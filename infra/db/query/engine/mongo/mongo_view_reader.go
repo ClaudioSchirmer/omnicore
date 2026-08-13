@@ -80,36 +80,45 @@ func (r *MongoViewReader) resolveViewSchema(view string) *query.ViewNode {
 }
 
 // translateFilterKeys rewrites a Go-field-path-keyed filter into a
-// physical-column-keyed filter via the view node. Keys that do not resolve are
-// passed through unchanged (defensive; the web allowlist validates first).
-func translateFilterKeys(node *query.ViewNode, src map[string]any) map[string]any {
+// physical-column-keyed filter via the view node. A key the view cannot resolve
+// is a schema mismatch, not something to guess at — it aborts the read with the
+// canonical 400 (see translateDotted).
+func translateFilterKeys(node *query.ViewNode, src map[string]any) (map[string]any, error) {
 	if len(src) == 0 {
-		return src
+		return src, nil
 	}
 	out := make(map[string]any, len(src))
 	for k, v := range src {
-		out[translateDotted(node, k)] = v
+		col, err := translateDotted(node, k)
+		if err != nil {
+			return nil, err
+		}
+		out[col] = v
 	}
-	return out
+	return out, nil
 }
 
 // translateSortFields rewrites Go-field-path sort terms into physical columns.
-func translateSortFields(node *query.ViewNode, src []queries.OrderByField) []queries.OrderByField {
+func translateSortFields(node *query.ViewNode, src []queries.OrderByField) ([]queries.OrderByField, error) {
 	if len(src) == 0 {
-		return src
+		return src, nil
 	}
 	out := make([]queries.OrderByField, len(src))
 	for i, s := range src {
-		out[i] = queries.OrderByField{Field: translateDotted(node, s.Field), Desc: s.Desc}
+		col, err := translateDotted(node, s.Field)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = queries.OrderByField{Field: col, Desc: s.Desc}
 	}
-	return out
+	return out, nil
 }
 
 // translateProjectionKeys rewrites a Go-field-path projection into physical
 // columns. The reserved "_id" key passes through untranslated.
-func translateProjectionKeys(node *query.ViewNode, src map[string]int) map[string]int {
+func translateProjectionKeys(node *query.ViewNode, src map[string]int) (map[string]int, error) {
 	if len(src) == 0 {
-		return src
+		return src, nil
 	}
 	out := make(map[string]int, len(src))
 	for k, v := range src {
@@ -117,20 +126,32 @@ func translateProjectionKeys(node *query.ViewNode, src map[string]int) map[strin
 			out[k] = v
 			continue
 		}
-		out[translateDotted(node, k)] = v
+		col, err := translateDotted(node, k)
+		if err != nil {
+			return nil, err
+		}
+		out[col] = v
 	}
-	return out
+	return out, nil
 }
 
 // translateDotted translates a dotted Go field path into the dotted physical
-// column path, leaving it unchanged when the node cannot resolve it.
-func translateDotted(node *query.ViewNode, dotted string) string {
+// column path.
+//
+// A node with NO schema is an unregistered view name — it translates nothing
+// and every path passes through unchanged, exactly as before (ColumnPath's own
+// contract). A node WITH a schema that cannot resolve the path is a different
+// animal: the caller named a field this view does not have. Passing that
+// through to Mongo verbatim is what made a mistyped filter return an empty page
+// with a 200 and a mistyped sort do nothing at all — so it now fails with the
+// canonical Schema 400 naming the offending path.
+func translateDotted(node *query.ViewNode, dotted string) (string, error) {
 	parts := strings.Split(dotted, ".")
 	col, ok := node.ColumnPath(parts)
 	if !ok {
-		return dotted
+		return "", core.UnresolvedFieldPathError(dotted)
 	}
-	return strings.Join(col, ".")
+	return strings.Join(col, "."), nil
 }
 
 // SetComposedViews registers the boot-validated composed-view definitions so
@@ -206,9 +227,18 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	}
 
 	node := r.resolveViewSchema(view)
-	colFilter := translateFilterKeys(node, c.Filter)
-	colSort := translateSortFields(node, c.OrderBy)
-	colProj := translateProjectionKeys(node, c.Projection)
+	colFilter, err := translateFilterKeys(node, c.Filter)
+	if err != nil {
+		return queries.Page{}, err
+	}
+	colSort, err := translateSortFields(node, c.OrderBy)
+	if err != nil {
+		return queries.Page{}, err
+	}
+	colProj, err := translateProjectionKeys(node, c.Projection)
+	if err != nil {
+		return queries.Page{}, err
+	}
 	sdCol, sdOn := node.DeletedAtColumn()
 
 	filter := bson.M{}
@@ -413,12 +443,12 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	}
 
 	page := queries.Page{
-		Items:       items,
+		Items:           items,
 		HasNextPage:     hasNext,
-		HasPreviousPage:     hasPrev,
-		TotalCount:       total,
-		ItemCursors: itemCursors,
-		Projection:  c.Projection, // echo the effective projection for export plan pruning
+		HasPreviousPage: hasPrev,
+		TotalCount:      total,
+		ItemCursors:     itemCursors,
+		Projection:      c.Projection, // echo the effective projection for export plan pruning
 	}
 	if hasNext {
 		page.EndCursor = nextCursorStr
@@ -437,12 +467,16 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	sdCol, sdOn := node.DeletedAtColumn()
 	col := r.mongo.collFn(r.resolver.Active(view).String())
 	filter := bson.M{"_id": id}
-	applyFilter(filter, translateFilterKeys(node, c.Filter))
+	colFilter, err := translateFilterKeys(node, c.Filter)
+	if err != nil {
+		return nil, false, err
+	}
+	applyFilter(filter, colFilter)
 	if !c.IncludeArchived && sdOn {
 		filter[sdCol] = nil
 	}
 	var doc bson.M
-	err := col.FindOne(ctx, filter).Decode(&doc)
+	err = col.FindOne(ctx, filter).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, false, nil
 	}

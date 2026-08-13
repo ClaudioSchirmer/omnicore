@@ -80,8 +80,8 @@ func sbvView() *ViewDefinition {
 }
 
 var (
-	sbvAddrSeg = domain.PluralizeWord("sbvAddr")      // base-child segment at the root
-	sbvDepSeg  = domain.PluralizeWord("sbvDependent") // employee-child segment inside the role
+	sbvAddrSeg = sbvAddr{}.CollectionName()      // base-child segment at the root
+	sbvDepSeg  = sbvDependent{}.CollectionName() // employee-child segment inside the role
 )
 
 // --- builder ----------------------------------------------------------------
@@ -803,3 +803,6 @@ func TestRoleView_BaseChildBranches(t *testing.T) {
 		t.Error("a nil embed source must contribute nothing")
 	}
 }
+
+func (sbvAddr) CollectionName() string      { return "SbvAddrs" }
+func (sbvDependent) CollectionName() string { return "SbvDependents" }

@@ -359,21 +359,6 @@ func TestEnumDescriptionKey_ValueAndPointer(t *testing.T) {
 	}
 }
 
-// --- identifier_render: isVowelByte ---------------------------------------
-
-func TestIsVowelByte(t *testing.T) {
-	for _, b := range []byte{'a', 'e', 'i', 'o', 'u'} {
-		if !isVowelByte(b) {
-			t.Errorf("isVowelByte(%c) = false, want true", b)
-		}
-	}
-	for _, b := range []byte{'b', 'c', 'd', 'z', '0', '!'} {
-		if isVowelByte(b) {
-			t.Errorf("isVowelByte(%c) = true, want false", b)
-		}
-	}
-}
-
 // --- WorkUnit -------------------------------------------------------------
 
 func TestRunWorkUnit_ReturnsValue(t *testing.T) {

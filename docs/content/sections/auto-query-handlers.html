@@ -179,6 +179,17 @@
         parameter.
     </p>
     <p>
+        <strong>Behind the allowlist, the view has the last word.</strong> The allowlist validates a request against
+        the <em>DTO</em>; the reader then resolves each Go field path against the <em>view's</em> <code>TableSchema</code>
+        tree. A path the view cannot resolve — a DTO field that does not match any column or segment the view projects,
+        typically a collection field spelled differently from the child's <code>CollectionName()</code> — is rejected
+        with the same canonical 400 <code>SchemaViolationNotification</code>, naming the offending dotted Go path. This
+        covers <code>?filter</code>, <code>?orderBy=</code> and <code>?fields=</code> alike, on the Mongo and relational
+        backings equally. It is deliberately not a silent fallback: passing an unresolvable path through to the store
+        would answer 200 with an empty page for a mistyped filter, and 200 unsorted for a mistyped sort. (An
+        UNREGISTERED view name has no schema to check against, so its paths still pass through untouched.)
+    </p>
+    <p>
         <strong>The DTO governs every surface.</strong> The Request DTO is the single source of truth
         for what a list endpoint exposes: a reserved control the DTO does not declare is rejected on
         EVERY surface — REST answers 400 with the control key as the field; GraphQL cuts the argument
@@ -751,7 +762,8 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         own data — root columns, siblings and SharedBase (FLAT), and every <code>Child(...)</code> collection (each child's
         siblings folded in FLAT) — projects into the document <em>automatically</em> from the <code>TableSchema</code>, a
         faithful mirror of the write closure. You declare <strong>nothing</strong> for it; a nested collection lands under
-        its pluralized child-type segment, filterable/sortable by its dotted Go path (<code>Items.SKU</code>).
+        the segment its child type declares in <code>CollectionName()</code>, filterable/sortable by its dotted Go
+        path (<code>Items.SKU</code>).
         <code>EmbedMany</code>/<code>Embed</code> compose data the aggregate does <strong>not</strong> own, from either
         material source: another service's read model (<code>UpstreamSubscription</code> + <code>JoinUpstream</code> over a
         type-less <code>NewExternalSchema</code>) or another LOCAL view (<code>JoinView</code> — see

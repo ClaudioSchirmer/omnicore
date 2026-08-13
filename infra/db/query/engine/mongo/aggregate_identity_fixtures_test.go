@@ -17,3 +17,6 @@ func (v loaderNoteVO) IsSameBusinessIdentity(o domain.AggregateValueObject) bool
 func (v loaderTagVO) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(v, o)
 }
+
+func (loaderNoteVO) CollectionName() string { return "LoaderNoteVOs" }
+func (loaderTagVO) CollectionName() string  { return "LoaderTagVOs" }

@@ -952,3 +952,5 @@ func TestChildElems_NormalizesBothArrayShapes(t *testing.T) {
 		t.Fatalf("nil must yield nil, got %v", got)
 	}
 }
+
+func (cvrLine) CollectionName() string { return "CvrLines" }

@@ -223,29 +223,7 @@ func TestServiceBase_IsServiceSeal(t *testing.T) {
 	var _ Service = ServiceBase{}
 }
 
-// ─── path_render.go: PluralizeWord / ToLowerCamel / toLowerRune ──────────────
-
-func TestPluralizeWord(t *testing.T) {
-	cases := []struct {
-		in, out string
-	}{
-		{"", ""},
-		{"Address", "Addresses"},    // ends 's' → es
-		{"Box", "Boxes"},            // ends 'x' → es
-		{"Buzz", "Buzzes"},          // ends 'z' → es
-		{"Dish", "Dishes"},          // ends 'sh' → es
-		{"Match", "Matches"},        // ends 'ch' → es
-		{"Category", "Categories"},  // 'y' after consonant → ies
-		{"Day", "Days"},             // 'y' after vowel → s
-		{"OrderLine", "OrderLines"}, // default → s
-		{"a", "as"},                 // single rune, default
-	}
-	for _, c := range cases {
-		if got := PluralizeWord(c.in); got != c.out {
-			t.Errorf("PluralizeWord(%q) = %q, want %q", c.in, got, c.out)
-		}
-	}
-}
+// ─── path_render.go: ToLowerCamel / toLowerRune ──────────────────────────────
 
 func TestToLowerCamel_Exported(t *testing.T) {
 	cases := []struct {

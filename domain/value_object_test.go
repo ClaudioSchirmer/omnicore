@@ -374,3 +374,5 @@ func TestNewValueObjectValue_EnumConverges(t *testing.T) {
 		t.Errorf("NewValueObjectValue(testSize,\"XL\") = %v want sizeUnknown (converge)", got)
 	}
 }
+
+func (voChild) CollectionName() string { return "VoChilds" }

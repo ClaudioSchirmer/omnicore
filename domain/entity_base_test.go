@@ -7,9 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Rec is an AggregateValueObject used in tests. Short type name → collection
-// inference yields "recs" (Pluralize(PascalToSnake("Rec"))) matching the
-// previous wire-format expectations from Phase 13/14.
+// Rec is an AggregateValueObject used in tests. It declares "Recs" as its
+// collection, which the wire path renders as "recs".
 type Rec struct {
 	Managed
 	Name      string
@@ -46,9 +45,9 @@ func (u Tag) BuildRules(_ string, _ Service, _ *Rules) {
 }
 
 // providerEntity embeds AggregateRoot and implements AggregateRootProvider.
-// Phase 19: no children mapping — typeNames discovered via reflection on
-// AggregateRoot.AllAggregateItems(); collection names inferred via
-// PluralizeSnake(PascalToSnake(typeName)).
+// No children mapping — typeNames are discovered via reflection on
+// AggregateRoot.AllAggregateItems(); each collection's name comes from the
+// child's own CollectionName().
 type providerEntity struct {
 	AggregateRoot
 }
@@ -381,8 +380,8 @@ func TestGetUnarchivable_DispatchesModeUnarchiveNotUpdate(t *testing.T) {
 	}
 }
 
-// Collection name is inferred via PluralizeSnake(PascalToSnake(typeName)).
-// Rec → "recs". Wire path: "recs[0].street".
+// The collection name is the child's declared one, lower-camelled for the wire:
+// Rec declares "Recs" → wire path "recs[0].street".
 func TestRunAggregateValidations_AutoComposesCollectionPathWithIndex(t *testing.T) {
 	p := newProviderEntity()
 	AddAggregateChild(p, Rec{Name: "x", emit: "Street"})

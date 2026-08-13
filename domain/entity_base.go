@@ -46,7 +46,7 @@ type avoEntry struct {
 }
 
 type BaseEntity struct {
-	Managed // id + revision + managed timestamps; GetID() ID / SetID / ClearID promoted
+	Managed   // id + revision + managed timestamps; GetID() ID / SetID / ClearID promoted
 	signature uuid.UUID
 	mode      EntityMode
 	service   Service
@@ -67,6 +67,7 @@ func (b *BaseEntity) RequiresService() bool { return false }
 
 func (b *BaseEntity) NotificationContext() *NotificationContext { return b.notifCtx }
 func (b *BaseEntity) Events() []DomainEvent                     { return b.events }
+
 // GetID shadows the promoted Managed.GetID() ID with the Entity contract's
 // nullable *ID form (nil = not persisted). SetID / ClearID come promoted from
 // Managed.
@@ -94,7 +95,6 @@ func (b *BaseEntity) AddNotification(name string, n Notification, value ...any) 
 func (b *BaseEntity) AddNotificationContext(ctx *NotificationContext) {
 	b.contexts = append(b.contexts, ctx)
 }
-
 
 func (b *BaseEntity) ValidateAggregateValueObject(name string, avo AggregateValueObject) {
 	b.avos = append(b.avos, avoEntry{name: name, avo: avo})
@@ -600,10 +600,11 @@ func validateValueObjectFields(value any, ctx *NotificationContext, ignored []st
 // (ValidateAggregateValueObject) remains available for typeNames OUTSIDE the
 // AggregateRoot (VOs without their own table, e.g. tags in a JSONB column).
 //
-// Collection name in the wire path is the camelCase plural of the Go typeName
-// (childCollectionSegment = toLowerCamel + pluralize): Address → "addresses",
-// OrderLine → "orderLines". It is a JSON wire segment, so the convention is
-// camelCase — independent of the physical table name declared in the TableSchema.
+// Collection name in the wire path is the name the AVO declares in
+// CollectionName, cased for the wire (childCollectionSegment = toLowerCamel):
+// "Addresses" → "addresses", "OrderLines" → "orderLines". It is a JSON wire
+// segment, so the convention is camelCase — independent of the physical table
+// name declared in the TableSchema.
 //
 // The framework passes to AVO.BuildRules a *Rules whose NotificationContext
 // is scoped with the prefix:
@@ -621,7 +622,13 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 			all := root.AllAggregateItems()
 			for typeName, items := range all {
 				mappedTypeNames[typeName] = struct{}{}
-				collectionName := childCollectionSegment(typeName)
+				if len(items) == 0 {
+					continue
+				}
+				// The collection name is declared by the AVO, so it is resolved
+				// from an item's type — the map key is the Go type name, which
+				// names nothing on the wire.
+				collectionName := childCollectionSegment(reflect.TypeOf(items[0].Item))
 				idx := 0
 				for _, item := range items {
 					if item.CurrentStatus == StatusRemoved {

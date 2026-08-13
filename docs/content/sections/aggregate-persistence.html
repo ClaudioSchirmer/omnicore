@@ -33,7 +33,7 @@
     </p>
 
     <p>
-        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, which comes promoted from an <strong>embedded <a href="#table-schema"><code>domain.Managed</code> carrier</a></strong> (identity is a TYPE on children exactly as on references; the id lives in the carrier, and the persister's minted-id write-back sets it through the promoted <code>SetID</code>). Embed <code>domain.Managed</code> in the value object; a load surfaces the id AND the managed timestamps/revision through the carrier's getters. Infra maps the business columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); the id column is declared with <code>.ID(col)</code> (skipped on the INSERT/UPDATE write list, used in the WHERE clause and read back as a trailing scan column); the ParentID to the root is injected by infra (it is not a struct field). It also requires <code>IsSameBusinessIdentity(other AggregateValueObject) bool</code> — see <a href="#aggregate-persistence~child-identity">Child identity</a>.
+        <code>AggregateValueObject</code> requires <code>BuildRules(actionName string, svc Service, r *Rules)</code> — signature identical to <code>Entity.BuildRules</code> — plus <code>GetID() domain.ID</code>, which comes promoted from an <strong>embedded <a href="#table-schema"><code>domain.Managed</code> carrier</a></strong> (identity is a TYPE on children exactly as on references; the id lives in the carrier, and the persister's minted-id write-back sets it through the promoted <code>SetID</code>). Embed <code>domain.Managed</code> in the value object; a load surfaces the id AND the managed timestamps/revision through the carrier's getters. Infra maps the business columns via the child's <code>TableSchema</code>; an undeclared exported field is runtime-only by construction (the schema simply does not list it, so it is never persisted/scanned/audited); the id column is declared with <code>.ID(col)</code> (skipped on the INSERT/UPDATE write list, used in the WHERE clause and read back as a trailing scan column); the ParentID to the root is injected by infra (it is not a struct field). It also requires <code>IsSameBusinessIdentity(other AggregateValueObject) bool</code> — see <a href="#aggregate-persistence~child-identity">Child identity</a> — and <code>CollectionName() string</code>, the declared name of the collection it occupies inside the aggregate — see <a href="#aggregate-persistence~collection-name">Naming the collection</a>.
     </p>
 
     <h3>Child identity</h3>
@@ -60,6 +60,43 @@
 func (d Dependent) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
     return domain.IsSameByBusinessFields(d, other)
 }</code></pre>
+
+    <h3 id="collection-name">Naming the collection — <code>CollectionName()</code></h3>
+    <p>
+        Every <code>AggregateValueObject</code> MUST also declare <code>CollectionName() string</code>: the name of the
+        collection it occupies inside its owning aggregate. It is the <strong>one</strong> name for that collection
+        across the framework, with exactly two consumers:
+    </p>
+    <ul>
+        <li><strong>The read side</strong> — it is the document segment the projection nests the collection under and the
+            Go segment a filter/sort path walks (<code>?addresses.city</code> resolves as <code>Addresses.City</code>).
+            It must therefore match the field your read DTO declares for the collection.</li>
+        <li><strong>The notification wire path</strong> — rendered lower-camel, so a child's notification surfaces as
+            <code>addresses[0].zipCode</code> without the AVO knowing it is a child.</li>
+    </ul>
+    <pre><code>func (Address) CollectionName() string { return "Addresses" }
+
+// The domain's own language — the framework has no opinion:
+func (Endereco) CollectionName() string { return "Enderecos" }</code></pre>
+    <p>
+        <strong>Declared, never derived.</strong> The framework applies no pluralization rule: an English heuristic
+        cannot spell a Portuguese or German collection, it gets English irregulars wrong
+        (<code>Person</code>, <code>Child</code>, <code>Analysis</code>), and a name that is merely derived is a name
+        nobody declared — while it is, in fact, a persisted document key. This is the same posture as
+        <a href="#table-schema">TableSchema</a>: physical names are declared, complete, and checked.
+    </p>
+    <p>
+        <strong>Contract.</strong> A constant, valid as an exported Go field name — first rune an ASCII uppercase letter
+        (A-Z), every other rune a letter or a digit (accented letters are fine: <code>"Endereços"</code>). The framework
+        resolves it once per type from a zero value and caches it, so it must not depend on receiver state. Two children
+        of one schema declaring the same name is a boot error, as is a child type that declares no name — both panic at
+        the <code>Child(...)</code> declaration, never at runtime.
+    </p>
+    <p>
+        <strong>Changing a declared name changes the projection's shape</strong> — the collection moves to a new document
+        key. Bump the view's <code>Version(N)</code> so the blue-green rebuild republishes it, and rename the matching
+        field in the read DTO (see <a href="#mongo-schema-evolution">Mongo schema evolution</a>).
+    </p>
 
     <h3>Universal symmetric cascade</h3>
     <p>
@@ -234,7 +271,10 @@ r.WithSchema(UserSchema())
         for each typeName present, it fires <code>BuildRules(actionName, svc, r)</code> on each item of the
         <code>AggregateRoot</code> with <code>CurrentStatus != Removed</code>, with <code>r</code> carrying a
         <code>NotificationContext</code> already scoped at <code>[NameSegment(collection), IndexSegment(i)]</code> —
-        the collection segment is the JSON wire name, <code>toLowerCamel(typeName)</code> pluralized in camelCase (<code>Address</code> → <code>addresses</code>, <code>OrderLine</code> → <code>orderLines</code>).
+        the collection segment is the name the AVO declares in <code>CollectionName()</code>, rendered lower-camel for the
+        wire (<code>"Addresses"</code> → <code>addresses</code>, <code>"OrderLines"</code> → <code>orderLines</code>). The
+        framework applies no pluralization rule of its own — see
+        <a href="#aggregate-persistence~collection-name">Naming the collection</a>.
         <strong>The root's <code>BuildRules</code> does not need to register children manually</strong>
         for the child's to run. Since the type-guard on the primitives ensures only types declared in
         <code>AggregateChildren()</code> enter the collection, iterating the map equals iterating the declared list.

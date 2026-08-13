@@ -7,6 +7,40 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.48.0</span><span class="release-date">August 13, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>an aggregate child names its own
+                collection; the framework's English pluralizer is gone.</strong> Every
+                <a href="#aggregate-persistence~collection-name"><code>AggregateValueObject</code> now declares
+                <code>CollectionName() string</code></a>, and <code>domain.PluralizeWord</code> was removed. That
+                helper was the last name inference left in the framework, and what it inferred was a
+                <em>persisted document key</em>: the segment a child collection is nested under in the projection,
+                the Go segment a filter/sort path walks (<code>?addresses.city</code> →
+                <code>Addresses.City</code>), the <code>?fields=</code>/CSV token, and — lower-camelled — the
+                notification wire path (<code>addresses[0].zipCode</code>). It guessed that key with basic English
+                plural rules, so it was wrong for any non-English domain (<code>Animal</code> →
+                <code>Animals</code>, not <code>Animais</code>) and for English irregulars (<code>Person</code> →
+                <code>Persons</code>, <code>Child</code> → <code>Childs</code>), and right elsewhere only by
+                coincidence. The name is now declared by the domain, in the domain's own language, and one
+                declaration feeds both consumers — so the document key and the wire path cannot drift.
+                <em>Migration:</em> add the method to every AVO (a compile error until you do); declaring the string
+                the old rule produced keeps every projection, DTO and wire path byte-identical, with no rebuild.
+                Choosing a different (correct) name changes the document shape — bump the view's
+                <code>Version(N)</code> and rename the matching read-DTO field.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a Go field path a registered view
+                cannot resolve is now a 400 instead of a silent empty result.</strong> The Mongo reader used to pass
+                an unresolvable filter / sort / projection path through to the store verbatim, where it matched
+                nothing: a mistyped filter answered <code>200</code> with an empty page and a mistyped sort answered
+                <code>200</code> unsorted — the failure mode that made a wrong collection segment so expensive to
+                find. Such a path now aborts the read with the canonical <code>SchemaViolationNotification</code>
+                (<code>SemanticSchema</code> → 400) naming the offending dotted path, matching what the
+                <a href="#relational-view">relational backing</a> already did for its unservable fields and what the
+                <a href="#auto-query-handlers~qry-allowlist">wire allowlist</a> already did for an unknown
+                <code>?fields=</code> token. An UNREGISTERED view name has no schema to check against, so its paths
+                still pass through unchanged.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.47.2</span><span class="release-date">August 12, 2026</span></div>
         <ul>
             <li><strong>Docs</strong> — <strong>the GraphQL manual taught a broken idiom for clearing a sibling

@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"reflect"
+	"strings"
+)
 
 // renderPath turns a structured PathSegment slice into the wire-format field
 // string. Name segments are rendered via lowerCamel (PascalCase → camelCase,
@@ -64,41 +67,14 @@ func itoa(i int) string {
 	return string(buf[pos:])
 }
 
-// childCollectionSegment renders an aggregate child's collection segment for the
-// notification wire path: the type name in camelCase, pluralized. JSON-facing —
-// the wire path is camelCase everywhere, so this is too (Address → addresses,
-// OrderLine → orderLines), matching the client's JSON array name. The framework
-// no longer has column/table convention; this is the one remaining wire-naming
-// derivation, and it stays camelCase.
-func childCollectionSegment(typeName string) string {
-	return PluralizeWord(toLowerCamel(typeName))
-}
-
-// PluralizeWord applies basic English plural rules to a word, preserving its
-// case (the last word carries the plural): "Address" → "Addresses",
-// "OrderLine" → "OrderLines", "Category" → "Categories". Irregulars are not
-// covered. Exported so infra can derive a local view embed's Go segment from
-// its schema's type name.
-func PluralizeWord(s string) string {
-	if s == "" {
-		return ""
-	}
-	n := len(s)
-	if n >= 2 {
-		tail := s[n-2:]
-		if tail == "sh" || tail == "ch" {
-			return s + "es"
-		}
-	}
-	switch s[n-1] {
-	case 's', 'x', 'z':
-		return s + "es"
-	case 'y':
-		if n >= 2 && !isVowelByte(s[n-2]) {
-			return s[:n-1] + "ies"
-		}
-	}
-	return s + "s"
+// childCollectionSegment renders an aggregate child's collection segment for
+// the notification wire path: the DECLARED collection name (CollectionSegmentOf)
+// in camelCase. JSON-facing — the wire path is camelCase everywhere, so this is
+// too ("Addresses" → addresses, "OrderLines" → orderLines), matching the
+// client's JSON array name. The framework derives no name of its own: the
+// domain declares the segment, this only cases it for the wire.
+func childCollectionSegment(t reflect.Type) string {
+	return toLowerCamel(CollectionSegmentOf(t))
 }
 
 // toLowerCamel converts a Go identifier to a JSON-friendly camelCase string.
@@ -152,12 +128,4 @@ func toLowerRune(r rune) rune {
 		return r + ('a' - 'A')
 	}
 	return r
-}
-
-func isVowelByte(b byte) bool {
-	switch b {
-	case 'a', 'e', 'i', 'o', 'u':
-		return true
-	}
-	return false
 }

@@ -150,3 +150,5 @@ func TestArchived_DeletedAtPathsCoverEverySegment(t *testing.T) {
 		t.Errorf("child collections still contribute, got %v", paths)
 	}
 }
+
+func (arcItem) CollectionName() string { return "ArcItems" }

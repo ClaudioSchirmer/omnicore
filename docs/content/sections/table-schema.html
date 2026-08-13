@@ -293,7 +293,11 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     grandchild would silently never persist. Model the sub-collection as a <strong>separate aggregate</strong> (its own
     root + ParentID). On the <em>read side</em>, a schema's own children (like a shared base's children) <strong>project
     automatically</strong> into the Mongo view — the composer nests each declared <code>Child(...)</code> wherever the
-    schema is used, so a child on a view root or on an embed leg is materialized, not ignored. An embed leg
+    schema is used, so a child on a view root or on an embed leg is materialized, not ignored. Each collection lands
+    under the segment its type declares in
+    <a href="#aggregate-persistence~collection-name"><code>CollectionName()</code></a> — a child type that declares
+    none is a boot panic at the <code>Child(...)</code> call, as are two children of one schema declaring the same
+    name. An embed leg
     <em>cannot</em> declare a further <code>Embed(...)</code> / <code>EmbedMany(...)</code>, though — a leg
     exposes no such builder, so embed-of-embed does not compile (embeds are single-level per declaration; depth beyond one
     hop comes from a <code>JoinView</code> source's own embeds, from a second top-level embed, or from a read-time

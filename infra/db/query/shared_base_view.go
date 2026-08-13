@@ -54,10 +54,10 @@ func SharedBaseView(name string) *ViewDefinition {
 }
 
 // roleDef is one declared role of a SharedBaseView. The segment — the document
-// field AND the Go segment the criteria/Response refer to — is derived from
-// the role schema's Go type name ("User", "Employee"), the same derivation rule
-// nested children use (childDocSegment), minus the pluralization: a role is a
-// single optional sub-document, not a collection.
+// field AND the Go segment the criteria/Response refer to — is the role schema's
+// Go type name ("User", "Employee"). A role is a single optional sub-document,
+// not a collection, so it declares no CollectionName the way a nested child does
+// (childDocSegment).
 type roleDef struct {
 	schema  *core.TableSchema
 	segment string

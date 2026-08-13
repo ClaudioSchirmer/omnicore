@@ -752,18 +752,18 @@ func TestConsultGuardedStages_ChildSegmentsInBothScopes(t *testing.T) {
 
 	doc := Document{
 		"id": "a1", "email": "a@x", "name": "Ana",
-		"builderTestEntities": []Document{{"id": "e1", "city": "POA"}},
-		docRevisionField:      int64(2),
-		docBaseRevisionField:  int64(5),
+		builderTestEntity{}.CollectionName(): []Document{{"id": "e1", "city": "POA"}},
+		docRevisionField:                     int64(2),
+		docBaseRevisionField:                 int64(5),
 	}
 	stages := consultGuardedStages(view, doc)
 	if len(stages) != 2 {
 		t.Fatalf("want own + base stages, got %d: %v", len(stages), stages)
 	}
 	baseSet, _ := stages[1]["$set"].(Document)
-	segCond, _ := baseSet["builderTestEntities"].(Document)["$cond"].([]any)
+	segCond, _ := baseSet[builderTestEntity{}.CollectionName()].(Document)["$cond"].([]any)
 	if len(segCond) != 3 {
-		t.Fatalf("base-children segment must be guard-wrapped, got %v", baseSet["builderTestEntities"])
+		t.Fatalf("base-children segment must be guard-wrapped, got %v", baseSet[builderTestEntity{}.CollectionName()])
 	}
 	equalBranch, _ := segCond[2].(Document)["$cond"].([]any)
 	fillBranch, _ := equalBranch[1].(Document)["$cond"].([]any)

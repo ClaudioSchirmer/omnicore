@@ -11,6 +11,55 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-08-13
+
+### Changed
+
+- **BREAKING — an aggregate child names its own collection; the framework's
+  English pluralizer is gone.** `domain.AggregateValueObject` now requires
+  `CollectionName() string`, and `domain.PluralizeWord` was removed. That
+  helper was the last name inference left in the framework, and it produced a
+  **persisted document key**: the segment a child collection is nested under in
+  the Mongo projection, the Go segment a filter/sort path walks
+  (`?addresses.city` → `Addresses.City`), the `?fields=`/CSV export token, and —
+  lower-camelled — the notification wire path (`addresses[0].zipCode`). It
+  guessed that key with basic English plural rules, so it was wrong for any
+  non-English domain (`Animal` → `Animals`, not `Animais`) and for English
+  irregulars (`Person` → `Persons`, `Child` → `Childs`, `Analysis` →
+  `Analysiss`), and it was right elsewhere only by coincidence. The name is now
+  declared by the domain, in the domain's own language, and is the single
+  source for both consumers — the read side reaches it through the new
+  `core.TableSchema.CollectionSegment()`, so the document key and the wire path
+  can never drift apart.
+  **Migration:** add `func (X) CollectionName() string { return "..." }` to
+  every `AggregateValueObject` (a compile error until you do). Declaring the
+  string the old rule produced keeps every projection, DTO and wire path
+  byte-identical — no rebuild. Choosing a different (correct) name changes the
+  document shape: bump the view's `Version(N)` and rename the matching read-DTO
+  field. Contract: a constant, valid as an exported Go field name (first rune
+  A-Z, the rest letters or digits); a missing, malformed or colliding
+  declaration panics at the `Child(...)` declaration, at boot.
+- **BREAKING — a Go field path a registered view cannot resolve is now a 400
+  instead of a silent empty result.** The Mongo reader used to pass an
+  unresolvable filter / sort / projection path through to the store verbatim,
+  where it matched nothing: a mistyped filter answered `200` with an empty
+  page, and a mistyped sort answered `200` unsorted — the failure mode that
+  made a wrong collection segment so expensive to find. Such a path now aborts
+  the read with the canonical `SchemaViolationNotification` (`SemanticSchema` →
+  400) naming the offending dotted path, matching what the relational backing
+  already did for its unservable fields, and what the wire allowlist already
+  did for an unknown `?fields=` token. An UNREGISTERED view name still has no
+  schema to check against, so its paths pass through unchanged.
+
+### Added
+
+- **`domain.CollectionSegmentOf(reflect.Type)`** — the single resolution point
+  of a child collection's declared name (validated, cached per type), with
+  `domain.CollectionNamed` as the narrow interface it resolves against, and
+  **`core.TableSchema.CollectionSegment()`** as the read side's accessor.
+- **`core.UnresolvedFieldPathError(goPath)`** — the canonical Schema envelope
+  for a Go field path a view cannot translate.
+
 ## [0.47.2] - 2026-08-12
 
 ### Docs

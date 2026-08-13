@@ -34,3 +34,11 @@ func (c *ptrChildVO) IsSameBusinessIdentity(o domain.AggregateValueObject) bool 
 func (c noColsChild) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(c, o)
 }
+
+func (addrLoad) CollectionName() string     { return "AddrLoads" }
+func (covChild) CollectionName() string     { return "CovChilds" }
+func (csLoadChild) CollectionName() string  { return "CsLoadChilds" }
+func (fakeVO) CollectionName() string       { return "FakeVOs" }
+func (guardChildVO) CollectionName() string { return "GuardChildVOs" }
+func (ptrChildVO) CollectionName() string   { return "PtrChildVOs" }
+func (noColsChild) CollectionName() string  { return "NoColsChilds" }

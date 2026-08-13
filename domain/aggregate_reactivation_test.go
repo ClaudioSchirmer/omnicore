@@ -120,3 +120,6 @@ func TestIsSameByBusinessFields_SkipsPointerManagedCarrier(t *testing.T) {
 		t.Fatal("different Name must not be the same identity")
 	}
 }
+
+func (narrowAVO) CollectionName() string     { return "NarrowAVOs" }
+func (ptrCarrierAVO) CollectionName() string { return "PtrCarrierAVOs" }

@@ -77,3 +77,23 @@ func InvalidCursorError(cause error) *InfrastructureError {
 		Notification: domain.SchemaViolationNotification{},
 	})
 }
+
+// UnresolvedFieldPathError packages "this view cannot resolve that Go field
+// path" in the canonical Schema envelope — a filter, sort or projection path
+// that the view's TableSchema tree does not translate to a physical column.
+// FieldName is the offending dotted Go path.
+//
+// The alternative the reader used to take was to pass the path through to Mongo
+// verbatim, which silently matched nothing: a filter returned an empty page and
+// a sort did nothing, both with a 200. A path the view cannot name is a schema
+// mismatch between the caller's DTO and the view's declaration — the same class
+// of error as an unknown `?fields=` token, and it gets the same 400 (via
+// SemanticSchema on the kernel SchemaViolationNotification). The relational
+// backing already rejects its unservable fields this way, so both backings
+// answer an unknown path identically.
+func UnresolvedFieldPathError(goPath string) *InfrastructureError {
+	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
+		FieldName:    goPath,
+		Notification: domain.SchemaViolationNotification{},
+	})
+}

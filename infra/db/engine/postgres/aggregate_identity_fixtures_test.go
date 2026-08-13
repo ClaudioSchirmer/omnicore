@@ -12,3 +12,5 @@ import "github.com/ClaudioSchirmer/omnicore/domain"
 func (c covChild) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(c, o)
 }
+
+func (covChild) CollectionName() string { return "CovChilds" }

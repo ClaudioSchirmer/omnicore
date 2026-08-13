@@ -58,6 +58,12 @@ func TestSchemaAccess_KindAccessors(t *testing.T) {
 	if got := ext.TypeName(); got != "" {
 		t.Errorf("external TypeName() = %q, want empty", got)
 	}
+	// A type-less source is never an aggregate child, so it occupies no
+	// collection segment — the one case CollectionSegment() answers empty
+	// instead of resolving a declaration.
+	if got := ext.CollectionSegment(); got != "" {
+		t.Errorf("external CollectionSegment() = %q, want empty", got)
+	}
 	if ext.HasPKDeclared() {
 		t.Error("HasPKDeclared() must be false before ID(...)")
 	}
