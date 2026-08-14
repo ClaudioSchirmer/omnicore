@@ -229,16 +229,26 @@ r.WithSchema(UserSchema())
 
     <div class="box">
         <strong>Construction-time notifications survive to the boundary.</strong>
-        Root methods must call <code>domain.EnsureInitialized(u)</code> on the first line. Without it,
-        notifications emitted in the constructor (e.g., duplicate detection in <code>AddAddress</code>) would be
-        silently lost because <code>BaseEntity.AddNotification</code> is a no-op when
-        <code>notifCtx == nil</code> (the natural state of an entity freshly constructed via <code>&amp;User{}</code>;
-        <code>GetInsertable</code> only initializes the context LATER). <code>resetEntity</code>
-        called by <code>getInsertable/getUpdatable/getDeletable</code> <strong>does not clear</strong> the
-        <code>NotificationContext</code> — notifications accumulated during construction survive
-        until <code>checkAllNotifications</code>. <code>IsValid</code> (re-check) calls <code>Clear()</code>
-        explicitly before re-validating. The type-guarded primitives also call
-        <code>ensureRootInit</code> internally as defense in depth.
+        A root method emits with no preparation of any kind: an entity built with
+        <code>&amp;User{}</code> already carries its <code>NotificationContext</code>, because
+        <code>BaseEntity</code> allocates it on first use. So a duplicate detected inside
+        <code>AddAddress</code> — long before <code>GetInsertable</code> ever sees the entity — is kept,
+        not dropped. <code>resetEntity</code>, called by
+        <code>getInsertable/getUpdatable/getDeletable</code>, <strong>does not clear</strong> the
+        context: notifications accumulated during construction survive until
+        <code>checkAllNotifications</code>. <code>IsValid</code> (re-check) calls <code>Clear()</code>
+        explicitly before re-validating.
+    </div>
+
+    <div class="box">
+        <strong>What the framework fills in later — and why you never see it.</strong>
+        Two things about the context cannot be known at construction: the entity name it reports,
+        and the type whose <code>labelKey:"…"</code> tags its emissions resolve against. A method whose
+        receiver is <code>*BaseEntity</code> cannot see the type embedding it —
+        <code>reflect.TypeOf</code> answers <code>*BaseEntity</code>, never <code>*User</code>. The
+        framework therefore stamps both the first time it holds the concrete entity (every
+        <code>Get*</code> entry point, plus the aggregate primitives), and backfills the field label of
+        anything emitted in the meantime. Naming is a late concern; emitting never is.
     </div>
 
     <h3>Replacing the children collection</h3>

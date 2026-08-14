@@ -78,7 +78,7 @@ func TestGetUnarchivable_MissingIDEmitsNotification(t *testing.T) {
 	}
 }
 
-// ─── applyFieldAliases: aliases declared but context not yet initialized ─────
+// ─── applyFieldAliases: aliases declared before the framework names the root ─
 
 type aliasOnlyEntity struct {
 	BaseEntity
@@ -87,14 +87,26 @@ type aliasOnlyEntity struct {
 func (a *aliasOnlyEntity) Modes() []EntityMode                { return []EntityMode{ModeInsert} }
 func (a *aliasOnlyEntity) BuildRules(string, Service, *Rules) {}
 
-func TestApplyFieldAliases_NilContextNoOp(t *testing.T) {
+func TestApplyFieldAliases_AppliesBeforeFrameworkEntry(t *testing.T) {
 	e := &aliasOnlyEntity{}
-	e.AddFieldNameAlias("orig", "new") // populates aliases without initializing notifCtx
-	if e.NotificationContext() != nil {
-		t.Fatal("precondition: context should be nil before init")
-	}
-	// Must not panic — the nil-context guard returns early.
+	// Both the alias and the notification are declared before any framework
+	// call — the rename must still land.
+	e.AddFieldNameAlias("orig", "new")
+	e.AddNotificationMessage(NotificationMessage{
+		FieldName:    "orig",
+		Notification: RequiredFieldNotification{},
+	})
+
 	applyFieldAliases(e)
+
+	if got := e.NotificationContext().Messages()[0].ResolveFieldName(); got != "new" {
+		t.Errorf("field name after alias = %q, want %q", got, "new")
+	}
+}
+
+func TestApplyFieldAliases_NoAliasesIsNoOp(t *testing.T) {
+	e := &aliasOnlyEntity{}
+	applyFieldAliases(e) // must not panic on an entity that declared nothing
 }
 
 // ─── cloneEntity: a failing UnmarshalJSON degrades to nil ────────────────────
@@ -136,7 +148,7 @@ func TestValidateAggregateChild_NilAggregateRootReturnsFalse(t *testing.T) {
 	}
 }
 
-// ─── ValidateAggregateChild: a non-Entity root with an uninitialized context ─
+// ─── ValidateAggregateChild: a root that is not an Entity ───────────────────
 
 type nonEntityProvider struct {
 	AggregateRoot
@@ -147,15 +159,14 @@ func (p *nonEntityProvider) AggregateChildren() []AggregateValueObject {
 	return []AggregateValueObject{testAVO{}}
 }
 
-func TestValidateAggregateChild_NilContextReturnsFalse(t *testing.T) {
-	// nonEntityProvider does not implement Entity, so ensureRootInit is a no-op
-	// and the embedded NotificationContext stays nil.
+func TestValidateAggregateChild_NonEntityRootStillValidates(t *testing.T) {
+	// nonEntityProvider does not implement Entity, so ensureRootInit cannot name
+	// its context. Validation runs anyway: the context exists from birth, so the
+	// child is judged on its own merits instead of being rejected wholesale.
 	p := &nonEntityProvider{}
-	if p.NotificationContext() != nil {
-		t.Fatal("precondition: context should be nil")
-	}
-	if ValidateAggregateChild(p, testAVO{}, ModeInsert, "GetInsertable", nil) {
-		t.Fatal("expected false when the root's NotificationContext is nil")
+	if !ValidateAggregateChild(p, testAVO{}, ModeInsert, "GetInsertable", nil) {
+		t.Fatalf("expected true for a child that emits nothing, got the root's messages: %+v",
+			p.NotificationContext().Messages())
 	}
 }
 

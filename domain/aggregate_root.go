@@ -327,12 +327,13 @@ func isAllowedChild(root AggregateRootProvider, item AggregateValueObject) bool 
 	return ok
 }
 
-// ensureRootInit guarantees the root's NotificationContext exists before any
-// primitive emits a notification. AggregateRootProvider implementers always
-// also implement Entity (BaseEntity embedded), so the type assertion is safe in
-// practice. Without this, type-guard rejections at command time (before
-// GetInsertable) would be silently dropped because BaseEntity.AddNotification
-// no-ops when notifCtx is nil.
+// ensureRootInit names the root's NotificationContext at the earliest moment a
+// primitive holds the root, so a type-guard rejection emitted at command time —
+// before GetInsertable — reports its entity and resolves its field labels like
+// any other. AggregateRootProvider implementers always also implement Entity
+// (BaseEntity embedded), so the type assertion is safe in practice. The
+// notification itself is never at risk: BaseEntity allocates its context on
+// demand.
 func ensureRootInit(root AggregateRootProvider) {
 	if e, ok := root.(Entity); ok {
 		ensureInit(e)
@@ -452,9 +453,6 @@ func ValidateAggregateChild(
 		return false
 	}
 	rootCtx := ar.NotificationContext()
-	if rootCtx == nil {
-		return false
-	}
 	typeName := classNameOf(item)
 	collectionName := childCollectionSegment(reflect.TypeOf(item))
 	existing := ar.aggregates[typeName]

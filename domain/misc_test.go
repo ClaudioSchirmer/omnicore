@@ -304,17 +304,121 @@ func TestBaseEntity_GetMode_DefaultIsDisplayAfterInit(t *testing.T) {
 	}
 }
 
-func TestEnsureInitialized_PublicWrapper(t *testing.T) {
+func TestEnsureInit_Idempotent(t *testing.T) {
 	e := &plainEntity{}
-	EnsureInitialized(e)
-	if e.NotificationContext() == nil {
-		t.Error("EnsureInitialized should populate the NotificationContext")
-	}
-	// Idempotent — a second call should not panic and should not reset.
+	ensureInit(e)
 	ctx := e.NotificationContext()
-	EnsureInitialized(e)
+	if ctx == nil {
+		t.Fatal("ensureInit should populate the NotificationContext")
+	}
+	ensureInit(e)
 	if e.NotificationContext() != ctx {
-		t.Error("EnsureInitialized should be idempotent (same ctx after second call)")
+		t.Error("ensureInit should be idempotent (same ctx after second call)")
+	}
+}
+
+// --- automatic context (no initialization step for the developer) ---------
+
+// lateLabelEntity carries a `labelKey` tag so the late stamping can be observed
+// on a message emitted before the framework ever saw the entity.
+type lateLabelEntity struct {
+	BaseEntity
+	Name string `labelKey:"LateLabelNameField"`
+}
+
+func (l *lateLabelEntity) Modes() []EntityMode                      { return []EntityMode{ModeInsert} }
+func (l *lateLabelEntity) BuildRules(_ string, _ Service, _ *Rules) {}
+
+func TestBaseEntity_NotificationContext_NeverNil(t *testing.T) {
+	e := &plainEntity{}
+	if e.NotificationContext() == nil {
+		t.Fatal("a freshly constructed entity must already carry a context")
+	}
+}
+
+func TestBaseEntity_AddNotification_BeforeFrameworkEntry(t *testing.T) {
+	e := &plainEntity{}
+	e.AddNotification("Name", RequiredFieldNotification{})
+
+	if !e.NotificationContext().HasErrors() {
+		t.Fatal("a notification emitted before any framework call must be kept, not dropped")
+	}
+	// The framework's own entry point then names the context in place; the
+	// notification emitted earlier survives it.
+	ensureInit(e)
+	if got := e.NotificationContext().Context(); got != "plainEntity" {
+		t.Errorf("context name after ensureInit = %q, want %q", got, "plainEntity")
+	}
+	if n := len(e.NotificationContext().Messages()); n != 1 {
+		t.Fatalf("messages after ensureInit = %d, want 1", n)
+	}
+}
+
+func TestBaseEntity_AddNotificationMessage_BeforeFrameworkEntry(t *testing.T) {
+	e := &plainEntity{}
+	e.AddNotificationMessage(NotificationMessage{
+		FieldName:    "name",
+		Notification: RequiredFieldNotification{},
+	})
+	if n := len(e.NotificationContext().Messages()); n != 1 {
+		t.Fatalf("messages = %d, want 1", n)
+	}
+}
+
+func TestInitWithName_BackfillsPendingLabels(t *testing.T) {
+	e := &lateLabelEntity{}
+	// Emitted while the context is still anonymous: the label cannot be
+	// resolved yet, because *BaseEntity does not know it is inside a
+	// labeledEntity.
+	e.AddNotification("Name", RequiredFieldNotification{})
+	if got := e.NotificationContext().Messages()[0].LabelKey; got != "" {
+		t.Fatalf("LabelKey before naming = %q, want empty", got)
+	}
+
+	ensureInit(e)
+
+	if got := e.NotificationContext().Messages()[0].LabelKey; got != "LateLabelNameField" {
+		t.Errorf("LabelKey after naming = %q, want %q", got, "LateLabelNameField")
+	}
+}
+
+func TestInitWithName_BackfillLeavesResolvedLabelsAlone(t *testing.T) {
+	e := &lateLabelEntity{}
+	ensureInit(e)
+	// Emitted after naming: resolved at emit time, and a second stamping
+	// attempt must not disturb it.
+	e.AddNotification("Name", RequiredFieldNotification{})
+	ensureInit(e)
+	if got := e.NotificationContext().Messages()[0].LabelKey; got != "LateLabelNameField" {
+		t.Errorf("LabelKey = %q, want %q", got, "LateLabelNameField")
+	}
+}
+
+func TestResolvePendingLabels_SkipsUnnamedType(t *testing.T) {
+	ctx := NewNotificationContext("")
+	ctx.AddNotification("Name", RequiredFieldNotification{})
+	ctx.resolvePendingLabels() // entityType is nil — nothing to resolve, no panic
+	if got := ctx.Messages()[0].LabelKey; got != "" {
+		t.Errorf("LabelKey = %q, want empty", got)
+	}
+}
+
+func TestResolvePendingLabels_SkipsScopedForwardedMessages(t *testing.T) {
+	e := &lateLabelEntity{}
+	ensureInit(e)
+	// A child AVO's scoped view resolves its own label and forwards a
+	// multi-segment path; the root's backfill must not touch it.
+	scoped := e.NotificationContext().Scoped(NameSegment("Items"), IndexSegment(0))
+	scoped.AddNotification("Name", RequiredFieldNotification{})
+
+	e.NotificationContext().resolvePendingLabels()
+
+	msg := e.NotificationContext().Messages()[0]
+	if msg.LabelKey != "" {
+		t.Errorf("forwarded message LabelKey = %q, want empty (child owns its label)", msg.LabelKey)
+	}
+	if got := msg.ResolveFieldName(); got != "items[0].name" {
+		t.Errorf("forwarded field name = %q, want %q", got, "items[0].name")
 	}
 }
 

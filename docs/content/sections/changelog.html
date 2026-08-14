@@ -7,6 +7,30 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.49.0</span><span class="release-date">August 13, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>an entity carries its
+                notification context from construction; <code>domain.EnsureInitialized</code> was
+                removed.</strong> <code>BaseEntity.AddNotification</code> and
+                <code>AddNotificationMessage</code> used to be silent no-ops on an entity the framework had not
+                touched yet — the natural state of <code>&amp;User{}</code> — so a notification raised inside a
+                <a href="#aggregate-persistence">root domain method</a> called from a command's
+                <code>ToEntity</code> (a duplicate rejected by <code>AddAddress</code>, say) simply vanished.
+                The escape hatch was <code>domain.EnsureInitialized(root)</code> as the first line of any such
+                method: an initialization step the developer had to know about, whose only symptom when forgotten
+                was a missing notification. The context is now allocated on first use — nothing to remember,
+                nothing to drop. <em>Migration:</em> delete every <code>domain.EnsureInitialized(...)</code> call
+                (a compile error until you do); behavior is identical wherever the call was present, and correct
+                wherever it was missing. The context is born anonymous, since a method on
+                <code>*BaseEntity</code> cannot see the type embedding it — the framework stamps the entity name
+                and the <code>labelKey</code>-resolving type at its first <code>Get*</code>/aggregate entry point
+                and backfills the field label of anything emitted before that. Related:
+                <code>domain.ValidateAggregateChild</code> no longer returns <code>false</code> for a root whose
+                context is nil, a state that can no longer occur — a root that is not an <code>Entity</code> is
+                now validated on its merits instead of being rejected wholesale.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.48.0</span><span class="release-date">August 13, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>an aggregate child names its own

@@ -266,6 +266,27 @@ func (c *NotificationContext) Scoped(segments ...PathSegment) *NotificationConte
 	}
 }
 
+// resolvePendingLabels fills in the LabelKey of messages that were emitted
+// before the context learned which entity it describes — the window between an
+// entity's first AddNotification and the framework's first look at it. Only
+// single-segment emissions on this context qualify: a message forwarded from a
+// scoped child view arrives with its prefix already applied and its label
+// already resolved against the child's own type, and one that carries a label
+// was resolved at emit time.
+func (c *NotificationContext) resolvePendingLabels() {
+	if c.entityType == nil {
+		return
+	}
+	root := c.root()
+	for i := range root.messages {
+		msg := &root.messages[i]
+		if msg.LabelKey != "" || len(msg.Path) != 1 || msg.Path[0].Name == "" {
+			continue
+		}
+		msg.LabelKey = resolveLabelKey(c.entityType, msg.Path[0].Name)
+	}
+}
+
 // scopedForType is Scoped plus the entity type whose `labelKey:"…"` tags apply
 // to emissions on the returned view — so a value object validated against a
 // child AVO's context resolves its field label against that child's type.
