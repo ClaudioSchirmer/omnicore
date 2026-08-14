@@ -11,6 +11,31 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-08-13
+
+### Changed
+
+- **BREAKING — an entity carries its `NotificationContext` from construction;
+  `domain.EnsureInitialized` was removed.** `BaseEntity.AddNotification` and
+  `AddNotificationMessage` used to be silent no-ops on an entity the framework
+  had not touched yet — the natural state of `&User{}` — so a notification
+  raised inside a root domain method called from a command's `ToEntity`
+  (a duplicate rejected by `AddAddress`, say) simply vanished. The escape hatch
+  was `domain.EnsureInitialized(root)` as the first line of any such method: an
+  initialization step the developer had to know about, whose only symptom when
+  forgotten was a missing notification. The context is now allocated on first
+  use, so there is nothing to remember and nothing to drop.
+  **Migration:** delete every `domain.EnsureInitialized(...)` call (a compile
+  error until you do). No other change — behavior is identical wherever the
+  call was present, and correct wherever it was missing.
+  Two details, for the record: the context is born anonymous, because a method
+  on `*BaseEntity` cannot see the type that embeds it — the framework stamps the
+  entity name and the `labelKey`-resolving type at its first `Get*`/aggregate
+  entry point and backfills the field label of anything emitted before that.
+  And `domain.ValidateAggregateChild` no longer returns `false` for a root whose
+  context is nil, a state that can no longer occur; a root that is not an
+  `Entity` is now validated on its merits instead of being rejected wholesale.
+
 ## [0.48.0] - 2026-08-13
 
 ### Changed

@@ -44,8 +44,13 @@ func TestCloneEntity_ClonedNotifCtxIsZero(t *testing.T) {
 
 	clone := cloneEntity(src).(*simpleEntity)
 
-	if clone.NotificationContext() != nil {
-		t.Errorf("clone notifCtx should be zero (frozen ghost), got %+v", clone.NotificationContext())
+	// The ghost carries a context of its own (every entity does), but none of
+	// the source's state: no shared pointer, no inherited notifications.
+	if clone.NotificationContext() == src.NotificationContext() {
+		t.Error("clone must not share the source's notification context")
+	}
+	if msgs := clone.NotificationContext().Messages(); len(msgs) != 0 {
+		t.Errorf("clone notifications should be empty (frozen ghost), got %+v", msgs)
 	}
 }
 

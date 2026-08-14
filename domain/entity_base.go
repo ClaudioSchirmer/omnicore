@@ -65,8 +65,39 @@ type BaseEntity struct {
 // override by declaring their own RequiresService returning true.
 func (b *BaseEntity) RequiresService() bool { return false }
 
-func (b *BaseEntity) NotificationContext() *NotificationContext { return b.notifCtx }
+// NotificationContext returns the entity's context, creating it on first use.
+// It is never nil: an entity carries a place to put notifications from the
+// moment anyone asks for one, with no initialization step for the developer to
+// remember.
+func (b *BaseEntity) NotificationContext() *NotificationContext { return b.ensureContext() }
 func (b *BaseEntity) Events() []DomainEvent                     { return b.events }
+
+// ensureContext returns the notification context, allocating it on first use.
+// Every emit helper goes through it, so a notification raised before the
+// framework has seen the entity — inside a constructor, or inside a root domain
+// method called from a command's ToEntity, ahead of GetInsertable — is stored
+// rather than dropped.
+//
+// The context is born ANONYMOUS. A method whose receiver is *BaseEntity cannot
+// see the type that embeds it (reflect.TypeOf(b) is *BaseEntity, never *User),
+// and the two things that need that type are precisely the context name and the
+// entityType that resolves `labelKey:"…"` tags. initWithName stamps both the
+// first time the framework holds the concrete Entity and backfills the labels of
+// whatever was emitted in the meantime. Naming is therefore a late concern;
+// emitting never is.
+func (b *BaseEntity) ensureContext() *NotificationContext {
+	if b.notifCtx == nil {
+		b.notifCtx = NewNotificationContext("")
+		b.mode = ModeDisplay
+		b.signature = uuid.New()
+	}
+	// Never reassigned: AddFieldNameAlias may legitimately run before the first
+	// emission, and its map must survive the context's birth.
+	if b.aliases == nil {
+		b.aliases = map[string]string{}
+	}
+	return b.notifCtx
+}
 
 // GetID shadows the promoted Managed.GetID() ID with the Entity contract's
 // nullable *ID form (nil = not persisted). SetID / ClearID come promoted from
@@ -74,9 +105,7 @@ func (b *BaseEntity) Events() []DomainEvent                     { return b.event
 func (b *BaseEntity) GetID() *ID { return b.idPtr() }
 
 func (b *BaseEntity) AddNotificationMessage(msg NotificationMessage) {
-	if b.notifCtx != nil {
-		b.notifCtx.AddNotificationMessage(msg)
-	}
+	b.ensureContext().AddNotificationMessage(msg)
 }
 
 // AddNotification is the convenience emit helper shared with
@@ -87,9 +116,7 @@ func (b *BaseEntity) AddNotificationMessage(msg NotificationMessage) {
 // already hold the entity reference. The optional value variadic populates
 // FieldValue (use to echo rejected input).
 func (b *BaseEntity) AddNotification(name string, n Notification, value ...any) {
-	if b.notifCtx != nil {
-		b.notifCtx.AddNotification(name, n, value...)
-	}
+	b.ensureContext().AddNotification(name, n, value...)
 }
 
 func (b *BaseEntity) AddNotificationContext(ctx *NotificationContext) {
@@ -122,15 +149,21 @@ func (b *BaseEntity) AddFieldNameAlias(orig, new string) {
 	b.aliases[orig] = new
 }
 
+// initWithName stamps the identity the context could not know at birth: the
+// class name it reports and the type whose `labelKey:"…"` tags its emissions
+// resolve against. The framework calls it (through ensureInit) at every entry
+// point that holds the concrete Entity, so it must be idempotent — the guard is
+// the class name, not the context, which may already exist because the entity
+// emitted before the framework ever saw it.
 func (b *BaseEntity) initWithName(name string, entityType reflect.Type) {
-	if b.notifCtx == nil {
-		b.className = name
-		b.notifCtx = NewNotificationContext(name)
-		b.notifCtx.entityType = entityType
-		b.mode = ModeDisplay
-		b.signature = uuid.New()
-		b.aliases = map[string]string{}
+	ctx := b.ensureContext()
+	if b.className != "" {
+		return
 	}
+	b.className = name
+	ctx.context = name
+	ctx.entityType = entityType
+	ctx.resolvePendingLabels()
 }
 
 func (b *BaseEntity) resetEntity() {
@@ -242,12 +275,10 @@ func IsValid(e Entity, mode EntityMode, service Service) (bool, []*NotificationC
 	ensureInit(e)
 	// IsValid is the "fresh check" path — clear prior accumulated notifications
 	// explicitly. getInsertable/getUpdatable/etc. don't clear because they're
-	// one-shot validations on a freshly constructed entity, and Phase 20 root
-	// domain methods may have emitted construction-time notifications that must
-	// reach checkAllNotifications.
-	if e.NotificationContext() != nil {
-		e.NotificationContext().Clear()
-	}
+	// one-shot validations on a freshly constructed entity, and root domain
+	// methods may have emitted construction-time notifications that must reach
+	// checkAllNotifications.
+	e.NotificationContext().Clear()
 	e.resetEntity()
 	e.setService(service)
 
@@ -670,7 +701,7 @@ func checkAllNotifications(e Entity) error {
 func collectContexts(e Entity) []*NotificationContext {
 	applyFieldAliases(e)
 	out := []*NotificationContext{}
-	if e.NotificationContext() != nil && e.NotificationContext().HasErrors() {
+	if e.NotificationContext().HasErrors() {
 		out = append(out, e.NotificationContext())
 	}
 	for _, ctx := range e.contextCollection() {
@@ -687,28 +718,19 @@ func applyFieldAliases(e Entity) {
 		return
 	}
 	ctx := e.NotificationContext()
-	if ctx == nil {
-		return
-	}
 	for orig, new := range aliases {
 		ctx.ChangeFieldName(orig, new)
 	}
 }
 
+// ensureInit gives the entity's context the identity only the concrete type can
+// supply. It is not a precondition for emitting — BaseEntity allocates the
+// context on demand — so domain code never has to call it; the framework runs
+// it at every entry point that holds the Entity, and it is a no-op after the
+// first.
 func ensureInit(e Entity) {
-	if e.NotificationContext() == nil {
-		e.initWithName(classNameOf(e), reflect.TypeOf(e))
-	}
+	e.initWithName(classNameOf(e), reflect.TypeOf(e))
 }
-
-// EnsureInitialized exposes ensureInit publicly so domain methods on the root
-// (e.g., User.AddAddress) can guarantee the NotificationContext exists before
-// emitting via AddNotification / AddNotificationMessage. Without this, any
-// notification raised during construction time (before GetInsertable runs) is
-// silently dropped because BaseEntity.AddNotification is a no-op when notifCtx
-// is nil. Idempotent — safe to call multiple times. Always call this as the
-// first line of any root domain method that may emit notifications.
-func EnsureInitialized(e Entity) { ensureInit(e) }
 
 func classNameOf(e any) string {
 	t := reflect.TypeOf(e)
