@@ -11,6 +11,27 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-08-15
+
+### Fixed
+
+- **The `value` variadic of `AddNotification` now dereferences a pointer of any
+  type, not only `*string`.** Every optional field is a pointer, and one whose
+  type does not render itself — `*int`, `*int64`, `*float64`, `*bool`, and any
+  value-object pointer (`*vos.Email`: a VO is a named type over a base type and
+  declares no `String()`) — reached `NotificationMessage.FieldValue` through
+  `fmt.Sprint`, which renders such a pointer as its ADDRESS. A rule that fired
+  correctly answered the caller with `"value":"0xc000180dda"` where the rejected
+  number belonged, and because an address is a perfectly valid rendering of a
+  pointer it was invisible to any test asserting only that some value came back.
+  A `nil` pointer now renders `""` (it was `"<nil>"`), the same as `nil`.
+  **Unaffected, then and now:** `*string`, which had its own case, and any
+  pointer whose type implements `fmt.Stringer` or `error` — `*time.Time` above
+  all — which keeps its own rendering instead of being unwrapped. Applies to all
+  three emit surfaces (`Rules`, `NotificationContext`, `BaseEntity`) and to
+  `AddNotificationWithVars`. No call site changes — code that worked keeps
+  working, and code that passed an optional field starts saying what it meant.
+
 ## [0.49.0] - 2026-08-13
 
 ### Changed

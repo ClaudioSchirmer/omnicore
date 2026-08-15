@@ -7,6 +7,29 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.49.1</span><span class="release-date">August 15, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>the <code>value</code> variadic of
+                <a href="#status-mapping"><code>AddNotification</code></a> now dereferences a pointer of ANY
+                type, not only <code>*string</code>.</strong> Every optional field is a pointer, and one whose
+                type does not render itself — <code>*int</code>, <code>*int64</code>, <code>*float64</code>,
+                <code>*bool</code>, and any <a href="#value-objects">value-object</a> pointer
+                (<code>*vos.Email</code>: a VO is a named type over a base type and declares no
+                <code>String()</code>) — reached <code>NotificationMessage.FieldValue</code> through
+                <code>fmt.Sprint</code>, which renders such a pointer as its ADDRESS. A rule that fired correctly
+                answered the caller with <code>"value":"0xc000180dda"</code> where the rejected number belonged,
+                and because an address is a perfectly valid rendering of a pointer, it was invisible to any test
+                asserting only that some value came back. A <code>nil</code> pointer now renders <code>""</code>
+                (it was <code>"&lt;nil&gt;"</code>), the same as <code>nil</code>. <em>Unaffected, then and
+                now:</em> <code>*string</code>, which had its own case, and any pointer whose type implements
+                <code>fmt.Stringer</code> or <code>error</code> — <code>*time.Time</code> above all — which keeps
+                its own rendering instead of being unwrapped. Applies to all three emit surfaces
+                (<code>Rules</code>, <code>NotificationContext</code>, <code>BaseEntity</code>) and to
+                <code>AddNotificationWithVars</code>. No call site changes: an optional field can now be passed
+                straight through.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.49.0</span><span class="release-date">August 13, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>an entity carries its
