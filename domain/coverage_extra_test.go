@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -175,6 +177,75 @@ func TestFormatFieldValue(t *testing.T) {
 		if got := formatFieldValue(c.in); got != c.want {
 			t.Errorf("%s: formatFieldValue(%v) = %q, want %q", c.name, c.in, got, c.want)
 		}
+	}
+}
+
+// stringerVO stands for a value object that renders itself through a POINTER
+// receiver — unwrapping one would discard the only method that knows how to
+// print it.
+type stringerVO struct{ raw string }
+
+func (s *stringerVO) String() string { return "VO(" + s.raw + ")" }
+
+// TestFormatFieldValue_DereferencesEveryPointer pins the fix. A rule echoing an
+// optional field answered the caller with a memory address, because only *string
+// had a case and fmt.Sprint renders a pointer as its address unless the type
+// renders itself. That was invisible to every test asserting "some value came
+// back": an address IS a valid Go rendering of a pointer.
+//
+// The ptrTime/ptrStringer cases are the other half of the contract and are NOT
+// regressions being fixed — they always worked, because time.Time has String().
+// They are here so a future simplification of the loop cannot quietly unwrap
+// them and print a bare struct.
+func TestFormatFieldValue_DereferencesEveryPointer(t *testing.T) {
+	i, i64, f, b := 15, int64(-7), 2.5, true
+	when := time.Date(2026, 8, 15, 10, 30, 0, 0, time.UTC)
+	type email string // a raw value object: a named type over a base type
+	mail := email("a@b.c")
+	vo := &stringerVO{raw: "x"}
+
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"ptrInt", &i, "15"},
+		{"ptrInt64", &i64, "-7"},
+		{"ptrFloat", &f, "2.5"},
+		{"ptrBool", &b, "true"},
+		{"ptrTime", &when, when.String()},
+		{"ptrNamedString", &mail, "a@b.c"},
+		{"nilPtrInt", (*int)(nil), ""},
+		{"nilPtrTime", (*time.Time)(nil), ""},
+		// The Stringer keeps its own rendering rather than being unwrapped.
+		{"ptrStringer", vo, "VO(x)"},
+		{"nilPtrStringer", (*stringerVO)(nil), ""},
+	}
+	for _, c := range cases {
+		if got := formatFieldValue(c.in); got != c.want {
+			t.Errorf("%s: formatFieldValue = %q, want %q", c.name, got, c.want)
+		}
+		if strings.HasPrefix(formatFieldValue(c.in), "0x") {
+			t.Errorf("%s: leaked a pointer address into FieldValue", c.name)
+		}
+	}
+}
+
+// TestAddNotification_EchoesOptionalFieldValue proves the fix through the path
+// a generated rule actually takes: r.AddNotification with the entity's own
+// optional field.
+func TestAddNotification_EchoesOptionalFieldValue(t *testing.T) {
+	rating := 15
+	ctx := NewNotificationContext("Visit")
+	r := NewRules(ModeInsert, ctx, nil)
+	r.AddNotification("Rating", RequiredFieldNotification{}, &rating)
+
+	msgs := ctx.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].FieldValue != "15" {
+		t.Errorf("FieldValue = %q, want \"15\" — an optional field must echo its value, not its address", msgs[0].FieldValue)
 	}
 }
 

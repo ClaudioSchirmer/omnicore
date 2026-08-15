@@ -217,6 +217,11 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
             // optional value becomes FieldValue — echo of the rejected input in the response
             r.AddNotification("Email", InvalidEmailNotification{}, u.Email)
         }
+        // An OPTIONAL field is passed straight through: the pointer is
+        // dereferenced for you, and a nil one renders as "".
+        if u.Age != nil &amp;&amp; *u.Age &gt; 150 {
+            r.AddNotification("Age", InvalidAgeNotification{}, u.Age)
+        }
     })
 }
 
@@ -259,7 +264,9 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
 }
 
 // Common form — name + notification + optional value (becomes FieldValue).
-// value accepts string, *string (safe deref), nil, or any type (via fmt.Sprint).
+// value accepts string, nil, any POINTER (dereferenced; nil renders ""), or any
+// other type (via fmt.Sprint). A type whose pointer implements fmt.Stringer or
+// error keeps its own rendering instead of being unwrapped.
 func (r *Rules) AddNotification(name string, n Notification, value ...any)
 
 // Escape hatch — for messages that need Err, FuncName, Override, or multi-segment Path.

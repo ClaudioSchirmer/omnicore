@@ -87,7 +87,10 @@ func (r *Rules) forcedValueObjects() []voEntry { return r.forcedVOs }
 // using the Go identifier name; the framework's renderer converts to camelCase
 // (acronym-aware) and, when r.ctx is scoped, prepends the collection + index
 // prefix. The optional value variadic populates FieldValue (echo the rejected
-// input on Invalid* notifications); pass *string and it is dereferenced safely.
+// input on Invalid* notifications). A POINTER of any type is dereferenced, so
+// an optional field is passed straight through; a type that renders itself
+// (fmt.Stringer/error, time.Time among them) keeps its own rendering, and nil
+// renders as the empty string.
 //
 // The emitted NotificationMessage carries LabelKey resolved from the field's
 // `labelKey:"..."` struct tag on r.entityType (or "" when no tag is declared, or

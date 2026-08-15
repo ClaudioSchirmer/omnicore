@@ -185,7 +185,9 @@ func (c *NotificationContext) AddNotificationMessage(msg NotificationMessage) {
 
 // AddNotification is the common emit helper. It writes a single-segment Path
 // using the Go identifier name; an optional value variadic populates FieldValue
-// (use it to echo back the rejected input on Invalid* notifications).
+// (use it to echo back the rejected input on Invalid* notifications). A pointer
+// of any type is dereferenced, so an optional field can be passed straight
+// through; nil renders as the empty string.
 //
 // In an AggregateValueObject called via a scoped context, the framework's prefix
 // (collection name + index) composes with the supplied name to produce paths
@@ -211,6 +213,19 @@ func (c *NotificationContext) AddNotification(name string, n Notification, value
 // NotificationMessage.FieldValue. Strings pass through; everything else is
 // rendered with fmt.Sprint so callers can pass *string, ints, etc. without
 // boilerplate at the call site.
+//
+// A POINTER is unwrapped first, and that is the whole point of the reflect
+// step. Every optional field is a pointer, and fmt.Sprint prints the ADDRESS of
+// one whose type does not render itself — *int, *float64, a *vos.Email (a value
+// object is a named type over a base type and declares no String()). A caller
+// who asked "which value did you refuse?" was answered 0xc000180dda: a rule that
+// fired correctly, reported through a message nobody can act on. A nil pointer
+// is an absent value, so it renders "" for the same reason nil does.
+//
+// *time.Time was never affected, and the loop below says why in code: time.Time
+// has String(), so its pointer satisfies fmt.Stringer and keeps that rendering.
+// Worth knowing, because it is why the gap survived — the one optional field
+// this framework's own example ever echoed was a *time.Time.
 func formatFieldValue(v any) string {
 	switch s := v.(type) {
 	case nil:
@@ -222,9 +237,25 @@ func formatFieldValue(v any) string {
 			return ""
 		}
 		return *s
-	default:
-		return fmt.Sprint(v)
 	}
+
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return ""
+		}
+		// A type that renders ITSELF keeps that method. Unwrapping a value whose
+		// pointer carries String()/Error() would discard the only code that
+		// knows how to print it, and render the bare struct instead.
+		if _, ok := rv.Interface().(fmt.Stringer); ok {
+			break
+		}
+		if _, ok := rv.Interface().(error); ok {
+			break
+		}
+		rv = rv.Elem()
+	}
+	return fmt.Sprint(rv.Interface())
 }
 
 func (c *NotificationContext) HasErrors() bool {
