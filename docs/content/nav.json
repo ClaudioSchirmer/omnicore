@@ -34,6 +34,10 @@
       {
         "id": "authz-seams",
         "label": "Authorization"
+      },
+      {
+        "id": "token-issuance",
+        "label": "Token issuance"
       }
     ]
   },

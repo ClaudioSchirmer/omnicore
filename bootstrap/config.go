@@ -513,6 +513,13 @@ func (g *GRPCConfig) validate() error {
 }
 
 func (g *GraphQLConfig) collidesFramework(path string) bool {
+	return collidesFrameworkPath(path)
+}
+
+// collidesFrameworkPath is the reserved-route set shared by every optional
+// self-mounted surface (GraphQL, OpenAPI, the issuer's JWKS document): a
+// path an operator cannot repurpose because the framework already owns it.
+func collidesFrameworkPath(path string) bool {
 	switch path {
 	case "/openapi.json", "/livez", "/readyz", "/docs":
 		return true

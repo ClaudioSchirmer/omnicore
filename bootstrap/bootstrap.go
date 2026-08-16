@@ -698,6 +698,16 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	fwweb.SetTranslator(deps.Translator)
 	openapi.SetGate(fwweb.PermissionGate(deps.Translator))
 
+	// Build deps.Issuer from auth.issuer BEFORE the public-routes/auth-
+	// middleware setup below — both need to know whether this service
+	// mints its own tokens. Idempotent, mirroring mountSurfaceFeatures:
+	// serve() already ran this on the direct Run path, so this is a no-op
+	// there; on the direct buildApp path (tests, Build/Serve consumers) it
+	// runs now.
+	if err := buildIssuer(&deps, wiring); err != nil {
+		return nil, err
+	}
+
 	// Apply authorization claim-name configuration BEFORE the auth middleware
 	// runs so the first request observes the configured names. No-op when the
 	// yaml carries no authorization block.
@@ -760,10 +770,24 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 			augmentedPublicRoutes = append(augmentedPublicRoutes, "GET /")
 		}
 	}
+	// The JWKS document has to be fetchable without a token — registered as
+	// a public route automatically, like the OpenAPI spec/UI paths above
+	// (never like /livez /readyz, which stay operator opt-in). Declaring
+	// the same path in auth.publicRoutes too is accepted (idempotent
+	// append), never required.
+	if deps.Issuer != nil && deps.Config.Auth.Issuer.JWKS != nil {
+		augmentedPublicRoutes = append(augmentedPublicRoutes, "GET "+deps.Config.Auth.Issuer.JWKS.Path)
+	}
 
 	if deps.Config.Auth.Mode == AuthModeJWT {
 		authOpts := authOptionsFromConfig(deps.Config.Auth)
 		authOpts.PublicRoutes = augmentedPublicRoutes
+		// wiring.TokenChecker plugs the in-process revocation seam
+		// directly — e.g. consulting the same store a self-issued
+		// refresh-token family lives in — with no HTTP hop. nil (the
+		// common case) leaves auth.jwt.externalValidator, if configured,
+		// as the only revocation check.
+		authOpts.TokenChecker = wiring.TokenChecker
 		mw, err := fwweb.AuthMiddleware(authOpts, deps.Pipeline)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: auth middleware: %w", err)
@@ -823,6 +847,33 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 				},
 			},
 		})
+
+	// The issuer's JWKS document — opt-in via auth.issuer.jwks (absent means
+	// the public key never touches the network; every consumer validates
+	// via auth.jwt.externalValidator against this service instead). Public
+	// like /openapi.json: a JWKS document that requires a bearer to fetch
+	// is a contradiction (nothing could ever bootstrap trust in it).
+	if deps.Issuer != nil && deps.Config.Auth.Issuer.JWKS != nil {
+		jwksPath := deps.Config.Auth.Issuer.JWKS.Path
+		openapi.MountRaw(deps.OpenAPIRegistry, app, fiber.MethodGet, jwksPath,
+			func(c fiber.Ctx) error {
+				doc, err := deps.Issuer.JWKS()
+				if err != nil {
+					return err
+				}
+				c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+				return c.Send(doc)
+			},
+			openapi.RawSpec{
+				Summary: "Published JWKS document for this service's self-issued tokens",
+				Tags:    []string{"Auth"},
+				Public:  true,
+				Responses: map[int]openapi.ResponseSpec{
+					200: {Description: "JWK Set — every signing key in any rotation state"},
+				},
+			})
+		deps.Logger.Info("issuer jwks served", "path", jwksPath)
+	}
 
 	// Build + populate the GraphQL/gRPC registries from the features that opt
 	// into GraphQLFeature/GRPCFeature. Idempotent: in the serve path this
@@ -1211,6 +1262,60 @@ func authOptionsFromConfig(a AuthConfig) fwweb.AuthOptions {
 	return opts
 }
 
+// buildIssuer constructs deps.Issuer from auth.issuer when enabled. This is
+// the one place IssuerConfig meets Wiring: the boot guard "refresh tokens
+// enabled requires a RefreshTokenStore" can only be checked here, since
+// AuthConfig.validate() (schema-only) has no visibility into Wiring.
+//
+// Idempotent — mirrors mountSurfaceFeatures: a non-nil deps.Issuer means it
+// already ran. Called from both serve() (before buildApp, so anything that
+// runs between the two phases already sees it) and buildApp() (the direct
+// path — tests, Build/Serve consumers — where serve() never ran).
+func buildIssuer(deps *Deps, wiring Wiring) error {
+	if deps.Issuer != nil {
+		return nil
+	}
+	ic := deps.Config.Auth.Issuer
+	if ic == nil || !ic.Enabled {
+		return nil
+	}
+	if ic.RefreshTokenTTLSeconds > 0 && wiring.RefreshTokenStore == nil {
+		return errors.New("bootstrap: auth.issuer.refreshTokenTtlSeconds > 0 requires Wiring.RefreshTokenStore")
+	}
+
+	keys := make([]authcore.SigningKey, len(ic.Keys))
+	for idx, k := range ic.Keys {
+		state := authcore.KeyCurrent
+		switch k.State {
+		case issuerKeyStateNext:
+			state = authcore.KeyNext
+		case issuerKeyStatePrevious:
+			state = authcore.KeyPrevious
+		}
+		keys[idx] = authcore.SigningKey{
+			KID:        k.KID,
+			Algorithm:  k.Algorithm,
+			PrivatePEM: k.PrivateKeyPEM,
+			State:      state,
+		}
+	}
+
+	iss, err := authcore.NewIssuer(authcore.IssuerOptions{
+		SelfURL:         ic.SelfURL,
+		Audience:        ic.Audience,
+		TokenTTL:        time.Duration(ic.TokenTTLSeconds) * time.Second,
+		MaxTokenTTL:     time.Duration(ic.MaxTokenTTLSeconds) * time.Second,
+		RefreshTokenTTL: time.Duration(ic.RefreshTokenTTLSeconds) * time.Second,
+		Keys:            keys,
+		RefreshStore:    wiring.RefreshTokenStore,
+	})
+	if err != nil {
+		return fmt.Errorf("bootstrap: build auth.issuer: %w", err)
+	}
+	deps.Issuer = iss
+	return nil
+}
+
 func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// Whatever ends serve() — a listener that failed to bind, a fatal boot
 	// rebuild, any early return, or the graceful drain below — the background
@@ -1227,6 +1332,9 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// call is a no-op once these are set. Harmless when no feature opts in
 	// (both stay nil → no surface).
 	if err := mountSurfaceFeatures(&deps, wiring); err != nil {
+		return err
+	}
+	if err := buildIssuer(&deps, wiring); err != nil {
 		return err
 	}
 

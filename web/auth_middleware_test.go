@@ -1,11 +1,13 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -593,6 +595,86 @@ func TestAuthMiddleware_External_BadOptions_FailsAtBoot(t *testing.T) {
 	}
 	if _, err := AuthMiddleware(opts, newPipeline()); err == nil {
 		t.Fatal("expected boot error for invalid external validator options")
+	}
+}
+
+// fakeTokenChecker is a minimal in-process authcore.TokenChecker double —
+// records whether it was called and returns a fixed verdict.
+type fakeTokenChecker struct {
+	called bool
+	err    error
+}
+
+func (f *fakeTokenChecker) Validate(_ context.Context, _ string) error {
+	f.called = true
+	return f.err
+}
+
+func TestAuthMiddleware_TokenChecker_RevokesInProcess(t *testing.T) {
+	signer := newTokenSigner(t)
+	opts := newOpts(signer.pemPub)
+	checker := &fakeTokenChecker{err: errors.New("revoked")}
+	opts.TokenChecker = checker
+	app := makeApp(t, opts)
+
+	tok := signer.sign(t, standardClaims())
+	status, _ := sendRequest(t, app, "GET", "/protected", tok)
+	if status != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 from in-process revocation, got %d", status)
+	}
+	if !checker.called {
+		t.Fatal("TokenChecker.Validate was never called")
+	}
+}
+
+func TestAuthMiddleware_TokenChecker_AcceptsWhenNil(t *testing.T) {
+	signer := newTokenSigner(t)
+	opts := newOpts(signer.pemPub)
+	checker := &fakeTokenChecker{err: nil}
+	opts.TokenChecker = checker
+	app := makeApp(t, opts)
+
+	tok := signer.sign(t, standardClaims())
+	status, _ := sendRequest(t, app, "GET", "/protected", tok)
+	if status != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if !checker.called {
+		t.Fatal("TokenChecker.Validate was never called")
+	}
+}
+
+func TestAuthMiddleware_TokenChecker_TakesPriorityOverExternalValidator(t *testing.T) {
+	signer := newTokenSigner(t)
+	httpCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":true}`))
+	}))
+	defer srv.Close()
+
+	opts := newOpts(signer.pemPub)
+	opts.ExternalValidator = &ExternalValidatorOptions{
+		Method:         "POST",
+		URL:            srv.URL,
+		TokenPlacement: "bearer_header",
+		Success:        ExternalValidatorSuccess{JSONPath: "$.active", ExpectedValue: true},
+	}
+	checker := &fakeTokenChecker{err: nil}
+	opts.TokenChecker = checker
+	app := makeApp(t, opts)
+
+	tok := signer.sign(t, standardClaims())
+	status, _ := sendRequest(t, app, "GET", "/protected", tok)
+	if status != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if !checker.called {
+		t.Fatal("TokenChecker should have been consulted")
+	}
+	if httpCalled {
+		t.Fatal("ExternalValidator HTTP call should have been skipped in favor of TokenChecker")
 	}
 }
 

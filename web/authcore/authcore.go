@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -102,7 +103,8 @@ type Validator struct {
 
 // New builds the Validator: key source (exactly one of JWKS / PEM), parser
 // pinning and the optional external checker. Errors are construction-time
-// only (invalid PEM, unreachable JWKS on first fetch).
+// only for an invalid PEM. An unreachable JWKS on first fetch does NOT error
+// here — see BuildKeyfunc.
 func New(opts Options) (*Validator, error) {
 	keyfn, err := BuildKeyfunc(opts)
 	if err != nil {
@@ -165,6 +167,15 @@ func (v *Validator) ValidateToken(ctx context.Context, token string) (*configura
 
 // BuildKeyfunc resolves the verification key source: exactly one of JWKSURL
 // (fetched and cached, refreshing on `kid` cache miss) or PublicKeyPEM.
+//
+// An unreachable JWKS endpoint on the FIRST fetch does not fail this call:
+// the underlying keyfunc/jwkset client sets NoErrorReturnFirstHTTPReq, so
+// construction succeeds with zero keys loaded (background refresh keeps
+// retrying). That is the correct behavior for boot ordering — a consumer
+// does not deadlock waiting for an issuer that boots after it — but it is a
+// silent failure mode: the Validator comes up healthy and then rejects
+// every token until a refresh lands. BuildKeyfunc surfaces that state with a
+// boot-time slog.Warn instead of leaving it undetectable.
 func BuildKeyfunc(opts Options) (jwt.Keyfunc, error) {
 	hasJWKS := opts.JWKSURL != ""
 	hasPEM := opts.PublicKeyPEM != ""
@@ -181,6 +192,10 @@ func BuildKeyfunc(opts Options) (jwt.Keyfunc, error) {
 	k, err := keyfunc.NewDefaultCtx(context.Background(), []string{opts.JWKSURL})
 	if err != nil {
 		return nil, err
+	}
+	if keys, kerr := k.Storage().KeyReadAll(context.Background()); kerr != nil || len(keys) == 0 {
+		slog.Warn("authcore: JWKS endpoint returned no keys on first fetch — every token will be rejected until a background refresh succeeds",
+			"url", opts.JWKSURL, "error", kerr)
 	}
 	return k.Keyfunc, nil
 }

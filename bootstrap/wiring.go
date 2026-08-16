@@ -5,6 +5,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/infra/cache"
+	"github.com/ClaudioSchirmer/omnicore/web/authcore"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
@@ -72,4 +73,20 @@ type Wiring struct {
 	// Wiring — an in-process LRU cannot satisfy the cross-service
 	// read contract.
 	SharedCache cache.Cache
+
+	// RefreshTokenStore supplies the persistence for auth.issuer's refresh
+	// tokens: the Issuer owns the rotation/reuse-detection algorithm, the
+	// service owns the storage medium (SQL table, Redis, whatever fits).
+	// Required (non-nil) when auth.issuer.refreshTokenTtlSeconds > 0 —
+	// buildIssuer rejects the boot otherwise. nil when the service never
+	// declares refresh tokens.
+	RefreshTokenStore authcore.RefreshTokenStore
+
+	// TokenChecker plugs a direct in-process revocation check into
+	// AuthOptions.TokenChecker — e.g. consulting the same store
+	// RefreshTokenStore lives in, or a denylist — with no HTTP hop. Takes
+	// priority over auth.jwt.externalValidator when both are configured.
+	// nil (default) leaves externalValidator, if any, as the only
+	// revocation check.
+	TokenChecker authcore.TokenChecker
 }

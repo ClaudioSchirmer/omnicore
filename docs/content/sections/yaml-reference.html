@@ -11,6 +11,7 @@
         Each block below maps 1:1 to a field on the framework's parsed config. Keys not shown here do
         not exist — unknown keys under the strict-decoded blocks
         (<code>mongo.rebuild</code>, <code>auth.authorization</code>, <code>auth.authorization.tenant</code>,
+        <code>auth.issuer</code>, each <code>auth.issuer.keys</code> entry, <code>auth.issuer.jwks</code>,
         each <code>upstreamSubscriptions</code> entry) abort the boot naming the offender.
     </p>
 
@@ -49,7 +50,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>transport</code></td><td>no†</td><td>broker endpoints + SyncEngine group/workers (neutral across kafka/nats) — <strong>opt-out</strong>: omit it (and build tagless) to boot with no messaging</td><td>below</td></tr>
         <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
         <tr><td><code>query</code></td><td>no</td><td>read-side <code>?first=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
-        <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a></td></tr>
+        <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz + self-issuance (<code>issuer:</code>)</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a> · <a href="#token-issuance">Token issuance</a></td></tr>
         <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
         <tr><td><code>observability</code></td><td>no</td><td>distributed tracing (OpenTelemetry); default off</td><td>below · <a href="#tracing">Distributed tracing</a></td></tr>
         <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
@@ -150,8 +151,10 @@ query:
     <p>
         Optional block; defaults to <code>{mode: disabled}</code>. When <code>mode: jwt</code>, the
         <code>jwt:</code> sub-block is required with <code>issuer</code> + <code>audience</code> +
-        <strong>exactly one</strong> of <code>jwksUrl</code> / <code>publicKeyPem</code>. See
-        <a href="#auth-middleware">Authentication</a> and <a href="#authz-seams">Authorization</a>.
+        <strong>exactly one</strong> of <code>jwksUrl</code> / <code>publicKeyPem</code>. The separate
+        <code>issuer:</code> sub-block — this service minting its OWN tokens — is orthogonal to
+        <code>mode</code> and validated regardless of it. See <a href="#auth-middleware">Authentication</a>,
+        <a href="#authz-seams">Authorization</a>, and <a href="#token-issuance">Token issuance</a>.
     </p>
 <pre><code>auth:
   mode: jwt                              # jwt | disabled — default disabled (disabled rejected unless APP_PROFILE=dev)
@@ -190,7 +193,22 @@ query:
     tenant:                              # optional (strict-decoded) — multi-tenant gate
       enabled: false                     # default false — toggles Identity.TenantID() lookup
       claim: tenant_id                   # default "tenant_id"
-      required: false                    # default false — reject requests with empty tenant (needs tenant.enabled=true)</code></pre>
+      required: false                    # default false — reject requests with empty tenant (needs tenant.enabled=true)
+
+  issuer:                                # optional (strict-decoded) — this service mints its OWN tokens; orthogonal to mode above
+    enabled: true                        # default false — everything below is ignored when false, Deps.Issuer stays nil
+    selfUrl: http://auth                 # MANDATORY (enabled) — the `iss` minted tokens carry; must equal auth.jwt.issuer when both are set
+    audience: [my-api]                   # MANDATORY (enabled) — default `aud` for minted tokens
+    tokenTtlSeconds: 900                 # MANDATORY (enabled) — must be > 0; no framework default (a silent 0 would mint dead-on-arrival tokens)
+    maxTokenTtlSeconds: 3600             # MANDATORY (enabled) — must be > 0 and >= tokenTtlSeconds; hard ceiling, including per-request overrides
+    refreshTokenTtlSeconds: 2592000      # optional — default 0 disables refresh tokens; > 0 REQUIRES Wiring.RefreshTokenStore (checked at boot)
+    keys:                                # MANDATORY (enabled) — exactly one entry with state=current (strict-decoded per entry)
+      - kid: "2026-08-a"                 # MANDATORY per key
+        algorithm: RS256                 # RS256 | ES256 | EdDSA — asymmetric only; RSA keys under 2048 bits rejected
+        state: current                   # next (published, not signing) | current (published + signing) | previous (published, validates in-flight tokens)
+        privateKeyPem: "${JWT_SIGNING_KEY}"   # convention: ${...} substitution, never a literal PEM — NOT machine-enforced (see Token issuance)
+    jwks:                                # optional (strict-decoded) — presence IS the switch: absent → the public key never touches the network
+      path: /.well-known/jwks.json       # default when the block is present; collision-checked like graphql.path / openapi.uiPath</code></pre>
 
     <h3>audit</h3>
     <p>

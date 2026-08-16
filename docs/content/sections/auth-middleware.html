@@ -75,4 +75,4 @@
   <p>Domain events emitted via <code>infra/events.SlogPublisher</code> mirror the same pattern (<code>actor</code> + <code>actorIssuer</code>) but never carry <code>actorClaims</code> — the audit allowlist is the only place that can broaden the claim surface logged, by design.</p>
 
   <h3>Token issuance</h3>
-  <p>The framework <strong>only validates</strong> — it does not mint tokens. The IdP (Keycloak, Auth0, an in-house auth service, etc.) issues tokens; each service consumes them. Login endpoints, refresh, and credential storage live in the IdP or in a dedicated auth service.</p>
+  <p>This section covers validation only. A service can also <strong>mint</strong> its own tokens — asymmetric signing, key rotation, an optional refresh-token flow — while every consumer keeps validating exactly as described above, including a self-issued token. See <a href="#token-issuance">Token issuance</a>. Login endpoints, refresh, and credential storage always live in the issuing service (or a third-party IdP) — never in the framework.</p>

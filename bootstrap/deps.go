@@ -16,6 +16,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 	"github.com/ClaudioSchirmer/omnicore/web"
+	"github.com/ClaudioSchirmer/omnicore/web/authcore"
 	"github.com/ClaudioSchirmer/omnicore/web/graphql"
 	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
@@ -166,6 +167,15 @@ type Deps struct {
 	// the slice through internal package state. nil when the service
 	// declared zero upstream subscriptions in YAML / Wiring.
 	UpstreamSubscribers []*query.UpstreamSubscriber
+
+	// Issuer is this service's own JWT-minting capability, built from
+	// auth.issuer when Enabled. nil when the block is absent or
+	// Enabled=false — features that self-issue tokens must guard at
+	// composition time. Populated post-wire (buildIssuer needs
+	// Wiring.RefreshTokenStore to check the one Wiring-dependent boot
+	// guard), so it is nil during Wire(deps) itself and only live once a
+	// Feature's Mount(app, deps) runs.
+	Issuer *authcore.Issuer
 
 	// SyncEngine exposes the live read-side projection engine spun by
 	// bootstrap.Run. Surfaced so serve's coordinated drain can wait for the

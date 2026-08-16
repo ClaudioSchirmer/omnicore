@@ -90,6 +90,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | AppContext (UUID + language + Identity), request lifecycle, cancellation/`http.requestTimeoutSeconds` (→504) | `app-context.html` | Single per-request vehicle; `implements context.Context`; owns the cancellation parent. |
 | JWT auth middleware (JWKS/PEM/external validator, revocation cache; validation core in `web/authcore`, shared with the gRPC shell) | `auth-middleware.html` | `auth.mode: jwt`; populates `Identity`; expired vs invalid split. |
 | Authorization — 3 concentric layers (permission gate / `BuildRules` / tenant) | `authz-seams.html` | `resource:action`; `SemanticForbidden → 403`; no enforcement at infra. |
+| Token issuance — a service minting its own JWTs (asymmetric signing, key rotation, opaque refresh tokens); the validate side is unchanged | `token-issuance.html` | `web/authcore.Issuer`, same package as `Validator`; framework ships methods, never HTTP endpoints; JWKS route is the one opt-in, self-mounted exception. |
 
 ### Domain & persistence
 | Topic | Section | Essence |

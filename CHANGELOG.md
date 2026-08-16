@@ -11,6 +11,35 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-08-16
+
+### Added
+
+- **`web/authcore.Issuer` — the framework can now mint its own JWT access and
+  refresh tokens, not just validate them.** New `Issuer` type in the same
+  package as `Validator`: asymmetric signing (RS256/ES256/EdDSA), a
+  `KeyNext`/`KeyCurrent`/`KeyPrevious` rotation model (publish-then-sign, so a
+  key never signs before every validator in the mesh has had a chance to
+  fetch it), and a published `JWKS()` document consumable by the unmodified
+  `Validator`/`BuildKeyfunc` with zero issuer-specific code — proven by a
+  round-trip test per algorithm. Refresh tokens are opaque (never JWT),
+  single-use, rotated on every redemption, with reuse detection that revokes
+  the whole token family; the `Issuer` owns that algorithm, the consuming
+  service supplies persistence via the new `authcore.RefreshTokenStore`
+  interface. New `bootstrap` wiring: `auth.issuer:` yaml block
+  (`bootstrap.IssuerConfig`), `Deps.Issuer`, `Wiring.RefreshTokenStore`,
+  `Wiring.TokenChecker` (an in-process alternative to
+  `auth.jwt.externalValidator` for post-validation revocation checks — no
+  HTTP hop), and an opt-in JWKS route (`auth.issuer.jwks:`) that mounts
+  exactly like the GraphQL/OpenAPI optional surfaces (configurable path,
+  collision-checked, auto-public). The framework never mounts a login,
+  refresh, or introspection HTTP endpoint — every such route is built by the
+  consuming service on top of `Issuer.Issue`/`IssueWithRefresh`/
+  `RedeemRefreshToken`.
+- Boot-time `slog.Warn` when a JWKS endpoint returns zero keys on its first
+  fetch — this previously boot succeeded silently and then rejected every
+  token until a background refresh landed. See `authcore.BuildKeyfunc`.
+
 ## [0.49.1] - 2026-08-15
 
 ### Fixed
