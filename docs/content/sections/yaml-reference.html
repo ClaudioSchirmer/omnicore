@@ -165,7 +165,9 @@ query:
     audience: my-service                 # MANDATORY (mode=jwt)
     leewaySeconds: 30                    # optional clock-skew leeway on exp
     jwksUrl: https://idp/.well-known/jwks.json   # exactly ONE of jwksUrl / publicKeyPem
-    # publicKeyPem: "${file:/etc/idp.pem}"       # inline PEM alternative
+    # fetched once at boot + cached — NOT per request; auto-refreshes hourly, plus
+    # an immediate one-off on an unrecognized kid (rate-limited to once per 5min)
+    # publicKeyPem: "${file:/etc/idp.pem}"       # inline PEM alternative — no cache, no auto-refresh at all
 
   externalValidator:                     # optional — per-request revocation check (RFC 7662-style)
     method: POST                         # GET | POST — default POST
