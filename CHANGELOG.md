@@ -11,6 +11,38 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-08-16
+
+### Added
+
+- **`web/authcore.Issuer` token lifetimes are now adjustable on a running
+  service.** New setters `SetTokenTTL`, `SetMaxTokenTTL`, `SetRefreshTokenTTL`
+  and matching getters `TokenTTL()`, `MaxTokenTTL()`, `RefreshTokenTTL()` let
+  an operator retune the three `auth.issuer` lifetimes without a restart. Each
+  setter enforces exactly the invariants `bootstrap` enforces on the yaml
+  block, so runtime can never reach a state the boot would have rejected: the
+  default must stay positive and within the ceiling, the ceiling must stay
+  positive and at or above the default, and the refresh lifetime must stay
+  positive. Two deliberate asymmetries with the yaml: `SetMaxTokenTTL(0)` is
+  rejected rather than meaning "no ceiling" (removing the ceiling on a live
+  service is a privilege escalation — any caller could then request an
+  effectively permanent, unrevocable access token), and `SetRefreshTokenTTL`
+  is rejected outright on an `Issuer` built without a `RefreshStore`, since
+  there is nowhere to persist rotation state. Every accepted change logs at
+  `Warn` with the old and new value: the yaml file still holds the original,
+  so the next restart silently reverts it, and that drift needs to be
+  diagnosable. Tokens already issued are unaffected — a JWT's `exp` is baked
+  in at signing time, and a refresh token keeps the expiry it was saved with.
+  The three fields moved behind a `sync.RWMutex` (one lock, not three atomics:
+  the ceiling invariant spans two of them, so a validated write must observe a
+  stable pair and a single `Issue` must read one). **Signing keys remain
+  immutable after construction by design** — rotating the key set stays a
+  restart-time operation via the existing `KeyNext`/`KeyCurrent`/`KeyPrevious`
+  runbook, which already achieves zero downtime; a runtime key-swap API would
+  require a private key to reach the process over some admin channel, which is
+  a materially worse trade than a redeploy for an operation that happens a
+  couple of times a year.
+
 ## [0.50.0] - 2026-08-16
 
 ### Added

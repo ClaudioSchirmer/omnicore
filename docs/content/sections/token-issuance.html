@@ -83,6 +83,25 @@ func (i *Issuer) RedeemRefreshToken(ctx context.Context, value string, claims ma
 
   <p>Signing material (<code>privateKeyPem</code>) is expected via <code>${ENV_VAR}</code> substitution, the same operational convention every other secret in a <code>microservice.&lt;profile&gt;.yaml</code> follows (DSNs, API keys, …) — never a literal PEM block committed to the file. This is not machine-enforced: interpolation runs on the raw file text before the yaml is parsed, so by the time the config struct exists, a literal and a substituted value are indistinguishable.</p>
 
+  <h4>Retuning lifetimes at runtime</h4>
+  <p>The three TTLs are the only <code>Issuer</code> state that can change after boot. Each has a setter and a getter, so a service can expose its own admin route (the framework mounts none) and retune lifetimes without a restart:</p>
+
+  <pre><code>func (i *Issuer) SetTokenTTL(d time.Duration) error
+func (i *Issuer) SetMaxTokenTTL(d time.Duration) error
+func (i *Issuer) SetRefreshTokenTTL(d time.Duration) error
+
+func (i *Issuer) TokenTTL() time.Duration
+func (i *Issuer) MaxTokenTTL() time.Duration
+func (i *Issuer) RefreshTokenTTL() time.Duration</code></pre>
+
+  <p>Each setter enforces the same invariants the yaml block enforces at boot, so runtime can never reach a state the boot would have rejected: the default stays positive and within the ceiling, the ceiling stays positive and at or above the default, the refresh lifetime stays positive. Two asymmetries with the yaml are deliberate — <code>SetMaxTokenTTL(0)</code> is rejected rather than meaning “no ceiling” (removing the ceiling on a live service is a privilege escalation, not a retune: any caller could then request an effectively permanent, unrevocable token), and <code>SetRefreshTokenTTL</code> is rejected outright on an <code>Issuer</code> built without a <code>RefreshStore</code>, which has nowhere to persist rotation state. A rejected call changes nothing.</p>
+
+  <p>Only future tokens are affected: an access token's <code>exp</code> is baked in at signing time and a refresh token keeps the expiry it was saved with, so a change never shortens or extends a credential already in circulation.</p>
+
+  <p>Every accepted change logs at <code>Warn</code> with the old and new value, because the yaml file still holds the original — the next restart, including an unattended one, silently reverts it. That drift is inherent to runtime configuration; the log line is what makes it diagnosable. Two operational consequences follow. The endpoint a service exposes for this deserves the protection of a credential-changing route: whoever can raise <code>maxTokenTtlSeconds</code> can mint near-permanent tokens. And a change meant to last belongs in the yaml too, or it lives only until the next deploy.</p>
+
+  <p><strong>Signing keys are not adjustable at runtime</strong>, by design. Rotation stays the config-plus-redeploy runbook above, which already achieves zero downtime through <code>next</code>/<code>previous</code>. A runtime key-swap API would require a private key to reach the process over an admin channel — the worst possible surface to add to an auth service — to serve an operation that happens a couple of times a year and already coincides with a deploy, since the new key arrives by environment variable anyway.</p>
+
   <h4>JWKS route</h4>
   <p>Follows the same shape <code>GraphQLConfig</code> uses: no bare <code>enabled</code> bool, a configurable path with a sensible default, collision-checked against reserved framework routes. The block's <strong>presence</strong> on <code>auth.issuer.jwks</code> is the switch — absent means the public key never touches the network (validate-against-issuer only); present mounts <code>GET &lt;path&gt;</code> as a public route automatically (a JWKS document that required a bearer to fetch would be a contradiction — nothing could ever bootstrap trust in it). The service mounts nothing for it.</p>
 
@@ -100,6 +119,82 @@ func (i *Issuer) RedeemRefreshToken(ctx context.Context, value string, claims ma
 
   <h3>What stays in the consumer service</h3>
   <p>User/credential entity, password hashing, lockout and rate limiting, login UI, consent, account lifecycle, and every HTTP route — <code>POST /auth/login</code>, <code>POST /auth/refresh</code>, an introspection endpoint, whatever shape the service wants. All of it is domain, built with the normal scaffolding on top of <code>Issuer</code>'s methods.</p>
+
+  <p>A real login route, end to end. Note where the boundary falls: everything above the <code>IssueWithRefresh</code> call is the service's own domain — the framework never sees a password and never decides who is authentic.</p>
+
+  <pre><code>// internal/web/auth_routes.go
+func MountAuth(app *fiber.App, d bootstrap.Deps, users appdomain.CredentialRepository) {
+    g := app.Group("/auth")
+
+    fwopenapi.MountRaw(d.OpenAPIRegistry, g, fiber.MethodPost, "/login",
+        func(c fiber.Ctx) error {
+            var req loginRequest
+            if err := json.Unmarshal(c.Body(), &amp;req); err != nil {
+                return fiber.ErrBadRequest
+            }
+            appCtx := fwweb.AppContext(c)
+            appCtx.SetParent(c)
+
+            // The service's own domain: lookup, hash comparison, lockout,
+            // rate limiting. The Issuer mints for a subject the CALLER has
+            // already decided is authentic.
+            user, err := users.Authenticate(appCtx, req.Username, req.Password)
+            if err != nil {
+                return fiber.ErrUnauthorized
+            }
+
+            access, refresh, err := d.Issuer.IssueWithRefresh(appCtx, authcore.TokenRequest{
+                Subject: user.ID.String(),
+                Claims: map[string]any{
+                    "permissions": user.Permissions,   // the RBAC vocabulary is YOURS
+                    "tenant_id":   user.TenantID,
+                },
+            })
+            if err != nil {
+                return err
+            }
+            return fwweb.RespondWithSuccess(c, fiber.StatusOK, loginResponse{
+                AccessToken:  access.Token,
+                ExpiresAt:    access.ExpiresAt,
+                RefreshToken: refresh.Value,
+            })
+        },
+        fwopenapi.RawSpec{Summary: "Sign in", Tags: []string{"Auth"}, Public: true})
+}</code></pre>
+
+  <p>The route is <code>Public</code> and listed in <code>auth.publicRoutes</code> for the obvious reason: a login route cannot require the credential it is about to grant. <code>POST /auth/refresh</code> is the same shape over <code>RedeemRefreshToken</code>, re-supplying the caller's current claims so a permission revoked between logins lands on the next refresh.</p>
+
+  <p>The runtime TTL seam has no route of its own either — the service mounts one where it wants, typically over <code>Wiring.BeforeServe</code>, which runs after every feature has mounted and before the listener binds:</p>
+
+  <pre><code>// bootstrap/wire.go — protect this like a password-change route: whoever can
+// raise the ceiling can mint near-permanent tokens.
+BeforeServe: func(app *fiber.App, d bootstrap.Deps) error {
+    admin := app.Group("/admin")
+
+    fwopenapi.MountRaw(d.OpenAPIRegistry, admin, fiber.MethodPatch, "/token-policy",
+        func(c fiber.Ctx) error {
+            var req struct {
+                TokenTTLSeconds *int `json:"tokenTtlSeconds"`   // pointer: absent != 0
+            }
+            if err := json.Unmarshal(c.Body(), &amp;req); err != nil {
+                return fiber.ErrBadRequest
+            }
+            if req.TokenTTLSeconds != nil {
+                ttl := time.Duration(*req.TokenTTLSeconds) * time.Second
+                if err := d.Issuer.SetTokenTTL(ttl); err != nil {
+                    return fiber.NewError(fiber.StatusBadRequest, err.Error())
+                }
+            }
+            return fwweb.RespondWithSuccess(c, fiber.StatusOK, fiber.Map{
+                "tokenTtlSeconds": int(d.Issuer.TokenTTL().Seconds()),
+            })
+        },
+        fwopenapi.RawSpec{Summary: "Retune token lifetimes", Tags: []string{"Admin"}},
+        fwopenapi.RequirePermission("token-policy:write"))
+    return nil
+},</code></pre>
+
+  <p>A working version of all of this — login, refresh, logout, access-token revocation and the TTL routes — is the <code>/qa/auth/*</code> fixture in <code>omnicore-example-users</code>, exercised end to end by <code>qa/auth_selfissued.sh</code> against a real database on every supported engine.</p>
 
   <h3>Multi-service topology</h3>
   <p>Per consumer service, the entire integration is configuration — no framework change:</p>

@@ -782,3 +782,220 @@ func parseUnverified(t *testing.T, token string) map[string]any {
 	}
 	return claims
 }
+
+// --- runtime TTL adjustment -------------------------------------------------
+
+func TestIssuerTTLGetters_ReflectConstruction(t *testing.T) {
+	store := newMemRefreshStore()
+	iss := newTestIssuer(t, IssuerOptions{
+		Keys:            []SigningKey{rs256Key(t, "k1", KeyCurrent)},
+		TokenTTL:        15 * time.Minute,
+		MaxTokenTTL:     time.Hour,
+		RefreshTokenTTL: 720 * time.Hour,
+		RefreshStore:    store,
+	})
+	if got := iss.TokenTTL(); got != 15*time.Minute {
+		t.Fatalf("TokenTTL() = %s", got)
+	}
+	if got := iss.MaxTokenTTL(); got != time.Hour {
+		t.Fatalf("MaxTokenTTL() = %s", got)
+	}
+	if got := iss.RefreshTokenTTL(); got != 720*time.Hour {
+		t.Fatalf("RefreshTokenTTL() = %s", got)
+	}
+}
+
+func TestSetTokenTTL_AppliesToNextIssue(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{
+		Keys:        []SigningKey{rs256Key(t, "k1", KeyCurrent)},
+		TokenTTL:    15 * time.Minute,
+		MaxTokenTTL: time.Hour,
+	})
+	if err := iss.SetTokenTTL(30 * time.Minute); err != nil {
+		t.Fatalf("SetTokenTTL: %v", err)
+	}
+	if got := iss.TokenTTL(); got != 30*time.Minute {
+		t.Fatalf("TokenTTL() = %s after set", got)
+	}
+	before := time.Now()
+	tok, err := iss.Issue(context.Background(), TokenRequest{Subject: "user-1"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if tok.ExpiresAt.Before(before.Add(29*time.Minute)) || tok.ExpiresAt.After(before.Add(31*time.Minute)) {
+		t.Fatalf("new default TTL not applied: expires %v (issued around %v)", tok.ExpiresAt, before)
+	}
+}
+
+func TestSetTokenTTL_RejectsNonPositive(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{Keys: []SigningKey{rs256Key(t, "k1", KeyCurrent)}, TokenTTL: 15 * time.Minute})
+	for _, d := range []time.Duration{0, -time.Second} {
+		if err := iss.SetTokenTTL(d); err == nil || !strings.Contains(err.Error(), "must be > 0") {
+			t.Fatalf("SetTokenTTL(%s) error = %v", d, err)
+		}
+	}
+	if got := iss.TokenTTL(); got != 15*time.Minute {
+		t.Fatalf("rejected set mutated the value: %s", got)
+	}
+}
+
+func TestSetTokenTTL_RejectsAboveCeiling(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{
+		Keys:        []SigningKey{rs256Key(t, "k1", KeyCurrent)},
+		TokenTTL:    15 * time.Minute,
+		MaxTokenTTL: time.Hour,
+	})
+	err := iss.SetTokenTTL(2 * time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the current MaxTokenTTL") {
+		t.Fatalf("expected ceiling rejection, got %v", err)
+	}
+	if got := iss.TokenTTL(); got != 15*time.Minute {
+		t.Fatalf("rejected set mutated the value: %s", got)
+	}
+}
+
+func TestSetTokenTTL_UnboundedWhenNoCeiling(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{Keys: []SigningKey{rs256Key(t, "k1", KeyCurrent)}, TokenTTL: time.Minute})
+	if err := iss.SetTokenTTL(9000 * time.Hour); err != nil {
+		t.Fatalf("SetTokenTTL with no ceiling: %v", err)
+	}
+}
+
+func TestSetMaxTokenTTL_LowersCapForNextIssue(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{
+		Keys:        []SigningKey{rs256Key(t, "k1", KeyCurrent)},
+		TokenTTL:    time.Minute,
+		MaxTokenTTL: time.Hour,
+	})
+	if err := iss.SetMaxTokenTTL(5 * time.Minute); err != nil {
+		t.Fatalf("SetMaxTokenTTL: %v", err)
+	}
+	before := time.Now()
+	tok, err := iss.Issue(context.Background(), TokenRequest{Subject: "user-1", TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if tok.ExpiresAt.After(before.Add(6 * time.Minute)) {
+		t.Fatalf("new ceiling not applied: expires %v", tok.ExpiresAt)
+	}
+}
+
+func TestSetMaxTokenTTL_RejectsNonPositive(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{
+		Keys:        []SigningKey{rs256Key(t, "k1", KeyCurrent)},
+		TokenTTL:    time.Minute,
+		MaxTokenTTL: time.Hour,
+	})
+	for _, d := range []time.Duration{0, -time.Second} {
+		err := iss.SetMaxTokenTTL(d)
+		if err == nil || !strings.Contains(err.Error(), "cannot be removed at runtime") {
+			t.Fatalf("SetMaxTokenTTL(%s) error = %v", d, err)
+		}
+	}
+	if got := iss.MaxTokenTTL(); got != time.Hour {
+		t.Fatalf("rejected set mutated the ceiling: %s", got)
+	}
+}
+
+func TestSetMaxTokenTTL_RejectsBelowDefault(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{
+		Keys:        []SigningKey{rs256Key(t, "k1", KeyCurrent)},
+		TokenTTL:    15 * time.Minute,
+		MaxTokenTTL: time.Hour,
+	})
+	err := iss.SetMaxTokenTTL(time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "below the current TokenTTL") {
+		t.Fatalf("expected floor rejection, got %v", err)
+	}
+	if got := iss.MaxTokenTTL(); got != time.Hour {
+		t.Fatalf("rejected set mutated the ceiling: %s", got)
+	}
+}
+
+func TestSetRefreshTokenTTL_AppliesToNextMint(t *testing.T) {
+	iss, store := newRefreshIssuer(t)
+	if err := iss.SetRefreshTokenTTL(48 * time.Hour); err != nil {
+		t.Fatalf("SetRefreshTokenTTL: %v", err)
+	}
+	before := time.Now()
+	_, refresh, err := iss.IssueWithRefresh(context.Background(), TokenRequest{Subject: "user-1"})
+	if err != nil {
+		t.Fatalf("IssueWithRefresh: %v", err)
+	}
+	if refresh.ExpiresAt.Before(before.Add(47 * time.Hour)) {
+		t.Fatalf("new refresh TTL not applied: expires %v", refresh.ExpiresAt)
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 stored record, got %d", len(store.records))
+	}
+}
+
+func TestSetRefreshTokenTTL_RejectsNonPositive(t *testing.T) {
+	iss, _ := newRefreshIssuer(t)
+	for _, d := range []time.Duration{0, -time.Second} {
+		if err := iss.SetRefreshTokenTTL(d); err == nil || !strings.Contains(err.Error(), "must be > 0") {
+			t.Fatalf("SetRefreshTokenTTL(%s) error = %v", d, err)
+		}
+	}
+	if got := iss.RefreshTokenTTL(); got != time.Hour {
+		t.Fatalf("rejected set mutated the value: %s", got)
+	}
+}
+
+func TestSetRefreshTokenTTL_RejectsWithoutStore(t *testing.T) {
+	iss := newTestIssuer(t, IssuerOptions{Keys: []SigningKey{rs256Key(t, "k1", KeyCurrent)}})
+	err := iss.SetRefreshTokenTTL(time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "disabled on this Issuer") {
+		t.Fatalf("expected disabled rejection, got %v", err)
+	}
+	if got := iss.RefreshTokenTTL(); got != 0 {
+		t.Fatalf("rejected set enabled refresh tokens: %s", got)
+	}
+}
+
+// TestIssuerTTLSetters_RaceWithIssue is the reason the three TTLs sit behind
+// a lock at all: before the setters existed they were write-once at
+// construction and read without synchronization. Run under -race.
+func TestIssuerTTLSetters_RaceWithIssue(t *testing.T) {
+	iss, _ := newRefreshIssuer(t)
+	if err := iss.SetMaxTokenTTL(2 * time.Hour); err != nil {
+		t.Fatalf("SetMaxTokenTTL: %v", err)
+	}
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < 50; n++ {
+				if _, err := iss.Issue(ctx, TokenRequest{Subject: "user-1"}); err != nil {
+					t.Errorf("Issue: %v", err)
+					return
+				}
+				if _, _, err := iss.IssueWithRefresh(ctx, TokenRequest{Subject: "user-1"}); err != nil {
+					t.Errorf("IssueWithRefresh: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for n := 1; n <= 50; n++ {
+				d := time.Duration(base+n) * time.Minute
+				if err := iss.SetTokenTTL(d); err != nil {
+					t.Errorf("SetTokenTTL(%s): %v", d, err)
+					return
+				}
+				if err := iss.SetRefreshTokenTTL(d); err != nil {
+					t.Errorf("SetRefreshTokenTTL(%s): %v", d, err)
+					return
+				}
+				_, _, _ = iss.TokenTTL(), iss.MaxTokenTTL(), iss.RefreshTokenTTL()
+			}
+		}(g * 50)
+	}
+	wg.Wait()
+}

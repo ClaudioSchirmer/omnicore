@@ -14,6 +14,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/MicahParks/jwkset"
@@ -108,20 +110,32 @@ type issuerKey struct {
 // Issuer mints and rotates JWT access tokens plus, optionally, opaque
 // refresh tokens. Construct once at boot via NewIssuer.
 //
+// The three TTLs are the ONLY state that may change after construction —
+// see SetTokenTTL / SetMaxTokenTTL / SetRefreshTokenTTL. Everything else,
+// the signing keys included, is fixed at NewIssuer: rotating the key set
+// is a restart-time operation (declare the new key as KeyNext, promote it
+// on the next deploy), deliberately not a runtime one.
+//
 // Issuer and Validator deliberately live in the same package: the JWKS
 // document Issuer.JWKS produces must be directly consumable by
 // BuildKeyfunc, so any divergence between what is published and what is
 // accepted is caught by the round-trip test, not by integration surprises.
 type Issuer struct {
-	selfURL         string
-	audience        []string
+	selfURL      string
+	audience     []string
+	notBefore    time.Duration
+	current      *issuerKey
+	keys         []*issuerKey // every key, any state — JWKS serves all of them
+	refreshStore RefreshTokenStore
+
+	// ttlMu guards the three fields below, the only mutable Issuer state.
+	// One lock rather than three atomics because the ceiling invariant
+	// (maxTokenTTL >= tokenTTL) spans two of them: a validated write has
+	// to observe a stable pair, and a single Issue call has to read one.
+	ttlMu           sync.RWMutex
 	tokenTTL        time.Duration
 	maxTokenTTL     time.Duration
 	refreshTokenTTL time.Duration
-	notBefore       time.Duration
-	current         *issuerKey
-	keys            []*issuerKey // every key, any state — JWKS serves all of them
-	refreshStore    RefreshTokenStore
 }
 
 // NewIssuer builds an Issuer: parses and validates every key, enforces
@@ -200,6 +214,122 @@ func NewIssuer(opts IssuerOptions) (*Issuer, error) {
 	}, nil
 }
 
+// --- runtime TTL adjustment -------------------------------------------------
+//
+// The setters below let an operator retune token lifetimes on a running
+// service. They enforce exactly the invariants bootstrap enforces on the
+// `auth.issuer` yaml block, so runtime can never reach a state the boot
+// would have rejected — in particular the ceiling can be lowered or
+// raised but never removed, since an unbounded MaxTokenTTL would let any
+// caller mint an effectively permanent (and unrevocable) access token.
+//
+// Every accepted change is logged at Warn: the yaml file still holds the
+// old value, so the next restart silently reverts it. That drift is
+// inherent to runtime configuration; the log line is what makes it
+// diagnosable.
+
+// TokenTTL returns the current default access-token lifetime.
+func (i *Issuer) TokenTTL() time.Duration {
+	i.ttlMu.RLock()
+	defer i.ttlMu.RUnlock()
+	return i.tokenTTL
+}
+
+// MaxTokenTTL returns the current hard ceiling on an access token's
+// lifetime. Zero means no ceiling — reachable only by constructing the
+// Issuer that way, never by SetMaxTokenTTL.
+func (i *Issuer) MaxTokenTTL() time.Duration {
+	i.ttlMu.RLock()
+	defer i.ttlMu.RUnlock()
+	return i.maxTokenTTL
+}
+
+// RefreshTokenTTL returns the current refresh-token lifetime. Zero means
+// refresh tokens were never enabled on this Issuer.
+func (i *Issuer) RefreshTokenTTL() time.Duration {
+	i.ttlMu.RLock()
+	defer i.ttlMu.RUnlock()
+	return i.refreshTokenTTL
+}
+
+// SetTokenTTL replaces the default access-token lifetime. It must be
+// positive and, when a ceiling is in force, must not exceed it — mirroring
+// the `tokenTtlSeconds` > 0 and `maxTokenTtlSeconds >= tokenTtlSeconds`
+// yaml guards. Tokens already issued are unaffected: a JWT's expiry is
+// baked in at signing time.
+func (i *Issuer) SetTokenTTL(d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("authcore: SetTokenTTL: must be > 0, got %s", d)
+	}
+	i.ttlMu.Lock()
+	if i.maxTokenTTL > 0 && d > i.maxTokenTTL {
+		ceiling := i.maxTokenTTL
+		i.ttlMu.Unlock()
+		return fmt.Errorf("authcore: SetTokenTTL: %s exceeds the current MaxTokenTTL %s", d, ceiling)
+	}
+	old := i.tokenTTL
+	i.tokenTTL = d
+	i.ttlMu.Unlock()
+	logTTLChange("tokenTTL", old, d)
+	return nil
+}
+
+// SetMaxTokenTTL replaces the hard ceiling on an access token's lifetime.
+// It must be positive and at least the current default — the same pair of
+// yaml guards. Zero is rejected on purpose: removing the ceiling on a
+// running service is a privilege escalation, not a retune.
+func (i *Issuer) SetMaxTokenTTL(d time.Duration) error {
+	if d <= 0 {
+		return fmt.Errorf("authcore: SetMaxTokenTTL: must be > 0, got %s (the ceiling cannot be removed at runtime)", d)
+	}
+	i.ttlMu.Lock()
+	if d < i.tokenTTL {
+		def := i.tokenTTL
+		i.ttlMu.Unlock()
+		return fmt.Errorf("authcore: SetMaxTokenTTL: ceiling %s is below the current TokenTTL %s", d, def)
+	}
+	old := i.maxTokenTTL
+	i.maxTokenTTL = d
+	i.ttlMu.Unlock()
+	logTTLChange("maxTokenTTL", old, d)
+	return nil
+}
+
+// SetRefreshTokenTTL replaces the lifetime a freshly minted refresh token
+// gets. It must be positive and requires an Issuer built with a
+// RefreshStore — an Issuer that booted without refresh tokens cannot grow
+// them at runtime, since it has nowhere to persist rotation state.
+// Refresh tokens already in circulation keep the expiry they were saved
+// with.
+func (i *Issuer) SetRefreshTokenTTL(d time.Duration) error {
+	if i.refreshStore == nil {
+		return errors.New("authcore: SetRefreshTokenTTL: refresh tokens are disabled on this Issuer (built without a RefreshStore)")
+	}
+	if d <= 0 {
+		return fmt.Errorf("authcore: SetRefreshTokenTTL: must be > 0, got %s", d)
+	}
+	i.ttlMu.Lock()
+	old := i.refreshTokenTTL
+	i.refreshTokenTTL = d
+	i.ttlMu.Unlock()
+	logTTLChange("refreshTokenTTL", old, d)
+	return nil
+}
+
+// accessTTLs snapshots the pair Issue needs under one read lock, so a
+// single mint can never combine a pre-change default with a post-change
+// ceiling.
+func (i *Issuer) accessTTLs() (def, max time.Duration) {
+	i.ttlMu.RLock()
+	defer i.ttlMu.RUnlock()
+	return i.tokenTTL, i.maxTokenTTL
+}
+
+func logTTLChange(field string, old, updated time.Duration) {
+	slog.Warn("authcore: issuer TTL changed at runtime — the yaml value is unchanged and takes effect again on the next restart",
+		"field", field, "old", old.String(), "new", updated.String())
+}
+
 // parseSigningKey decodes PrivatePEM (PKCS#8), checks the parsed key's
 // concrete type matches the declared Algorithm, and enforces the minimum
 // strength for that algorithm (RSA >= 2048 bits; ES256 requires a P-256
@@ -266,8 +396,8 @@ func rejectReservedClaims(claims map[string]any) error {
 // the issuing service's own domain.
 type TokenRequest struct {
 	Subject  string
-	Audience []string       // nil = IssuerOptions.Audience
-	TTL      time.Duration  // 0 = IssuerOptions.TokenTTL, capped by MaxTokenTTL
+	Audience []string      // nil = IssuerOptions.Audience
+	TTL      time.Duration // 0 = IssuerOptions.TokenTTL, capped by MaxTokenTTL
 	Claims   map[string]any
 }
 
@@ -287,12 +417,13 @@ func (i *Issuer) Issue(ctx context.Context, req TokenRequest) (IssuedToken, erro
 		return IssuedToken{}, err
 	}
 
+	defaultTTL, maxTTL := i.accessTTLs()
 	ttl := req.TTL
 	if ttl <= 0 {
-		ttl = i.tokenTTL
+		ttl = defaultTTL
 	}
-	if i.maxTokenTTL > 0 && ttl > i.maxTokenTTL {
-		ttl = i.maxTokenTTL
+	if maxTTL > 0 && ttl > maxTTL {
+		ttl = maxTTL
 	}
 	aud := req.Audience
 	if len(aud) == 0 {
@@ -462,7 +593,7 @@ func (i *Issuer) mintRefresh(ctx context.Context, subject string, audience []str
 	if err != nil {
 		return RefreshToken{}, err
 	}
-	expiresAt := time.Now().Add(i.refreshTokenTTL)
+	expiresAt := time.Now().Add(i.RefreshTokenTTL())
 	rec := RefreshTokenRecord{
 		Hash:      hash,
 		FamilyID:  familyID,
