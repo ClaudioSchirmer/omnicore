@@ -1,0 +1,115 @@
+<h2>Token issuance</h2>
+  <p>The framework can mint its own JWT access and refresh tokens, so a service can be its own IdP instead of depending on Keycloak/Auth0/Entra — while every service's inbound authentication (<a href="#auth-middleware">the middleware</a>, <code>authcore.Validator</code>) stays exactly as it is today. Issuance is a new, additive surface that happens to produce standards-compliant JWTs; it is never a prerequisite for validation, and it works with any IdP a deployment already trusts.</p>
+
+  <p><strong>The framework ships methods, never HTTP endpoints.</strong> <code>POST /auth/login</code>, <code>POST /auth/refresh</code>, an introspection endpoint — all of it is built by the consuming service on top of <code>Issuer</code>. The one exception is the JWKS document itself: publishing a public key is infrastructure, not a business endpoint, and it follows the same opt-in, self-mounted pattern as <a href="#graphql">GraphQL</a>/<a href="#openapi">OpenAPI</a>.</p>
+
+  <h3>Validate vs. issue — two independent surfaces</h3>
+  <p>Nothing about <a href="#auth-middleware">inbound validation</a> changes. A token minted by <code>Issuer.Issue</code> must validate through the <em>unmodified</em> <code>Validator</code>, using a <code>Validator</code> built from the issuer's own published JWKS and zero issuer-specific code paths — that round-trip is the framework's own test for this feature. Consumers keep choosing between the two shapes <code>auth.jwt</code> already supports:</p>
+  <ul>
+    <li><strong>Self-validation</strong> — <code>auth.jwt.jwksUrl</code> points at the issuer's JWKS document; nobody exchanges a shared secret, the public key is enough.</li>
+    <li><strong>Validate-against-issuer</strong> — <code>auth.jwt.externalValidator</code> calls an introspection endpoint the issuing service builds itself; the public key never has to touch the network at all.</li>
+  </ul>
+  <p>No consumer service needs a framework change to accept a self-issued token — pointing either knob at an in-house issuer is configuration.</p>
+
+  <h3>The Issuer</h3>
+  <p><code>web/authcore.Issuer</code> lives in the same package as <code>Validator</code> on purpose: the JWKS document it produces must be directly consumable by <code>BuildKeyfunc</code> in the same compile unit, so divergence between what's published and what's accepted is a compile-unit-local concern, not an integration surprise.</p>
+
+  <pre><code>func NewIssuer(opts IssuerOptions) (*Issuer, error)
+
+func (i *Issuer) Issue(ctx context.Context, req TokenRequest) (IssuedToken, error)
+func (i *Issuer) JWKS() ([]byte, error)
+
+func (i *Issuer) IssueWithRefresh(ctx context.Context, req TokenRequest) (IssuedToken, RefreshToken, error)
+func (i *Issuer) RedeemRefreshToken(ctx context.Context, value string, claims map[string]any) (IssuedToken, RefreshToken, error)</code></pre>
+
+  <p><code>TokenRequest.Claims</code> is where groups, permissions, <code>tenant_id</code>, or any other RBAC shape ride — the framework never interprets it, that vocabulary belongs to the issuing service's own domain. Reserved claims (<code>iss</code>/<code>aud</code>/<code>exp</code>/<code>iat</code>/<code>nbf</code>/<code>jti</code>) are owned by the <code>Issuer</code>: supplying one in <code>Claims</code> is a rejected call, not a silent override.</p>
+
+  <h4>Refresh tokens</h4>
+  <p>Refresh tokens follow the pattern every mature IdP uses (Keycloak, Auth0, Okta): <strong>opaque, never a JWT</strong>, single-use, rotated on every redemption, with reuse detection. The <code>Issuer</code> owns that algorithm — it is security-critical logic that must not be copy-pasted per service — but <strong>not the storage</strong>:</p>
+
+  <pre><code>type RefreshTokenStore interface {
+    Save(ctx context.Context, rec RefreshTokenRecord) error
+    Lookup(ctx context.Context, hash string) (RefreshTokenRecord, error)
+    MarkUsed(ctx context.Context, hash string) error
+    RevokeFamily(ctx context.Context, familyID string) error
+}</code></pre>
+
+  <p>The service supplies the implementation (SQL table, Redis, whatever fits) via <code>Wiring.RefreshTokenStore</code>; only a SHA-256 hash of the opaque value ever crosses this seam — never the raw secret, never claims. Reuse of an already-redeemed value revokes the entire family (the session and every token descended from it) and returns <code>ErrRefreshTokenReused</code> — the standard signal a stolen refresh token was replayed.</p>
+
+  <p><code>RedeemRefreshToken</code> takes <code>claims</code> fresh from the caller at redemption time — the same shape <code>Issue</code> takes — so a permission revoked between logins reaches the mesh on the next refresh (minutes), not only on the next full login. A refresh token can only ever be redeemed at the issuing service — not by rule, but structurally: it is opaque, so no other process can even attempt to interpret it, and only whoever holds the <code>RefreshTokenStore</code> can look it up.</p>
+
+  <h3>Key rotation</h3>
+  <p>Keys carry a <code>KeyState</code>: <code>KeyNext</code> (published in the JWKS, not signing yet), <code>KeyCurrent</code> (published and signing — exactly one, enforced at construction), <code>KeyPrevious</code> (published, no longer signing, still validates tokens already in flight). This exists because of how the underlying JWKS client libraries behave: periodic refresh runs every hour, and a refresh triggered by an unknown <code>kid</code> is rate-limited to once per five minutes — so a key that starts signing before it is published can make the whole mesh serve 401s for up to five minutes.</p>
+
+  <p>Runbook for promoting a key, entirely a config change plus redeploy (no scheduler in the framework):</p>
+  <ol>
+    <li>Add the new key as <code>next</code>. It appears in the JWKS immediately; nothing signs with it.</li>
+    <li>Wait the propagation window — conservatively 5+ minutes, or one refresh interval to be safe.</li>
+    <li>Promote: <code>next</code> → <code>current</code>, old <code>current</code> → <code>previous</code>.</li>
+    <li>After the longest access-token TTL has elapsed, drop <code>previous</code>.</li>
+  </ol>
+
+  <h3>Configuration</h3>
+  <p>New <code>auth.issuer:</code> block, sibling of <code>auth.jwt:</code> (see the <a href="#yaml-reference">full yaml reference</a>):</p>
+
+  <pre><code>auth:
+  mode: jwt
+  jwt:                                    # VALIDATE — unchanged
+    algorithms: [RS256]
+    issuer: "http://auth"
+    audience: "users-api"
+    jwksUrl: "http://auth/.well-known/jwks.json"
+
+  issuer:                                 # ISSUE — new
+    enabled: true
+    selfUrl: "http://auth"                # the `iss` this service signs with
+    audience: ["users-api", "orders-api"]
+    tokenTtlSeconds: 900
+    maxTokenTtlSeconds: 3600
+    refreshTokenTtlSeconds: 2592000        # 30 days; 0 or omitted disables refresh tokens
+    keys:
+      - kid: "2026-08-a"
+        algorithm: RS256
+        state: current
+        privateKeyPem: "${JWT_SIGNING_KEY}"
+      - kid: "2026-05-b"
+        algorithm: RS256
+        state: previous
+        privateKeyPem: "${JWT_SIGNING_KEY_PREVIOUS}"
+    jwks:                                 # OPT-IN — see below
+      path: /.well-known/jwks.json</code></pre>
+
+  <p><code>selfUrl</code> is deliberately not named <code>issuer</code> — that word already labels the block — and is never inherited from <code>auth.jwt.issuer</code>: always explicit, since a service may issue without ever validating locally. When both blocks are configured on the same service, <code>selfUrl</code> must equal <code>auth.jwt.issuer</code> — a service that issues and validates cannot disagree with itself about who it is.</p>
+
+  <p>Signing material (<code>privateKeyPem</code>) is expected via <code>${ENV_VAR}</code> substitution, the same operational convention every other secret in a <code>microservice.&lt;profile&gt;.yaml</code> follows (DSNs, API keys, …) — never a literal PEM block committed to the file. This is not machine-enforced: interpolation runs on the raw file text before the yaml is parsed, so by the time the config struct exists, a literal and a substituted value are indistinguishable.</p>
+
+  <h4>JWKS route</h4>
+  <p>Follows the same shape <code>GraphQLConfig</code> uses: no bare <code>enabled</code> bool, a configurable path with a sensible default, collision-checked against reserved framework routes. The block's <strong>presence</strong> on <code>auth.issuer.jwks</code> is the switch — absent means the public key never touches the network (validate-against-issuer only); present mounts <code>GET &lt;path&gt;</code> as a public route automatically (a JWKS document that required a bearer to fetch would be a contradiction — nothing could ever bootstrap trust in it). The service mounts nothing for it.</p>
+
+  <h3>In-process revocation</h3>
+  <p><code>authcore.TokenChecker</code> is the same post-validation revocation seam <a href="#auth-middleware">the middleware</a> already uses for <code>auth.jwt.externalValidator</code> — today reachable only by routing through HTTP. <code>Wiring.TokenChecker</code> plugs a direct Go implementation instead (e.g. consulting the same store a refresh-token family lives in, or a denylist), with no HTTP hop; it takes priority over <code>externalValidator</code> when both are set. The HTTP path stays available for the cross-process case (a <em>different</em> service checking this one's revocations) — this is the same-process fast path.</p>
+
+  <h3>Security</h3>
+  <ul>
+    <li><strong>Asymmetric only</strong> — RS256/ES256/EdDSA, enforced at construction; RSA keys under 2048 bits are rejected. <em>Validators</em> never hold signing material, only the issuing service does, and it holds a private key whose public half is safe to publish.</li>
+    <li>Every access token carries <code>jti</code> (random), <code>iat</code>, <code>exp</code>, <code>iss</code>. <code>exp</code> is never caller-controlled beyond <code>maxTokenTtlSeconds</code>.</li>
+    <li>Refresh tokens are opaque, single-use, stored only as a hash.</li>
+    <li>The signing key never appears in logs, the audit trail, or any error string — <code>Issuer</code> has no getter for it.</li>
+    <li><code>Issuer</code> authenticates nobody. <code>Issue</code>/<code>IssueWithRefresh</code> mint for a subject the service already decided is authentic; the framework does not and will not verify passwords.</li>
+  </ul>
+
+  <h3>What stays in the consumer service</h3>
+  <p>User/credential entity, password hashing, lockout and rate limiting, login UI, consent, account lifecycle, and every HTTP route — <code>POST /auth/login</code>, <code>POST /auth/refresh</code>, an introspection endpoint, whatever shape the service wants. All of it is domain, built with the normal scaffolding on top of <code>Issuer</code>'s methods.</p>
+
+  <h3>Multi-service topology</h3>
+  <p>Per consumer service, the entire integration is configuration — no framework change:</p>
+  <pre><code>auth:
+  mode: jwt
+  jwt:
+    algorithms: [RS256]
+    issuer: "http://users"
+    audience: "orders-api"
+    jwksUrl: "http://users/.well-known/jwks.json"
+    # OR, for validate-against-issuer:
+    # externalValidator: { url: "http://users/auth/introspect", ... }</code></pre>
+  <p>Service-to-service calls need nothing new either: <code>type: forward</code> (see <a href="#httpclient">httpclient</a>) propagates the end user's bearer for attribution, <code>type: oauth2</code> with a service-built token endpoint covers machine-to-machine with the existing cache and 401 re-acquisition.</p>

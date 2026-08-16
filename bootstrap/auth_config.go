@@ -45,8 +45,14 @@ const (
 )
 
 // Default JWT signing algorithms allow-listed when none are declared. Only
-// asymmetric algorithms — symmetric (HMAC) is intentionally excluded so the
-// service never holds the IdP's signing secret.
+// asymmetric algorithms — symmetric (HMAC) is intentionally excluded
+// permanently. The property this buys: a VALIDATOR never holds signing
+// material, only the ISSUER does (whether that issuer is an external IdP or
+// this service's own auth.issuer block — see IssuerConfig), and an issuer's
+// private key has a public half that is safe to publish. HMAC breaks that:
+// every validator would need the same secret used to mint tokens, so any
+// compromised or merely careless validator becomes a forgery vector for the
+// whole mesh. That failure mode is what this allowlist exists to prevent.
 var defaultJWTAlgorithms = []string{"RS256", "ES256", "EdDSA"}
 
 // AuthConfig is the `auth:` block of microservice.<profile>.yaml.
@@ -85,6 +91,13 @@ type AuthConfig struct {
 	// opt in by declaring `authorization:` (even an empty block enables it
 	// via UnmarshalYAML allocating the struct).
 	Authorization *AuthorizationConfig `yaml:"authorization,omitempty"`
+
+	// Issuer is the outbound mirror of JWT: this service's OWN capability to
+	// mint tokens (asymmetric signing, key rotation, optional refresh
+	// tokens), built into Deps.Issuer. nil or Enabled=false means the
+	// service never signs — every other auth.* knob keeps validating
+	// whatever tokens arrive, unaffected. See IssuerConfig.
+	Issuer *IssuerConfig `yaml:"issuer,omitempty"`
 }
 
 // AuthorizationConfig is the `auth.authorization:` sub-block. Drives the boot
@@ -188,6 +201,211 @@ func quoteEach(items []string) []string {
 	return out
 }
 
+// issuerKeyStateNext / issuerKeyStateCurrent / issuerKeyStatePrevious are the
+// yaml values for IssuerKeyConfig.State — the wire form of authcore.KeyState.
+const (
+	issuerKeyStateNext     = "next"
+	issuerKeyStateCurrent  = "current"
+	issuerKeyStatePrevious = "previous"
+)
+
+// defaultIssuerJWKSPath is IssuerJWKSConfig.Path's default when the jwks:
+// block is present but Path is empty.
+const defaultIssuerJWKSPath = "/.well-known/jwks.json"
+
+// IssuerConfig is the `auth.issuer:` block — this service's own capability
+// to mint JWTs, the outbound mirror of JWTConfig. Closed key set (typos
+// surface at boot via UnmarshalYAML), matching the AuthorizationConfig
+// precedent.
+type IssuerConfig struct {
+	// Enabled is the master switch. false (default) — everything below is
+	// ignored and Deps.Issuer stays nil.
+	Enabled bool `yaml:"enabled"`
+
+	// SelfURL is the `iss` claim every token this service mints carries.
+	// Deliberately not named "issuer" (that word already labels this
+	// block) and never inherited from JWTConfig.Issuer — a service may
+	// issue without ever validating locally. Required when Enabled; when
+	// auth.jwt is also configured on the same service, SelfURL must equal
+	// JWTConfig.Issuer (a service cannot disagree with itself about who it
+	// is).
+	SelfURL string `yaml:"selfUrl"`
+
+	// Audience is the default `aud` claim for every minted token. Required
+	// (non-empty) when Enabled.
+	Audience []string `yaml:"audience"`
+
+	// TokenTTLSeconds is the default access-token lifetime. Required (> 0)
+	// — there is no framework default, because a silent zero would mint
+	// tokens that expire the instant they are issued.
+	TokenTTLSeconds int `yaml:"tokenTtlSeconds"`
+
+	// MaxTokenTTLSeconds is the hard ceiling on any access token's
+	// lifetime, including a per-request TTL override. Required
+	// (>= TokenTTLSeconds).
+	MaxTokenTTLSeconds int `yaml:"maxTokenTtlSeconds"`
+
+	// RefreshTokenTTLSeconds, when > 0, is the lifetime of a freshly minted
+	// refresh token and enables IssueWithRefresh / RedeemRefreshToken. 0
+	// (default) disables refresh tokens entirely. Requires
+	// Wiring.RefreshTokenStore to be non-nil — checked at boot against the
+	// live Wiring, not here (this struct has no visibility into Wiring).
+	RefreshTokenTTLSeconds int `yaml:"refreshTokenTtlSeconds,omitempty"`
+
+	// Keys is the rotation set: exactly one State=current, any number of
+	// next/previous. Required (non-empty) when Enabled.
+	//
+	// Signing material (PrivateKeyPEM) is expected to arrive via
+	// ${ENV_VAR} substitution (see load.go's interpolate), never as a
+	// literal PEM block committed to the yaml file — the same operational
+	// convention every other secret in a microservice.<profile>.yaml
+	// follows (DSNs, API keys, …). This is NOT machine-enforced: by the
+	// time this struct is populated, interpolate() has already replaced
+	// ${...} references in the raw file text, so a literal PEM and a
+	// substituted one are indistinguishable at validate() time.
+	Keys []IssuerKeyConfig `yaml:"keys"`
+
+	// JWKS is opt-in: nil (default) means the public key never touches the
+	// network — every consumer validates via auth.jwt.externalValidator
+	// against this service instead. A non-nil (even empty) block mounts
+	// GET <path> as a public route, following the same
+	// presence-is-the-switch shape as GraphQLConfig/OpenAPIConfig.
+	JWKS *IssuerJWKSConfig `yaml:"jwks,omitempty"`
+}
+
+// IssuerKeyConfig is one signing key in IssuerConfig.Keys — the yaml mirror
+// of authcore.SigningKey.
+type IssuerKeyConfig struct {
+	KID           string `yaml:"kid"`
+	Algorithm     string `yaml:"algorithm"`
+	State         string `yaml:"state"` // "next" | "current" | "previous"
+	PrivateKeyPEM string `yaml:"privateKeyPem"`
+}
+
+// IssuerJWKSConfig is the `auth.issuer.jwks:` sub-block. Its mere presence
+// on IssuerConfig.JWKS is the switch that mounts the route — see JWKS route
+// in the token-issuance manual section.
+type IssuerJWKSConfig struct {
+	// Path is the Fiber route (GET) the JWKS document is served on.
+	// Default "/.well-known/jwks.json". Must not collide with a reserved
+	// framework route.
+	Path string `yaml:"path,omitempty"`
+}
+
+// UnmarshalYAML for IssuerConfig enforces the closed key set.
+func (c *IssuerConfig) UnmarshalYAML(node *yaml.Node) error {
+	type alias IssuerConfig
+	if err := node.Decode((*alias)(c)); err != nil {
+		return err
+	}
+	return rejectUnknownYAMLFields(node, "auth.issuer",
+		"enabled", "selfUrl", "audience", "tokenTtlSeconds", "maxTokenTtlSeconds",
+		"refreshTokenTtlSeconds", "keys", "jwks")
+}
+
+// UnmarshalYAML for IssuerKeyConfig enforces the closed key set.
+func (k *IssuerKeyConfig) UnmarshalYAML(node *yaml.Node) error {
+	type alias IssuerKeyConfig
+	if err := node.Decode((*alias)(k)); err != nil {
+		return err
+	}
+	return rejectUnknownYAMLFields(node, "auth.issuer.keys[]",
+		"kid", "algorithm", "state", "privateKeyPem")
+}
+
+// UnmarshalYAML for IssuerJWKSConfig enforces the closed key set.
+func (j *IssuerJWKSConfig) UnmarshalYAML(node *yaml.Node) error {
+	type alias IssuerJWKSConfig
+	if err := node.Decode((*alias)(j)); err != nil {
+		return err
+	}
+	return rejectUnknownYAMLFields(node, "auth.issuer.jwks", "path")
+}
+
+// applyDefaults fills IssuerJWKSConfig.Path when the jwks: block is present
+// but left the path empty. No-op when Enabled is false — an unmounted
+// Issuer has nothing to default.
+func (c *IssuerConfig) applyDefaults() {
+	if !c.Enabled {
+		return
+	}
+	if c.JWKS != nil && c.JWKS.Path == "" {
+		c.JWKS.Path = defaultIssuerJWKSPath
+	}
+}
+
+// validate enforces the IssuerConfig invariants. jwtIssuer is
+// AuthConfig.JWT.Issuer when auth.jwt is configured on the same service
+// (empty otherwise) — passed in because a service that both issues and
+// validates must agree with itself about SelfURL.
+func (c *IssuerConfig) validate(jwtIssuer string) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.SelfURL == "" {
+		return fmt.Errorf("auth.issuer.selfUrl is required when auth.issuer.enabled=true")
+	}
+	if jwtIssuer != "" && c.SelfURL != jwtIssuer {
+		return fmt.Errorf("auth.issuer.selfUrl %q must equal auth.jwt.issuer %q when both are configured", c.SelfURL, jwtIssuer)
+	}
+	if len(c.Audience) == 0 {
+		return fmt.Errorf("auth.issuer.audience is required when auth.issuer.enabled=true")
+	}
+	if c.TokenTTLSeconds <= 0 {
+		return fmt.Errorf("auth.issuer.tokenTtlSeconds must be > 0")
+	}
+	if c.MaxTokenTTLSeconds <= 0 {
+		return fmt.Errorf("auth.issuer.maxTokenTtlSeconds must be > 0")
+	}
+	if c.MaxTokenTTLSeconds < c.TokenTTLSeconds {
+		return fmt.Errorf("auth.issuer.maxTokenTtlSeconds (%d) must be >= tokenTtlSeconds (%d)", c.MaxTokenTTLSeconds, c.TokenTTLSeconds)
+	}
+	if c.RefreshTokenTTLSeconds < 0 {
+		return fmt.Errorf("auth.issuer.refreshTokenTtlSeconds must be >= 0 (0 = refresh tokens disabled)")
+	}
+	if len(c.Keys) == 0 {
+		return fmt.Errorf("auth.issuer.keys must declare at least one key when auth.issuer.enabled=true")
+	}
+	var currentCount int
+	for idx, k := range c.Keys {
+		if k.KID == "" {
+			return fmt.Errorf("auth.issuer.keys[%d].kid is required", idx)
+		}
+		if !isAllowedAlgorithm(k.Algorithm) {
+			return fmt.Errorf("auth.issuer.keys[%d].algorithm %q is invalid (allowed: %s)", idx, k.Algorithm, strings.Join(defaultJWTAlgorithms, ", "))
+		}
+		switch k.State {
+		case issuerKeyStateNext, issuerKeyStatePrevious:
+		case issuerKeyStateCurrent:
+			currentCount++
+		default:
+			return fmt.Errorf("auth.issuer.keys[%d].state %q is invalid (expected %q, %q or %q)", idx, k.State, issuerKeyStateNext, issuerKeyStateCurrent, issuerKeyStatePrevious)
+		}
+		if k.PrivateKeyPEM == "" {
+			return fmt.Errorf("auth.issuer.keys[%d].privateKeyPem is required", idx)
+		}
+	}
+	if currentCount != 1 {
+		return fmt.Errorf("auth.issuer.keys must declare exactly one key with state=%q, got %d", issuerKeyStateCurrent, currentCount)
+	}
+	if c.JWKS != nil {
+		if err := c.JWKS.validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (j *IssuerJWKSConfig) validate() error {
+	if !strings.HasPrefix(j.Path, "/") {
+		return fmt.Errorf("auth.issuer.jwks.path %q must start with %q", j.Path, "/")
+	}
+	if collidesFrameworkPath(j.Path) {
+		return fmt.Errorf("auth.issuer.jwks.path %q collides with a framework route", j.Path)
+	}
+	return nil
+}
+
 // JWTConfig describes how to locally verify the bearer JWT before any external
 // call. Exactly one of JWKSURL / PublicKeyPEM must be set when Mode == jwt.
 type JWTConfig struct {
@@ -242,6 +460,12 @@ func (a *AuthConfig) applyDefaults() {
 	if a.Mode == "" {
 		a.Mode = AuthModeDisabled
 	}
+	// Issuer (outbound: this service minting tokens) is orthogonal to Mode
+	// (inbound: how this service validates tokens) — a service can issue
+	// without validating locally, so its defaults apply regardless of Mode.
+	if a.Issuer != nil {
+		a.Issuer.applyDefaults()
+	}
 	if a.Mode != AuthModeJWT {
 		return
 	}
@@ -283,6 +507,20 @@ func (a *AuthorizationConfig) applyDefaults() {
 // validate enforces the schema invariants of the auth block. Profile-aware
 // guards (e.g., AuthModeDisabled forbidden under prd) live in load.go.
 func (a *AuthConfig) validate() error {
+	// Issuer is orthogonal to Mode — validated regardless of how (or
+	// whether) this service validates inbound tokens. jwtIssuer is only
+	// non-empty under AuthModeJWT, which is exactly when a same-service
+	// SelfURL/Issuer agreement is meaningful to check.
+	var jwtIssuer string
+	if a.Mode == AuthModeJWT && a.JWT != nil {
+		jwtIssuer = a.JWT.Issuer
+	}
+	if a.Issuer != nil {
+		if err := a.Issuer.validate(jwtIssuer); err != nil {
+			return err
+		}
+	}
+
 	switch a.Mode {
 	case AuthModeDisabled:
 		// authorization.enabled requires authentication — a service that

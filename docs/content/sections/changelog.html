@@ -7,6 +7,25 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.50.0</span><span class="release-date">August 16, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#token-issuance">the framework can now mint its own
+                JWT access and refresh tokens</a>, not just validate them.</strong> New
+                <code>web/authcore.Issuer</code>: asymmetric signing (RS256/ES256/EdDSA), publish-then-sign key
+                rotation, a JWKS document the unmodified <code>Validator</code> consumes with zero
+                issuer-specific code. Opaque, single-use, rotating refresh tokens with reuse detection — the
+                <code>Issuer</code> owns the algorithm, the service supplies persistence via
+                <code>authcore.RefreshTokenStore</code>. New <code>auth.issuer:</code> yaml block,
+                <code>Wiring.RefreshTokenStore</code>, <code>Wiring.TokenChecker</code> (in-process revocation,
+                no HTTP hop), and an opt-in JWKS route. The framework mounts no login/refresh/introspection
+                endpoint — the service builds those on top of the new methods. See
+                <a href="#token-issuance">Token issuance</a>.</li>
+            <li><strong>Fixed</strong> — a JWKS endpoint returning zero keys on its first fetch now logs a
+                boot-time warning instead of failing silently and rejecting every token until the next
+                background refresh.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.49.1</span><span class="release-date">August 15, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>the <code>value</code> variadic of

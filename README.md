@@ -63,6 +63,7 @@ Each row links to its manual page.
 | Capability | In one line | Docs |
 |---|---|---|
 | JWT authentication | Local validation (JWKS / PEM, RSA·ECDSA·Ed25519); optional revocation cache | [auth-middleware](https://claudioschirmer.github.io/omnicore/#auth-middleware) |
+| Token issuance | A service mints its own JWTs — key rotation, opaque rotating refresh tokens; validate side unchanged | [token-issuance](https://claudioschirmer.github.io/omnicore/#token-issuance) |
 | Authorization | 3 concentric layers: permission gate · owner rules · tenant scoping | [authz-seams](https://claudioschirmer.github.io/omnicore/#authz-seams) |
 | Outbound HTTP | `httpclient` from YAML: retry, cache, breaker, HMAC, OAuth2, streaming | [httpclient](https://claudioschirmer.github.io/omnicore/#httpclient) |
 | Cache | One `cache.Cache` port; private vs shared enforced by DI; memory/redis/custom | [cache-subsystem](https://claudioschirmer.github.io/omnicore/#cache-subsystem) |

@@ -56,8 +56,18 @@ type AuthOptions struct {
 	// ExternalValidator, when non-nil, makes the middleware also call the IdP
 	// (token introspection, RFC 7662 or compatible) after local JWT validation
 	// passes — so revoked tokens are caught immediately. Optional; absent
-	// means local validation is the only check.
+	// means local validation is the only check. Superseded by TokenChecker
+	// when both are set.
 	ExternalValidator *ExternalValidatorOptions
+
+	// TokenChecker, when non-nil, plugs a direct in-process revocation check
+	// (authcore.TokenChecker) — e.g. consulting the same store a
+	// self-issued refresh-token family lives in — with no HTTP hop. Takes
+	// priority over ExternalValidator when both are set; the HTTP path
+	// stays available for cross-process cases (a DIFFERENT service
+	// checking THIS service's revocations), this is the same-process fast
+	// path.
+	TokenChecker authcore.TokenChecker
 
 	// TenantRequired makes the middleware reject any non-public request whose
 	// Identity carries no tenant claim — uniform across the service, no
@@ -101,8 +111,8 @@ func coreOptions(opts AuthOptions, external authcore.TokenChecker) authcore.Opti
 // auth interceptor with EXACTLY the validation the HTTP surface enforces:
 // one core, two transport shells.
 func NewAuthCoreValidator(opts AuthOptions) (*authcore.Validator, error) {
-	var external authcore.TokenChecker
-	if opts.ExternalValidator != nil {
+	external := opts.TokenChecker
+	if external == nil && opts.ExternalValidator != nil {
 		externalV, err := newExternalValidator(*opts.ExternalValidator)
 		if err != nil {
 			return nil, fmt.Errorf("web: NewAuthCoreValidator externalValidator: %w", err)
