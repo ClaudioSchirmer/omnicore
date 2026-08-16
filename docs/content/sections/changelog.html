@@ -7,6 +7,26 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.51.0</span><span class="release-date">August 16, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#token-issuance">the issuer's token lifetimes can now
+                be retuned on a running service</a>.</strong> <code>web/authcore.Issuer</code> gains
+                <code>SetTokenTTL</code>, <code>SetMaxTokenTTL</code> and <code>SetRefreshTokenTTL</code> plus
+                matching getters, so an operator can adjust access- and refresh-token lifetimes without a
+                restart. Each setter enforces exactly the invariants <code>bootstrap</code> already enforces on
+                the <code>auth.issuer</code> yaml block, so runtime can never reach a state the boot would have
+                rejected — with two deliberate asymmetries: <code>SetMaxTokenTTL(0)</code> is refused rather
+                than meaning “no ceiling” (removing the ceiling on a live service is a privilege escalation, not
+                a retune), and the refresh lifetime cannot be enabled on an issuer built without a
+                <code>RefreshStore</code>. Tokens already issued are untouched. Every accepted change logs at
+                <code>Warn</code>: the yaml still holds the old value and restores it on the next restart, so
+                that drift has to be diagnosable. <strong>Signing keys stay immutable after construction</strong>
+                — rotation remains the existing publish-then-sign redeploy runbook, which already achieves zero
+                downtime without exposing a private-key admin channel. See
+                <a href="#token-issuance">Token issuance</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.50.0</span><span class="release-date">August 16, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#token-issuance">the framework can now mint its own
