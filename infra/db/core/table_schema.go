@@ -75,6 +75,13 @@ type TableSchema struct {
 	// on a shared base (enforced at .SharedBase time); meaningless elsewhere.
 	revisionCol    string
 	sharedBaseLink *sharedBaseLink
+	// composites are the value-object decompositions attached to this schema, in
+	// declaration order (see composite_vo.go). Each is built whole by
+	// NewCompositeValueObject and handed to Composite(...), so the schema keeps
+	// no builder state of its own — what it stores is the finished mapping the
+	// once-rule checkpoint walks.
+	composites []*compositeDecl
+
 	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
 	// it — each a pointer to the role schema + the ParentID column it links through
 	// (populated as each role calls .SharedBase — the instance IS the cross-schema
@@ -88,7 +95,20 @@ type TableSchema struct {
 type schemaField struct {
 	goName string
 	column string
-	index  int // reflect field index in the struct; -1 = not a struct field
+	// path addresses the Go field: a one-element chain for a field declared at
+	// the entity's root, a longer one for a part of a composite value object
+	// (Composite). Empty = not a struct field (a type-less schema's
+	// column, or a shared-base column before a role resolves it).
+	path FieldPath
+
+	// Composite-value-object provenance, set only on a PART (zero for a plain
+	// field). voType is the value object the part belongs to; voFieldName is the
+	// part's name INSIDE that type, which differs from goName whenever .As(...)
+	// aliased the exposed name. The pair is what lets a type-less shared base
+	// resolve its parts against each role's struct at .SharedBase(...) time,
+	// where only the VO type and the in-VO name are meaningful.
+	voType      reflect.Type
+	voFieldName string
 
 	// labelKey is the header catalog key declared inline on the schema. It is
 	// EXTERNAL-ONLY (NewExternalSchema): a type-less schema has no Go struct to
@@ -396,6 +416,8 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 			"infra.TableSchema(%s): %q is the reserved read-only foreign-key projection — it is exposed "+
 				"automatically when the schema declares an ParentID and is never mapped as a Field.", s.table, parentIDGoField))
 	}
+	// A Field declaration ends any open DecomposeValueObject scope: Part(...) and
+	// As(...) are the only calls that continue one.
 	idx := -1
 	if s.typ != nil {
 		idx = exportedFieldIndex(s.typ, goName)
@@ -405,29 +427,12 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 				s.table, goName, s.typ.Name(),
 			))
 		}
+		// A COMPOSITE value object spans more than one column, so it cannot be a
+		// Field — teach the fix instead of failing later on the closed-set check
+		// with a message about an unsupported type.
+		mustNotCompositeField(s.table, goName, s.typ.Field(idx).Type)
 	}
-	if _, dup := s.byGo[goName]; dup {
-		panic(fmt.Sprintf("infra.TableSchema(%s): field %q declared twice", s.table, goName))
-	}
-	if _, dup := s.byCol[column]; dup {
-		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
-	}
-	mustNotReservedColumn(s.table, column)
-	if column == s.idColumn || column == s.deletedAt || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
-		panic(fmt.Sprintf("infra.TableSchema(%s): field column %q collides with a ID/managed column", s.table, column))
-	}
-	// The aggregate-child ParentID is OWNED by the write cascade: insertChild sets it to
-	// the parent's id, overwriting whatever a mapped field would carry, so a Field
-	// on the ParentID column is a silently-ignored write — reject it at boot. Note this
-	// is NOT the shared-ID case (ID == ParentID): the ID is never in byCol and is fixed
-	// to the "ID" field, so that legitimate model is unaffected.
-	if s.parentIDColumn != "" && column == s.parentIDColumn {
-		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): field column %q is the aggregate-root ParentID — it is written by the cascade "+
-				"(set to the parent id), so a mapped field on it would be silently overwritten on every write; "+
-				"drop the Field mapping. (A shared ID that IS the ParentID is fine — that is the ID, not a mapped field.)",
-			s.table, column))
-	}
+	s.mustClaimNames(goName, column, "field")
 	lk := ""
 	switch len(labelKey) {
 	case 0:
@@ -442,36 +447,74 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 			s.table, goName,
 		))
 	}
-	kind := IDNone
-	var (
-		isVO       bool
-		isEnum     bool
-		underlying reflect.Type
-	)
-	if s.typ != nil && idx >= 0 {
-		ft := s.typ.Field(idx).Type
-		if enum, u, ok := valueObjectField(ft); ok {
-			// A value-object field: the framework persists its UNDERLYING scalar,
-			// so THAT is what must belong to the closed set (the named VO type is
-			// unwrapped on write and reconstructed on read, so the driver never
-			// sees it).
-			isVO, isEnum, underlying = true, enum, u
-			mustSupportedFieldType(s.table, goName, u)
-		} else {
-			mustSupportedFieldType(s.table, goName, ft)
-			switch ft {
-			case idType:
-				kind = IDValue
-			case idPtrType:
-				kind = IDPointer
-			}
-		}
+	fd := schemaField{goName: goName, column: column, labelKey: lk}
+	if idx >= 0 {
+		fd.path = FieldPath{idx}
+		fd.applyTyping(s.table, goName, s.typ.Field(idx).Type)
 	}
-	fd := schemaField{goName: goName, column: column, index: idx, labelKey: lk, idKind: kind, isVO: isVO, isEnum: isEnum, underlyingType: underlying}
-	s.fields = append(s.fields, fd)
-	s.byGo[goName] = fd
-	s.byCol[column] = fd
+	s.appendField(fd)
 	return s
+}
+
+// mustClaimNames runs the name/column guards every declared field passes: the
+// logical Go name is free, the column is free, not reserved, and not one the
+// framework already owns. Shared by Field and by a composite's Part, so a part
+// enters the bijection under exactly the same rules as a root field. `what`
+// names the declaration in the message ("field" / "value-object part").
+func (s *TableSchema) mustClaimNames(goName, column, what string) {
+	if _, dup := s.byGo[goName]; dup {
+		panic(fmt.Sprintf("infra.TableSchema(%s): %s %q declared twice", s.table, what, goName))
+	}
+	if _, dup := s.byCol[column]; dup {
+		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
+	}
+	mustNotReservedColumn(s.table, column)
+	if column == s.idColumn || column == s.deletedAt || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
+		panic(fmt.Sprintf("infra.TableSchema(%s): %s column %q collides with a ID/managed column", s.table, what, column))
+	}
+	// The aggregate-child ParentID is OWNED by the write cascade: insertChild sets it to
+	// the parent's id, overwriting whatever a mapped field would carry, so a Field
+	// on the ParentID column is a silently-ignored write — reject it at boot. Note this
+	// is NOT the shared-ID case (ID == ParentID): the ID is never in byCol and is fixed
+	// to the "ID" field, so that legitimate model is unaffected.
+	if s.parentIDColumn != "" && column == s.parentIDColumn {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): %s column %q is the aggregate-root ParentID — it is written by the cascade "+
+				"(set to the parent id), so a mapped field on it would be silently overwritten on every write; "+
+				"drop the mapping. (A shared ID that IS the ParentID is fine — that is the ID, not a mapped field.)",
+			s.table, what, column))
+	}
+}
+
+// applyTyping derives a declared field's storage typing from its Go type — the
+// closed-set check, the value-object unwrapping, and the identity kind. The
+// TYPE is the declaration, so this is the single place that reads it, shared by
+// Field and by a composite's Part.
+func (f *schemaField) applyTyping(table, goName string, ft reflect.Type) {
+	if enum, u, ok := valueObjectField(ft); ok {
+		// A value-object field: the framework persists its UNDERLYING scalar,
+		// so THAT is what must belong to the closed set (the named VO type is
+		// unwrapped on write and reconstructed on read, so the driver never
+		// sees it).
+		f.isVO, f.isEnum, f.underlyingType = true, enum, u
+		mustSupportedFieldType(table, goName, u)
+		return
+	}
+	mustSupportedFieldType(table, goName, ft)
+	switch ft {
+	case idType:
+		f.idKind = IDValue
+	case idPtrType:
+		f.idKind = IDPointer
+	}
+}
+
+// appendField registers a resolved declaration in the three views the schema
+// keeps of it (ordered slice, by Go name, by column).
+func (s *TableSchema) appendField(fd schemaField) {
+	s.fields = append(s.fields, fd)
+	s.byGo[fd.goName] = fd
+	s.byCol[fd.column] = fd
 }
 
 // DeletedAt enables the DeletedAt predicate on col (read scope-gate +
@@ -899,12 +942,19 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 	}
 	out := make(domain.Fields, len(s.fields))
 	for _, f := range s.fields {
-		if f.index < 0 {
+		fv, ok := f.path.ValueIn(v)
+		if !ok {
+			// Either a type-less column, or a part of an ABSENT optional composite
+			// (a nil *Address): the value object was never created, so every one of
+			// its columns is SQL NULL — never a materialized zero.
+			if f.path.resolved() {
+				out[f.column] = nil
+			}
 			continue
 		}
 		// A value-object field binds as its underlying scalar (unwrapVO is a no-op
 		// for a plain field); a nil nullable VO becomes SQL NULL.
-		out[f.column] = unwrapVO(v.Field(f.index).Interface())
+		out[f.column] = unwrapVO(fv.Interface())
 	}
 	return out
 }
@@ -978,10 +1028,10 @@ func (s *TableSchema) BoolColumns() map[string]bool {
 	}
 	out := make(map[string]bool)
 	for _, f := range s.fields {
-		if f.index < 0 {
+		ft, ok := f.path.TypeIn(s.typ)
+		if !ok {
 			continue
 		}
-		ft := s.typ.Field(f.index).Type
 		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
@@ -992,22 +1042,27 @@ func (s *TableSchema) BoolColumns() map[string]bool {
 	return out
 }
 
-// ScanPlan returns the SELECT columns (in field order) + a column → reflect
-// field-index map for the scanner. The ID column is included only when the ID is
-// an exported struct field (aggregate child); for the root (idIndex < 0) the ID
-// is the leading key handled by ScanLeadingKey, not a struct field.
-func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]int) {
-	byCol = make(map[string]int, len(s.fields)+1)
+// ScanPlan returns the SELECT columns (in field order) + a column → FieldPath
+// map for the scanner. The ID column is included only when the ID is an exported
+// struct field (aggregate child); for the root (idIndex < 0) the ID is the
+// leading key handled by ScanLeadingKey, not a struct field.
+//
+// The map carries a PATH, not a field position, because a part of a composite
+// value object lives inside the entity rather than at its root (Person.Address.
+// Street). A root field is a one-element path, so the depth-1 case is the same
+// code, not a branch.
+func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]FieldPath) {
+	byCol = make(map[string]FieldPath, len(s.fields)+1)
 	if s.idIndex >= 0 {
 		cols = append(cols, s.idColumn)
-		byCol[s.idColumn] = s.idIndex
+		byCol[s.idColumn] = FieldPath{s.idIndex}
 	}
 	for _, f := range s.fields {
-		if f.index < 0 {
+		if !f.path.resolved() {
 			continue
 		}
 		cols = append(cols, f.column)
-		byCol[f.column] = f.index
+		byCol[f.column] = f.path
 	}
 	return cols, byCol
 }
@@ -1231,23 +1286,94 @@ func (s *TableSchema) ValidateOldCloneSafety() {
 			owner, s.typ.Name(), goName,
 		))
 	}
+	jsonDashed := func(t reflect.Type, p FieldPath) bool {
+		sf, ok := p.StructFieldIn(t)
+		return ok && sf.Tag.Get("json") == "-"
+	}
 	for _, f := range s.fields {
-		if f.index >= 0 && s.typ.Field(f.index).Tag.Get("json") == "-" {
+		if jsonDashed(s.typ, f.path) {
 			reject(s.table, f.goName)
 		}
 	}
 	for _, sib := range s.siblings {
 		for _, f := range sib.fields {
-			if f.index >= 0 && sib.typ.Field(f.index).Tag.Get("json") == "-" {
+			if jsonDashed(sib.typ, f.path) {
 				reject(sib.table, f.goName)
 			}
 		}
 	}
 	if link := s.sharedBaseLink; link != nil {
 		for _, f := range link.base.fields {
-			if idx, ok := link.scanByCol[f.column]; ok && s.typ.Field(idx).Tag.Get("json") == "-" {
+			if p, ok := link.scanByCol[f.column]; ok && jsonDashed(s.typ, p) {
 				reject(link.base.table, f.goName)
 			}
 		}
 	}
+	s.validateCompositeCloneSafety()
+	s.validateCompositeOnceRule()
+}
+
+// validateCompositeCloneSafety extends the Old()-snapshot guards above to the
+// composite value objects this entity carries. The ghost is a JSON round-trip
+// of the ROOT, so a value object with a custom (un)marshaler takes that contract
+// over exactly as an entity would — and it is a far more common thing to write
+// on a value object than on an entity, which is why the guard has to exist.
+func (s *TableSchema) validateCompositeCloneSafety() {
+	for _, sc := range s.selfAndPartitions() {
+		for _, decl := range sc.composites {
+			pt := reflect.PointerTo(decl.typ)
+			if decl.typ.Implements(jsonMarshalerType) || decl.typ.Implements(jsonUnmarshalerType) ||
+				pt.Implements(jsonMarshalerType) || pt.Implements(jsonUnmarshalerType) {
+				panic(fmt.Sprintf(
+					"infra.TableSchema(%s): the composite value object %s implements json.Marshaler/json.Unmarshaler — "+
+						"the framework builds the domain.Old() snapshot by cloning the entity through a JSON round-trip, "+
+						"and a custom (un)marshaler on a persisted value object takes that contract over (the ghost's "+
+						"composite would not survive it). Keep the value object free of custom JSON methods; shape wire "+
+						"payloads on the web-layer DTOs instead.",
+					sc.table, decl.typ))
+			}
+		}
+	}
+}
+
+// validateCompositeOnceRule enforces the cross-schema half of the once rule:
+// each composite value object type appears EXACTLY ONCE in an entity's schema
+// graph — root, every sibling, and the shared base. Splitting one across two of
+// them is rejected because the READ side cannot honor it: a sibling is loaded by
+// a separate SELECT (an absent row leaves its fields zeroed), so a split
+// composite reconstructs half-built, and the "every part NULL ⇒ nil" decision of
+// an optional composite cannot be taken by either scan alone.
+//
+// It runs at the boot checkpoint rather than at the declaration call so that the
+// order between DecomposeValueObject and Sibling/SharedBase cannot matter.
+func (s *TableSchema) validateCompositeOnceRule() {
+	seen := map[reflect.Type]string{}
+	for _, sc := range s.selfAndPartitions() {
+		for _, decl := range sc.composites {
+			if where, dup := seen[decl.typ]; dup {
+				panic(fmt.Sprintf(
+					"infra.TableSchema(%s): the composite value object %s is decomposed on BOTH %q and %q — a "+
+						"composite is persisted by exactly ONE schema of an entity. Its parts are loaded by separate "+
+						"statements (a sibling/base row that is absent leaves its half zeroed, and an optional "+
+						"composite's \"every part NULL ⇒ nil\" cannot be decided by either half alone), so a split "+
+						"value object reconstructs half-built. Move every Part(...) into one table.",
+					s.table, decl.typ, where, sc.table))
+			}
+			seen[decl.typ] = sc.table
+		}
+	}
+}
+
+// selfAndPartitions lists the schemas that persist THIS entity's fields: the
+// node itself, its siblings (same Go type, disjoint columns) and its shared
+// base (type-less, resolved against this role's struct). It is the scope every
+// entity-wide checkpoint walks.
+func (s *TableSchema) selfAndPartitions() []*TableSchema {
+	out := make([]*TableSchema, 0, len(s.siblings)+2)
+	out = append(out, s)
+	out = append(out, s.siblings...)
+	if s.sharedBaseLink != nil {
+		out = append(out, s.sharedBaseLink.base)
+	}
+	return out
 }

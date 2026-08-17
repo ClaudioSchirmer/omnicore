@@ -61,7 +61,7 @@ type scanTargetStruct struct {
 func TestScanRowIntoStruct_FillsFields(t *testing.T) {
 	dst := &scanTargetStruct{}
 	row := &scanCovRow{values: []any{"bob", 42}}
-	err := scanRowIntoStruct(row, dst, []string{"name", "age"}, map[string]int{"name": 0, "age": 1})
+	err := scanRowIntoStruct(row, dst, []string{"name", "age"}, map[string]FieldPath{"name": {0}, "age": {1}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestScanRowIntoStruct_RejectsNonStruct(t *testing.T) {
 
 func TestScanRowIntoStruct_UnknownColumn(t *testing.T) {
 	dst := &scanTargetStruct{}
-	err := scanRowIntoStruct(&scanCovRow{values: []any{"x"}}, dst, []string{"missing"}, map[string]int{"name": 0})
+	err := scanRowIntoStruct(&scanCovRow{values: []any{"x"}}, dst, []string{"missing"}, map[string]FieldPath{"name": {0}})
 	if err == nil || !strings.Contains(err.Error(), "no corresponding field") {
 		t.Fatalf("expected unknown-column error, got %v", err)
 	}
@@ -98,7 +98,7 @@ func TestScanRowIntoStruct_UnknownColumn(t *testing.T) {
 func TestScanRowIntoStruct_ScanErrorPropagates(t *testing.T) {
 	dst := &scanTargetStruct{}
 	row := &scanCovRow{scanErr: errors.New("boom")}
-	if err := scanRowIntoStruct(row, dst, []string{"name"}, map[string]int{"name": 0}); err == nil {
+	if err := scanRowIntoStruct(row, dst, []string{"name"}, map[string]FieldPath{"name": {0}}); err == nil {
 		t.Fatal("expected scan error to propagate")
 	}
 }
@@ -106,7 +106,7 @@ func TestScanRowIntoStruct_ScanErrorPropagates(t *testing.T) {
 func TestScanLeadingKey_ReturnsKeyAndFills(t *testing.T) {
 	dst := &scanTargetStruct{}
 	row := &scanCovRow{values: []any{"id-1", "bob", 42}}
-	key, err := ScanLeadingKey(row, dst, []string{"name", "age"}, map[string]int{"name": 0, "age": 1})
+	key, err := ScanLeadingKey(row, dst, []string{"name", "age"}, map[string]FieldPath{"name": {0}, "age": {1}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestScanLeadingKey_RejectsNonStruct(t *testing.T) {
 
 func TestScanLeadingKey_UnknownColumn(t *testing.T) {
 	dst := &scanTargetStruct{}
-	_, err := ScanLeadingKey(&scanCovRow{values: []any{"id"}}, dst, []string{"missing"}, map[string]int{"name": 0})
+	_, err := ScanLeadingKey(&scanCovRow{values: []any{"id"}}, dst, []string{"missing"}, map[string]FieldPath{"name": {0}})
 	if err == nil || !strings.Contains(err.Error(), "no corresponding field") {
 		t.Fatalf("expected unknown-column error, got %v", err)
 	}

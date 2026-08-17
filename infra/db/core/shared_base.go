@@ -60,8 +60,8 @@ type roleLink struct {
 type sharedBaseLink struct {
 	base           *TableSchema
 	parentIDColumn string
-	scanCols       []string       // base columns, in declaration order
-	scanByCol      map[string]int // base column → field index in the role's Go type
+	scanCols       []string             // base columns, in declaration order
+	scanByCol      map[string]FieldPath // base column → path into the role's Go type
 }
 
 // NewSharedBaseSchema starts a shared-base schema for table. It is TYPE-LESS like
@@ -201,26 +201,21 @@ func (s *TableSchema) SharedBase(base *TableSchema, parentIDColumn string) *Tabl
 	// declaration had no type to validate against — and capture the resolved
 	// field indices for the read-side scan.
 	scanCols := make([]string, 0, len(base.fields))
-	scanByCol := make(map[string]int, len(base.fields))
+	scanByCol := make(map[string]FieldPath, len(base.fields))
 	if s.typ != nil {
 		for _, f := range base.fields {
-			idx := exportedFieldIndex(s.typ, f.goName)
-			if idx < 0 {
-				panic(fmt.Sprintf(
-					"infra.TableSchema(%s): shared base %q field %q is not an exported field of %s — a role must "+
-						"carry every shared-base field.", s.table, base.table, f.goName, s.typ.Name()))
-			}
+			path := s.resolveBaseFieldPath(base, f)
 			// A value-object shared field validates its UNDERLYING scalar (the
 			// write path unwraps it, the read path reconstructs via the role's
 			// field type) — same rule as Field() on a type-anchored schema.
-			ft := s.typ.Field(idx).Type
+			ft, _ := path.TypeIn(s.typ)
 			if _, u, ok := valueObjectField(ft); ok {
 				mustSupportedFieldType(base.table, f.goName, u)
 			} else {
 				mustSupportedFieldType(base.table, f.goName, ft)
 			}
 			scanCols = append(scanCols, f.column)
-			scanByCol[f.column] = idx
+			scanByCol[f.column] = path
 		}
 	}
 	s.sharedBaseLink = &sharedBaseLink{base: base, parentIDColumn: parentIDColumn, scanCols: scanCols, scanByCol: scanByCol}
@@ -273,7 +268,7 @@ func (s *TableSchema) ReferencingRoles() []RoleRef {
 // role's Go type: the base columns and the column → role-field-index map, so the
 // loader scans the shared columns straight into the role struct. ok=false when
 // the role declares no shared base.
-func (s *TableSchema) SharedBaseScanPlan() (cols []string, byCol map[string]int, ok bool) {
+func (s *TableSchema) SharedBaseScanPlan() (cols []string, byCol map[string]FieldPath, ok bool) {
 	if s == nil || s.sharedBaseLink == nil {
 		return nil, nil, false
 	}
@@ -322,6 +317,13 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 		other, ok := b.byGo[f.goName]
 		if !ok || other.column != f.column {
 			diverges("field "+f.goName, f.column, other.column)
+		}
+		// A part of a composite value object carries its provenance (which value
+		// object, which field inside it): two bases mapping the same column to
+		// DIFFERENT value objects would resolve to different paths on the role.
+		if f.voType != other.voType || f.voFieldName != other.voFieldName {
+			diverges("the value object behind field "+f.goName,
+				compositeOrigin(f), compositeOrigin(other))
 		}
 	}
 	if len(a.children) != len(b.children) {

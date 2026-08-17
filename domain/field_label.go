@@ -66,6 +66,13 @@ func loadLabelPlan(t reflect.Type) map[string]string {
 // `label` tag is present, non-empty, and non-"-". Anonymous embedded structs flatten into the same plan so
 // promoted-field lookups (e.g. via BaseEntity embed) reach their label tag
 // through the same Go identifier the caller used on the outer type.
+//
+// A COMPOSITE value object field flattens the same way, by its PARTS' names: a
+// composite carries several fields, its IsValid emits notifications on them
+// (ctx.AddNotification("Street", …)), and the label of a part is declared on the
+// value object's own field — the value object owns its vocabulary for every
+// entity that uses it. Without this hop a part-level notification would ship
+// with no label at all, since "Street" is not a field of the entity.
 func buildLabelPlan(t reflect.Type) map[string]string {
 	out := map[string]string{}
 	for i := 0; i < t.NumField(); i++ {
@@ -81,11 +88,42 @@ func buildLabelPlan(t reflect.Type) map[string]string {
 			}
 			continue
 		}
-		tag, ok := f.Tag.Lookup("labelKey")
-		if !ok || tag == "" || tag == "-" {
-			continue
+		if tag, ok := f.Tag.Lookup("labelKey"); ok && tag != "" && tag != "-" {
+			out[f.Name] = tag
 		}
-		out[f.Name] = tag
+		if ct, ok := compositeValueObjectType(f.Type); ok {
+			// The field's own label (above) stays: a rule about the value object as
+			// a whole emits on the entity's field name. The parts are added beside
+			// it, and never overwrite a name the entity itself declares.
+			for name, key := range buildLabelPlan(ct) {
+				if _, exists := out[name]; !exists {
+					out[name] = key
+				}
+			}
+		}
 	}
 	return out
+}
+
+// compositeValueObjectType reports whether ft holds a COMPOSITE value object —
+// a struct that owns a rule (IsValid) but yields no single scalar (no Value()),
+// so its value spans several fields — and returns that type. The discriminator
+// is the presence of Value(), the same one the persistence layer uses to tell a
+// value object that occupies one column from one that decomposes.
+func compositeValueObjectType(ft reflect.Type) (reflect.Type, bool) {
+	t := ft
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil, false
+	}
+	zero := reflect.Zero(t).Interface()
+	if !IsValueObject(zero) {
+		return nil, false
+	}
+	if _, hasValue := ValueObjectValue(zero); hasValue {
+		return nil, false
+	}
+	return t, true
 }

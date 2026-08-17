@@ -11,6 +11,96 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-08-16
+
+### Added
+
+- **Composite value objects — a value object may now span several persisted
+  columns.** DDD allows a value object to carry more than one field
+  (`Address{Street, City, ZipCode}`, `Money{Amount, Currency}`,
+  `Period{From, To}`), and some rules only exist between two fields; the
+  framework previously modeled only single-scalar value objects, so a
+  multi-field one could not be a persisted field at all. The workaround was to
+  flatten the fields onto the entity root and hand-force the value object into
+  the validation pass via `r.ValidateValueObject`. **The domain gains nothing
+  new**: a composite is a struct that declares `IsValid` and no `Value()`, and
+  the existing automatic discovery (`validateValueObjectFields` → `validatorFor`)
+  already finds and validates it. The whole feature is a `TableSchema` matter —
+  a declaration built by `core.NewCompositeValueObject[VO]()` with its own
+  `Field(goName, column)` / `As(exposedName)` chain and attached with
+  `Composite(...)`, the way `Sibling(NewSiblingSchema[T](…))` already reads. It
+  resolves the entity field BY TYPE and registers each part under
+  an exposed logical name (the part's own name by default). Those names are the
+  same keys a hand-flattened field would produce, so **nothing downstream learns
+  a composite exists**: criteria, audit, the Mongo projection, the read DTO,
+  filters, `orderBy`, `?fields=`, OpenAPI, GraphQL, gRPC and the tabular export
+  are untouched. `.As(...)` exists because a part's name belongs to the value
+  object, not to the consumer: `Money{Amount, Currency}` on a salary field would
+  otherwise expose `?amount=`, and two composites sharing a part name would
+  collide with no way out.
+  - **Absence.** A composite held by value is mandatory only as a whole — each
+    part follows its own Go type, exactly as a scalar value-object field does
+    (a non-pointer part scanning NULL is a loud error; a pointer part is nil).
+    A composite held as a pointer is optional, and the group decides first:
+    every part column NULL reconstructs as `nil` (the per-part rules are not
+    consulted), any part carrying a value makes it present, and then a NULL on a
+    non-pointer part is a half-written row and a loud error.
+  - **Where.** Any locally materialized schema: the root, a sibling, an
+    aggregate child, and a shared base (type-less, so its parts resolve against
+    each role's struct at `SharedBase(...)` time). `NewExternalSchema` is the
+    one exception — it describes an upstream service's columns.
+  - **The once rule.** Each composite type appears exactly once in an entity's
+    schema graph (root + siblings + shared base). Splitting one across two
+    schemas is a boot failure at the `ValidateOldCloneSafety` checkpoint, so
+    declaration order is irrelevant: a sibling is loaded by a separate
+    statement, so a split composite would reconstruct half-built, and an
+    optional composite's "every part NULL ⇒ absent" verdict cannot be reached
+    by either half alone.
+  - **Labels.** A part's `labelKey` comes from the tag inside the value object
+    — on both the infra side (audit `FieldChange.FieldLabelKey`, CSV/XLSX
+    export) and the domain side, where `buildLabelPlan` now walks into
+    composites so a part-level notification (`ctx.AddNotification("Street", …)`)
+    carries a label the entity never declared.
+  - Every misuse is a boot panic that names the fix, in both directions: a
+    composite declared with `Field(...)` is told to decompose it, and a scalar
+    or enum value object passed to `Composite` is told to use
+    `Field(...)`. The discriminator is the presence of `Value()`, so a composite
+    may not declare one (expose a canonical rendering as `String()` instead).
+    A type with no `IsValid` is rejected outright — decomposition is not a way
+    to flatten an arbitrary struct. The `domain.Old()` guards extend to
+    composites: a part tagged `json:"-"`, or a composite implementing
+    `json.Marshaler`/`json.Unmarshaler`, is a boot failure (the ghost is a JSON
+    round-trip, and a custom marshaler is far likelier on a value object than
+    on an entity).
+  - Migrating off the flat-field workaround costs no DDL and no view rebuild:
+    keep the same columns and pin the exposed names with `.As(...)`, and every
+    name the outside world ever saw is preserved.
+
+### Changed
+
+- The scan plan carries a **path** rather than a field position,
+  because a composite's part lives inside the entity (`Person.Address.Street`)
+  rather than at its root. New exported type `core.FieldPath` (`[]int`, with
+  `ValueIn`/`TargetIn`/`StructFieldIn`/`TypeIn`); a root field is simply a
+  one-element path, so depth-1 behavior is unchanged. Four exported signatures
+  move from `map[string]int` to `map[string]FieldPath`:
+  `(*TableSchema).ScanPlan`, `(*TableSchema).SharedBaseScanPlan`,
+  `core.ScanLeadingKey` and `core.ScanLeadingKeyTrailing`. Only an out-of-tree
+  relational engine consuming those directly is affected; it recompiles by
+  changing the map's value type. `FieldPath` is a named type rather than a bare
+  `[]int` because the walker has to exist anyway — an optional composite must be
+  ALLOCATED before its parts are addressable, and `reflect.Value.FieldByIndex`
+  panics on a nil pointer while `FieldByIndexErr` only reports it.
+
+### Fixed
+
+- `core.UnwrapVO` returned `nil` — a silent SQL NULL — for a struct that
+  declares `IsValid` but no `Value()`. Unreachable before (such a field could
+  not be declared), reachable the moment composites became legal: a nil nullable
+  value object still maps to NULL, but a present composite now passes through
+  untouched, so an out-of-band caller gets the driver's loud "unsupported type"
+  instead of a silently nulled column.
+
 ## [0.51.0] - 2026-08-16
 
 ### Added

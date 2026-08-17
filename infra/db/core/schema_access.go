@@ -75,9 +75,14 @@ func labelKeysByGoField(schema *TableSchema) map[string]string {
 	var out map[string]string
 	for _, f := range schema.fields {
 		tag := f.labelKey
-		if tag == "" && schema.typ != nil && f.index >= 0 {
-			if t, ok := schema.typ.Field(f.index).Tag.Lookup("labelKey"); ok {
-				tag = t
+		if tag == "" && schema.typ != nil {
+			// A composite's part reads its tag from the field INSIDE the value
+			// object (the path walks there): the value object owns its own
+			// vocabulary, for every entity that uses it.
+			if sf, ok := f.path.StructFieldIn(schema.typ); ok {
+				if t, found := sf.Tag.Lookup("labelKey"); found {
+					tag = t
+				}
 			}
 		}
 		if tag == "" || tag == "-" {
@@ -239,12 +244,19 @@ func (s *TableSchema) GoFieldValues(e any) map[string]any {
 	}
 	out := make(map[string]any, len(s.fields))
 	for _, f := range s.fields {
-		if f.index < 0 {
+		fv, ok := f.path.ValueIn(v)
+		if !ok {
+			// A part of an ABSENT optional composite records as nil — the audit
+			// timeline says the value object was not there, which is exactly what
+			// the columns say.
+			if f.path.resolved() {
+				out[f.goName] = nil
+			}
 			continue
 		}
 		// A value-object field surfaces as its underlying scalar in the audit
 		// timeline (unwrapVO is a no-op for a plain field).
-		out[f.goName] = unwrapVO(v.Field(f.index).Interface())
+		out[f.goName] = unwrapVO(fv.Interface())
 	}
 	return out
 }
@@ -284,8 +296,8 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 			return
 		}
 		for _, f := range sc.fields {
-			if f.index >= 0 {
-				out[f.column] = resolveType(s.typ.Field(f.index).Type)
+			if ft, ok := f.path.TypeIn(s.typ); ok {
+				out[f.column] = resolveType(ft)
 			}
 		}
 	}
@@ -314,8 +326,10 @@ func (s *TableSchema) PayloadColumnTypes() map[string]reflect.Type {
 	if l := s.sharedBaseLink; l != nil {
 		out[l.parentIDColumn] = stringT
 		if s.typ != nil {
-			for col, idx := range l.scanByCol {
-				out[col] = resolveType(s.typ.Field(idx).Type)
+			for col, path := range l.scanByCol {
+				if ft, ok := path.TypeIn(s.typ); ok {
+					out[col] = resolveType(ft)
+				}
 			}
 		}
 		addManaged(l.base)

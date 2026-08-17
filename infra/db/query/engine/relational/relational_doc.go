@@ -114,8 +114,15 @@ func mergeSharedBase(doc query.Document, schema *core.TableSchema, e any) {
 	if v.Kind() != reflect.Struct {
 		return
 	}
-	for col, idx := range byCol {
-		doc[col] = v.Field(idx).Interface()
+	for col, path := range byCol {
+		// A part of an ABSENT optional composite value object has no value to
+		// read: the document carries nil, which is what the column holds.
+		fv, ok := path.ValueIn(v)
+		if !ok {
+			doc[col] = nil
+			continue
+		}
+		doc[col] = fv.Interface()
 	}
 }
 

@@ -7,6 +7,42 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.52.0</span><span class="release-date">August 16, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#value-objects">a value object may now span several
+                persisted columns</a>.</strong> DDD allows a value object to carry more than one field
+                (<code>Address{Street, City, ZipCode}</code>, <code>Money{Amount, Currency}</code>,
+                <code>Period{From, To}</code>), and a rule <em>between</em> two fields has nowhere to live on a
+                single-scalar type. <strong>The domain gains nothing new</strong>: a composite is a struct that
+                declares <code>IsValid</code> and no <code>Value()</code>, and the existing automatic discovery
+                already finds and validates it. The whole feature is a <a href="#table-schema">schema</a> matter —
+                <code>Composite(...)</code> over <code>core.NewCompositeValueObject[VO]()</code>, which resolve the entity field by TYPE and register each part under an
+                exposed logical name. Those are the same keys a hand-flattened field would produce, so
+                <strong>nothing downstream learns a composite exists</strong> — criteria, audit, the projection, the
+                read DTO, filters, <code>?fields=</code>, OpenAPI, GraphQL, gRPC and the export are untouched. A
+                composite held by value is mandatory only as a whole (each part follows its own Go type); one held as
+                a pointer is optional, and every part column NULL reconstructs as <code>nil</code>, while a NULL on a
+                non-pointer part of a PRESENT composite is a loud half-written-row error. Each composite type appears
+                exactly once per entity — splitting one across a root and a sibling is a boot failure, because a
+                separate statement loads the sibling and a split value object would reconstruct half-built. Migrating
+                off the flat-field workaround costs no DDL and no view rebuild: keep the columns, pin the names with
+                <code>.As(...)</code>. See <a href="#value-objects">Value objects</a> and
+                <a href="#table-schema">Table schema</a>.</li>
+            <li><strong>Changed</strong> — the scan plan carries a <strong>path</strong>
+                rather than a field position, since a composite's part lives inside the entity
+                (<code>Person.Address.Street</code>) rather than at its root. New exported
+                <code>core.FieldPath</code>; a root field is a one-element path, so depth-1 behavior is unchanged.
+                Four exported signatures move from <code>map[string]int</code> to
+                <code>map[string]FieldPath</code>: <code>ScanPlan</code>, <code>SharedBaseScanPlan</code>,
+                <code>ScanLeadingKey</code> and <code>ScanLeadingKeyTrailing</code>. Only an out-of-tree relational
+                engine consuming them directly is affected, and it recompiles by changing the map's value type.</li>
+            <li><strong>Fixed</strong> — <code>UnwrapVO</code> returned <code>nil</code> — a silent SQL NULL — for a
+                struct declaring <code>IsValid</code> but no <code>Value()</code>. Unreachable before, reachable the
+                moment composites became legal: a nil nullable value object still maps to NULL, but a present
+                composite now passes through untouched.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.51.0</span><span class="release-date">August 16, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#token-issuance">the issuer's token lifetimes can now

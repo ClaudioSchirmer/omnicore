@@ -305,6 +305,100 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     projects (same derived segment) is still a boot error.
 </div>
 
+<h3>Decomposing a composite value object</h3>
+<p>
+    A <a href="#value-objects">composite value object</a> — a struct that owns its rule and declares no
+    <code>Value()</code>, so its value spans several fields — cannot be a single column. The schema is the only place
+    that knows it is stored across several: it resolves the entity field <strong>by type</strong>, and each part is a
+    field ↔ column pair like any other.
+</p>
+<pre><code>NewTableSchema[Contract]("contracts").
+    ID("id").
+    Field("Code", "code").
+    Composite(core.NewCompositeValueObject[vos.Money]().
+        Field("Amount",   "salary_amount").As("SalaryAmount").
+        Field("Currency", "salary_currency").As("SalaryCurrency")).
+    Composite(core.NewCompositeValueObject[vos.Period]().
+        Field("From", "trial_from").As("TrialFrom").
+        Field("To",   "trial_to").As("TrialTo")).
+    CreatedAt("created_at")</code></pre>
+<p>
+    It is declared the way every other sub-object of a schema is — a constructor builds the whole thing with its own
+    <code>Field</code> chain and the owner attaches it, exactly like
+    <code>Sibling(NewSiblingSchema[T](…).Field(…))</code>:
+</p>
+<ul>
+    <li><strong><code>core.NewCompositeValueObject[VO]()</code></strong> starts the declaration. The type is a
+        parameter rather than a value, and the KIND is verified right here: passing a scalar or enum value object
+        (one that declares <code>Value()</code>) fails pointing at this line.</li>
+    <li><strong><code>Field(goName, column)</code></strong> declares one field of that value object.
+        <code>goName</code> is the field's name <em>inside</em> it; the part is validated against the closed
+        persistable set and typed exactly like a schema <code>Field</code> — value-object parts unwrapped to their
+        underlying, a <code>domain.ID</code> part getting the identity treatment.</li>
+    <li><strong><code>As(exposedName)</code></strong> renames the field declared immediately before it.</li>
+    <li><strong><code>Composite(...)</code></strong> attaches the finished declaration, locating the entity field
+        BY TYPE — <code>vos.Money</code> or <code>*vos.Money</code>, the optional form.</li>
+</ul>
+<p>
+    Because the parts are methods of the value object's own declaration, a part cannot escape it: calling
+    <code>Field</code>/<code>As</code> of a part anywhere else does not compile.
+</p>
+<p>
+    Each part is registered under its <strong>exposed logical name</strong>: the part's own name by default, which is
+    what reads right when the value object is specific (<code>Address{Street, City, ZipCode}</code> →
+    <code>street</code>, <code>city</code>, <code>zipCode</code>), so most declarations never call <code>As</code>.
+    Rename when the value object is generic — <code>Money{Amount, Currency}</code> on a salary field would otherwise
+    expose <code>?amount=</code>, and an entity carrying both a <code>Money</code> and a <code>Discount</code> would
+    collide on <code>Amount</code> with no way out, since a part's name belongs to the value object rather than to the
+    consumer. <strong>The alias moves the exposed name only</strong>; the <code>labelKey</code> still comes from the tag
+    inside the value object, because the value object owns its own vocabulary for every entity that uses it.
+</p>
+<p>
+    Those exposed names are the same keys a hand-flattened field would produce, and that identity is the whole design:
+    criteria, the audit timeline, the projected document, the read DTO, filters, <code>orderBy</code>,
+    <code>?fields=</code>, OpenAPI, GraphQL, gRPC and the tabular export never learn that a composite exists.
+</p>
+
+<div class="box">
+    <strong>The once rule.</strong> Each composite value object type appears <strong>exactly once</strong> in an
+    entity's schema graph — one <code>Composite(...)</code> across the root, every sibling and the shared
+    base. What is capped is the number of appearances of one type, not the number of composites: an entity may carry as
+    many different ones as its model calls for, and the same value object used by other entities is untouched.
+    <br><br>
+    Splitting one across two schemas is rejected because the read side cannot honor it: a sibling is loaded by a
+    separate statement, and an absent sibling row leaves its half of the value object zeroed, so a split composite
+    reconstructs half-built — and an optional composite's "every part NULL ⇒ absent" verdict cannot be reached by
+    either half alone. The check runs at the boot checkpoint rather than at the declaration call, so the order between
+    <code>Composite</code> and <code>Sibling</code>/<code>SharedBase</code> does not matter.
+</div>
+
+<p>Every misuse is a boot panic that names the fix:</p>
+<ul>
+    <li>A composite declared with <code>Field(...)</code> → it spans more than one column; decompose it. Conversely, a
+        scalar or enum value object passed to <code>NewCompositeValueObject[VO]()</code> → it occupies exactly one column;
+        declare it with <code>Field(...)</code>. The discriminator is the presence of <code>Value()</code>.</li>
+    <li>A type that declares no <code>IsValid</code> → not a value object. Decomposition is not a way to flatten an
+        arbitrary struct, and this is what keeps an entity from being modeled inside an entity. (A rule declared on the
+        POINTER is called out separately — the framework validates the value.)</li>
+    <li>An entity carrying two fields of one composite type → resolution is by type, so there is nothing to pick from.</li>
+    <li><code>Part</code> outside a decomposition; <code>As</code> not following a <code>Part</code>; a decomposition
+        with no parts; a part that is not an exported field of the value object; a part's type outside the closed set.</li>
+    <li>A part tagged <code>json:"-"</code>, or a composite type implementing <code>json.Marshaler</code>/
+        <code>json.Unmarshaler</code> — both poison the <code>domain.Old()</code> snapshot, which is a JSON round-trip
+        of the entity. A custom marshaler is far more common on a value object than on an entity, which is why the
+        guard exists.</li>
+    <li>A decomposition on a <code>NewExternalSchema</code> — it describes an upstream service's columns, not a local
+        materialization. It is the only schema kind that cannot decompose: the root, a sibling, an aggregate child and
+        a shared base all can. (A shared base is type-less, so its parts resolve against each role's struct at
+        <code>SharedBase(...)</code> time — the role must carry the composite field itself.)</li>
+</ul>
+<p>
+    Mapping is <strong>partial by default</strong>, exactly like any undeclared field: a part you do not declare is not
+    persisted, not scanned and not audited, and reconstructs as its zero value. Absence semantics for the value object
+    as a whole — mandatory versus optional, and what "every part NULL" means — are in
+    <a href="#value-objects">Value objects</a>.
+</p>
+
 <h3>The managed columns — by presence, not a flag</h3>
 <p>
     The archive timestamp (deleted-at), created-at, and updated-at are declared by <em>calling</em> the matching builder method with the column
