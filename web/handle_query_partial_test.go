@@ -7,7 +7,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -31,6 +30,12 @@ func (q *testFindPartialQuery) ToCriteria(_ *configuration.AppContext) (queries.
 	return q.Criteria, nil
 }
 
+// FromQueryResult is the mandatory doc→Result hook of queries.QueryWithParams; the
+// operator cases assert the assembled Filter, so the Result rides through.
+func (q *testFindPartialQuery) FromQueryResult(_ *configuration.AppContext, r testUserResult) (testUserResult, error) {
+	return r, nil
+}
+
 func (r testFindPartialRequest) ToQuery(crit queries.ReadCriteria) *testFindPartialQuery {
 	return &testFindPartialQuery{Criteria: crit}
 }
@@ -39,9 +44,9 @@ type capturingPartialHandler struct {
 	got *testFindPartialQuery
 }
 
-func (h *capturingPartialHandler) Handle(_ *configuration.AppContext, q *testFindPartialQuery) (queries.Page, error) {
+func (h *capturingPartialHandler) Handle(_ *configuration.AppContext, q *testFindPartialQuery) (queries.PageOf[testUserResult], error) {
 	h.got = q
-	return queries.Page{}, nil
+	return queries.PageOf[testUserResult]{}, nil
 }
 
 // dispatchPartial wires the wrapper end to end and returns the criteria the
@@ -52,7 +57,7 @@ func dispatchPartial(t *testing.T, query string) (queries.ReadCriteria, int) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingPartialHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindPartialRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindPartialRequest{}, rawItem, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users"+query, nil))
 	if err != nil {

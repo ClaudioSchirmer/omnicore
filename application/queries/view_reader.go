@@ -110,6 +110,17 @@ func (c *ReadCriteria) referencesField(goFieldPath string) bool {
 	return false
 }
 
+// projectionIncludes reports inclusion mode: any real column flagged 1 (the
+// `_id` auto-exclusion never counts — it rides along in either mode).
+func projectionIncludes(proj map[string]int) bool {
+	for k, v := range proj {
+		if v == 1 && k != "_id" {
+			return true
+		}
+	}
+	return false
+}
+
 // scrubField removes the field from the projection (mode-aware), the ordering,
 // and the filter so it reaches neither the store nor the wire.
 func (c *ReadCriteria) scrubField(goFieldPath string) {
@@ -183,7 +194,7 @@ type Page struct {
 
 	// Projection is the effective per-field include/exclude map the read used —
 	// the post-ToCriteria ReadCriteria.Projection echoed back. The tabular-export
-	// wrapper prunes its column plan to this (ExportPlan.PruneToProjection), so a
+	// wrapper prunes its column plan to this (export.Plan.PruneToProjection), so a
 	// field a Query removed from the criteria (e.g. via ReadCriteria.Restrict)
 	// disappears from the CSV/XLSX columns — header included — not just from the
 	// JSON, which keeps ToCriteria the single source of truth for which fields

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -15,17 +14,25 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// QueryExport creates a fiber.Handler that streams a view's filtered read
-// as a flat tabular file (CSV/XLSX), reusing the SAME Request DTO + query
-// handler the JSON list endpoint uses. The format is the pluggable enc
-// (export.Encoder); everything else — plan walk, hierarchy column offset,
-// labelKey headers, `?fields=` narrowing — is format-neutral.
+// QueryExport creates a fiber.Handler that streams a filtered read as a flat
+// tabular file (CSV/XLSX), reusing the SAME Request DTO, query handler,
+// Result AND Response DTO the JSON list endpoint uses. The format is the
+// pluggable enc (export.Encoder); everything else — plan walk, hierarchy
+// column offset, header labels, `?fields=` narrowing — is format-neutral.
+//
+// The Response DTO is the single wire authority, exactly as on every other
+// read surface: the column set is derived from TResp (a field absent from
+// the Response exports nowhere), `?fields=`/`?orderBy=` speak the SAME json
+// wire tokens as the JSON listing (validated against the same projection
+// schema), and each row renders the projected TResp value — so the
+// application-side FromQueryResult computation and the Response-side FromResult
+// mapping both apply to the exported cells.
 //
 // Wire behavior:
 //   - Filters come from the Request DTO's `query:"X" filter:"ops"` tags (same
 //     allowlist as the JSON endpoint). `?search=` and `?includeArchived=` are
 //     honored; `?fields=` and `?orderBy=` are validated/translated against the
-//     plan (the view schema), not a Response DTO.
+//     Response DTO's projection schema.
 //   - User pagination (`?first` / `?last` / `?after` / `?before` / `?onlyTotal`) is
 //     IGNORED — an export returns the full filtered set, capped at maxRows
 //     (the resolved per-view / yaml ceiling) sent as the read limit.
@@ -34,32 +41,33 @@ import (
 //     envelope. On success → Content-Type + Content-Disposition headers and the
 //     encoded rows.
 //
-// Headers are rendered from each column's labelKey via the Translator in the
-// request's Accept-Language, falling back to the Go field name when a column
-// carries no label.
-// ExportView is the read-side projection surface a tabular export needs from a
-// ViewDefinition, expressed as an interface so omnicore/web stays free of any
-// infra import — the concrete *infra.ViewDefinition satisfies it structurally
-// ("accept interfaces"). All three methods return / take only types web already
-// names (the plan lives in application/queries; the ceiling and the filename are
-// primitives), so the "web must not import infra" rule holds without a bridge.
+// Headers are rendered from each column's `exportLabelKey` tag via the
+// Translator in the request's Accept-Language, falling back to the json wire
+// name when the field carries no label. Reusing the entity's labelKey value
+// on the Response tag converges the header on the same translation the write
+// side uses.
+
+// ExportView is the read-side surface a tabular export still needs from a
+// ViewDefinition — the row ceiling and the download filename base — expressed
+// as an interface so omnicore/web stays free of any infra import (the
+// concrete *infra.ViewDefinition satisfies it structurally). The COLUMN plan
+// no longer comes from the view: it is derived from the Response DTO, the
+// same wire authority every other surface consumes.
 type ExportView interface {
-	// ExportPlan is the format-neutral column tree (root + embeds) the encoder walks.
-	ExportPlan() *queries.ExportPlan
 	// ResolveMaxExportRows resolves the row ceiling: the per-view override when
 	// declared, else the supplied yaml default, else the framework fallback.
 	ResolveMaxExportRows(yamlDefault int64) int64
-	// Name is the Mongo collection name, used as the default download filename base.
+	// Name is the view name, used as the default download filename base.
 	Name() string
 }
 
 // ExportDeps bundles the service-ambient inputs every tabular export shares —
-// the Translator singleton (labelKey header rendering) and the yaml default
-// row ceiling (query.maxExportRows). bootstrap.Run pre-packages it on
+// the Translator singleton (exportLabelKey header rendering) and the yaml
+// default row ceiling (query.maxExportRows). bootstrap.Run pre-packages it on
 // Deps.Export so the consumer threads one value instead of spelling out
 // d.Translator + d.Config.Query.MaxExportRows at every export route.
 type ExportDeps struct {
-	// Translator renders each column's labelKey header in the request's language.
+	// Translator renders each column's exportLabelKey header in the request's language.
 	Translator *translation.Translator
 	// MaxExportRows is the yaml-supplied default ceiling (cfg.Query.MaxExportRows),
 	// fed to ExportView.ResolveMaxExportRows; a per-view override still wins.
@@ -84,38 +92,43 @@ func isExportIgnoredParam(key string) bool {
 	return false
 }
 
-func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
+func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
+	responseProjection func(TResult) TResp,
 	view ExportView,
 	deps ExportDeps,
 	enc export.Encoder,
-	h pipeline.Handler[TQ, queries.Page],
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 ) fiber.Handler {
 	_ = sample
-	// Resolve the view-derived + ambient inputs once: the plan tree, the
-	// labelKey Translator, the effective row ceiling (per-view override > yaml
-	// default > framework fallback), and the download filename base (the view's
-	// collection name). The rest of the body is format-neutral.
-	plan := view.ExportPlan()
-	translator := deps.Translator
-	maxRows := view.ResolveMaxExportRows(deps.MaxExportRows)
-	filenameBase := view.Name()
 	reqType := reflect.TypeOf(sample)
 	if reqType.Kind() == reflect.Pointer {
 		reqType = reqType.Elem()
 	}
-	schema := queryschema.ExtractRequestSchema(reqType)
 	pathSchema := inspectPathTags(reqType)
+	// The same boot scan as the JSON listing: Request schema, Result↔Response
+	// alignment guard, sparse guards, projection schema — one wire authority,
+	// one vocabulary. The export additionally derives its column plan from
+	// TResp.
+	schema, projSchema := queryBootScan(
+		reqType,
+		reflect.TypeOf((*TResult)(nil)).Elem(),
+		reflect.TypeOf((*TResp)(nil)).Elem(),
+	)
+	plan := export.PlanFor(reflect.TypeOf((*TResp)(nil)).Elem())
+	translator := deps.Translator
+	maxRows := view.ResolveMaxExportRows(deps.MaxExportRows)
+	filenameBase := view.Name()
 
 	return func(c fiber.Ctx) error {
-		crit, badField, ok := buildExportCriteria(c, schema, plan, maxRows)
+		crit, computedSelected, selectedWire, violation, ok := buildExportCriteria(c, schema, projSchema, maxRows)
 		if !ok {
-			return respondSchemaViolation[queries.Page](c, pipe, badField)
+			return respondViolation[queries.PageOf[TResult]](c, pipe, violation)
 		}
 		var req TReq
 		if bad, bok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !bok {
-			return respondSchemaViolation[queries.Page](c, pipe, bad)
+			return respondSchemaViolation[queries.PageOf[TResult]](c, pipe, bad)
 		}
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
@@ -132,13 +145,24 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 		// CSV/XLSX column (header included), keeping ToCriteria the single
 		// source of truth across JSON + export. ?fields still feeds the read
 		// projection (and its validation) in buildExportCriteria.
-		pruned := plan.PruneToProjection(page.Projection)
+		pruned := plan.PruneToProjection(page.Projection, computedSelected...)
 		lang := appCtx.Language()
-		label := func(labelKey, goField string) string {
+		label := func(labelKey, wireLeaf string) string {
 			if labelKey == "" {
-				return goField
+				return wireLeaf
 			}
 			return translator.Render(lang, labelKey, nil)
+		}
+
+		// Project every Result through the SAME response seat the JSON
+		// listing uses — the rows render wire values, not raw documents.
+		// Sources read only to feed a selected computed column are blanked before
+		// projection, mirroring the JSON listing: `?fields=` shapes the export
+		// too, so a source that shares the Response never renders unasked.
+		hidden := queryschema.UnrequestedComputedSources(projSchema, selectedWire)
+		items := make([]TResp, len(page.Items))
+		for i, r := range page.Items {
+			items[i] = responseProjection(blankResultPaths(r, hidden))
 		}
 
 		// Buffer up to maxRows worth of rows (the ceiling already bounds memory)
@@ -149,7 +173,7 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 		if err != nil {
 			return err
 		}
-		if err := export.Generate(pruned, page.Items, label, sink); err != nil {
+		if err := export.Generate(pruned, items, label, sink); err != nil {
 			return err
 		}
 		if err := sink.Close(); err != nil {
@@ -165,30 +189,32 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 // QueryAsCSV is the CSV-format convenience over QueryExport. The
 // optional csvOpts (e.g. export.WithDelimiter(';')) are the per-route CSV
 // serialization choices, fixed at mount time.
-func QueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
+func QueryAsCSV[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
+	responseProjection func(TResult) TResp,
 	view ExportView,
 	deps ExportDeps,
-	h pipeline.Handler[TQ, queries.Page],
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	csvOpts ...export.CSVOption,
 ) fiber.Handler {
-	return QueryExport(pipe, sample, view, deps, export.CSV(csvOpts...), h)
+	return QueryExport(pipe, sample, responseProjection, view, deps, export.CSV(csvOpts...), h)
 }
 
 // QueryAsXLSX is the Excel-format convenience over QueryExport —
 // a drop-in sibling of QueryAsCSV sharing the same plan, generator, and
 // criteria handling; only the encoder differs. Optional xlsxOpts (e.g.
 // export.WithSheetName("Users")) are the per-route serialization choices.
-func QueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
+func QueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
+	responseProjection func(TResult) TResp,
 	view ExportView,
 	deps ExportDeps,
-	h pipeline.Handler[TQ, queries.Page],
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	xlsxOpts ...export.XLSXOption,
 ) fiber.Handler {
-	return QueryExport(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
+	return QueryExport(pipe, sample, responseProjection, view, deps, export.XLSX(xlsxOpts...), h)
 }
 
 // QueryExportSpec is the OpenAPI-aware sibling of QueryExport — it
@@ -199,15 +225,16 @@ func QueryAsXLSX[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 // renders; FileResponse marks the success response as a file/download of the
 // encoder's content type instead of the JSON envelope. The consumer mounts with
 // fwopenapi.Mount(reg, group, GET, path, handler, spec, Doc{…}, RequirePermission(…)).
-func QueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
+func QueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
+	responseProjection func(TResult) TResp,
 	view ExportView,
 	deps ExportDeps,
 	enc export.Encoder,
-	h pipeline.Handler[TQ, queries.Page],
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := QueryExport(pipe, sample, view, deps, enc, h)
+	handler := QueryExport(pipe, sample, responseProjection, view, deps, enc, h)
 	return handler, openapi.RouteSpec{
 		RequestType:        reflect.TypeOf((*TReq)(nil)).Elem(),
 		SuccessStatus:      fiber.StatusOK,
@@ -219,51 +246,58 @@ func QueryExportSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
 // QueryAsCSVSpec is the OpenAPI-aware, self-sufficient CSV sibling: it
 // returns (handler, RouteSpec) for fwopenapi.Mount. csvOpts (e.g.
 // export.WithDelimiter(';')) are the per-route CSV options chosen at mount.
-func QueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
+func QueryAsCSVSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
+	responseProjection func(TResult) TResp,
 	view ExportView,
 	deps ExportDeps,
-	h pipeline.Handler[TQ, queries.Page],
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	csvOpts ...export.CSVOption,
 ) (fiber.Handler, openapi.RouteSpec) {
-	return QueryExportSpec(pipe, sample, view, deps, export.CSV(csvOpts...), h)
+	return QueryExportSpec(pipe, sample, responseProjection, view, deps, export.CSV(csvOpts...), h)
 }
 
 // QueryAsXLSXSpec is the OpenAPI-aware, self-sufficient Excel sibling: it
 // returns (handler, RouteSpec) for fwopenapi.Mount. xlsxOpts (e.g.
-// export.WithSheetName("Users")) are the per-route XLSX options chosen at mount.
-func QueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams](
+// export.WithSheetName("Users")) are the per-route serialization choices.
+func QueryAsXLSXSpec[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any](
 	pipe *pipeline.Pipeline,
 	sample TReq,
+	responseProjection func(TResult) TResp,
 	view ExportView,
 	deps ExportDeps,
-	h pipeline.Handler[TQ, queries.Page],
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	xlsxOpts ...export.XLSXOption,
 ) (fiber.Handler, openapi.RouteSpec) {
-	return QueryExportSpec(pipe, sample, view, deps, export.XLSX(xlsxOpts...), h)
+	return QueryExportSpec(pipe, sample, responseProjection, view, deps, export.XLSX(xlsxOpts...), h)
 }
 
 // buildExportCriteria parses the export route's query string. Filters come from
 // the Request DTO schema (reusing the JSON allowlist); `?fields=` / `?orderBy=` are
-// validated/translated against the plan; `?search=` / `?includeArchived=` flow
+// validated/translated against the Response DTO's projection schema — the SAME
+// vocabulary as the JSON listing; `?search=` / `?includeArchived=` flow
 // through. Pagination keys are ignored — the export forces Limit=maxRows and
-// walks the full filtered set. `?fields=` flows into crit.Projection (validated
-// against the plan), which the reader echoes on Page.Projection for the export
-// plan pruning. Returns the criteria and the first bad field on a 400.
-func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *queries.ExportPlan, maxRows int64) (queries.ReadCriteria, string, bool) {
+// walks the full filtered set. `?fields=` flows into crit.Projection, which
+// the reader echoes on Page.Projection for the export plan pruning. Returns
+// the criteria and the first bad field on a 400.
+func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, projSchema *queryschema.ProjectionSchema, maxRows int64) (queries.ReadCriteria, []string, map[string]bool, *queryschema.Violation, bool) {
 	// BypassMaxLimit: the export enforces its own operator-set ceiling
 	// (maxRows = resolved maxExportRows), which is deliberately larger than the
 	// per-view `?first/?last` page-size ceiling — the reader must not reject it.
 	crit := queries.ReadCriteria{Filter: map[string]any{}, Limit: maxRows, BypassMaxLimit: true}
-	wireToGo := plan.WireToGoPaths()
 	// The DTO governs what the export honors, exactly as on the JSON listing:
 	// the honored controls (fields/orderBy/search/includeArchived) pass the
 	// canonical gate; the pagination keys stay accepted-but-ignored — they are
 	// part of the export contract as no-ops, documented via the omitted
 	// OpenAPI parameters.
 	var controls queryschema.Controls
-	var bad string
+	var violation *queryschema.Violation
+	// Go paths of the COMPUTED columns the consumer selected: they carry no
+	// projection entry (their sources went to the store instead), so the plan
+	// pruning below needs them named explicitly or it would drop them.
+	var computedSelected []string
+	var selectedWire map[string]bool
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll deprecated; All() migration deferred.
 		if !ok {
@@ -295,27 +329,36 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *q
 				return
 			case queryschema.KeyFields:
 				controls.Fields = true
-				tokens := queries.SplitFields(val)
-				if b, vok := plan.Validate(tokens); !vok {
-					bad, ok = "fields["+b+"]", false
+				proj, wireSet, b, projOk := queryschema.ParseProjection(val, projSchema)
+				if !projOk {
+					violation, ok = queryschema.SchemaViolation(queryschema.FieldsField(b)), false
 					return
 				}
-				crit.Projection = plan.Projection(tokens)
+				if projSchema != nil && !wireSet["id"] {
+					// The same auto-exclusion the JSON listing applies: the
+					// consumer did not ask for `id`, so the store's default
+					// `_id` inclusion is dropped. One criteria for both
+					// formats — an export and its JSON twin read identically.
+					proj["_id"] = 0
+				}
+				crit.Projection = proj
+				computedSelected = queryschema.SelectedComputedPaths(projSchema, wireSet)
+				selectedWire = wireSet
 				return
 			case queryschema.KeyOrderBy:
 				controls.OrderBy = true
-				sf, b, sok := parseExportOrderBy(val, wireToGo)
-				if !sok {
-					bad, ok = "orderBy["+b+"]", false
+				orderBy, obViolation, obOk := queryschema.ParseOrderByWithSchema(val, projSchema)
+				if !obOk {
+					violation, ok = obViolation, false
 					return
 				}
-				crit.OrderBy = sf
+				crit.OrderBy = orderBy
 				return
 			}
 		}
 		wirePath, op := queryschema.ParseKeyAgainstSchema(key, schema)
 		if wirePath == "" {
-			bad, ok = key, false
+			violation, ok = queryschema.SchemaViolation(key), false
 			return
 		}
 		spec := schema.Filters[wirePath]
@@ -324,41 +367,16 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, plan *q
 			eff = OpEq
 		}
 		if !spec.Ops[eff] {
-			bad, ok = key, false
+			violation, ok = queryschema.SchemaViolation(key), false
 			return
 		}
 		queryschema.ApplyFilterParam(crit.Filter, spec, op, val)
 	})
 	if !ok {
-		return crit, bad, false
+		return crit, nil, nil, violation, false
 	}
 	if violations := queryschema.ValidateControls(schema.Reserved, controls, nil); len(violations) > 0 {
-		return crit, violations[0].Field(), false
+		return crit, nil, nil, &queryschema.Violation{Field: violations[0].Field(), Notification: violations[0].Message().Notification}, false
 	}
-	return crit, "", true
-}
-
-// parseExportOrderBy resolves a comma-separated `?orderBy=` value against the
-// plan's wire→Go path map. Each token may carry a leading `-` (descending). An
-// unknown token returns it verbatim for the 400 envelope.
-func parseExportOrderBy(val string, wireToGo map[string]string) ([]queries.OrderByField, string, bool) {
-	tokens := strings.Split(val, ",")
-	out := make([]queries.OrderByField, 0, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
-		}
-		desc := false
-		name := t
-		if strings.HasPrefix(t, "-") {
-			desc, name = true, t[1:]
-		}
-		gp, found := wireToGo[name]
-		if !found {
-			return nil, t, false
-		}
-		out = append(out, queries.OrderByField{Field: gp, Desc: desc})
-	}
-	return out, "", true
+	return crit, computedSelected, selectedWire, nil, true
 }

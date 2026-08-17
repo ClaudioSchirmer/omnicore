@@ -8,10 +8,22 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
+//
+// The read side is a three-type contract: an application-pure Result, the
+// Query that fills it (FromQueryResult), and the wire Response the projector maps
+// it into. The spec wrappers reflect TReq and TResp — the Result never
+// reaches the OpenAPI assembler.
+
+// specResult is the application-layer Result: tagless, field names matching
+// the canonical document keys.
+type specResult struct {
+	ID *string
+}
 
 type specParamsQuery struct {
 	pipeline.RequestBase
@@ -23,6 +35,10 @@ func (q *specParamsQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadC
 	return q.criteria, nil
 }
 
+func (q *specParamsQuery) FromQueryResult(_ *configuration.AppContext, r specResult) (specResult, error) {
+	return r, nil
+}
+
 type specParamsReq struct {
 	Name *string `query:"name" filter:"eq"`
 }
@@ -31,21 +47,19 @@ func (specParamsReq) ToQuery(criteria queries.ReadCriteria) *specParamsQuery {
 	return &specParamsQuery{criteria: criteria}
 }
 
+// specPageItem is the wire Response — the shape the RouteSpec advertises.
 type specPageItem struct {
 	ID string `json:"id"`
 }
 
-func (specPageItem) FromDoc(doc map[string]any) specPageItem {
-	if id, ok := doc["id"].(string); ok {
-		return specPageItem{ID: id}
-	}
-	return specPageItem{}
+func (specPageItem) FromResult(r specResult) specPageItem {
+	return responses.Map[specPageItem](r)
 }
 
 type specParamsHandler struct{}
 
-func (specParamsHandler) Handle(_ *configuration.AppContext, _ *specParamsQuery) (queries.Page, error) {
-	return queries.Page{}, nil
+func (specParamsHandler) Handle(_ *configuration.AppContext, _ *specParamsQuery) (queries.PageOf[specResult], error) {
+	return queries.PageOf[specResult]{}, nil
 }
 
 type specByIDQuery struct {
@@ -57,21 +71,23 @@ func (specByIDQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriter
 	return queries.ReadCriteria{}, nil
 }
 
+func (specByIDQuery) FromQueryResult(_ *configuration.AppContext, r specResult) (specResult, error) {
+	return r, nil
+}
+
 func (specByIDQuery) ContextName() string { return "Spec" }
 
 type specByIDReq struct {
 	IncludeArchived *bool `query:"includeArchived"`
 }
 
-func (specByIDReq) ToQuery() *specByIDQuery { return &specByIDQuery{} }
+func (specByIDReq) ToQuery(_ queries.ReadCriteria) *specByIDQuery { return &specByIDQuery{} }
 
 type specByIDHandler struct{}
 
-func (specByIDHandler) Handle(_ *configuration.AppContext, _ *specByIDQuery) (map[string]any, error) {
-	return map[string]any{}, nil
+func (specByIDHandler) Handle(_ *configuration.AppContext, _ *specByIDQuery) (specResult, error) {
+	return specResult{}, nil
 }
-
-func projectRaw(doc map[string]any) specPageItem { return specPageItem{}.FromDoc(doc) }
 
 // Ensure the fixture wiring is sound so the package still compiles when the
 // underlying queries.QueryByIDBase API drifts — touches both helpers we
@@ -83,8 +99,8 @@ var _ = domain.NewRandomID
 func TestHandleQueryWithParamsSpec_BasicShape(t *testing.T) {
 	pipe := pipeline.New(translation.New())
 	h, spec := QueryWithParamsSpec[
-		specParamsReq, *specParamsQuery, specPageItem,
-	](pipe, specParamsReq{}, projectRaw, specParamsHandler{})
+		specParamsReq, *specParamsQuery, specResult, specPageItem,
+	](pipe, specParamsReq{}, specPageItem{}.FromResult, specParamsHandler{})
 
 	if h == nil {
 		t.Fatal("handler should not be nil")
@@ -114,8 +130,8 @@ func TestHandleQueryWithParamsSpec_BasicShape(t *testing.T) {
 func TestHandleQueryByIDSpec_HasPathID(t *testing.T) {
 	pipe := pipeline.New(translation.New())
 	h, spec := QueryByIDSpec[
-		specByIDReq, *specByIDQuery, specPageItem,
-	](pipe, specByIDReq{}, projectRaw, specByIDHandler{})
+		specByIDReq, *specByIDQuery, specResult, specPageItem,
+	](pipe, specByIDReq{}, specPageItem{}.FromResult, specByIDHandler{})
 
 	if h == nil {
 		t.Fatal("handler should not be nil")

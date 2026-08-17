@@ -73,22 +73,23 @@ func handleCommandWithBody[
 
 // handleQueryWithParams is the read-side sibling of
 // web.QueryWithParams: same flow, queries.QueryWithParams constraint and
-// queries.Page result, no strict presence (queries have no FullBody
-// contract).
+// a typed queries.PageOf result, no strict presence (queries have no
+// FullBody contract).
 func handleQueryWithParams[
 	PB, RPB any,
-	TQ queries.QueryWithParams,
+	TQ queries.QueryWithParams[TResult],
+	TResult any,
 ](
 	pipe *pipeline.Pipeline,
 	toQuery func(*PB) (TQ, error),
-	h pipeline.Handler[TQ, queries.Page],
-	fromResult func(queries.Page) (*RPB, error),
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
+	fromResult func(queries.PageOf[TResult]) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		appCtx := AppContextFrom(ctx)
 		q, err := toQuery(req.Msg)
 		if err != nil {
-			return nil, conversionError[queries.Page](pipe, appCtx, err)
+			return nil, conversionError[queries.PageOf[TResult]](pipe, appCtx, err)
 		}
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		return responseFromResult(result, fromResult)
@@ -246,28 +247,30 @@ func handleCommandByID[
 }
 
 // handleQueryByID is the get-one sibling of web.QueryByID: the
-// handler returns the view document (map[string]any, Go-field-keyed) and
-// fromDoc projects it to the response message. The wrapper injects
-// q.SetPathID(idFrom(msg)) after toQuery, symmetric with the command side;
-// toQuery carries the rest of the message (e.g. include_archived).
+// handler returns the typed Result (the application filled it from the view
+// document and ran FromQueryResult) and fromResult projects it to the response
+// message. The wrapper injects q.SetPathID(idFrom(msg)) after toQuery,
+// symmetric with the command side; toQuery carries the rest of the message
+// (e.g. include_archived).
 func handleQueryByID[
 	PB, RPB any,
-	TQ queries.QueryByID,
+	TQ queries.QueryByID[TResult],
+	TResult any,
 ](
 	pipe *pipeline.Pipeline,
 	idFrom func(*PB) string,
 	toQuery func(*PB) (TQ, error),
-	h pipeline.Handler[TQ, map[string]any],
-	fromDoc func(map[string]any) (*RPB, error),
+	h pipeline.Handler[TQ, TResult],
+	fromResult func(TResult) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		appCtx := AppContextFrom(ctx)
 		q, err := toQuery(req.Msg)
 		if err != nil {
-			return nil, conversionError[map[string]any](pipe, appCtx, err)
+			return nil, conversionError[TResult](pipe, appCtx, err)
 		}
 		q.SetPathID(idFrom(req.Msg))
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
-		return responseFromResult(result, fromDoc)
+		return responseFromResult(result, fromResult)
 	}
 }

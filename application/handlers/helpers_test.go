@@ -185,13 +185,29 @@ func (s *spyReader) ReadByID(_ context.Context, view, id string, c queries.ReadC
 	return s.docToReturn, s.docFound, s.docErr
 }
 
+// testFindResult is the application-layer Result the read-handler tests
+// project into: pure data, NO wire tags, fields named after the canonical
+// doc's Go keys (three-name model).
+type testFindResult struct {
+	ID   string
+	Name string
+}
+
 // testFindParamsQuery is a minimal QueryWithParams for handler tests:
-// echoes a Criteria captured at construction time. The recorder lets the
-// test assert that the handler passes the request ctx into ToCriteria.
+// echoes a Criteria captured at construction time. The recorders let the
+// tests assert that the handler passes the request ctx into ToCriteria and
+// that FromQueryResult runs once per returned item, over the already-filled
+// TResult. fromQueryErr forces the FromQueryResult failure path; mutate opts the
+// hook into read-side computation (derived-field shaping).
 type testFindParamsQuery struct {
 	queries.ReadCriteria
 	pipeline.QueryBase
 	gotCtx *configuration.AppContext
+
+	fromQueryCalls int
+	fromQuerySeen  []testFindResult
+	fromQueryErr   error
+	mutate         func(testFindResult) testFindResult
 }
 
 func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
@@ -199,16 +215,34 @@ func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) (queries
 	return q.ReadCriteria, nil
 }
 
+func (q *testFindParamsQuery) FromQueryResult(_ *configuration.AppContext, r testFindResult) (testFindResult, error) {
+	q.fromQueryCalls++
+	q.fromQuerySeen = append(q.fromQuerySeen, r)
+	if q.fromQueryErr != nil {
+		return testFindResult{}, q.fromQueryErr
+	}
+	if q.mutate != nil {
+		return q.mutate(r), nil
+	}
+	return r, nil
+}
+
 // testFindIDQuery is a minimal QueryByID for handler tests. Honors
 // the Query-side ToCriteria(ctx) contract and records ctx so tests can
 // assert ctx propagation. Mirrors the behavior of FindUserByIDQuery in
-// the canonical example.
+// the canonical example. FromQueryResult mirrors testFindParamsQuery: records
+// the filled TResult it receives, optionally errors or mutates.
 type testFindIDQuery struct {
 	queries.QueryByIDBase
 	includeArchived bool
 	contextName     string
 	overlay         map[string]any
 	gotCtx          *configuration.AppContext
+
+	fromQueryCalls int
+	fromQuerySeen  []testFindResult
+	fromQueryErr   error
+	mutate         func(testFindResult) testFindResult
 }
 
 func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
@@ -219,3 +253,15 @@ func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) (queries.Rea
 	}, nil
 }
 func (q testFindIDQuery) ContextName() string { return q.contextName }
+
+func (q *testFindIDQuery) FromQueryResult(_ *configuration.AppContext, r testFindResult) (testFindResult, error) {
+	q.fromQueryCalls++
+	q.fromQuerySeen = append(q.fromQuerySeen, r)
+	if q.fromQueryErr != nil {
+		return testFindResult{}, q.fromQueryErr
+	}
+	if q.mutate != nil {
+		return q.mutate(r), nil
+	}
+	return r, nil
+}

@@ -36,8 +36,10 @@ var (
 type sdlBuilder struct {
 	defs         map[string]string
 	order        []string
-	objectByType map[reflect.Type]string // Go type → emitted object name (recursion break)
-	objectNames  map[string]bool         // names claimed by entity/response OBJECT types (vs derived/infra types)
+	objectByType map[reflect.Type]string    // Go type → emitted object name (recursion break)
+	objectNames  map[string]bool            // names claimed by entity/response OBJECT types (vs derived/infra types)
+	objectFields map[string]map[string]bool // object name → wire field set (alignment guard)
+	objectSource map[string]reflect.Type    // object name → the Go type that DEFINED it
 	needDateTime bool
 }
 
@@ -47,6 +49,8 @@ func newSDLBuilder() *sdlBuilder {
 		order:        []string{},
 		objectByType: map[reflect.Type]string{},
 		objectNames:  map[string]bool{},
+		objectFields: map[string]map[string]bool{},
+		objectSource: map[string]reflect.Type{},
 	}
 }
 
@@ -149,8 +153,11 @@ func (b *sdlBuilder) objectType(t reflect.Type) string {
 // (the list and by-id Response DTOs of the same entity both registering under
 // "User"), the first registration defines the object and later types map onto
 // it without re-walking — so their nested types never leak into the SDL as
-// orphans. Consumers sharing an entity name must keep the Response DTOs
-// wire-aligned; a field only the later DTO carries is not selectable.
+// orphans. Sharing an entity name REQUIRES the Response DTOs to be
+// wire-aligned: the builder compares the later type's wire field set against
+// the defined object and boot-fails on any difference — a field only one DTO
+// carries would otherwise be silently unselectable (or resolve to null) on
+// the other registration.
 func (b *sdlBuilder) objectTypeAs(name string, t reflect.Type) string {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -169,18 +176,50 @@ func (b *sdlBuilder) objectTypeAs(name string, t reflect.Type) string {
 			panic("graphql: entity/object name " + strconv.Quote(name) +
 				" collides with a derived/infrastructure schema type of the same name — pick a different entity name")
 		}
+		// Wire-alignment guard: the later DTO must carry EXACTLY the wire
+		// fields the defining DTO emitted under this name.
+		defined := b.objectFields[name]
+		later := map[string]bool{}
+		for _, f := range exportedJSONFields(t) {
+			later[f.wire] = true
+		}
+		var diffs []string
+		for w := range later {
+			if !defined[w] {
+				diffs = append(diffs, "field "+strconv.Quote(w)+" exists only on "+t.String())
+			}
+		}
+		for w := range defined {
+			if !later[w] {
+				diffs = append(diffs, "field "+strconv.Quote(w)+" is missing on "+t.String())
+			}
+		}
+		if len(diffs) > 0 {
+			sort.Strings(diffs)
+			src := "the defining DTO"
+			if def, ok := b.objectSource[name]; ok {
+				src = def.String()
+			}
+			panic("graphql: entity " + strconv.Quote(name) + " is shared by wire-misaligned Response DTOs (" +
+				src + " defined it): " + strings.Join(diffs, "; ") +
+				". Response DTOs sharing an entity name must expose the same wire field set")
+		}
 		b.objectByType[t] = name
 		return name
 	}
 	b.objectByType[t] = name // break recursion before walking fields
 	b.objectNames[name] = true
 	fields := exportedJSONFields(t)
+	fieldSet := make(map[string]bool, len(fields))
 	var sb strings.Builder
 	sb.WriteString("type " + name + " {\n")
 	for _, f := range fields {
+		fieldSet[f.wire] = true
 		sb.WriteString("  " + f.wire + ": " + b.typeRef(f.field.Type) + "\n")
 	}
 	sb.WriteString("}")
+	b.objectFields[name] = fieldSet
+	b.objectSource[name] = t
 	b.record(name, sb.String())
 	return name
 }
@@ -265,13 +304,27 @@ func orderEnumValue(wirePath string) string {
 // empty when the Response carries no typed paths (the orderBy argument is
 // then omitted from the SDL). Two wire paths colliding on one enum value is a
 // Response-DTO modeling error and panics at boot with both names.
+//
+// A COMPUTED path (`computed:"…"` on the Response — derived by the Query's
+// FromQueryResult after the read, backed by no column) is EXCLUDED: it stays
+// selectable, but it is not a member of the `<Entity>OrderField` enum, so
+// gqlparser rejects an ordering by it during validation, before any resolver
+// runs. That is this surface's native idiom for the refusal REST answers with
+// ComputedFieldNotSortableNotification — the cut lands in the schema itself,
+// the same posture the reserved-control arguments carry.
 func orderFieldMap(entity string, projSchema *queryschema.ProjectionSchema) (values []string, byValue map[string]string) {
 	if projSchema == nil || len(projSchema.Paths) == 0 {
 		return nil, nil
 	}
 	wires := make([]string, 0, len(projSchema.Paths))
 	for w := range projSchema.Paths {
+		if _, isComputed := projSchema.Computed[w]; isComputed {
+			continue
+		}
 		wires = append(wires, w)
+	}
+	if len(wires) == 0 {
+		return nil, nil
 	}
 	sort.Strings(wires)
 	byValue = make(map[string]string, len(wires))
@@ -293,8 +346,8 @@ func orderFieldMap(entity string, projSchema *queryschema.ProjectionSchema) (val
 // OrderDirection enum, the per-entity `<Entity>OrderField` enum (one value per
 // sortable wire path) and the `<Entity>Order` input `{ field!, direction =
 // ASC }` — and returns the input name. ok=false when the entity has no
-// sortable paths (RawDoc-style responses): the caller then omits the orderBy
-// argument entirely.
+// sortable paths (a Response with no reflectable shape, or one whose every
+// path is computed): the caller then omits the orderBy argument entirely.
 func (b *sdlBuilder) orderInput(entity string, projSchema *queryschema.ProjectionSchema) (string, bool) {
 	values, _ := orderFieldMap(entity, projSchema)
 	if len(values) == 0 {

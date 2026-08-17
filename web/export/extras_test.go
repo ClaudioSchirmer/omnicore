@@ -7,38 +7,37 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// extractChildItems normalizes a node's GoSegment value into a slice of docs.
-// The []map[string]any and map[string]any shapes are exercised by export_test;
-// here we cover the []any branch (with a non-map element filtered out) and the
-// default branch (a value of an unexpected shape yields no rows).
-func TestExtractChildItems_AnySliceFiltersNonMaps(t *testing.T) {
-	in := []any{
-		map[string]any{"City": "NYC"},
-		"not-a-map", // must be skipped, not panic
-		map[string]any{"City": "LA"},
-	}
-	out := extractChildItems(in)
-	if len(out) != 2 {
-		t.Fatalf("expected 2 maps (non-map filtered), got %d: %+v", len(out), out)
-	}
-	if out[0]["City"] != "NYC" || out[1]["City"] != "LA" {
-		t.Fatalf("unexpected contents: %+v", out)
-	}
+// A non-pointer 1:1 struct segment renders exactly one child row group per
+// parent item — the struct-branch of the typed child descent (the slice branch
+// and the nil-pointer branch are covered in export_test.go).
+type exportProfileResponse struct {
+	Bio string `json:"bio"`
 }
 
-func TestExtractChildItems_AnySliceAllNonMaps(t *testing.T) {
-	out := extractChildItems([]any{1, "x", true})
-	if len(out) != 0 {
-		t.Fatalf("expected no rows when no element is a map, got %+v", out)
-	}
+type exportOwnerResponse struct {
+	Name    string                `json:"name"`
+	Profile exportProfileResponse `json:"profile"`
 }
 
-func TestExtractChildItems_UnexpectedShapeYieldsNil(t *testing.T) {
-	cases := []any{nil, "string", 42, []string{"a", "b"}}
-	for _, c := range cases {
-		if out := extractChildItems(c); out != nil {
-			t.Errorf("extractChildItems(%v) = %+v, want nil", c, out)
-		}
+func TestGenerate_OneToOneStructSegmentRendersSingleGroup(t *testing.T) {
+	plan := planOf[exportOwnerResponse](t)
+	items := []exportOwnerResponse{{Name: "Ann", Profile: exportProfileResponse{Bio: "dev"}}}
+	sink := &captureSink{}
+	if err := Generate(plan, items, idLabel, sink); err != nil {
+		t.Fatal(err)
+	}
+	// name h(0) / Ann(0) / bio h(1) / dev(1) / BLANK
+	if len(sink.rows) != 5 {
+		t.Fatalf("expected 5 rows, got %+v", sink.rows)
+	}
+	if !sink.rows[2].Header || sink.rows[2].Depth != 1 || sink.rows[2].Cells[0].Value != "bio" {
+		t.Fatalf("expected depth-1 bio header, got %+v", sink.rows[2])
+	}
+	if sink.rows[3].Depth != 1 || sink.rows[3].Cells[0].Value != "dev" {
+		t.Fatalf("expected depth-1 profile data, got %+v", sink.rows[3])
+	}
+	if len(sink.rows[4].Cells) != 0 {
+		t.Fatalf("expected trailing blank separator, got %+v", sink.rows[4])
 	}
 }
 

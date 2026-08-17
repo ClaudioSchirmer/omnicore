@@ -13,16 +13,18 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// reuses fakeExportView / expCSVReq / expCSVHandler / expCSVPlan / newExportHandler
-// / expLabelModule from handle_query_export_test.go (same package).
+// reuses fakeExportView / expCSVReq / expCSVHandler / expUserResponse /
+// newExportHandler / expLabelModule from handle_query_export_test.go (same
+// package). The column plan is derived from the Response DTO, so the view
+// fake only supplies the row ceiling and the filename base.
 
 func mountXLSX(app *fiber.App, h *expCSVHandler) {
 	tr := translation.Default()
 	tr.Import(expLabelModule{})
 	pipe := pipeline.New(tr)
-	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	view := fakeExportView{name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
-	app.Get("/users.xlsx", QueryAsXLSX(pipe, expCSVReq{}, view, deps, h, export.WithSheetName("Users")))
+	app.Get("/users.xlsx", QueryAsXLSX(pipe, expCSVReq{}, expUserResponse{}.FromResult, view, deps, h, export.WithSheetName("Users")))
 }
 
 func TestHandleQueryAsXLSX_FullHierarchy(t *testing.T) {
@@ -57,12 +59,19 @@ func TestHandleQueryAsXLSX_FullHierarchy(t *testing.T) {
 		t.Fatalf("open xlsx: %v", err)
 	}
 	defer f.Close()
-	// header rendered from labelKey via the Translator
-	if got, _ := f.GetCellValue("Users", "A1"); got != "Full Name" {
-		t.Fatalf("A1 (labelKey header) = %q, want Full Name", got)
+	// Column A is the Response's first declared field (`id`) — a Response-
+	// declared field IS an export column, and with no exportLabelKey its
+	// header falls back to the json wire name.
+	if got, _ := f.GetCellValue("Users", "A1"); got != "id" {
+		t.Fatalf("A1 (wire-name header) = %q, want id", got)
 	}
-	if got, _ := f.GetCellValue("Users", "A2"); got != "John" {
-		t.Fatalf("A2 = %q, want John", got)
+	// Column B carries exportLabelKey, so its header renders through the
+	// Translator in the request's language.
+	if got, _ := f.GetCellValue("Users", "B1"); got != "Full Name" {
+		t.Fatalf("B1 (exportLabelKey header) = %q, want Full Name", got)
+	}
+	if got, _ := f.GetCellValue("Users", "B2"); got != "John" {
+		t.Fatalf("B2 = %q, want John", got)
 	}
 }
 
@@ -83,10 +92,10 @@ func TestHandleQueryAsXLSX_UnknownQueryKey_400(t *testing.T) {
 func TestHandleQueryAsXLSXSpec_OmitsPaginationAndMarksFileResponse(t *testing.T) {
 	tr := translation.Default()
 	pipe := pipeline.New(tr)
-	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	view := fakeExportView{name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
 
-	_, spec := QueryAsXLSXSpec(pipe, expCSVReq{}, view, deps,
+	_, spec := QueryAsXLSXSpec(pipe, expCSVReq{}, expUserResponse{}.FromResult, view, deps,
 		&expCSVHandler{}, export.WithSheetName("Users"))
 
 	if spec.FileResponse == nil {

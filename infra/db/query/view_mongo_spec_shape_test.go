@@ -122,8 +122,8 @@ func TestValidateMongoSpec_NoSchema_ShapeGuardSkipped(t *testing.T) {
 
 // A SharedBase role's document carries the base's columns (mergeSharedBase) and
 // its siblings' columns (mergeOwnerSiblings) FLAT — the emitted-column set the
-// shape guard checks against must include them, matching what buildExportNode
-// walks. Regression for the gap where collectComposedColumns only knew the
+// shape guard checks against must include them, matching what the composer
+// emits. Regression for the gap where collectComposedColumns only knew the
 // role's own columns and rejected a legitimate index on a base/sibling field.
 type sbShapeRole struct {
 	ID         string

@@ -496,12 +496,10 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 // normalizeBSONValues rewrites driver-specific BSON scalars into their plain
 // Go equivalents, recursively through nested maps and slices (the child
 // collections), so EVERY consumer downstream of the reader sees Go-typed
-// values: a BSON datetime becomes time.Time (UTC). The typed-Response JSON
-// path already tolerated the driver types via its unmarshal round-trip, but
-// consumers of the raw document — the tabular export, RawDoc handlers —
-// received bson.DateTime and rendered epoch milliseconds. The reader is the
-// membrane that promises Go vocabulary (it already translates column names);
-// values follow the same rule.
+// values: a BSON datetime becomes time.Time (UTC). The reader is the membrane
+// that promises Go vocabulary (it already translates column names); values
+// follow the same rule, so the Result fill and every consumer above it see
+// Go types rather than driver types.
 func normalizeBSONValues(m map[string]any) {
 	for k, v := range m {
 		m[k] = normalizeBSONValue(v)

@@ -215,9 +215,9 @@
     segment: <code>?user.userName=ana</code>, <code>?employee.dependents.relationship=daughter</code>,
     sort and projection likewise. On a default read an ARCHIVED role's whole segment is hidden (the
     single-map counterpart of the archived-entry strip on child collections);
-    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Exports render
-    each role as a nested branch (role fields + siblings, then its child collections), never repeating
-    the base columns.
+    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Declare each role as
+    a nested struct on the Response DTO and the exports render it as a nested branch (role fields +
+    siblings, then its child collections), never repeating the base columns.
 </p>
 
 <h4>Rules &amp; validation</h4>
@@ -545,11 +545,12 @@ func SaleView() *query.ViewDefinition {
     too. Every writer of the segment applies the same cut — first compose, batch rebuild, the surgical ripple and the
     1:1 repair — so a trimmed segment is byte-identical whichever writer produced it. On the read side the cut is a
     contract, not an accident: the segment's translator knows only the allowlist (no archived gate when
-    <code>"DeletedAt"</code> is capped, no strip path, no translation for a capped leaf), and the tabular export stops
-    advertising columns the segment does not store. On the wire, declare the Request/Response DTOs to MIRROR the cut —
+    <code>"DeletedAt"</code> is capped, no strip path, no translation for a capped leaf). On the wire, declare the
+    Request/Response DTOs to MIRROR the cut —
     the DTO is the read-side allowlist, so a token it does not declare (<code>?brand.deletedAt</code> on a capped
     segment) is <code>400 SchemaViolationNotification</code> at the membrane; a DTO that over-declares a capped field
-    gets the LEFT answer (the field never materializes, so a filter on it matches nothing).
+    gets the LEFT answer (the field never materializes, so a filter on it matches nothing, and its
+    JSON key and its CSV/XLSX column render empty — the Response DTO is what both surfaces advertise).
 </p>
 <div class="box">
     <strong>THE ARCHIVE SWITCH — one entry in or out of <code>Fields</code> decides whether the segment follows the
@@ -1051,13 +1052,12 @@ same envelope, same projector, same pagination block as any view read</div>
         <code>ToCriteria</code></strong>, exactly as tenant scoping is on every view today.
     </p>
     <pre><code>func (q FindGadgetFullByIDQuery) ToCriteria(_ *configuration.AppContext) (fwqueries.ReadCriteria, error) {
-    return fwqueries.ReadCriteria{
-        IncludeArchived: q.IncludeArchived,
-        // Per-leg overlay: the composed surface never exposes internal notes,
-        // regardless of what the wire asked. Segment paths resolve at every
-        // level of the linked document.
-        Filter: map[string]any{"Notes.Kind": "public"},
-    }, nil
+    crit := q.Criteria   // the wire criteria the wrapper handed ToQuery (includeArchived)
+    // Per-leg overlay: the composed surface never exposes internal notes,
+    // regardless of what the wire asked. Segment paths resolve at every
+    // level of the linked document.
+    crit.Filter = map[string]any{"Notes.Kind": "public"}
+    return crit, nil
 }</code></pre>
     <div class="note">
         Overlay filters participate in the cursor's listing context and <strong>compose freely with

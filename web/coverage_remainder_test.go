@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
@@ -20,7 +20,9 @@ type idPathBindReq struct {
 	Tenant uuid.UUID `path:"tenantId"`
 }
 
-func (r idPathBindReq) ToQuery() *testFindIDQuery { return &testFindIDQuery{} }
+func (r idPathBindReq) ToQuery(criteria queries.ReadCriteria) *testFindIDQuery {
+	return &testFindIDQuery{Criteria: criteria}
+}
 
 func TestHandleQueryByID_PathBindFailureReturns400(t *testing.T) {
 	resetPathSchemaCache()
@@ -28,7 +30,7 @@ func TestHandleQueryByID_PathBindFailureReturns400(t *testing.T) {
 	pipe := pipeline.New(translation.Default())
 	h := &capturingIDHandler{}
 
-	app.Get("/t/:tenantId/users/:id", QueryByID(pipe, idPathBindReq{}, responses.RawDoc, h))
+	app.Get("/t/:tenantId/users/:id", QueryByID(pipe, idPathBindReq{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/t/not-a-uuid/users/abc", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {

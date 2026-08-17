@@ -259,8 +259,8 @@ func formatPathBootError(t reflect.Type, f reflect.StructField, reason string) s
 // envelope — same shape the wrapper produces. req must be a pointer to a
 // struct; returns ("", true) when the struct has no `path:` tags.
 //
-// Same cached pathSchema the wrapper uses; mirrors fwweb.ParseCriteria and
-// fwweb.RespondPaged — manual handlers chain BindPath → ParseCriteria →
+// Same cached pathSchema the wrapper uses; mirrors fwweb.QueryParser.Parse
+// and fwweb.RespondPaged — manual handlers chain BindPath → Parse →
 // ToCommand/ToQuery → Dispatch.
 func BindPath(c fiber.Ctx, req any) (string, bool) {
 	if req == nil {

@@ -93,7 +93,9 @@ protoc -I web/grpc/proto \
     (archive/delete: id only), <code>QueryWithParams</code> (list) and <code>QueryByID</code> (get one)
     — and consumes <strong>exactly the REST Spec ingredients</strong>: the same Request DTO (its
     <code>ToCommand</code>/<code>ToQuery</code> seat) and the same
-    <code>Response{}.FromResult</code> / <code>fwresponses.AutoFromDoc[Response]</code>. The pb message
+    <code>Response{}.FromResult</code> projection — on the read side
+    <code>func(TResult) R</code>, the identical seat the REST, export and GraphQL constructors take.
+    The pb message
     types ride as explicit type parameters (message VALUE types — Go cannot infer them from a procedure
     string); the id extractor is the generated getter passed as a method expression, e.g.
     <code>(*usersv1.ArchiveUserRequest).GetId</code>.
@@ -380,7 +382,7 @@ message ListUsersRequest {
     (INVALID_ARGUMENT), exactly the REST 400, and a proto filter with no tagged DTO leaf aborts boot.
     <code>fields</code> and <code>order_by</code> speak <strong>wire names</strong> (the item message's
     proto fields, snake_case — FieldMask's canonical form; protojson converts the JSON camelCase
-    spelling for you), resolved against the projector's Response DTO — an undeclared path fails as
+    spelling for you), resolved against the response projection's Response DTO — an undeclared path fails as
     SchemaViolation and never reaches the reader, where an unresolved spelling would pass through as a
     physical column and bypass <code>ToCriteria</code> overlays such as <code>Restrict</code>. The
     assembled INPUT criteria (filter keys = <strong>Go field paths</strong>) then reaches the Request
@@ -388,12 +390,37 @@ message ListUsersRequest {
     type's <code>ToCriteria(ctx)</code> keeps applying identity overlays on top, exactly like every
     other surface.
 </p>
-<pre><code>reg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUsersResponse](
+<pre><code>// Type params: [PB, RPB, TReq, TQ, TResult, R] — only the two pb message
+// types are spelled; TReq comes from the sample, TResult/R from the
+// response projection and TQ from the handler.
+reg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUsersResponse](
     usersv1connect.UsersServiceListUsersProcedure,
     requests.FindUsersByParamsRequest{},                    // filter: tags = the operator allowlist
-    fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse],  // mask/sort vocabulary + projection
-    &amp;handlers.FindByParamsQueryHandler[*appqueries.FindUserByParamsQuery]{Reader: d.ViewReader, View: view.Name()},
+    requests.FindUsersByParamsResponse{}.FromResult,        // mask/sort vocabulary + wire projection
+    &amp;handlers.FindByParamsQueryHandler[*appqueries.FindUserByParamsQuery,
+                                       appqueries.FindUsersByParamsResult]{
+        Reader: d.ViewReader, View: view.Name()},
+    fwgrpc.RequirePermission("users:read")))
+
+// The by-id twin adds the generated id getter after the procedure:
+reg.Register(fwgrpc.QueryByID[usersv1.GetUserRequest, usersv1.GetUserResponse](
+    usersv1connect.UsersServiceGetUserProcedure,
+    (*usersv1.GetUserRequest).GetId,
+    requests.FindUserByIDRequest{},
+    requests.FindUserByIDResponse{}.FromResult,
+    &amp;handlers.FindByIDQueryHandler[*appqueries.FindUserByIDQuery,
+                                   appqueries.FindUserByIDResult]{
+        Reader: d.ViewReader, View: view.Name()},
     fwgrpc.RequirePermission("users:read")))</code></pre>
+<p>
+    The read constructors take the projection as
+    <code>responseProjection func(TResult) R</code>: <code>QueryWithParams</code>'s handler returns
+    <code>queries.PageOf[TResult]</code> and <code>QueryByID</code>'s returns <code>TResult</code>, and
+    the framework maps each value through that seat before the pb ↔ DTO bridge runs. The bridge, the
+    criteria plan and the FieldMask/sort vocabulary are all expressed over <code>R</code> — so the pb
+    contract mirrors the same Response DTO the REST body, the CSV/XLSX columns and the GraphQL node
+    render.
+</p>
 <div class="box">
     <strong>One emitter, two wires.</strong> Conversion delegates to
     <code>queryschema.ApplyFilterValues</code> — the same clause emitter the REST/OpenAPI/GraphQL path
@@ -404,6 +431,45 @@ message ListUsersRequest {
     <code>fwgrpc.NewCriteria()</code> (<code>Fields</code> allowlist + <code>Page</code>/<code>OrderBy</code>/<code>FieldMask</code>/typed
     filters + <code>Build</code>) — the raw path never re-implements operator emission.
 </div>
+
+<h4>Computed Response fields on the proto wire</h4>
+<p>
+    A Response field declared <code>computed:"Src1,Src2"</code> carries no column: the Query's
+    <code>FromQueryResult</code> derives it after the read from the named Result fields. The pb
+    contract still exposes it like any other item field — it is selectable — but the two controls
+    that reach the store are adjusted, so the proto wire behaves exactly as the REST one:
+</p>
+<ul>
+    <li><strong><code>read_mask</code> pushes the SOURCES.</strong> A mask path naming a computed
+        field resolves through the same vocabulary allowlist and then substitutes its declared
+        sources into the projection; the computed path itself never goes down, because no column
+        would resolve it. Sources the Response does not declare are read and dropped at the wire
+        boundary, exactly as on <code>?fields=</code>.</li>
+    <li><strong><code>order_by</code> is refused.</strong> Ordering happens in the store and the
+        keyset cursor is built from stored ordering values, so a derived value is not expressible.
+        The refusal is <code>INVALID_ARGUMENT</code> carrying
+        <code>ComputedFieldNotSortableNotification</code> — translated per the request language,
+        with one <code>google.rpc.BadRequest</code> field violation per offending entry. The field
+        name is the sort entry <em>verbatim as the proto spelled it</em> (e.g. <code>label</code>),
+        not REST's <code>orderBy[label]</code> bracket form: <code>order_by</code> is already a typed
+        field on the request message, so the prefix would name nothing on this wire.</li>
+</ul>
+<p>
+    On the Auto path the cut is compiled at <code>Register</code> from the Response DTO — nothing to
+    wire per call. A hand-rolled <code>MountRaw</code> list gets the same parity by declaring the map
+    on the raw builder beside its <code>Fields</code> allowlist:
+</p>
+<pre><code class="language-go">crit, err := fwgrpc.NewCriteria().
+    Fields(wireToGo).                                        // the mask/sort vocabulary
+    ComputedFields(map[string][]string{"label": {"Code", "Name"}}). // wire → Result sources
+    Page(msg.GetPagination()).
+    OrderBy(msg.GetOrderBy()).
+    FieldMask(msg.GetFields()).
+    Build()</code></pre>
+<p>
+    A nil map keeps the previous behavior, so a raw procedure with no computed field declares
+    nothing.
+</p>
 
 <h3>The outbound side — <code>infra/grpcclient</code></h3>
 <p>

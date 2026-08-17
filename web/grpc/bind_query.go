@@ -70,6 +70,14 @@ type queryPlan struct {
 	group   protoreflect.FieldDescriptor // the filters container, when grouped
 	filters []filterBinding
 	fields  map[string]string // wire → Go doc path (fields/orderBy vocabulary)
+	// computed is the COMPUTED subset of fields: proto wire path → the Go
+	// source paths the Response's `computed:"…"` tag names. Such a field has
+	// no column (the Query's FromQueryResult derives it after the read), so
+	// the two consumers of the vocabulary diverge exactly as they do on REST:
+	// a read_mask entry pushes the SOURCES down, a sort entry is refused with
+	// ComputedFieldNotSortableNotification. Kept as its own map so neither
+	// consumer has to re-derive it from the Response at request time.
+	computed map[string][]string
 	// reserved is the Request DTO's declared control set — the canonical
 	// opt-in gate. The shared proto shows every control field; the DTO
 	// decides which ones THIS endpoint honors, and buildCriteria feeds this
@@ -198,7 +206,14 @@ func compileQueryPlan(
 	for wirePath, docPath := range proj.Paths {
 		normProj[normalizePath(wirePath)] = docPath
 	}
+	// The COMPUTED cut of the same vocabulary, folded to the normalized
+	// spelling so it meets the proto field names the same way normProj does.
+	normComputed := make(map[string][]string, len(proj.Computed))
+	for wirePath, sources := range proj.Computed {
+		normComputed[normalizePath(wirePath)] = sources
+	}
 	plan.fields = map[string]string{}
+	plan.computed = map[string][]string{}
 	var walkItem func(md protoreflect.MessageDescriptor, wirePrefix, normPrefix string) error
 	seen := map[protoreflect.FullName]bool{}
 	walkItem = func(md protoreflect.MessageDescriptor, wirePrefix, normPrefix string) error {
@@ -213,6 +228,9 @@ func compileQueryPlan(
 			norm := normPrefix + normalizeName(string(fd.Name()))
 			if docPath, ok := normProj[norm]; ok {
 				plan.fields[wire] = docPath
+				if sources, isComputed := normComputed[norm]; isComputed {
+					plan.computed[wire] = sources
+				}
 			}
 			if fd.Kind() == protoreflect.MessageKind && !fd.IsMap() &&
 				!strings.HasPrefix(string(fd.Message().FullName()), "google.protobuf.") {
@@ -280,9 +298,11 @@ func compileListEnvelope(
 // is a wire-contract violation (SchemaViolation → INVALID_ARGUMENT). The
 // canonical control gateway runs against the DTO's Reserved set BEFORE the
 // handler — the full opt-in gate, the directional rule and the only-total
-// conflict matrix, shared verbatim with REST and GraphQL.
+// conflict matrix, shared verbatim with REST and GraphQL. The computed cut of
+// the field vocabulary rides along so read_mask pushes a computed field's
+// sources and sort refuses it, exactly as `?fields=`/`?orderBy=` do.
 func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCriteria, error) {
-	b := NewCriteria().Fields(plan.fields)
+	b := NewCriteria().Fields(plan.fields).ComputedFields(plan.computed)
 	if plan.page != nil && msg.Has(plan.page) {
 		if p, ok := msg.Get(plan.page).Message().Interface().(*pb.PaginationRequest); ok {
 			b.Page(p)
@@ -398,13 +418,14 @@ func (fb filterBinding) apply(b *CriteriaBuilder, wrapper proto.Message) string 
 	return ""
 }
 
-// buildListResponse materializes the response envelope from a page: each
-// doc runs through the projector (the same AutoFromDoc/FromDoc seat REST
-// uses) and the resulting DTO crosses to the item message via the bridge.
-func buildListResponse[RPB any, R any](
+// buildListResponse materializes the response envelope from a typed page:
+// each Result runs through the responseProjection (the same FromResult seat
+// REST uses) and the resulting Response DTO crosses to the item message via
+// the bridge.
+func buildListResponse[RPB any, TResult any, R any](
 	env *listEnvelope,
-	projector func(map[string]any) R,
-	page queries.Page,
+	responseProjection func(TResult) R,
+	page queries.PageOf[TResult],
 ) (*RPB, error) {
 	out := new(RPB)
 	pm, ok := any(out).(proto.Message)
@@ -414,17 +435,17 @@ func buildListResponse[RPB any, R any](
 	m := pm.ProtoReflect()
 	info := &pb.PaginationInfo{
 		TotalCount:      page.TotalCount,
-		EndCursor: page.EndCursor,
-		StartCursor: page.StartCursor,
-		HasNextPage:    page.HasNextPage,
-		HasPreviousPage:    page.HasPreviousPage,
+		EndCursor:       page.EndCursor,
+		StartCursor:     page.StartCursor,
+		HasNextPage:     page.HasNextPage,
+		HasPreviousPage: page.HasPreviousPage,
 	}
 	m.Set(env.pagination, protoreflect.ValueOfMessage(info.ProtoReflect()))
 	list := m.Mutable(env.items).List()
-	for _, doc := range page.Items {
+	for _, r := range page.Items {
 		item := list.NewElement()
 		target := item.Message().Interface()
-		mapped, err := dtoToMessage(env.itemPlan, projector(doc), target)
+		mapped, err := dtoToMessage(env.itemPlan, responseProjection(r), target)
 		if err != nil {
 			return nil, err
 		}

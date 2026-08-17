@@ -16,7 +16,7 @@ import (
 func newGraphQLApp(h *fakeReadHandler) *fiber.App {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryWithParams[execRequest, execResponse]("users", "User", h),
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, h),
 	)
 	app := fiber.New()
 	app.Post("/graphql", reg.Handler())
@@ -40,10 +40,10 @@ func postGraphQL(t *testing.T, app *fiber.App, body string) (int, map[string]any
 }
 
 func TestEndpoint_PostQueryReturnsData(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{
-		Items:       []map[string]any{{"ID": "u1", "Name": "alice"}},
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{
+		Items:       []execResult{{ID: sp("u1"), Name: sp("alice")}},
 		ItemCursors: []string{"c1"},
-		TotalCount:       1,
+		TotalCount:  1,
 	}}
 	app := newGraphQLApp(h)
 
@@ -67,7 +67,7 @@ func TestEndpoint_PostQueryReturnsData(t *testing.T) {
 }
 
 func TestEndpoint_ValidationErrorIn200Envelope(t *testing.T) {
-	app := newGraphQLApp(&fakeReadHandler{page: queries.Page{}})
+	app := newGraphQLApp(&fakeReadHandler{})
 	status, parsed := postGraphQL(t, app,
 		`{"query":"{ users(where: { name: { contains: \"x\" } }) { totalCount } }"}`)
 	if status != fiber.StatusOK {

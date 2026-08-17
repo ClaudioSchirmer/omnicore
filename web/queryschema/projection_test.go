@@ -294,12 +294,12 @@ func TestWalkResponseGuard_PointerAndNonStructDefensive(t *testing.T) {
 // ─── ParseOrderByWithSchema / ParseProjection edge cases ────────────────────────
 
 func TestParseOrderByWithSchema_EdgeCases(t *testing.T) {
-	if fields, bad, ok := ParseOrderByWithSchema("", nil); !ok || bad != "" || fields != nil {
-		t.Fatalf("empty sort = (%v,%q,%v)", fields, bad, ok)
+	if fields, v, ok := ParseOrderByWithSchema("", nil); !ok || v != nil || fields != nil {
+		t.Fatalf("empty sort = (%v,%+v,%v)", fields, v, ok)
 	}
-	fields, bad, ok := ParseOrderByWithSchema("-name,,age", nil)
-	if !ok || bad != "" || len(fields) != 2 {
-		t.Fatalf("nil-schema sort = (%v,%q,%v)", fields, bad, ok)
+	fields, v, ok := ParseOrderByWithSchema("-name,,age", nil)
+	if !ok || v != nil || len(fields) != 2 {
+		t.Fatalf("nil-schema sort = (%v,%+v,%v)", fields, v, ok)
 	}
 	if fields[0].Field != "name" || !fields[0].Desc {
 		t.Errorf("expected name desc, got %+v", fields[0])
@@ -308,16 +308,16 @@ func TestParseOrderByWithSchema_EdgeCases(t *testing.T) {
 
 func TestParseOrderByWithSchema_UnknownTokenWithSchema(t *testing.T) {
 	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if _, bad, ok := ParseOrderByWithSchema("bogus", ps); ok || bad != "bogus" {
-		t.Fatalf("expected unknown sort token rejection, got bad=%q ok=%v", bad, ok)
+	if _, v, ok := ParseOrderByWithSchema("bogus", ps); ok || v == nil || v.Field != "orderBy[bogus]" {
+		t.Fatalf("expected unknown sort token rejection, got v=%+v ok=%v", v, ok)
 	}
 }
 
 func TestParseOrderByWithSchema_KnownTokenTranslatesToDocPath(t *testing.T) {
 	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	fields, bad, ok := ParseOrderByWithSchema("-addresses.zipCode", ps)
-	if !ok || bad != "" || len(fields) != 1 {
-		t.Fatalf("sort = (%v,%q,%v)", fields, bad, ok)
+	fields, v, ok := ParseOrderByWithSchema("-addresses.zipCode", ps)
+	if !ok || v != nil || len(fields) != 1 {
+		t.Fatalf("sort = (%v,%+v,%v)", fields, v, ok)
 	}
 	if fields[0].Field != "Addresses.ZipCode" || !fields[0].Desc {
 		t.Errorf("expected Addresses.ZipCode desc, got %+v", fields[0])

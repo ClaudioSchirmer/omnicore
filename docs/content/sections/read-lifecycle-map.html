@@ -33,22 +33,24 @@
                 <td><code>FindByParamsQueryHandler</code></td>
                 <td>
                     <code>req.ToQuery(criteria)</code> (web boundary — no ctx) →
-                    <code>q.ToCriteria(ctx)</code> (overlays: tenant_id / owner_id layer onto <code>Filter</code>)
+                    <code>q.ToCriteria(ctx)</code> (overlays: tenant_id / owner_id layer onto <code>Filter</code>) →
+                    <code>q.FromQueryResult(ctx, r)</code> per filled Result
                 </td>
                 <td><code>ReadPage(view, criteria)</code></td>
                 <td><code>Find(filter, sort, limit+1)</code> + <code>CountDocuments(filter)</code> — <code>_id</code> ASC appended as the stable tiebreaker</td>
-                <td><code>{ data: []R, pagination: *PaginationInfo }</code> — items projected per doc</td>
+                <td><code>{ data: []TResp, pagination: *PaginationInfo }</code> — <code>PageOf[TResult]</code> items mapped through the response projection</td>
             </tr>
             <tr>
                 <td><code>QueryByID</code><br><span class="muted">GET /users/:id</span></td>
                 <td><code>FindByIDQueryHandler</code></td>
                 <td>
-                    <code>req.ToQuery()</code> + <code>q.SetPathID(c.Params("id"))</code> →
-                    <code>q.ToCriteria(ctx)</code> (<code>IncludeArchived</code> + overlays)
+                    <code>req.ToQuery(criteria)</code> (<code>IncludeArchived</code> only) + <code>q.SetPathID(c.Params("id"))</code> →
+                    <code>q.ToCriteria(ctx)</code> (<code>IncludeArchived</code> + overlays) →
+                    <code>q.FromQueryResult(ctx, r)</code>
                 </td>
                 <td><code>ReadByID(view, id, criteria)</code></td>
                 <td><code>findOne(_id=$1)</code> + <code>deleted_at</code> gate unless <code>IncludeArchived</code></td>
-                <td><code>{ data: R }</code>; miss (or filtered out by an overlay) → 404 <code>RecordNotFoundNotification</code></td>
+                <td><code>{ data: TResp }</code> — the <code>TResult</code> mapped through the response projection; miss (or filtered out by an overlay) → 404 <code>RecordNotFoundNotification</code></td>
             </tr>
             <tr>
                 <td><code>QueryWithParams</code> + <code>?onlyTotal=true</code><br><span class="muted">GET /users?onlyTotal=true</span></td>
@@ -64,7 +66,7 @@
                 <td>same as the listing row; the wrapper sets <code>ReadCriteria.BypassMaxLimit</code> and drops user pagination (<code>first</code>/<code>last</code>/<code>after</code>/<code>before</code>/<code>onlyTotal</code>)</td>
                 <td><code>ReadPage(view, criteria)</code></td>
                 <td><code>Find(filter, sort)</code> — full filtered set capped at the resolved export ceiling (per-view <code>MaxExportRows</code> &gt; <code>query.maxExportRows</code> &gt; 10000)</td>
-                <td>raw file stream (<code>text/csv</code> / <code>.xlsx</code>) rendered hierarchically via <code>web/export.Encoder</code> — no JSON envelope</td>
+                <td>raw file stream (<code>text/csv</code> / <code>.xlsx</code>) — columns derived from the SAME Response DTO, cells the projected values, rendered hierarchically via <code>web/export.Encoder</code>; no JSON envelope</td>
             </tr>
         </tbody>
     </table>

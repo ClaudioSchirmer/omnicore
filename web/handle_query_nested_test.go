@@ -7,7 +7,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -37,6 +36,13 @@ func (q *testNestedQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadC
 	return q.Criteria, nil
 }
 
+// FromQueryResult is the mandatory doc→Result hook of queries.QueryWithParams; the
+// nested cases assert criteria assembly, so the framework-filled Result rides
+// through untouched.
+func (q *testNestedQuery) FromQueryResult(_ *configuration.AppContext, r testUserResult) (testUserResult, error) {
+	return r, nil
+}
+
 func (r testNestedRequest) ToQuery(crit queries.ReadCriteria) *testNestedQuery {
 	return &testNestedQuery{Criteria: crit}
 }
@@ -45,9 +51,9 @@ type capturingNestedHandler struct {
 	got *testNestedQuery
 }
 
-func (h *capturingNestedHandler) Handle(_ *configuration.AppContext, q *testNestedQuery) (queries.Page, error) {
+func (h *capturingNestedHandler) Handle(_ *configuration.AppContext, q *testNestedQuery) (queries.PageOf[testUserResult], error) {
 	h.got = q
-	return queries.Page{}, nil
+	return queries.PageOf[testUserResult]{}, nil
 }
 
 // dispatchNested runs the wrapper end to end and returns the assembled
@@ -58,7 +64,7 @@ func dispatchNested(t *testing.T, query string) (queries.ReadCriteria, int) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingNestedHandler{}
-	app.Get("/users", QueryWithParams(pipe, testNestedRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testNestedRequest{}, rawItem, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users"+query, nil))
 	if err != nil {
@@ -200,18 +206,18 @@ func TestNested_ViewTagOverridesDocSegment(t *testing.T) {
 	type Req struct {
 		Loc WithOverride `query:"locations"`
 	}
-	type Q struct {
-		pipeline.QueryBase
-		Criteria queries.ReadCriteria
-	}
-	type Wrap struct{ Req Req }
+	// Manual route: the parser is the manual-side parsing surface. A
+	// map Response keeps it in pass-through mode (no projection schema), which
+	// is irrelevant here — the nested FILTER walk is Request-driven and is the
+	// contract under test.
+	parser := NewQueryParser[Req, map[string]any]()
 	app := fiber.New()
 	pipe := newTestPipeline()
 	captured := &queries.ReadCriteria{}
 	app.Get("/x", func(c fiber.Ctx) error {
-		crit, bad, ok := ParseCriteria(c, Req{})
+		crit, v, ok := parser.Parse(c)
 		if !ok {
-			return RespondSchemaViolation(c, pipe, bad)
+			return RespondSchemaViolation(c, pipe, v.Field)
 		}
 		*captured = crit
 		return c.SendStatus(fiber.StatusOK)
@@ -233,13 +239,14 @@ func TestNested_PointerToNestedStructAlsoWorks(t *testing.T) {
 	type Req struct {
 		Meta *Inner `query:"meta"`
 	}
+	parser := NewQueryParser[Req, map[string]any]()
 	app := fiber.New()
 	pipe := newTestPipeline()
 	captured := &queries.ReadCriteria{}
 	app.Get("/x", func(c fiber.Ctx) error {
-		crit, bad, ok := ParseCriteria(c, Req{})
+		crit, v, ok := parser.Parse(c)
 		if !ok {
-			return RespondSchemaViolation(c, pipe, bad)
+			return RespondSchemaViolation(c, pipe, v.Field)
 		}
 		*captured = crit
 		return c.SendStatus(fiber.StatusOK)

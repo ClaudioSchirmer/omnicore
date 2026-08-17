@@ -7,6 +7,120 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#auto-query-handlers~qry-computed">computed read
+                fields</a> — a Response field with no column, derived after the read.</strong> Declare
+                <code>computed:"Src1,Src2"</code> beside the <code>json</code> tag and produce the value in the
+                Query's <code>FromQueryResult</code> hook from the named Result fields. The sources are optional
+                on the Response — one that only exists on the Result is read, feeds the derivation and never
+                reaches the wire.
+                <ul>
+                    <li><code>?fields=&lt;computed&gt;</code>, a GraphQL selection and a gRPC
+                        <code>read_mask</code> push the SOURCES to the store instead of the computed path, which
+                        no column resolves. Sources read only to feed a selected computed field are blanked
+                        before projection, so <code>?fields=</code> keeps shaping the wire even when a source is
+                        itself a declared Response field.</li>
+                    <li>Ordering by one is refused: REST, the exports and gRPC answer 400 /
+                        <code>INVALID_ARGUMENT</code> with the new
+                        <code>ComputedFieldNotSortableNotification</code> (translated in all seven catalogs),
+                        reported on the wire token; <a href="#graphql">GraphQL omits the value from its
+                        <code>&lt;Entity&gt;OrderField</code> enum</a>, so the SDL rejects it at validation. The
+                        keyset cursor is built from stored ordering values, so a derived value is not
+                        expressible.</li>
+                    <li>The tabular exports keep the computed COLUMN when it is the only selection (its
+                        projection echo names the sources), with the header rendered from
+                        <code>exportLabelKey</code> like any other.</li>
+                    <li>Boot guards: a source naming no Result field, a source that is itself computed, and a
+                        Request <code>filter:</code> declared over a computed field all fail at construction —
+                        a filter is evaluated in the store, so it could never work.</li>
+                    <li>Rejected read controls now travel as a typed <code>queryschema.Violation</code> carrying
+                        both the wire spelling and the notification, so the manual <code>QueryParser</code> path
+                        renders the same message the auto wrappers do (<code>web.RespondViolation</code>). The
+                        raw gRPC path declares the cut via <code>fwgrpc.NewCriteria().ComputedFields(…)</code>.</li>
+                </ul></li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a <a href="#auto-query-handlers~qry-wrappers">by-id read receives its wire criteria the same way a paged read does</a>: <code>ToQuery(criteria queries.ReadCriteria)</code>.</strong>
+                The two read shapes had two different web&rarr;application seats. <code>QueryWithParams</code>
+                parsed the query string into a <code>ReadCriteria</code> and handed it whole to
+                <code>Request.ToQuery(criteria)</code>, so <code>includeArchived</code> reached the Query with
+                nobody copying a field; <code>QueryByID</code> called <code>Request.ToQuery()</code> with no
+                argument, leaving the consumer to unwrap the DTO's <code>*bool</code> in <code>ToQuery</code>
+                and then re-declare and re-copy it in <code>ToCriteria</code>. The by-id seat now takes the
+                criteria too — on REST, gRPC and GraphQL alike — so a by-id Query carries
+                <code>Criteria queries.ReadCriteria</code> and its <code>ToCriteria</code> is the paged body:
+                <code>return q.Criteria, nil</code>, plus any identity-derived overlay.
+                <ul>
+                    <li>The by-id wire vocabulary is unchanged: exactly one reserved control,
+                        <code>includeArchived</code>, honored only when the Request DTO declares
+                        <code>query:"includeArchived"</code> and rejected as the canonical 400 otherwise; any
+                        other query-string key still produces 400. The criteria the wrappers build carries that
+                        control and nothing else, and <code>ReadByID</code> keeps ignoring
+                        Limit/OrderBy/After/Before/Search/Projection by design. The DTO field stays — it IS the
+                        opt-in declaration — it just no longer has to be read by hand.</li>
+                    <li><em>Migration</em>, mechanical per by-id endpoint: the Request's
+                        <code>ToQuery()</code> gains the <code>criteria fwqueries.ReadCriteria</code> parameter
+                        and returns <code>&amp;FindXByIDQuery{Criteria: criteria}</code> (the <code>*bool</code>
+                        unwrap goes away); the Query swaps its hand-declared <code>IncludeArchived bool</code>
+                        for <code>Criteria fwqueries.ReadCriteria</code> and returns it from
+                        <code>ToCriteria</code> — an overlay starts from it
+                        (<code>crit := q.Criteria; crit.Filter = …</code>).</li>
+                    <li><code>queryschema.ReadIncludeArchived(reflect.Value)</code> is the new exported helper
+                        the REST and gRPC wrappers use to read the control off the bound DTO; a consumer driving
+                        the wrappers by hand can use the same seat.</li>
+                </ul></li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the read side now mirrors the
+                write side's Result anatomy, and the <a href="#auto-query-handlers~qry-wrappers">Response DTO is
+                the single wire authority on every surface</a>.</strong> Reads used to hand each transport a raw
+                view document (<code>map[string]any</code>) and let each surface decide what to do with it, so
+                the surfaces disagreed: REST and gRPC ran a <code>func(map[string]any) R</code> projector,
+                GraphQL re-derived the wire shape from <code>R</code>'s tags without ever calling the projector,
+                and the CSV/XLSX export had no <code>R</code> at all — its columns came from the view's
+                <code>TableSchema</code>, so a business column absent from the Response still exported. One
+                <code>?fields=</code> parameter meant four different vocabularies, to the point where
+                <code>GET /users?fields=id</code> answered 200 while <code>GET /users.csv?fields=id</code>
+                answered 400. The projection now happens ONCE, in the application layer, and every surface
+                consumes the same typed value.
+                <ul>
+                    <li>A read <a href="#query-side~qry-result">Query declares a <strong>Result</strong></a>
+                        (application-pure, no wire tags — the twin of a command's Result) and gains a MANDATORY
+                        <code>FromQueryResult(ctx, r TResult) (TResult, error)</code> hook, the read-side twin of a
+                        command's <code>FromEntity</code>. The framework fills the Result from the canonical
+                        Go-keyed document (<code>queries.ResultFromDoc</code>: <code>_id</code>→ID fallback,
+                        nil-slice normalization, enum convergence to <code>Unknown</code>) and then calls
+                        <code>FromQueryResult</code>, so derived fields and ctx-aware shaping land BEFORE any transport
+                        sees the data.</li>
+                    <li><code>queries.QueryWithParams</code> / <code>queries.QueryByID</code> are generic over the
+                        Result; <code>handlers.FindByParamsQueryHandler</code> returns the new
+                        <code>queries.PageOf[TResult]</code> and <code>FindByIDQueryHandler</code> returns
+                        <code>TResult</code>. A raw document never leaves the application layer.</li>
+                    <li>Every transport constructor — REST <code>QueryWithParams</code>/<code>QueryByID</code>
+                        (+<code>Spec</code>), the <a href="#auto-query-handlers~qry-export">CSV/XLSX exports</a>,
+                        <a href="#graphql"><code>graphql.QueryWithParams</code>/<code>QueryByID</code></a>,
+                        <a href="#grpc"><code>grpc.QueryWithParams</code>/<code>QueryByID</code></a> — takes the
+                        SAME <code>responseProjection func(TResult) TResp</code> seat the command wrappers
+                        already took, typically the Response's <code>FromResult</code>. The new generic
+                        <code>responses.Map[TResp](result)</code> implements the name-based mapping.</li>
+                    <li>The export derives its columns from the Response (<code>export.PlanFor</code>), so a field
+                        outside the DTO exports nowhere and <code>?fields=</code>/<code>?orderBy=</code> speak the
+                        json wire vocabulary shared with the JSON listing. Column headers come from a new
+                        <code>exportLabelKey:"&lt;catalog key&gt;"</code> tag on the Response, translated per
+                        request language (fallback: the json name). Cell values are the projected Response
+                        values, so enum convergence now applies to CSV/XLSX too.</li>
+                    <li>New boot guards: <code>queryschema.ValidateResultAlignment</code> (every Response field
+                        must have a same-named Result field; a Result carrying json tags is rejected),
+                        <code>ValidateFieldsResult</code> (the <code>?fields=</code> sparse contract on the
+                        Result), and a GraphQL SDL guard that boot-fails when two Response DTOs registered under
+                        one entity name expose different wire field sets.</li>
+                </ul>
+                <em>Removed:</em> <code>responses.AutoFromDoc</code>, <code>responses.RawDoc</code>,
+                <code>web.ParseCriteria</code> (use <code>web.NewQueryParser</code> + <code>Parse</code>),
+                <code>queries.ExportPlan</code> and the <code>ViewDefinition.ExportPlan()</code> family (the
+                <code>web.ExportView</code> interface is now just <code>ResolveMaxExportRows</code> +
+                <code>Name</code>). See <a href="#query-side">QueryHandler · CQRS</a> and
+                <a href="#auto-query-handlers">Auto query handlers</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.52.0</span><span class="release-date">August 16, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#value-objects">a value object may now span several

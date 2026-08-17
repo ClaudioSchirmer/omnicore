@@ -29,7 +29,7 @@ import (
 // Manual-with-pipeline pairing — the consumer hand-rolls handler AND
 // supplies the same RouteSpec the wrapper would have produced (pointing
 // to the Request / Response DTOs they already declared for
-// BodyParser / ParseCriteria / BindPath):
+// BodyParser / QueryParser.Parse / BindPath):
 //
 //	openapi.Mount(d.OpenAPIRegistry, group, fiber.MethodPost, "/",
 //	    customInsertUser(d.Pipeline, repo, d.Auditor, svc),

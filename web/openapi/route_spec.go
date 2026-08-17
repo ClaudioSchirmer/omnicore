@@ -76,7 +76,7 @@ func RouteSpecOfPaged[TReq, TResp any](status int) RouteSpec {
 //     FullBody marker on the handler and produce the RouteSpec
 //     automatically.
 //   - Manual-with-pipeline consumers — they hand-roll a fiber.Handler
-//     around their own BodyParser / ParseCriteria / BindPath and pass the
+//     around their own BodyParser / QueryParser.Parse / BindPath and pass the
 //     same RouteSpec the wrappers would have produced, pointing to the
 //     Request / Response DTOs they already declared. The RouteSpecOf
 //     helper above produces this struct from the two type parameters

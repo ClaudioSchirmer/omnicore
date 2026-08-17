@@ -615,8 +615,8 @@ func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 }
 
 // collectComposedColumns walks a schema + its embeds, adding every physical
-// column path into set. It mirrors what the composer actually emits (and what
-// buildExportNode walks): the node's own columns, PLUS the FLAT columns of each
+// column path into set. It mirrors what the composer actually emits: the
+// node's own columns, PLUS the FLAT columns of each
 // sibling and of the SharedBase (mergeOwnerSiblings / mergeSharedBase merge
 // them at this level), PLUS the base's native children nested under their
 // derived segment (mergeSharedBaseChildren), PLUS external embeds. The embed's

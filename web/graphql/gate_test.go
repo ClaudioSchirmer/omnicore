@@ -25,7 +25,7 @@ func (r bareGateRequest) ToQuery(crit queries.ReadCriteria) *execQuery {
 func newBareRegistry(h *fakeReadHandler) (*Registry, *configuration.AppContext) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryWithParams[bareGateRequest, execResponse]("users", "User", h),
+		QueryWithParams[bareGateRequest]("users", "User", execResponse{}.FromResult, h),
 	)
 	return reg, configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
@@ -64,7 +64,7 @@ func TestGate_SDLOmitsUndeclaredArgs(t *testing.T) {
 // gqlparser as an unknown argument — the GraphQL self-translation of the
 // canonical NotDeclared violation.
 func TestGate_UndeclaredArgRejectedByValidation(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newBareRegistry(h)
 	resp := reg.Execute(ctx, `query { users(first: 5) { totalCount } }`, nil, "")
 	if len(resp.Errors) == 0 {
@@ -85,7 +85,7 @@ func TestGate_UndeclaredArgRejectedByValidation(t *testing.T) {
 // un-optimized paged read and still serves totalCount.
 func TestGate_OnlyTotalOptInGovernsShortCircuit(t *testing.T) {
 	// Opted-in DTO (execRequest declares onlyTotal).
-	optIn := &fakeReadHandler{page: queries.Page{OnlyTotal: true, TotalCount: 9}}
+	optIn := &fakeReadHandler{page: queries.PageOf[execResult]{OnlyTotal: true, TotalCount: 9}}
 	reg, ctx := newExecRegistry(optIn)
 	resp := reg.Execute(ctx, `query { users { totalCount } }`, nil, "")
 	if len(resp.Errors) != 0 {
@@ -96,7 +96,7 @@ func TestGate_OnlyTotalOptInGovernsShortCircuit(t *testing.T) {
 	}
 
 	// Bare DTO: same selection, no short-circuit, still valid.
-	bare := &fakeReadHandler{page: queries.Page{TotalCount: 9}}
+	bare := &fakeReadHandler{page: queries.PageOf[execResult]{TotalCount: 9}}
 	regBare, ctxBare := newBareRegistry(bare)
 	respBare := regBare.Execute(ctxBare, `query { users { totalCount } }`, nil, "")
 	if len(respBare.Errors) != 0 {
@@ -112,7 +112,7 @@ func TestGate_OnlyTotalOptInGovernsShortCircuit(t *testing.T) {
 // essentials (ordering fields; bare probe degenerates to {_id: 1}) so the
 // reader materializes only what cursors and the beyond-edge flags need.
 func TestGate_PageInfoProbeNarrowsProjection(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{
 		HasNextPage: true, StartCursor: "a", EndCursor: "b", TotalCount: 4,
 	}}
 	reg, ctx := newExecRegistry(h)

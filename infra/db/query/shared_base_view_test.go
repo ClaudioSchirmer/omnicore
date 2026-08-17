@@ -5,14 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // White-box coverage for the SharedBaseView kind: the builder guards, the
 // base-rooted composition (active-first role selection under separate-ParentID
 // multiplicity), the ViewNode role segments (translation + strip), the rebuild
-// hash roles block, the export role branches and the composed-column allowlist.
+// hash roles block and the composed-column allowlist.
 
 // --- fixtures ---------------------------------------------------------------
 //
@@ -522,86 +521,6 @@ func TestSharedBaseView_RebuildHashMovesWithRoles(t *testing.T) {
 	twoSwapped := SharedBaseView("v").Schema(sbvBase()).Role(sbvEmployeeSchema()).Role(sbvUserSchema()).Version(1)
 	if two.RebuildHash() != twoSwapped.RebuildHash() {
 		t.Error("role declaration order must not change the RebuildHash")
-	}
-}
-
-// --- export ---------------------------------------------------------------------
-
-func TestSharedBaseView_ExportPlanRoleBranches(t *testing.T) {
-	plan := sbvView().ExportPlan()
-	rootCols := map[string]bool{}
-	for _, c := range plan.Root.Columns {
-		rootCols[c.GoField] = true
-	}
-	if !rootCols["Name"] || !rootCols["Document"] {
-		t.Errorf("root must carry the base business columns, got %v", plan.Root.Columns)
-	}
-	byGoSeg := map[string]int{}
-	for i, ch := range plan.Root.Children {
-		byGoSeg[ch.GoSegment] = i
-	}
-	if _, ok := byGoSeg[sbvAddrSeg]; !ok {
-		t.Fatalf("base-children must branch at the root, got %v", byGoSeg)
-	}
-	ui, ok := byGoSeg["sbvUser"]
-	if !ok {
-		t.Fatalf("user role must branch at the root, got %v", byGoSeg)
-	}
-	userNode := plan.Root.Children[ui]
-	if userNode.WireSegment != "sbvUser" && userNode.WireSegment != domain.ToLowerCamel("sbvUser") {
-		t.Errorf("role wire segment = %q", userNode.WireSegment)
-	}
-	userCols := map[string]bool{}
-	for _, c := range userNode.Columns {
-		userCols[c.GoField] = true
-	}
-	if !userCols["UserName"] || !userCols["EmailNotification"] {
-		t.Errorf("role branch must carry role fields + sibling fields, got %v", userNode.Columns)
-	}
-	if userCols["Name"] || userCols["Document"] {
-		t.Errorf("role branch must NOT repeat the base flat columns, got %v", userNode.Columns)
-	}
-	ei := byGoSeg["sbvEmployee"]
-	empNode := plan.Root.Children[ei]
-	if len(empNode.Children) != 1 || empNode.Children[0].GoSegment != sbvDepSeg {
-		t.Errorf("employee branch must nest its own child collection, got %+v", empNode.Children)
-	}
-}
-
-// The root of a SharedBaseView IS the type-less base, so its columns have no
-// struct tags of their own: the header labels are recovered off the declared
-// roles, in declaration order. Role-own and sibling columns keep labeling
-// themselves from their own type-anchored schema.
-func TestSharedBaseView_ExportPlanLabelsBaseColumnsOffTheRoles(t *testing.T) {
-	plan := sbvView().ExportPlan()
-
-	rootLabels := map[string]string{}
-	for _, c := range plan.Root.Columns {
-		rootLabels[c.GoField] = c.LabelKey
-	}
-	// Name: both roles tag it — the FIRST declared role (sbvUser) wins.
-	if rootLabels["Name"] != "PersonNameField" {
-		t.Errorf("base Name LabelKey = %q, want PersonNameField (first role declaring it)", rootLabels["Name"])
-	}
-	// Document: only the second role tags it — the walk must not stop at the first.
-	if rootLabels["Document"] != "PersonDocumentField" {
-		t.Errorf("base Document LabelKey = %q, want PersonDocumentField (second role supplies it)", rootLabels["Document"])
-	}
-
-	roleLabels := map[string]string{}
-	for _, ch := range plan.Root.Children {
-		if ch.GoSegment != "sbvUser" {
-			continue
-		}
-		for _, c := range ch.Columns {
-			roleLabels[c.GoField] = c.LabelKey
-		}
-	}
-	if roleLabels["UserName"] != "UserUserNameField" {
-		t.Errorf("role-own UserName LabelKey = %q, want UserUserNameField", roleLabels["UserName"])
-	}
-	if roleLabels["EmailNotification"] != "UserEmailNotificationField" {
-		t.Errorf("sibling EmailNotification LabelKey = %q, want UserEmailNotificationField", roleLabels["EmailNotification"])
 	}
 }
 

@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -9,40 +10,44 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// AutoFromDoc projects a view document into the typed wire shape R using R's
-// json tags. The MongoViewReader returns documents already keyed by Go field
-// name (it translated the physical columns via the view's TableSchema), so this
-// projector simply reads doc[<GoFieldName>] and writes it under the field's
-// json wire name — the canonical tag-driven projector for
-// QueryWith{Params,ID}:
+// Map converts an application-layer Result into the typed wire Response
+// TResp using TResp's json tags — the generic TResult→TResp mapper behind
+// every Response's FromResult method. The Result is application-pure (no
+// wire tags), so its JSON form is keyed by Go field name; Map reads each
+// Response field's same-named Result field and writes it under the field's
+// json wire name, recursing through nested structs, slices of structs and
+// pointer fields. The canonical usage mirrors the command side:
 //
-//	users.Get("/:id", fwweb.QueryByID(d.Pipeline,
-//	    requests.FindUserByIDRequest{},
-//	    fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
-//	    handler))
+//	func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUsersByParamsResponse {
+//	    return fwresponses.Map[FindUsersByParamsResponse](r)
+//	}
+//
+// A Response that needs renaming or reshaping beyond the tags writes its
+// FromResult by hand instead — the constructors accept any func(TResult)
+// TResp. Read-side COMPUTATION does not belong here: derived fields,
+// ctx-aware shaping and error paths live in the Query's FromQueryResult hook in
+// the application layer, so every transport surface sees the same values.
 //
 // Tag semantics:
 //
 //	json:"<wire>"  declares the field's name on the outgoing JSON envelope.
 //	               Same meaning as encoding/json everywhere else. The source
-//	               key inside the (Go-keyed) document is the Go field name.
-//	               Recurses through nested structs, slices of structs, and
-//	               pointer-to-struct fields.
+//	               key is the field's Go name on the Result.
 //
 // Normalizations applied:
-//   - Top-level "ID" ← _id when "ID" is absent and "_id" is a string (covers
-//     schema-less / RawDoc paths).
-//   - Nil slice fields → empty typed slice at every level. Wire output
-//     carries "[]" rather than "null".
+//   - Nil slice fields → empty typed slice at every level (wire output
+//     carries "[]" rather than "null" on non-sparse shapes).
+//   - EnumValueObject fields carrying an out-of-set value converge to the
+//     Unknown sentinel (idempotent with the application-side fill).
 //
-// For wire shapes that need logic beyond tag-driven projection (derived
-// fields, conditional projection, ctx-aware shaping) the consumer declares
-// its own FromDoc method — the wrapper signature func(map[string]any) R
-// accepts either.
-func AutoFromDoc[R any](doc map[string]any) R {
-	var out R
+// The Result↔Response name alignment is boot-guarded by the constructors
+// (queryschema.ValidateResultAlignment), so a Response field with no Result
+// backing fails at mount, not silently at runtime.
+func Map[TResp any](result any) TResp {
+	var out TResp
+	doc := goDocOf(result)
 	plan := planFor(reflect.TypeOf(out))
-	renamed := remapDoc(applyIDFallback(doc), plan)
+	renamed := remapDoc(doc, plan)
 	if raw, err := json.Marshal(renamed); err == nil {
 		_ = json.Unmarshal(raw, &out)
 	}
@@ -51,9 +56,26 @@ func AutoFromDoc[R any](doc map[string]any) R {
 	return out
 }
 
+// goDocOf renders a (tagless) Result value as its Go-field-keyed document
+// via a JSON round-trip. Numbers decode as json.Number so 64-bit integers
+// survive the trip without float64 truncation.
+func goDocOf(result any) map[string]any {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return nil
+	}
+	return doc
+}
+
 // convergeEnums walks v per plan and maps every EnumValueObject field whose
 // populated value is out of its declared member set to the Unknown sentinel —
-// the read-side twin of the entity reconstruction's converge (D3). Recurses into
+// the read-side twin of the entity reconstruction's converge. Recurses into
 // nested structs and slice-of-struct elements so an enum at any depth is covered.
 func convergeEnums(v reflect.Value, plan *typePlan) {
 	if plan == nil || !v.IsValid() {
@@ -124,34 +146,6 @@ func convergeEnumField(field reflect.Value) {
 	}
 }
 
-// applyIDFallback returns a doc with the Go ID field "ID" ← _id when "ID" is
-// absent and "_id" is a string. The reader maps the ID column to the Go field
-// "ID"; this covers schema-less / RawDoc paths where the doc carries only the
-// Mongo _id. Top-level only. Does not mutate the input; allocates a shallow
-// copy only when a rewrite is needed.
-func applyIDFallback(doc map[string]any) map[string]any {
-	if doc == nil {
-		return doc
-	}
-	if _, hasID := doc["ID"]; hasID {
-		return doc
-	}
-	v, ok := doc["_id"]
-	if !ok {
-		return doc
-	}
-	s, ok := v.(string)
-	if !ok {
-		return doc
-	}
-	patched := make(map[string]any, len(doc)+1)
-	for k, val := range doc {
-		patched[k] = val
-	}
-	patched["ID"] = s
-	return patched
-}
-
 // fieldKind classifies a destination field for the walker so remap and
 // normalizeSlices can branch without re-running reflection.
 type fieldKind int
@@ -175,13 +169,13 @@ type fieldEntry struct {
 	// enumType is non-nil when the field is an EnumValueObject (deref'd of any
 	// pointer). After the JSON round-trip populates the field, convergeEnums maps
 	// an out-of-set value to the Unknown sentinel — parity with the write-side
-	// entity reconstruction (D3), so a document carrying a stale/tampered enum
+	// entity reconstruction, so a document carrying a stale/tampered enum
 	// value never surfaces as a phantom member on the wire.
 	enumType reflect.Type
 }
 
-// typePlan is the cached projection plan for one R type. Built once per
-// reflect.Type via planFor; consulted on every call to AutoFromDoc.
+// typePlan is the cached projection plan for one TResp type. Built once per
+// reflect.Type via planFor; consulted on every call to Map.
 type typePlan struct {
 	fields []fieldEntry
 }
@@ -242,9 +236,9 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 		if skip {
 			continue
 		}
-		// The reader returns documents keyed by Go field name (it translated
-		// the physical columns via the view's TableSchema). So the source key
-		// is the Go field name; the json tag names the wire output.
+		// The Result's JSON form is keyed by Go field name (Results carry no
+		// wire tags). So the source key is the Go field name; the json tag
+		// names the wire output.
 		sourceKey := f.Name
 
 		entry := fieldEntry{
@@ -302,7 +296,7 @@ func wireName(f reflect.StructField) (string, bool) {
 
 // remapDoc produces a new doc where each entry's key is the wire name and
 // each value has been recursively remapped according to plan. Entries that
-// the plan does not declare are dropped (they would not land in R anyway).
+// the plan does not declare are dropped (they would not land in TResp anyway).
 // Returns the input unchanged when plan is nil — the helper falls back to a
 // plain JSON round-trip in that case.
 func remapDoc(doc map[string]any, plan *typePlan) map[string]any {
@@ -344,12 +338,9 @@ func remapValue(v any, f fieldEntry) any {
 	return v
 }
 
-// asMap normalizes any "string-keyed map-like" value — plain map[string]any
-// as well as the mongo-driver's bson.M (a named type sharing the same
-// underlying shape but distinct under a type assertion) — into the uniform
-// map[string]any the recursion expects. Reflection avoids importing bson in
-// the web layer; reflect.Kind sees through any named map type and is
-// type-system honest.
+// asMap normalizes any "string-keyed map-like" value into the uniform
+// map[string]any the recursion expects. Reflection sees through named map
+// types and is type-system honest.
 func asMap(v any) (map[string]any, bool) {
 	if m, ok := v.(map[string]any); ok {
 		return m, true
@@ -370,10 +361,9 @@ func asMap(v any) (map[string]any, bool) {
 }
 
 // asSliceOfMaps normalizes any slice-like value carrying map-like elements
-// into the uniform []map[string]any shape. Covers the mongo-driver's bson.A
-// (a named []any) plus plain []any and []map[string]any. Returns (_, false)
-// when the value is not a slice of documents (e.g. []string), letting the
-// caller fall through and copy the value verbatim.
+// into the uniform []map[string]any shape. Returns (_, false) when the value
+// is not a slice of documents (e.g. []string), letting the caller fall
+// through and copy the value verbatim.
 func asSliceOfMaps(v any) ([]map[string]any, bool) {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Slice {

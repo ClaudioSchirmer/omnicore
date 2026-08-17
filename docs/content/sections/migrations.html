@@ -32,7 +32,7 @@
         <li>filenames must carry a parseable <code>{version}_{name}</code> prefix (<code>0001_init</code>) — a file like <code>init.up.sql</code> or <code>v2_init.up.sql</code> is silently ignored by the migration loader, so the same startup validation rejects it rather than letting the SQL never run while boot reports success</li>
     </ul>
 
-    <h3>Tracking</h3>
+    <h3 id="tracking">Tracking</h3>
     <p>Two separate tables, created automatically by <code>golang-migrate</code> on first execution (no embed SQL for them):</p>
     <table>
         <tbody><tr><th>Table</th><th>Who writes</th><th>Contains</th></tr>

@@ -11,9 +11,10 @@ func (coreIT) Language() configuration.Language { return configuration.LangIT }
 func (coreIT) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":   "Campo obbligatorio.",
-		"SchemaViolationNotification": "Il contenuto del corpo della richiesta non corrisponde allo schema previsto.",
-		"LimitExceededNotification":   "Il limite richiesto supera il massimo consentito.",
+		"RequiredFieldNotification":            "Campo obbligatorio.",
+		"SchemaViolationNotification":          "Il contenuto del corpo della richiesta non corrisponde allo schema previsto.",
+		"LimitExceededNotification":            "Il limite richiesto supera il massimo consentito.",
+		"ComputedFieldNotSortableNotification": "I campi calcolati non possono essere utilizzati per l'ordinamento.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossibile inserire un record con una chiave primaria esistente.",

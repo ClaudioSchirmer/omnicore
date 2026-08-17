@@ -148,6 +148,12 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 // the prior behavior). The selection set was already validated against the schema
 // by gqlparser, so every leaf resolves through projSchema; a stray token (defensive)
 // drops the projection rather than erroring.
+//
+// Selecting a COMPUTED leaf needs nothing special here: ParseProjection pushes
+// that field's declared SOURCES down instead of its own path (which backs no
+// column), exactly as REST's `?fields=<computed>` does. The value is then
+// derived by the Query's FromQueryResult and rendered from the projected
+// Response — what this surface resolves node fields against.
 func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.FragmentDefinitionList) map[string]int {
 	nodeSel := relayNodeSelection(sel, frags)
 	if nodeSel == nil {
@@ -292,4 +298,3 @@ func toInt64(v any) (int64, bool) {
 		return 0, false
 	}
 }
-

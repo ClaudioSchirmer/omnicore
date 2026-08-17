@@ -13,6 +13,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 	"github.com/ClaudioSchirmer/omnicore/web/export"
+	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -25,11 +26,56 @@ func (expLabelModule) Translations() map[string]string {
 
 type expCSVReq struct {
 	Email *string `query:"email" filter:"eq"`
+
 	First           *int64  `query:"first"`
 	OrderBy         *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
+}
+
+// ─── the three-type read fixture backing every export case ─────────────────
+//
+// The export column plan is derived from the RESPONSE DTO — the same wire
+// authority the JSON listing consumes — not from the view. So the fixtures
+// below deliberately keep a Result field (Phone) OFF the Response: it is a
+// column of the underlying document that must never reach a CSV/XLSX cell
+// and must not be a legal `?fields=` token. Conversely ID IS declared on the
+// Response, so it is both a real column and a legal `?fields=` token.
+
+// expAddressResult is the nested Result segment (1:N) behind the child node.
+type expAddressResult struct {
+	City *string
+}
+
+// expUserResult is the application-layer Result: tagless, every field *T or
+// slice (the Result-side sparse contract enforced when the Request opts into
+// `?fields=`).
+type expUserResult struct {
+	ID        *string
+	Name      *string
+	Email     *string
+	Phone     *string
+	Addresses []expAddressResult
+}
+
+type expAddressResponse struct {
+	City *string `json:"city,omitempty"`
+}
+
+// expUserResponse is the wire Response — the single authority for the export
+// column set, the `?fields=`/`?orderBy=` vocabulary and the header labels.
+// Name carries an exportLabelKey so its header renders through the
+// Translator; every other column falls back to its json wire name.
+type expUserResponse struct {
+	ID        *string              `json:"id,omitempty"`
+	Name      *string              `json:"name,omitempty" exportLabelKey:"UserNameField"`
+	Email     *string              `json:"email,omitempty"`
+	Addresses []expAddressResponse `json:"addresses,omitempty"`
+}
+
+func (expUserResponse) FromResult(r expUserResult) expUserResponse {
+	return responses.Map[expUserResponse](r)
 }
 
 type expCSVQuery struct {
@@ -42,26 +88,30 @@ func (q *expCSVQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCri
 	return q.Criteria, nil
 }
 
+func (q *expCSVQuery) FromQueryResult(_ *configuration.AppContext, r expUserResult) (expUserResult, error) {
+	return r, nil
+}
+
 func (r expCSVReq) ToQuery(c queries.ReadCriteria) *expCSVQuery {
 	return &expCSVQuery{Criteria: c}
 }
 
 type expCSVHandler struct {
 	got  *expCSVQuery
-	page queries.Page
+	page queries.PageOf[expUserResult]
 	err  error
 }
 
-func (h *expCSVHandler) Handle(ctx *configuration.AppContext, q *expCSVQuery) (queries.Page, error) {
+func (h *expCSVHandler) Handle(ctx *configuration.AppContext, q *expCSVQuery) (queries.PageOf[expUserResult], error) {
 	h.got = q
 	if h.err != nil {
-		return queries.Page{}, h.err
+		return queries.PageOf[expUserResult]{}, h.err
 	}
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {
-		return queries.Page{}, err
+		return queries.PageOf[expUserResult]{}, err
 	}
-	// Mirror MongoViewReader.ReadPage: echo the effective projection so the
+	// Mirror the framework query handler: echo the effective projection so the
 	// export plan pruning narrows to the same fields the read used.
 	page := h.page
 	page.Projection = crit.Projection
@@ -69,15 +119,14 @@ func (h *expCSVHandler) Handle(ctx *configuration.AppContext, q *expCSVQuery) (q
 }
 
 // fakeExportView satisfies web.ExportView with no infra import — proving the
-// "accept interfaces" decoupling: the wrapper resolves plan / ceiling / filename
-// off this fake exactly as it would off a *infra.ViewDefinition.
+// "accept interfaces" decoupling: the wrapper resolves ceiling / filename off
+// this fake exactly as it would off a *infra.ViewDefinition. The interface
+// shrank to those two members: the COLUMN plan comes from the Response DTO.
 type fakeExportView struct {
-	plan *queries.ExportPlan
 	max  int64
 	name string
 }
 
-func (f fakeExportView) ExportPlan() *queries.ExportPlan { return f.plan }
 func (f fakeExportView) ResolveMaxExportRows(yamlDefault int64) int64 {
 	if f.max > 0 {
 		return f.max
@@ -86,23 +135,15 @@ func (f fakeExportView) ResolveMaxExportRows(yamlDefault int64) int64 {
 }
 func (f fakeExportView) Name() string { return f.name }
 
-func expCSVPlan() *queries.ExportPlan {
-	return &queries.ExportPlan{Root: &queries.ExportNode{
-		Columns: []queries.ExportColumn{
-			{GoField: "Name", WireLeaf: "name", LabelKey: "UserNameField"},
-			{GoField: "Email", WireLeaf: "email"},
-		},
-		Children: []*queries.ExportNode{{
-			GoSegment: "Addresses", WireSegment: "addresses",
-			Columns: []queries.ExportColumn{{GoField: "City", WireLeaf: "city"}},
-		}},
-	}}
-}
+var _ ExportView = fakeExportView{}
 
 func newExportHandler() *expCSVHandler {
-	return &expCSVHandler{page: queries.Page{Items: []map[string]any{
-		{"Name": "John", "Email": "j@x", "Addresses": []map[string]any{{"City": "NYC"}, {"City": "LA"}}},
-		{"Name": "Jane", "Email": "j@y"},
+	return &expCSVHandler{page: queries.PageOf[expUserResult]{Items: []expUserResult{
+		{
+			ID: strPtr("u1"), Name: strPtr("John"), Email: strPtr("j@x"), Phone: strPtr("555-0001"),
+			Addresses: []expAddressResult{{City: strPtr("NYC")}, {City: strPtr("LA")}},
+		},
+		{ID: strPtr("u2"), Name: strPtr("Jane"), Email: strPtr("j@y"), Phone: strPtr("555-0002")},
 	}}}
 }
 
@@ -113,9 +154,9 @@ func mountCSV(app *fiber.App, h *expCSVHandler) {
 	// The view carries no per-view override (max=0), so the yaml default
 	// (ExportDeps.MaxExportRows=100) wins through ResolveMaxExportRows; the
 	// filename base comes from the view's Name() ("users").
-	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	view := fakeExportView{name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
-	app.Get("/users.csv", QueryAsCSV(pipe, expCSVReq{}, view, deps, h, export.WithDelimiter(';')))
+	app.Get("/users.csv", QueryAsCSV(pipe, expCSVReq{}, expUserResponse{}.FromResult, view, deps, h, export.WithDelimiter(';')))
 }
 
 // expShadowReq declares the reserved `search` spelling as a FILTER leaf —
@@ -139,9 +180,9 @@ func TestHandleQueryAsCSV_FilterLeafShadowsReservedSpelling(t *testing.T) {
 	app := fiber.New()
 	tr := translation.Default()
 	pipe := pipeline.New(tr)
-	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	view := fakeExportView{name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
-	app.Get("/users.csv", QueryAsCSV(pipe, expShadowReq{}, view, deps, h))
+	app.Get("/users.csv", QueryAsCSV(pipe, expShadowReq{}, expUserResponse{}.FromResult, view, deps, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?search=Drill", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -205,22 +246,25 @@ func TestHandleQueryAsCSV_FullHierarchy(t *testing.T) {
 
 	recs := parseSemicolonCSV(t, resp.Body)
 	// header / John / addr header(depth1) / NYC / LA / Jane
+	// (the blank separator after John's cascade is skipped by encoding/csv)
 	if len(recs) != 6 {
 		t.Fatalf("records=%d: %v", len(recs), recs)
 	}
-	if recs[0][0] != "Full Name" || recs[0][1] != "Email" {
-		t.Fatalf("header (labelKey-rendered) = %v", recs[0])
+	// The column set is the Response's, in declaration order: id (declared →
+	// exported), name (labelKey-rendered header), email (json-name fallback).
+	if len(recs[0]) != 3 || recs[0][0] != "id" || recs[0][1] != "Full Name" || recs[0][2] != "email" {
+		t.Fatalf("header (Response-derived, labelKey-rendered) = %v", recs[0])
 	}
-	if recs[1][0] != "John" || recs[1][1] != "j@x" {
+	if recs[1][0] != "u1" || recs[1][1] != "John" || recs[1][2] != "j@x" {
 		t.Fatalf("root data = %v", recs[1])
 	}
-	if len(recs[2]) != 2 || recs[2][0] != "" || recs[2][1] != "City" {
+	if len(recs[2]) != 2 || recs[2][0] != "" || recs[2][1] != "city" {
 		t.Fatalf("addresses header should be offset one column: %v", recs[2])
 	}
 	if recs[3][0] != "" || recs[3][1] != "NYC" || recs[4][1] != "LA" {
 		t.Fatalf("addresses data offset wrong: %v / %v", recs[3], recs[4])
 	}
-	if recs[5][0] != "Jane" {
+	if recs[5][0] != "u2" || recs[5][1] != "Jane" {
 		t.Fatalf("second root row = %v", recs[5])
 	}
 }
@@ -248,6 +292,65 @@ func TestHandleQueryAsCSV_FieldsNarrowing(t *testing.T) {
 	}
 }
 
+// TestHandleQueryAsCSV_ResponseDeclaredIDIsExportable pins the read-side
+// symmetry behavior change: the export vocabulary is the Response DTO's, so
+// `id` — declared on expUserResponse — is a legal `?fields=` token AND a real
+// column, exactly like on the JSON listing. It used to be neither (the plan
+// came from the view, which never published the identity column).
+func TestHandleQueryAsCSV_ResponseDeclaredIDIsExportable(t *testing.T) {
+	app := fiber.New()
+	mountCSV(app, newExportHandler())
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?fields=id", nil))
+	if resp.StatusCode != fiber.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("?fields=id must be accepted, got %d (body=%s)", resp.StatusCode, b)
+	}
+	recs := parseSemicolonCSV(t, resp.Body)
+	if len(recs) != 3 {
+		t.Fatalf("records=%d: %v", len(recs), recs)
+	}
+	if recs[0][0] != "id" {
+		t.Fatalf("expected the id column header, got %v", recs[0])
+	}
+	if recs[1][0] != "u1" || recs[2][0] != "u2" {
+		t.Fatalf("expected the identity values as cells, got %v / %v", recs[1], recs[2])
+	}
+}
+
+// TestHandleQueryAsCSV_ResultFieldAbsentFromResponseNeverExports is the other
+// half of the same change: a document/Result column the Response does NOT
+// declare (Phone) is outside the export vocabulary — it is neither a column
+// nor a legal `?fields=` token.
+func TestHandleQueryAsCSV_ResultFieldAbsentFromResponseNeverExports(t *testing.T) {
+	app := fiber.New()
+	mountCSV(app, newExportHandler())
+
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv?fields=phone", nil))
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for a token absent from the Response, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "fields[phone]") {
+		t.Errorf("expected the canonical fields[phone] spelling, got %s", body)
+	}
+
+	// And the full export never materializes the column either.
+	app2 := fiber.New()
+	mountCSV(app2, newExportHandler())
+	full, _ := app2.Test(httptest.NewRequest("GET", "/users.csv", nil))
+	if full.StatusCode != fiber.StatusOK {
+		t.Fatalf("status=%d", full.StatusCode)
+	}
+	for _, r := range parseSemicolonCSV(t, full.Body) {
+		for _, cell := range r {
+			if cell == "phone" || cell == "555-0001" || cell == "555-0002" {
+				t.Fatalf("a field absent from the Response must never export, got row %v", r)
+			}
+		}
+	}
+}
+
 // expHideQuery simulates a Query that removes a field from the read via the
 // criteria (the ReadCriteria.Hide / field-access case): ToCriteria excludes
 // Email, so the export plan pruning must drop the Email column AND its header,
@@ -266,19 +369,23 @@ func (q *expHideQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCrit
 	return crit, nil
 }
 
+func (q *expHideQuery) FromQueryResult(_ *configuration.AppContext, r expUserResult) (expUserResult, error) {
+	return r, nil
+}
+
 type expHideReq struct{}
 
 func (expHideReq) ToQuery(c queries.ReadCriteria) *expHideQuery { return &expHideQuery{Criteria: c} }
 
-type expHideHandler struct{ page queries.Page }
+type expHideHandler struct{ page queries.PageOf[expUserResult] }
 
-func (h *expHideHandler) Handle(ctx *configuration.AppContext, q *expHideQuery) (queries.Page, error) {
+func (h *expHideHandler) Handle(ctx *configuration.AppContext, q *expHideQuery) (queries.PageOf[expUserResult], error) {
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {
-		return queries.Page{}, err
+		return queries.PageOf[expUserResult]{}, err
 	}
 	page := h.page
-	page.Projection = crit.Projection // mirror MongoViewReader.ReadPage
+	page.Projection = crit.Projection // mirror the framework query handler
 	return page, nil
 }
 
@@ -287,13 +394,13 @@ func TestHandleQueryAsCSV_ToCriteriaExclusionDropsColumnAndHeader(t *testing.T) 
 	tr := translation.Default()
 	tr.Import(expLabelModule{})
 	pipe := pipeline.New(tr)
-	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	view := fakeExportView{name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
-	h := &expHideHandler{page: queries.Page{Items: []map[string]any{
-		{"Name": "John", "Email": "j@x"},
-		{"Name": "Jane", "Email": "j@y"},
+	h := &expHideHandler{page: queries.PageOf[expUserResult]{Items: []expUserResult{
+		{ID: strPtr("u1"), Name: strPtr("John"), Email: strPtr("j@x")},
+		{ID: strPtr("u2"), Name: strPtr("Jane"), Email: strPtr("j@y")},
 	}}}
-	app.Get("/users.csv", QueryAsCSV(pipe, expHideReq{}, view, deps, h, export.WithDelimiter(';')))
+	app.Get("/users.csv", QueryAsCSV(pipe, expHideReq{}, expUserResponse{}.FromResult, view, deps, h, export.WithDelimiter(';')))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users.csv", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -303,13 +410,13 @@ func TestHandleQueryAsCSV_ToCriteriaExclusionDropsColumnAndHeader(t *testing.T) 
 	// Email must be gone entirely — header AND values — across every row.
 	for _, r := range recs {
 		for _, cell := range r {
-			if cell == "Email" || cell == "j@x" || cell == "j@y" {
+			if cell == "email" || cell == "j@x" || cell == "j@y" {
 				t.Fatalf("Email leaked despite ToCriteria exclusion: %v", recs)
 			}
 		}
 	}
-	if len(recs) == 0 || recs[0][0] != "Full Name" {
-		t.Fatalf("expected surviving Name header 'Full Name', got %v", recs)
+	if len(recs) == 0 || len(recs[0]) != 2 || recs[0][0] != "id" || recs[0][1] != "Full Name" {
+		t.Fatalf("expected the surviving [id, Full Name] header, got %v", recs)
 	}
 }
 
@@ -320,10 +427,10 @@ func TestHandleQueryAsCSV_ToCriteriaExclusionDropsColumnAndHeader(t *testing.T) 
 func TestHandleQueryAsCSVSpec_OmitsPaginationFromSpec(t *testing.T) {
 	tr := translation.Default()
 	pipe := pipeline.New(tr)
-	view := fakeExportView{plan: expCSVPlan(), name: "users"}
+	view := fakeExportView{name: "users"}
 	deps := ExportDeps{Translator: tr, MaxExportRows: 100}
 
-	_, spec := QueryAsCSVSpec(pipe, expCSVReq{}, view, deps,
+	_, spec := QueryAsCSVSpec(pipe, expCSVReq{}, expUserResponse{}.FromResult, view, deps,
 		&expCSVHandler{}, export.WithDelimiter(';'))
 
 	got := map[string]bool{}

@@ -381,6 +381,10 @@ func (q *failFindParamsQuery) ToCriteria(*configuration.AppContext) (queries.Rea
 	return queries.ReadCriteria{}, q.err
 }
 
+func (q *failFindParamsQuery) FromQueryResult(_ *configuration.AppContext, r testFindResult) (testFindResult, error) {
+	return r, nil
+}
+
 type failFindIDQuery struct {
 	queries.QueryByIDBase
 	err error
@@ -391,10 +395,14 @@ func (q *failFindIDQuery) ToCriteria(*configuration.AppContext) (queries.ReadCri
 }
 func (failFindIDQuery) ContextName() string { return "" }
 
+func (q *failFindIDQuery) FromQueryResult(_ *configuration.AppContext, r testFindResult) (testFindResult, error) {
+	return r, nil
+}
+
 func TestFindByParamsQueryHandler_ToCriteriaError_Propagates(t *testing.T) {
 	want := errors.New("overlay boom")
 	reader := &spyReader{}
-	h := &FindByParamsQueryHandler[*failFindParamsQuery]{Reader: reader, View: "users"}
+	h := &FindByParamsQueryHandler[*failFindParamsQuery, testFindResult]{Reader: reader, View: "users"}
 
 	_, err := h.Handle(testCtx(), &failFindParamsQuery{err: want})
 	if !errors.Is(err, want) {
@@ -408,7 +416,7 @@ func TestFindByParamsQueryHandler_ToCriteriaError_Propagates(t *testing.T) {
 func TestFindByIDQueryHandler_ToCriteriaError_Propagates(t *testing.T) {
 	want := errors.New("overlay boom")
 	reader := &spyReader{}
-	h := &FindByIDQueryHandler[*failFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*failFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &failFindIDQuery{err: want}
 	q.SetPathID("abc")

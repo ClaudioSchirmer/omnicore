@@ -170,3 +170,71 @@ func TestJoinPath_EmptySegmentReturnsPrefix(t *testing.T) {
 		t.Errorf("joinPath(a,b) = %q, want a.b", got)
 	}
 }
+
+// ─── ReadIncludeArchived ─────────────────────────────────────────────────────
+
+type iaValueDTO struct {
+	IncludeArchived bool `query:"includeArchived"`
+}
+
+type iaPointerDTO struct {
+	IncludeArchived *bool `query:"includeArchived"`
+}
+
+type iaEmbeddedDTO struct {
+	iaPointerDTO
+	Name *string `query:"name" filter:"eq"`
+}
+
+type iaAbsentDTO struct {
+	Name *string `query:"name" filter:"eq"`
+}
+
+type iaWrongKindDTO struct {
+	IncludeArchived string `query:"includeArchived"`
+}
+
+// iaEmbeddedEmptyDTO embeds a struct that declares the control but leaves it
+// unset — the walk must keep scanning the outer fields instead of stopping.
+type iaEmbeddedEmptyDTO struct {
+	iaPointerDTO
+	Other *string `query:"other" filter:"eq"`
+}
+
+// iaUnexportedDTO carries an unexported field before the control — reflect
+// cannot read it, so the walk skips it and finds the declared one.
+type iaUnexportedDTO struct {
+	hidden          bool
+	IncludeArchived bool `query:"includeArchived"`
+}
+
+func TestReadIncludeArchived(t *testing.T) {
+	yes := true
+	no := false
+	cases := []struct {
+		name string
+		dto  any
+		want bool
+	}{
+		{"bool true", iaValueDTO{IncludeArchived: true}, true},
+		{"bool false", iaValueDTO{}, false},
+		{"pointer true", iaPointerDTO{IncludeArchived: &yes}, true},
+		{"pointer false", iaPointerDTO{IncludeArchived: &no}, false},
+		{"pointer nil", iaPointerDTO{}, false},
+		{"promoted anonymous", iaEmbeddedDTO{iaPointerDTO: iaPointerDTO{IncludeArchived: &yes}}, true},
+		{"field absent", iaAbsentDTO{}, false},
+		{"non-bool field", iaWrongKindDTO{IncludeArchived: "true"}, false},
+		{"addressable pointer", &iaValueDTO{IncludeArchived: true}, true},
+		{"nil pointer DTO", (*iaValueDTO)(nil), false},
+		{"not a struct", 42, false},
+		{"embedded control unset", iaEmbeddedEmptyDTO{}, false},
+		{"unexported field skipped", iaUnexportedDTO{hidden: true, IncludeArchived: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReadIncludeArchived(reflect.ValueOf(tc.dto)); got != tc.want {
+				t.Errorf("ReadIncludeArchived(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}

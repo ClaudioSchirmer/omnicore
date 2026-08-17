@@ -44,7 +44,7 @@
 <span class="manual">Fiber middleware</span>: builds <span class="manual">AppContext</span>(UUID + Language)
    │
    ▼
-<span class="manual">Fiber Route</span>: fwweb.QueryWithParams(pipe, Request{}, fwresponses.AutoFromDoc[Response], h)
+<span class="manual">Fiber Route</span>: fwweb.QueryWithParams(pipe, Request{}, Response{}.FromResult, h)
    │
    ▼
 <span class="auto">extractAllowedKeys(reflect.Type)</span>  ← cached schema
@@ -76,15 +76,20 @@
    │                 └─► CountDocuments + Find(Limit+1)
    │
    ▼
-<span class="auto">queries.Page</span> returned to the wrapper
-   ├─► Items   []map[string]any
+<span class="auto">queries.Page</span> — the canonical Go-keyed documents, application layer only
+   │     ├─► <span class="auto">queries.ResultFromDoc[TResult]</span>: one typed Result per document
+   │     └─► <span class="auto">q.FromQueryResult(ctx, r)</span>: the mandatory read hook (derived fields, ctx-aware shaping)
+   │
+   ▼
+<span class="auto">queries.PageOf[TResult]</span> returned to the wrapper
+   ├─► Items   []TResult
    ├─► HasNextPage, HasPreviousPage
    ├─► StartCursor / EndCursor
    └─► TotalCount
    │
    ▼
-<span class="auto">wrapper renders Response</span> — Page is decomposed:
-   ├─► Response.Data       = projector applied to each page.Items doc → []R (top-level array)
+<span class="auto">wrapper renders Response</span> — PageOf is decomposed:
+   ├─► Response.Data       = responseProjection applied to each item → []TResp (top-level array)
    └─► Response.Pagination = { HasNextPage, HasPreviousPage, cursors, TotalCount }
    │
    ▼
@@ -108,6 +113,68 @@ HTTP 200 OK
         speak.
     </p>
 
+    <h3 id="qry-result">The Result — what a read produces</h3>
+    <p>
+        The read side mirrors the write side's <a href="#command-handler">Result anatomy</a>. A Query is
+        <strong>generic over a Result type</strong> — <code>queries.QueryWithParams[TResult]</code> /
+        <code>queries.QueryByID[TResult]</code> — and that Result is the value the application layer
+        produces: an ordinary Go struct, <strong>application-pure</strong> (no wire tags), whose exported
+        fields are named exactly like the canonical document's Go keys. <strong>The canonical document
+        never leaves the application layer.</strong> <code>FindByParamsQueryHandler</code> returns
+        <code>queries.PageOf[TResult]</code> and <code>FindByIDQueryHandler</code> returns
+        <code>TResult</code>; every transport surface — REST, the CSV/XLSX export, GraphQL, gRPC —
+        consumes that same typed value. A field absent from the Result can reach no wire.
+    </p>
+    <p>
+        Filling the Result is the framework's job: <code>queries.ResultFromDoc[TResult](doc)</code> maps the
+        Go-keyed document onto the Result <strong>by field name</strong>, recursively through nested
+        structs, slices of structs and pointer fields, and applies the read-side semantic pass every
+        surface then inherits — top-level <code>ID</code> falls back to <code>_id</code>, nil slices
+        normalize to empty typed slices at every depth, and an
+        <a href="#value-objects"><code>EnumValueObject</code></a> carrying an out-of-set value converges to
+        its <code>Unknown</code> sentinel (parity with the write-side entity reconstruction, so a
+        stale or tampered stored value never surfaces as a phantom member).
+    </p>
+    <p>
+        <strong><code>FromQueryResult(ctx, r TResult) (TResult, error)</code> is mandatory on every Query</strong> —
+        the read-side twin of a command's <code>FromEntity</code>. The framework hands it the Result it
+        already filled from the document and takes back the value that flows onward, so derived fields,
+        ctx-aware shaping and read-side computation land <em>before</em> any transport sees the data and
+        every surface renders identical values. A listing that needs no computation returns it unchanged:
+    </p>
+    <pre><code>// application/queries/find_users_by_params_query.go
+
+// The Result — application-pure: NO wire tags, field names = the document's Go keys.
+type FindUsersResult struct {
+    ID        *string
+    Name      *string
+    Email     *string
+    Addresses []FindUsersAddressResult
+}
+
+type FindUsersQuery struct {
+    fwqueries.QueryWithParamsBase
+    Criteria fwqueries.ReadCriteria
+}
+
+func (q FindUsersQuery) ToCriteria(ctx *configuration.AppContext) (fwqueries.ReadCriteria, error) {
+    return q.Criteria, nil
+}
+
+// FromQueryResult is where read-side computation belongs — this listing needs none.
+func (q FindUsersQuery) FromQueryResult(
+    _ *configuration.AppContext, r FindUsersResult,
+) (FindUsersResult, error) {
+    return r, nil
+}</code></pre>
+    <p>
+        Wire naming happens one layer up: the web <strong>Response DTO</strong> carries the
+        <code>json:</code> tags and maps from the Result through its <code>FromResult</code> method — see
+        <a href="#auto-query-handlers~qry-wrappers">the response projection seat</a>. The three-name model
+        holds on the read side exactly as it does on the write side: wire tags in <code>web/</code>, Go
+        field names in the Result, physical columns in the <code>TableSchema</code>.
+    </p>
+
     <h3 id="qry-criteria">What a read carries — <code>ReadCriteria</code></h3>
     <p>
         Every read — list or by-id, auto or custom — is one value: <code>queries.ReadCriteria</code>.
@@ -119,13 +186,15 @@ HTTP 200 OK
     <table>
         <tbody><tr><th>Field</th><th>Carries</th></tr>
         <tr><td><code>Filter map[string]any</code></td><td>field → value or operator clause. Keys are <strong>Go field names</strong> (the reader translates them to physical columns via the view <code>TableSchema</code>). Built from the <code>filter:"ops"</code> tags.</td></tr>
-        <tr><td><code>Sort []OrderByField</code></td><td>ordered list of <code>{Field, Desc}</code> (Go field paths). From <code>?orderBy=</code>.</td></tr>
+        <tr><td><code>OrderBy []OrderByField</code></td><td>ordered list of <code>{Field, Desc}</code> (Go field paths). From <code>?orderBy=</code>.</td></tr>
         <tr><td><code>Projection map[string]int</code></td><td>per-field include (<code>1</code>) / exclude (<code>0</code>). From <code>?fields=</code> and from <code>Restrict</code>.</td></tr>
-        <tr><td><code>Limit int64</code></td><td>page size, bounded by the per-view ceiling. From <code>?first=</code>.</td></tr>
+        <tr><td><code>Limit int64</code></td><td>page size, bounded by the per-view ceiling. From <code>?first=</code> — or from <code>?last=</code>, which sets <code>Backward</code> with it.</td></tr>
         <tr><td><code>After / Before string</code></td><td>opaque keyset cursors. From <code>?after=</code> / <code>?before=</code>.</td></tr>
+        <tr><td><code>Backward bool</code></td><td>walk the window that PRECEDES the cursor in canonical order — the keyset runs in inverted sort order and the slice is restored before returning. The explicit direction signal every surface sets for <code>?last=</code> (alone: the LAST N of the set; with <code>?before=</code>: the N rows before that edge); the reader also infers it from a non-empty <code>Before</code>. Ignored when <code>OnlyTotal</code> is set, like Limit/After/Before.</td></tr>
         <tr><td><code>Search string</code></td><td><code>$text</code> term. From <code>?search=</code>.</td></tr>
         <tr><td><code>IncludeArchived bool</code></td><td>lifts the <code>deleted_at IS NULL</code> gate. From <code>?includeArchived=true</code>.</td></tr>
         <tr><td><code>OnlyTotal bool</code></td><td>only-total short-circuit. From <code>?onlyTotal=true</code>.</td></tr>
+        <tr><td><code>BypassMaxLimit bool</code></td><td><strong>Never set from the wire.</strong> Skips the per-view page-size ceiling in <code>ReadPage</code> and uses <code>Limit</code> verbatim — for a trusted internal caller enforcing its OWN operator-set ceiling. The tabular export is the one framework user: it sets <code>Limit</code> to the resolved <code>maxExportRows</code> (deliberately larger than the page-read <code>MaxLimit</code>) and ignores the caller's <code>?first</code>/<code>?last</code>. A client cannot lift the ceiling with it.</td></tr>
     </tbody></table>
     <p>
         The reserved control keys (<code>?fields=</code>, <code>?orderBy=</code>, <code>?after=</code>/<code>?before=</code>,
@@ -143,7 +212,7 @@ HTTP 200 OK
         operator outside the declared set is rejected with 400 <code>SchemaViolationNotification</code>. The
         <strong>same tag and the same vocabulary drive both paths</strong> — the auto wrapper
         (<code>QueryWithParams</code>) and the custom parser
-        (<code>fwweb.NewQueryParser</code> / <code>fwweb.ParseCriteria</code>) read it identically.
+        (<code>fwweb.NewQueryParser</code> + <code>Parse</code>) read it identically.
     </p>
     <pre><code>// Operator constants — used in the filter tag (defined in web/queryschema/operators.go; re-exported as fwweb.Op* via web/operators_alias.go).
 const (

@@ -9,7 +9,7 @@ import (
 // TestPagination_FirstIsForward — `first: N` sets the page size and leaves the
 // criteria forward (Backward stays false; the reader pages from the start).
 func TestPagination_FirstIsForward(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(first: 5) { edges { node { id } } } }`, nil, "")
@@ -28,7 +28,7 @@ func TestPagination_FirstIsForward(t *testing.T) {
 // direction on its own: it sets the page size AND Backward, so the reader walks
 // back from the end and returns the LAST N (Relay semantics), even with no cursor.
 func TestPagination_LastIsBackward(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(last: 5) { edges { node { id } } } }`, nil, "")
@@ -48,7 +48,7 @@ func TestPagination_LastIsBackward(t *testing.T) {
 // Backward (only `last` does). This keeps REST — which has no `last` and infers
 // direction purely from the cursor — behaving identically.
 func TestPagination_BeforeStaysCursorDriven(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(before: "cur") { edges { node { id } } } }`, nil, "")
@@ -74,7 +74,7 @@ func TestPagination_DirectionMixRejected(t *testing.T) {
 		`{ users(last: 5, after: "c") { edges { node { id } } } }`,
 		`{ users(after: "a", before: "b") { edges { node { id } } } }`,
 	} {
-		h := &fakeReadHandler{page: queries.Page{Items: []map[string]any{{"ID": "u1"}}}}
+		h := &fakeReadHandler{page: queries.PageOf[execResult]{Items: []execResult{{ID: sp("u1")}}}}
 		reg, ctx := newExecRegistry(h)
 
 		resp := reg.Execute(ctx, q, nil, "")
@@ -100,7 +100,7 @@ func TestPagination_NonPositivePageSizeRejected(t *testing.T) {
 		`{ users(first: 0) { edges { node { id } } } }`,
 		`{ users(last: -1) { edges { node { id } } } }`,
 	} {
-		h := &fakeReadHandler{page: queries.Page{Items: []map[string]any{{"ID": "u1"}}}}
+		h := &fakeReadHandler{page: queries.PageOf[execResult]{Items: []execResult{{ID: sp("u1")}}}}
 		reg, ctx := newExecRegistry(h)
 
 		resp := reg.Execute(ctx, q, nil, "")

@@ -887,7 +887,7 @@ for ev := range resp.Events {
 
   <p><strong>Per-call override:</strong> none. A service's signing policy is part of its API contract and fixed for the service instance's lifetime — declare it in YAML, or in the <code>Config</code> you wire via <code>RegisterIfAbsent</code>; changing it means re-registering the service (or rebooting, for a YAML-declared one).</p>
 
-  <h3>Composition pattern</h3>
+  <h3 id="composition-pattern">Composition pattern</h3>
   <p>Application handlers never depend on <code>*httpclient.HttpClient</code> directly. The DDD layering is:</p>
   <ol>
     <li><code>bootstrap.Deps.HttpClient</code> exposes the registry singleton.</li>

@@ -5,7 +5,6 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
-	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 )
 
@@ -13,9 +12,9 @@ import (
 // RequirePermission("users:read"), with the authorization master switch set to
 // `authz`.
 func guardedRegistry(authz bool) *Registry {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	return New(pipeline.New(translation.Default())).
-		Register(QueryWithParams[execRequest, execResponse]("users", "User", h, RequirePermission("users:read"))).
+		Register(QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, h, RequirePermission("users:read"))).
 		EnableAuthorization(authz)
 }
 

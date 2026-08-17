@@ -68,45 +68,52 @@ grpcReg.Register(fwgrpc.CommandWithBody[usersv1.CreateUserRequest, usersv1.Creat
 
 <h3 id="hi-query">Query handlers</h3>
 <p>
-    One <code>pipeline.Handler[TQ, queries.Page]</code> (Auto or hand-rolled) feeds a JSON list, a
+    One <code>pipeline.Handler[TQ, queries.PageOf[TResult]]</code> (Auto or hand-rolled) feeds a JSON list, a
     CSV download, and an Excel download from the same instance and the <strong>same Request
     DTO</strong> — the same filter allowlist, the same <code>?fields=</code> narrowing, the same
     <code>?search</code> / <code>?orderBy</code> / <code>?includeArchived</code>, the same
     <code>ToCriteria(ctx)</code> authorization overlays. Only the <em>rendering</em> differs.
 </p>
-<pre><code>// one handler instance
-h := &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+<pre><code>// one handler instance + one response projection
+h := &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery,
+                                        queries.FindUsersByParamsResult]{
     Reader: d.ViewReader, View: view.Name()}
+project := requests.FindUsersByParamsResponse{}.FromResult   // func(TResult) TResp
 
 // attach to HTTP/JSON (paged envelope)
 fwweb.QueryWithParams(d.Pipeline,
-    requests.FindUsersByParamsRequest{},
-    fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse], h)
+    requests.FindUsersByParamsRequest{}, project, h)
 
 // attach the SAME h to a CSV download — view + d.Export carry the rest
 fwweb.QueryAsCSV(d.Pipeline,
-    requests.FindUsersByParamsRequest{}, view, d.Export, h,
+    requests.FindUsersByParamsRequest{}, project, view, d.Export, h,
     export.WithDelimiter(';'))
 
 // ...or to an Excel (.xlsx) download
 fwweb.QueryAsXLSX(d.Pipeline,
-    requests.FindUsersByParamsRequest{}, view, d.Export, h,
+    requests.FindUsersByParamsRequest{}, project, view, d.Export, h,
     export.WithSheetName("Users"))
 
 // ...or as a GraphQL query returning a Relay connection
-gql.Register(fwgraphql.QueryWithParams[requests.FindUsersByParamsRequest,
-    requests.FindUsersByParamsResponse](
-    "users", "User", h))
+gql.Register(fwgraphql.QueryWithParams[requests.FindUsersByParamsRequest](
+    "users", "User", project, h))
 
 // ...or as a gRPC unary RPC (shared omnicore/v1 criteria components → the same ToQuery)
 grpcReg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUsersResponse](
     usersv1connect.UsersServiceListUsersProcedure,
-    requests.FindUsersByParamsRequest{},
-    fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse], h))</code></pre>
+    requests.FindUsersByParamsRequest{}, project, h))</code></pre>
 <p>
-    CSV and Excel share a single format-neutral export core — the column plan
-    (<code>ViewDefinition.ExportPlan()</code>), the hierarchical walk
-    (<code>export.Generate</code>), the labelKey headers, the <code>?fields=</code> pruning — and
+    <strong>One Response DTO, one wire vocabulary.</strong> Every surface takes the same
+    <code>responseProjection func(TResult) TResp</code> seat, so the four attachments above render the
+    same values under the same names: <code>?fields=</code> speaks the Response's json tokens on the
+    JSON list and on the exports alike, the gRPC FieldMask resolves against the same DTO, and the
+    GraphQL node is the projected Response.
+</p>
+<p>
+    CSV and Excel share a single format-neutral export core — the column plan derived from the
+    Response DTO (<code>export.PlanFor</code>), the hierarchical walk
+    (<code>export.Generate</code>), the <code>exportLabelKey</code> headers, the
+    <code>?fields=</code> pruning — and
     differ only by a pluggable <code>web/export.Encoder</code>. Adding a third format is a new
     encoder, not a new wrapper. See <a href="#auto-query-handlers">Auto query handlers</a> →
     Tabular export.
@@ -152,7 +159,7 @@ grpcReg.Register(fwgrpc.QueryWithParams[usersv1.ListUsersRequest, usersv1.ListUs
         <td>HTTP / JSON</td>
         <td><code>QueryWith{Params,ID}</code></td>
         <td>JSON envelope + pagination block</td>
-        <td rowspan="5">the Query, <code>ToCriteria(ctx)</code>, the filter allowlist, the <code>ViewReader</code> read</td>
+        <td rowspan="5">the Query, <code>ToCriteria(ctx)</code>, the filter allowlist, the <code>ViewReader</code> read, the <code>Result</code> + <code>FromQueryResult</code> fill, the Response projection</td>
     </tr>
     <tr>
         <td>CSV</td>

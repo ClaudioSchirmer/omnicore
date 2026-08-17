@@ -335,43 +335,7 @@ func TestComposedLink_ResolveMaxLinkManyLimit(t *testing.T) {
 	}
 }
 
-// ─── export plan ─────────────────────────────────────────────────────────────
-
-func TestComposedView_ExportPlan(t *testing.T) {
-	plan := cvValidComposed().ExportPlan()
-	if plan == nil || plan.Root == nil {
-		t.Fatal("nil export plan")
-	}
-	var mirror, notes bool
-	for _, child := range plan.Root.Children {
-		switch child.GoSegment {
-		case "UpstreamMirror":
-			mirror = true
-			if child.WireSegment != "upstreamMirror" {
-				t.Fatalf("unexpected mirror wire segment %q", child.WireSegment)
-			}
-			if len(child.Columns) == 0 {
-				t.Fatal("mirror branch carries no columns")
-			}
-		case "Notes":
-			notes = true
-			if child.WireSegment != "notes" {
-				t.Fatalf("unexpected notes wire segment %q", child.WireSegment)
-			}
-		}
-	}
-	if !mirror || !notes {
-		t.Fatalf("export plan is missing leg branches (mirror=%v notes=%v)", mirror, notes)
-	}
-	// Wire→Go paths must resolve through the leg branches like any embed.
-	paths := plan.WireToGoPaths()
-	if paths["notes.text"] != "Notes.Text" {
-		t.Fatalf("expected notes.text → Notes.Text, got %q", paths["notes.text"])
-	}
-	if paths["upstreamMirror.code"] != "UpstreamMirror.Code" {
-		t.Fatalf("expected upstreamMirror.code → UpstreamMirror.Code, got %q", paths["upstreamMirror.code"])
-	}
-}
+// ─── export ceiling ──────────────────────────────────────────────────────────
 
 func TestComposedView_ResolveMaxExportRowsDelegatesToPrimary(t *testing.T) {
 	primary := cvPrimaryView().MaxExportRows(7)

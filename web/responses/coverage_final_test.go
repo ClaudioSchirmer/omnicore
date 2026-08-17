@@ -56,7 +56,7 @@ func TestWireName_SkipAndEmptyNameFallback(t *testing.T) {
 }
 
 // asMap branches: plain map[string]any (fast path), a named string-keyed map
-// (reflect path; namedMap is declared in auto_from_doc_test.go), a
+// (reflect path; namedMap is declared in map_result_test.go), a
 // non-string-keyed map (rejected), and a non-map (rejected).
 func TestAsMap_Branches(t *testing.T) {
 	if m, ok := asMap(map[string]any{"x": 1}); !ok || m["x"] != 1 {
@@ -93,12 +93,16 @@ func TestAsSliceOfMaps_Branches(t *testing.T) {
 
 // A scalar slice field with a present value exercises remapValue's pass-through
 // and normalizeSlices' fkSlice non-nil branch (no reset when already populated).
+type scalarSliceResult struct {
+	Tags []string
+}
+
 type scalarSliceResponse struct {
 	Tags []string `json:"tags"`
 }
 
-func TestAutoFromDoc_ScalarSlicePresentPassesThrough(t *testing.T) {
-	got := AutoFromDoc[scalarSliceResponse](map[string]any{"Tags": []any{"a", "b"}})
+func TestMap_ScalarSlicePresentPassesThrough(t *testing.T) {
+	got := Map[scalarSliceResponse](scalarSliceResult{Tags: []string{"a", "b"}})
 	if len(got.Tags) != 2 || got.Tags[0] != "a" {
 		t.Fatalf("scalar slice should pass through, got %+v", got.Tags)
 	}
@@ -110,8 +114,7 @@ func TestAutoFromDoc_ScalarSlicePresentPassesThrough(t *testing.T) {
 
 // buildPlan must deref an anonymous pointer-to-struct embed and promote its
 // fields, mirroring encoding/json (covers the pointer-deref loop in the
-// f.Anonymous branch). The doc populates the promoted field so json allocates
-// the embed pointer before normalizeSlices walks the promoted index path.
+// f.Anonymous branch).
 type embedWithNote struct {
 	Note string `json:"note"`
 }
@@ -138,13 +141,17 @@ func TestPlanFor_AnonymousPointerEmbed_FieldsPromoted(t *testing.T) {
 }
 
 // buildPlan must skip an unexported, non-anonymous field (the IsExported guard).
+type unexportedFieldResult struct {
+	Name string
+}
+
 type unexportedFieldResponse struct {
 	Name   string `json:"name"`
 	secret string //nolint:unused // exercised via reflection (must be skipped)
 }
 
 func TestBuildPlan_SkipsUnexportedNonAnonymousField(t *testing.T) {
-	got := AutoFromDoc[unexportedFieldResponse](map[string]any{"Name": "n", "secret": "s"})
+	got := Map[unexportedFieldResponse](unexportedFieldResult{Name: "n"})
 	if got.Name != "n" {
 		t.Errorf("Name: want n, got %q", got.Name)
 	}
@@ -153,11 +160,14 @@ func TestBuildPlan_SkipsUnexportedNonAnonymousField(t *testing.T) {
 	}
 }
 
-// A non-struct R yields a nil plan, so normalizeSlices returns at its plan==nil
-// guard and the JSON round-trip is a best-effort no-op.
-func TestAutoFromDoc_NonStructType_NilPlanNoOp(t *testing.T) {
-	if got := AutoFromDoc[int](map[string]any{"x": 1}); got != 0 {
-		t.Errorf("non-struct R must yield the zero value, got %d", got)
+// A non-struct TResp yields a nil plan, so normalizeSlices returns at its
+// plan==nil guard and the JSON round-trip is a best-effort no-op.
+func TestMap_NonStructType_NilPlanNoOp(t *testing.T) {
+	type Result struct {
+		X int
+	}
+	if got := Map[int](Result{X: 1}); got != 0 {
+		t.Errorf("non-struct TResp must yield the zero value, got %d", got)
 	}
 }
 
@@ -170,10 +180,10 @@ func TestNormalizeSlices_InvalidValueReturns(t *testing.T) {
 }
 
 // A []*struct with a nil pointer element exercises the nil-pointer break inside
-// normalizeSlices' fkSliceOfStruct deref loop. The source doc carries a null
-// element which json unmarshals to a nil *innerNorm.
+// normalizeSlices' fkSliceOfStruct deref loop (the Result carries a nil element,
+// which marshals to null and unmarshals back to a nil *innerNorm).
 func TestNormalizeSlices_SliceOfPointerStruct_NilElementSkipped(t *testing.T) {
-	got := AutoFromDoc[sliceOfPtrResponse](map[string]any{"Items": []any{nil}})
+	got := Map[sliceOfPtrResponse](sliceOfPtrResult{Items: []*innerNormResult{nil}})
 	if len(got.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(got.Items))
 	}
@@ -183,15 +193,27 @@ func TestNormalizeSlices_SliceOfPointerStruct_NilElementSkipped(t *testing.T) {
 }
 
 // A nested struct field whose source value is NOT a map exercises remapValue's
-// fkStruct fall-through (asMap returns false → value passes verbatim).
+// fkStruct fall-through (asMap returns false → value passes verbatim and json
+// drops it). Reachable only with a misaligned Result — the boot guard forbids
+// this on real routes; Map itself must stay lenient.
+type malformedInnerResult struct {
+	Inner string
+}
+
 type wrapperResponse struct {
 	Inner innerNorm `json:"inner"`
 }
 
-func TestAutoFromDoc_StructSourceNotAMapPassesThrough(t *testing.T) {
-	// "Inner" carries a non-map value; remapValue falls through and json drops it.
-	got := AutoFromDoc[wrapperResponse](map[string]any{"Inner": "scalar"})
+func TestMap_StructSourceNotAMapPassesThrough(t *testing.T) {
+	got := Map[wrapperResponse](malformedInnerResult{Inner: "scalar"})
 	if got.Inner.Tags == nil {
 		t.Error("nested slice should still normalize to empty even when source was malformed")
 	}
+}
+
+// convergeEnums early-return guards: nil plan and invalid value must be no-ops.
+func TestConvergeEnums_GuardBranches(t *testing.T) {
+	convergeEnums(reflect.Value{}, planFor(reflect.TypeOf(scalarSliceResponse{})))
+	v := reflect.ValueOf(&scalarSliceResponse{}).Elem()
+	convergeEnums(v, nil)
 }
