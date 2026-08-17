@@ -45,15 +45,37 @@ import (
 // backing fails at mount, not silently at runtime.
 func Map[TResp any](result any) TResp {
 	var out TResp
-	doc := goDocOf(result)
 	plan := planFor(reflect.TypeOf(out))
-	renamed := remapDoc(doc, plan)
-	if raw, err := json.Marshal(renamed); err == nil {
-		_ = json.Unmarshal(raw, &out)
+	// The compiled per-pair copier (map_direct.go) replaces the JSON
+	// render→remap→decode trip whenever the pair's shape provably copies
+	// wire-identically; an unsupported pair keeps the legacy trip, decided
+	// once and cached per (source, destination) type pair.
+	srcV := reflect.ValueOf(result)
+	for srcV.Kind() == reflect.Pointer && !srcV.IsNil() {
+		srcV = srcV.Elem()
+	}
+	if cp := pairCopierFor(srcTypeOf(srcV), reflect.TypeOf(out)); cp != nil {
+		cp(srcV, reflect.ValueOf(&out).Elem())
+	} else {
+		doc := goDocOf(result)
+		renamed := remapDoc(doc, plan)
+		if raw, err := json.Marshal(renamed); err == nil {
+			_ = json.Unmarshal(raw, &out)
+		}
 	}
 	normalizeSlices(reflect.ValueOf(&out).Elem(), plan)
 	convergeEnums(reflect.ValueOf(&out).Elem(), plan)
 	return out
+}
+
+// srcTypeOf answers the concrete struct type behind a (deref'd) source value,
+// or nil when there is none — a nil result or a non-struct source keeps the
+// legacy path.
+func srcTypeOf(v reflect.Value) reflect.Type {
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return nil
+	}
+	return v.Type()
 }
 
 // goDocOf renders a (tagless) Result value as its Go-field-keyed document

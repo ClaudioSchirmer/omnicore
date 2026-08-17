@@ -131,6 +131,43 @@ with `1.0.0`.
   `ViewDefinition.ExportPlan()` family (the `web.ExportView` interface is now
   just `ResolveMaxExportRows` + `Name`).
 
+- **Boot advisory when a Response↔Result pair misses the optimized mapping.**
+  `responses.Map` serves the travel with a copier compiled per type pair; a
+  pair whose shape cannot be proven to copy exactly like the JSON round trip
+  keeps that round trip, which costs a marshal+unmarshal per ITEM. The
+  read-side constructors now resolve that verdict at Mount and emit one
+  `slog.Warn` per degraded pair, naming the Response field that blocked it and
+  pointing at the manual. A compatible pair logs nothing — silence means the
+  optimized travel is in effect — and several endpoints sharing one pair warn
+  once. New surface: `responses.MappingFallbackReason(resultType, respType)`,
+  the diagnostic seat (also usable from a consumer's own tests); it doubles as
+  a cache pre-warm, so the first request no longer pays the compilation.
+
+- **Read-path performance round — same wire, same semantics, fewer passes and
+  round-trips.** Three internal changes to how a read is served; no surface,
+  envelope or ordering change on any of them.
+  - `queries.ResultFromDoc` fills the Result from the canonical document
+    through a cached reflection plan instead of a whole-document
+    `json.Marshal` + `Unmarshal` round-trip (per-field JSON fallback preserves
+    custom decoders and coercion edge cases; non-struct Results keep the
+    legacy path). `responses.Map` compiles a per-(Result, Response) copier at
+    first use — a pair it cannot prove copy-equivalent to the JSON trip keeps
+    the legacy path, decided once and cached per type pair. Per page item this
+    removes up to four `encoding/json` passes and the bulk of the read path's
+    allocations.
+  - The listing total runs concurrently with the page fetch on both readers
+    (Mongo `CountDocuments` ∥ `Find`; relational `CountEntities` ∥
+    `FindAllEntities`) — `totalCount` still arrives on every page; one store
+    round-trip leaves the latency path. Exception: the relational
+    bare-backward window (`last=N`, no cursor) anchors its offset on the total
+    and stays sequential.
+  - A composed view's `LinkMany` leg resolves in ONE aggregation —
+    `$match({fk: {$in: page ids}})` + `$group`/`$topN` (n = the resolved
+    per-parent ceiling, sortBy = declared order + `_id` tiebreak; MongoDB
+    5.2+, already the framework's floor) — instead of one capped find per page
+    parent. Same segments, same deterministic truncation, constant query count
+    per leg; the read cost model in `views.html` reflects the new bound.
+
 ## [0.52.0] - 2026-08-16
 
 ### Added

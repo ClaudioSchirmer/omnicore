@@ -111,6 +111,55 @@
         violation is a boot panic naming every offending field path — a Response field with no Result
         backing can never ship as a silently-null column.
     </p>
+    <h4 id="qry-mapping-fallback">Response mapping — the optimized travel and its fallback</h4>
+    <p>
+        <code>fwresponses.Map</code> serves the Result→Response travel with a <strong>copier compiled
+        once per type pair</strong>, at first use, and cached — a direct field-to-field copy, no
+        serialization involved. A pair whose shape cannot be proven to copy <em>exactly</em> like the
+        JSON round trip the copier replaced keeps that round trip instead: the Result is marshalled,
+        the keys renamed and the bytes decoded into the Response. Both paths produce the same wire
+        payload — the fallback is a performance property, never a semantic one — but the JSON path
+        costs extra CPU and allocations <strong>per item</strong>, which on a page read multiplies by
+        the page size.
+    </p>
+    <p>
+        The decision is invisible at runtime, so the read-side constructors resolve it at
+        <strong>Mount</strong> and emit ONE <code>slog.Warn</code> per degraded pair, naming the
+        Response field that blocked it. A compatible pair logs nothing: silence means the optimized
+        travel is in effect. The warning is advisory — the endpoint works correctly either way — and
+        several endpoints sharing one pair warn once, because the pair is the single fix site.
+    </p>
+    <p>A pair takes the optimized travel when every mapped field is one of:</p>
+    <table>
+        <tbody><tr><th>Field shape</th><th>Example</th></tr>
+        <tr><td>Identical types on both sides</td><td><code>string</code> → <code>string</code>,
+            <code>time.Time</code> → <code>time.Time</code>, a value object → itself</td></tr>
+        <tr><td>Pointer wrapping or unwrapping</td><td><code>string</code> → <code>*string</code>,
+            <code>*int</code> → <code>int</code> (a nil source leaves the field zero, as JSON null does)</td></tr>
+        <tr><td>Same-family numeric conversion</td><td><code>int32</code> → <code>int64</code>,
+            <code>uint16</code> → <code>uint64</code>, <code>float32</code> → <code>float64</code>
+            (an out-of-range value leaves the field zero, exactly as the JSON path left it)</td></tr>
+        <tr><td><code>domain.ID</code> ↔ <code>string</code></td><td>the ID's declared JSON form
+            <em>is</em> its string value, so the conversion is exact in both directions</td></tr>
+        <tr><td>Struct → struct, slice → slice</td><td>resolved recursively by the same rules</td></tr>
+    </tbody></table>
+    <p>
+        What forces the fallback is a field whose two sides <strong>differ</strong> while one of them
+        owns its own JSON or text codec — <code>time.Time</code> → <code>string</code> is the common
+        one, since only <code>MarshalJSON</code> knows the RFC 3339 rendering — or a conversion the
+        framework will not invent, such as <code>float64</code> → <code>int64</code> (whose fraction
+        handling belongs to the codec) or a map whose value type changes. A Result or Response that is
+        not a plain struct (a <code>map[string]any</code> Result, an <code>any</code> Response) never
+        takes the direct path either. The remedy, when the cost matters, is to make the two sides agree
+        on the field's type and let the Query's
+        <a href="#query-side~qry-result"><code>FromQueryResult</code></a> hook produce the rendered
+        value — which is where read-side computation belongs anyway.
+    </p>
+    <div class="note">
+        A <strong>hand-written</strong> <code>FromResult</code> is unaffected: it never calls
+        <code>Map</code>, so the advisory (which reasons about the type pair, not the function body)
+        can be ignored for those endpoints.
+    </div>
     <p>
         <strong>The Response carries <code>json:</code> only — no source-key override exists.</strong>
         The typed Response struct declares <code>json:"&lt;wire&gt;"</code> tags (plus the optional

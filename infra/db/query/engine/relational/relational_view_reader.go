@@ -161,17 +161,42 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 
 	// The listing total, counted under the SAME scoped criteria the OnlyTotal
 	// branch above uses — so `?first=N` and `?onlyTotal=true` report the same
-	// number by construction, exactly as they do on the Mongo reader (which pays
-	// its CountDocuments on every read). It also anchors the bare-backward
-	// window below, which needs this very count to find its offset.
-	total, err := v.loader.CountEntities(ctx, scopedQuery(where, crit.IncludeArchived))
-	if err != nil {
-		return queries.Page{}, err
+	// number by construction, exactly as they do on the Mongo reader.
+	//
+	// The count and the page fetch are independent queries, so they run
+	// CONCURRENTLY instead of serializing one round trip after the other —
+	// with ONE exception: the bare-backward window (`last=N`, no cursor)
+	// anchors its offset ON the total, so that path counts first, exactly as
+	// before. resolveWindow consumes the total only on that branch.
+	type countResult struct {
+		total int64
+		err   error
+	}
+	countCh := make(chan countResult, 1)
+	bareBackward := crit.Backward && crit.After == "" && crit.Before == ""
+	var total int64
+	if bareBackward {
+		n, err := v.loader.CountEntities(ctx, scopedQuery(where, crit.IncludeArchived))
+		if err != nil {
+			return queries.Page{}, err
+		}
+		total = n
+		countCh <- countResult{total: n}
+	} else {
+		go func() {
+			n, err := v.loader.CountEntities(ctx, scopedQuery(where, crit.IncludeArchived))
+			countCh <- countResult{total: n, err: err}
+		}()
 	}
 
 	win, err := r.resolveWindow(crit, limit, total, hashCtx)
 	if err != nil {
 		return queries.Page{}, err
+	}
+
+	joinCount := func() (int64, error) {
+		res := <-countCh
+		return res.total, res.err
 	}
 
 	if win.fetchLimit <= 0 {
@@ -180,11 +205,16 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		// issuing the query: q.Limit(0) renders as "no LIMIT clause" in
 		// applyWindow, which would load the ENTIRE table into memory and bypass
 		// MaxLimit. The has-more flags come straight from the resolved window.
+		if total, err = joinCount(); err != nil {
+			return queries.Page{}, err
+		}
 		return queries.Page{TotalCount: total, HasNextPage: win.hasNext, HasPreviousPage: win.hasPrev}, nil
 	}
 
 	q := scopedQuery(where, crit.IncludeArchived)
 	if err := applySort(v.schema, q, crit.OrderBy); err != nil {
+		// The buffered channel lets the in-flight count goroutine finish and
+		// be collected without blocking anyone.
 		return queries.Page{}, err
 	}
 	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
@@ -192,6 +222,9 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 
 	ents, err := v.loader.FindAllEntities(ctx, q)
 	if err != nil {
+		return queries.Page{}, err
+	}
+	if total, err = joinCount(); err != nil {
 		return queries.Page{}, err
 	}
 
@@ -205,7 +238,7 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	page := queries.Page{
 		Items:       make([]map[string]any, 0, len(ents)),
 		ItemCursors: make([]string, 0, len(ents)),
-		TotalCount:       total,
+		TotalCount:  total,
 	}
 	for j, ent := range ents {
 		doc := BuildDocument(v.schema, ent)

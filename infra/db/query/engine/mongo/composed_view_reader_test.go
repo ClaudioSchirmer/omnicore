@@ -3,6 +3,8 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -29,6 +31,9 @@ type filterColl struct {
 	filters []bson.M
 	opts    []*options.FindOptions
 	finds   int
+
+	aggs         int
+	aggPipelines []bson.A
 }
 
 func (c *filterColl) CountDocuments(ctx context.Context, filter any, opts ...countOpt) (int64, error) {
@@ -103,6 +108,134 @@ func (c *filterColl) Find(ctx context.Context, filter any, fopts ...findOpt) (*m
 		out = out[:*folded.Limit]
 	}
 	return mongo.NewCursorFromDocuments(out, nil, nil)
+}
+
+// Aggregate interprets exactly the pipeline shape attachMany emits — $match
+// (via matchesFilter), an optional top-level $project, and a $group whose
+// $topN sorts each parent's docs by sortBy and caps them at n — so the tests
+// verify grouping, ordering, truncation, archived gates and projections
+// against the same fixture semantics the Find fake provides.
+func (c *filterColl) Aggregate(ctx context.Context, pipeline any, opts ...aggOpt) (*mongo.Cursor, error) {
+	c.aggs++
+	if c.findErr != nil {
+		return nil, c.findErr
+	}
+	p, _ := pipeline.(bson.A)
+	c.aggPipelines = append(c.aggPipelines, p)
+
+	docs := append([]bson.M{}, c.docs...)
+	var group bson.M
+	for _, st := range p {
+		stage, _ := st.(bson.M)
+		if m, ok := stage["$match"].(bson.M); ok {
+			var kept []bson.M
+			for _, d := range docs {
+				if matchesFilter(d, m) {
+					kept = append(kept, d)
+				}
+			}
+			docs = kept
+		}
+		if proj, ok := stage["$project"].(bson.D); ok {
+			docs = projectFakeDocs(docs, proj)
+		}
+		if g, ok := stage["$group"].(bson.M); ok {
+			group = g
+		}
+	}
+	if group == nil {
+		out := make([]any, len(docs))
+		for i, d := range docs {
+			out[i] = d
+		}
+		return mongo.NewCursorFromDocuments(out, nil, nil)
+	}
+
+	keyField := strings.TrimPrefix(group["_id"].(string), "$")
+	topN, _ := group["docs"].(bson.M)["$topN"].(bson.M)
+	n := topN["n"].(int64)
+	sortBy, _ := topN["sortBy"].(bson.D)
+
+	grouped := map[string][]bson.M{}
+	var order []string
+	for _, d := range docs {
+		k := fmt.Sprintf("%v", d[keyField])
+		if _, ok := grouped[k]; !ok {
+			order = append(order, k)
+		}
+		grouped[k] = append(grouped[k], d)
+	}
+	var out []any
+	for _, k := range order {
+		g := grouped[k]
+		sort.SliceStable(g, func(i, j int) bool { return fakeLessBySort(g[i], g[j], sortBy) })
+		if int64(len(g)) > n {
+			g = g[:n]
+		}
+		out = append(out, bson.M{"_id": g[0][keyField], "docs": g})
+	}
+	return mongo.NewCursorFromDocuments(out, nil, nil)
+}
+
+// projectFakeDocs applies a top-level inclusion/exclusion projection to
+// copies of the docs (fixtures stay untouched).
+func projectFakeDocs(docs []bson.M, proj bson.D) []bson.M {
+	inclusion := false
+	for _, e := range proj {
+		if v, ok := e.Value.(int); ok && v == 1 && e.Key != "_id" {
+			inclusion = true
+			break
+		}
+	}
+	out := make([]bson.M, len(docs))
+	for i, d := range docs {
+		if inclusion {
+			kept := bson.M{}
+			if id, present := d["_id"]; present {
+				kept["_id"] = id
+			}
+			for _, e := range proj {
+				if v, ok := e.Value.(int); ok {
+					if v == 1 {
+						if val, present := d[e.Key]; present {
+							kept[e.Key] = val
+						}
+					} else if e.Key == "_id" {
+						delete(kept, "_id")
+					}
+				}
+			}
+			out[i] = kept
+			continue
+		}
+		kept := bson.M{}
+		for k, v := range d {
+			kept[k] = v
+		}
+		for _, e := range proj {
+			if v, ok := e.Value.(int); ok && v == 0 {
+				delete(kept, e.Key)
+			}
+		}
+		out[i] = kept
+	}
+	return out
+}
+
+func fakeLessBySort(a, b bson.M, sortBy bson.D) bool {
+	for _, e := range sortBy {
+		av := fmt.Sprintf("%v", a[e.Key])
+		bv := fmt.Sprintf("%v", b[e.Key])
+		if av == bv {
+			continue
+		}
+		dir, _ := e.Value.(int)
+		if dir < 0 {
+			return av > bv
+		}
+		return av < bv
+	}
+	return false
 }
 
 func (c *filterColl) FindOne(ctx context.Context, filter any, opts ...findOneOpt) *mongo.SingleResult {
@@ -184,7 +317,7 @@ func newCVREnv() *cvrEnv {
 		notes: &filterColl{
 			docs: []bson.M{
 				{"_id": "n1", "gadget_id": "g1", "text": "a"},
-				{"_id": "n4", "gadget_id": "g1", "text": "z", "deleted_at": "2026-01-01"},
+				{"_id": "n4", "gadget_id": "g1", "text": "ab", "deleted_at": "2026-01-01"},
 				{"_id": "n2", "gadget_id": "g1", "text": "b"},
 				{"_id": "n3", "gadget_id": "g2", "text": "c"},
 			},
@@ -222,7 +355,7 @@ func TestComposedReader_PassthroughForRegularView(t *testing.T) {
 	if _, attached := page.Items[0]["UpstreamMirror"]; attached {
 		t.Fatal("a regular view read must not be enriched")
 	}
-	if env.mirror.finds+env.notes.finds != 0 {
+	if env.mirror.finds+env.notes.finds+env.notes.aggs != 0 {
 		t.Fatal("a regular view read must not touch leg collections")
 	}
 }
@@ -262,22 +395,51 @@ func TestComposedReader_ReadPageEnrichesItems(t *testing.T) {
 		t.Fatalf("expected 1 note for g2, got %#v", g2["Notes"])
 	}
 
-	// The 1:1 leg resolves in ONE $in find; the 1:N leg one find per parent.
+	// The 1:1 leg resolves in ONE $in find; the 1:N leg in ONE aggregation
+	// grouped per parent — never a find per parent.
 	if env.mirror.finds != 1 {
 		t.Fatalf("expected one $in find on the mirror leg, got %d", env.mirror.finds)
 	}
-	if env.notes.finds != 2 {
-		t.Fatalf("expected one find per parent on the notes leg, got %d", env.notes.finds)
+	if env.notes.aggs != 1 || env.notes.finds != 0 {
+		t.Fatalf("expected one aggregation (and zero finds) on the notes leg, got %d aggs / %d finds",
+			env.notes.aggs, env.notes.finds)
 	}
-	// Per-parent finds carry the resolved ceiling and the declared order.
-	folded := env.notes.opts[0]
-	if folded.Limit == nil || *folded.Limit != 2 {
-		t.Fatalf("expected the resolved MaxLinkManyLimit(2) on the leg find, got %#v", folded.Limit)
+	// The $topN accumulator carries the resolved ceiling and the declared
+	// order + _id tiebreaker.
+	topN := aggTopN(t, env.notes.aggPipelines[0])
+	if n, _ := topN["n"].(int64); n != 2 {
+		t.Fatalf("expected the resolved MaxLinkManyLimit(2) as $topN n, got %#v", topN["n"])
 	}
-	sortDoc, _ := folded.Sort.(bson.D)
+	sortDoc, _ := topN["sortBy"].(bson.D)
 	if len(sortDoc) != 2 || sortDoc[0].Key != "text" || sortDoc[1].Key != "_id" {
-		t.Fatalf("expected the declared order + _id tiebreaker, got %#v", folded.Sort)
+		t.Fatalf("expected the declared order + _id tiebreaker, got %#v", topN["sortBy"])
 	}
+}
+
+// aggStage returns the named stage of an aggregation pipeline, nil-safe.
+func aggStage(p bson.A, name string) bson.M {
+	for _, st := range p {
+		if stage, ok := st.(bson.M); ok {
+			if v, ok := stage[name].(bson.M); ok {
+				return v
+			}
+		}
+	}
+	return nil
+}
+
+// aggTopN digs the $topN accumulator out of the pipeline's $group stage.
+func aggTopN(t *testing.T, p bson.A) bson.M {
+	t.Helper()
+	group := aggStage(p, "$group")
+	if group == nil {
+		t.Fatalf("expected a $group stage, got %#v", p)
+	}
+	topN, _ := group["docs"].(bson.M)["$topN"].(bson.M)
+	if topN == nil {
+		t.Fatalf("expected a $topN accumulator, got %#v", group)
+	}
+	return topN
 }
 
 func TestComposedReader_ArchivedGatePerLeg(t *testing.T) {
@@ -293,12 +455,13 @@ func TestComposedReader_ArchivedGatePerLeg(t *testing.T) {
 	if _, gated := env.mirror.filters[0]["deleted_at"]; gated {
 		t.Fatal("a leg without DeletedAt must not carry an archived gate")
 	}
-	if v, gated := env.notes.filters[0]["deleted_at"]; !gated || v != nil {
-		t.Fatalf("the notes leg must gate archived docs by default, got %#v", env.notes.filters[0])
+	notesMatch := aggStage(env.notes.aggPipelines[0], "$match")
+	if v, gated := notesMatch["deleted_at"]; !gated || v != nil {
+		t.Fatalf("the notes leg must gate archived docs by default, got %#v", notesMatch)
 	}
 
-	// includeArchived propagates to every leg: n4 surfaces (fixture order
-	// places it second; the ceiling of 2 keeps [n1, n4]).
+	// includeArchived propagates to every leg: n4 ("ab") surfaces — the
+	// declared order sorts [a, ab, b] and the ceiling of 2 keeps [n1, n4].
 	env2 := newCVREnv()
 	page, err := env2.reader.ReadPage(context.Background(), "gadgets_full",
 		queries.ReadCriteria{IncludeArchived: true})
@@ -310,7 +473,7 @@ func TestComposedReader_ArchivedGatePerLeg(t *testing.T) {
 		t.Fatalf("expected 2 notes, got %d", len(notes))
 	}
 	second, _ := notes[1].(map[string]any)
-	if second["Text"] != "z" {
+	if second["Text"] != "ab" {
 		t.Fatalf("expected the archived note to surface with includeArchived, got %#v", second)
 	}
 }
@@ -336,8 +499,8 @@ func TestComposedReader_SegmentFilterRoutesToLegOnly(t *testing.T) {
 		t.Fatalf("a segment filter must never select rows, got %d items", len(page.Items))
 	}
 	// The leg filter carries the entry translated to the physical column.
-	if env.notes.filters[0]["text"] != "b" {
-		t.Fatalf("leg filter must carry the translated segment filter: %#v", env.notes.filters[0])
+	if notesMatch := aggStage(env.notes.aggPipelines[0], "$match"); notesMatch["text"] != "b" {
+		t.Fatalf("leg filter must carry the translated segment filter: %#v", notesMatch)
 	}
 	// It shapes the segment content: g1 keeps [b], g2's non-matching note drops.
 	g1notes, _ := page.Items[0]["Notes"].([]any)
@@ -393,7 +556,7 @@ func TestComposedReader_OnlyTotalSkipsLegs(t *testing.T) {
 	if !page.OnlyTotal || page.TotalCount != 2 {
 		t.Fatalf("expected the only-total page, got %+v", page)
 	}
-	if env.mirror.finds+env.notes.finds != 0 {
+	if env.mirror.finds+env.notes.finds+env.notes.aggs != 0 {
 		t.Fatal("onlyTotal must short-circuit before any leg fetch")
 	}
 }
@@ -423,17 +586,24 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 	if _, present := item["_id"]; present {
 		t.Fatal("the _id helper inclusion must be stripped from the wire shape")
 	}
-	// The leg find carried the translated sparse projection; _id stays as an
-	// INCLUSION (queryable — the attach step may group by it) and is stripped
-	// from the wire shape after translation.
-	folded := env.notes.opts[0]
-	proj, _ := folded.Projection.(bson.D)
+	// The leg aggregation carried the translated sparse projection; _id stays
+	// as an INCLUSION (queryable — the attach step may group by it), the
+	// parent-key column is transparently forced in for the $group, and both
+	// are stripped from the wire shape after translation.
+	var proj bson.D
+	for _, st := range env.notes.aggPipelines[0] {
+		if stage, ok := st.(bson.M); ok {
+			if p, ok := stage["$project"].(bson.D); ok {
+				proj = p
+			}
+		}
+	}
 	got := map[string]int{}
 	for _, e := range proj {
 		got[e.Key], _ = e.Value.(int)
 	}
-	if got["text"] != 1 || got["_id"] != 1 {
-		t.Fatalf("unexpected leg projection: %#v", folded.Projection)
+	if got["text"] != 1 || got["_id"] != 1 || got["gadget_id"] != 1 {
+		t.Fatalf("unexpected leg projection: %#v", proj)
 	}
 	notesArr, _ := item["Notes"].([]any)
 	if len(notesArr) > 0 {

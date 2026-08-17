@@ -99,7 +99,13 @@ func FromQueryResultFiller[TResult any](ctx *configuration.AppContext, q interfa
 //     so a stale/tampered stored value never surfaces as a phantom member.
 func ResultFromDoc[TResult any](doc map[string]any) TResult {
 	var out TResult
-	if raw, err := json.Marshal(applyIDFallback(doc)); err == nil {
+	// Struct TResults take the direct reflection fill (result_fill.go) — the
+	// per-field twin of the JSON round-trip, minus the two whole-document
+	// codec passes. Anything else (map, pointer, scalar TResult) keeps the
+	// round-trip verbatim.
+	if fp := fillPlanFor(reflect.TypeOf(out)); fp != nil {
+		fillStructFromDoc(reflect.ValueOf(&out).Elem(), applyIDFallback(doc), fp)
+	} else if raw, err := json.Marshal(applyIDFallback(doc)); err == nil {
 		_ = json.Unmarshal(raw, &out)
 	}
 	plan := resultPlanFor(reflect.TypeOf(out))

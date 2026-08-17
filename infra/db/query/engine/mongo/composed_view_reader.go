@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -14,11 +13,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
-
-// legFetchConcurrency bounds the parallel per-parent fetches of a LinkMany
-// leg. A page of N parents issues N small, indexed, limit-capped finds; this
-// cap keeps the burst bounded regardless of the page size.
-const legFetchConcurrency = 8
 
 // ComposedViewReader decorates MongoViewReader with the read-time composition
 // the ComposedViewDefinition declares. It satisfies the same
@@ -420,8 +414,9 @@ func childElems(v any) []map[string]any {
 }
 
 // attachLegs fetches every kept leg for the given items and attaches the
-// segments in place. 1:1 legs resolve in ONE $in find per leg; 1:N legs run
-// one small indexed, capped, ordered find per parent, concurrency-bounded.
+// segments in place. 1:1 legs resolve in ONE $in find per leg; 1:N legs in
+// ONE $in-matched aggregation per leg, grouped per parent with the ordered,
+// capped $topN accumulator.
 func (r *ComposedViewReader) attachLegs(ctx context.Context, rt *composedRuntime, s *composedSplit, items []map[string]any, includeArchived bool) error {
 	if len(items) == 0 {
 		return nil
@@ -642,11 +637,17 @@ func (r *ComposedViewReader) attachInChild(ctx context.Context, leg *legRuntime,
 	return nil
 }
 
-// attachMany resolves a 1:N leg: one small find per parent — indexed on the
-// leg ParentID, sorted by the declared order (+ _id tiebreaker, the same stable-sort
-// rule every reader query follows), capped at the resolved per-parent ceiling
-// (deterministic silent truncation: "the first N in the declared order") —
-// with the fetches concurrency-bounded. Empty array when nothing matches.
+// attachMany resolves a 1:N leg in ONE aggregation round trip: a $match on
+// the page's parent keys (indexed on the leg ParentID, carrying the segment
+// filters and the leg's archived gate), an optional $project mirroring the
+// segment's sparse projection, and a $group whose $topN accumulator applies
+// the declared order (+ _id tiebreaker, the same stable-sort rule every
+// reader query follows) and the resolved per-parent ceiling server-side —
+// deterministic silent truncation: "the first N in the declared order",
+// per parent, exactly as the retired one-find-per-parent walk produced.
+// $topN needs MongoDB 5.2, which is already the framework's floor (the
+// materialized-embed ordering rides $sortArray from the same release).
+// Empty array when nothing matches a parent.
 func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s *composedSplit, items []map[string]any, includeArchived bool) error {
 	base, err := r.legBaseFilter(leg, s, includeArchived)
 	if err != nil {
@@ -657,68 +658,136 @@ func (r *ComposedViewReader) attachMany(ctx context.Context, leg *legRuntime, s 
 		return err
 	}
 
-	var legSort []queries.OrderByField
-	if leg.link.OrderByColumn != "" {
-		legSort = []queries.OrderByField{{Field: leg.link.OrderByColumn, Desc: leg.link.OrderByDesc}}
-	}
-	sortDoc := buildStableSortDoc(legSort, false)
-
-	col := r.inner.mongo.collFn(r.inner.resolver.Active(leg.link.Collection).String())
-	sem := make(chan struct{}, legFetchConcurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-
+	var keys []any
+	seen := map[string]bool{}
 	for _, item := range items {
-		item := item
-		parentKey, present := item["_id"]
-		if !present || parentKey == nil {
-			item[leg.link.GoSegment] = []any{}
+		v, present := item["_id"]
+		if !present || v == nil {
 			continue
 		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			filter := bson.M{leg.link.ParentIDColumn: parentKey}
-			for k, v := range base {
-				filter[k] = v
-			}
-			findOpts := options.Find().SetLimit(leg.maxItems).SetSort(sortDoc)
-			if proj != nil {
-				findOpts.SetProjection(proj)
-			}
-			cur, err := col.Find(ctx, filter, findOpts)
-			if err == nil {
-				var docs []bson.M
-				err = cur.All(ctx, &docs)
-				cur.Close(ctx)
-				if err == nil {
-					out := make([]any, 0, len(docs))
-					for _, d := range docs {
-						goDoc := r.toGoLegDoc(leg, map[string]any(d), includeArchived)
-						if stripLegID {
-							leg.node.StripJoinKeyID(goDoc)
-						}
-						out = append(out, goDoc)
-					}
-					mu.Lock()
-					item[leg.link.GoSegment] = out
-					mu.Unlock()
-					return
-				}
-			}
-			mu.Lock()
-			if firstErr == nil {
-				firstErr = err
-			}
-			mu.Unlock()
-		}()
+		k := fmt.Sprintf("%v", v)
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, v)
+		}
 	}
-	wg.Wait()
-	return firstErr
+
+	byParent := map[string][]any{}
+	if len(keys) > 0 {
+		match := bson.M{leg.link.ParentIDColumn: bson.M{"$in": keys}}
+		for k, v := range base {
+			match[k] = v
+		}
+
+		// The $group below reads the parent key off each document, so a sparse
+		// segment projection must keep that column queryable — force it in and
+		// strip it from the raw docs afterwards, the same transparent-helper
+		// treatment the projection already gives `_id`.
+		proj, stripParentCol := ensureParentColumn(proj, leg.link.ParentIDColumn)
+
+		var legSort []queries.OrderByField
+		if leg.link.OrderByColumn != "" {
+			legSort = []queries.OrderByField{{Field: leg.link.OrderByColumn, Desc: leg.link.OrderByDesc}}
+		}
+		sortDoc := buildStableSortDoc(legSort, false)
+
+		pipeline := bson.A{bson.M{"$match": match}}
+		if len(proj) > 0 {
+			pipeline = append(pipeline, bson.M{"$project": proj})
+		}
+		pipeline = append(pipeline, bson.M{"$group": bson.M{
+			"_id": "$" + leg.link.ParentIDColumn,
+			"docs": bson.M{"$topN": bson.M{
+				"n":      leg.maxItems,
+				"sortBy": sortDoc,
+				"output": "$$ROOT",
+			}},
+		}})
+
+		col := r.inner.mongo.collFn(r.inner.resolver.Active(leg.link.Collection).String())
+		cur, err := col.Aggregate(ctx, pipeline)
+		if err != nil {
+			return err
+		}
+		var groups []struct {
+			Key  any      `bson:"_id"`
+			Docs []bson.M `bson:"docs"`
+		}
+		if err := cur.All(ctx, &groups); err != nil {
+			cur.Close(ctx)
+			return err
+		}
+		cur.Close(ctx)
+
+		for _, g := range groups {
+			out := make([]any, 0, len(g.Docs))
+			for _, d := range g.Docs {
+				m := map[string]any(d)
+				if stripParentCol {
+					delete(m, leg.link.ParentIDColumn)
+				}
+				goDoc := r.toGoLegDoc(leg, m, includeArchived)
+				if stripLegID {
+					leg.node.StripJoinKeyID(goDoc)
+				}
+				out = append(out, goDoc)
+			}
+			byParent[fmt.Sprintf("%v", g.Key)] = out
+		}
+	}
+
+	for _, item := range items {
+		segment := []any{}
+		if v, present := item["_id"]; present && v != nil {
+			if docs, found := byParent[fmt.Sprintf("%v", v)]; found {
+				segment = docs
+			}
+		}
+		item[leg.link.GoSegment] = segment
+	}
+	return nil
+}
+
+// ensureParentColumn guarantees a non-empty segment projection keeps the leg's
+// parent-key column queryable for the $group stage. An inclusion projection
+// gains {parentCol: 1} when the consumer did not ask for it; an exclusion
+// projection drops an explicit {parentCol: 0}. Either adjustment reports
+// strip=true so the attach step removes the column from the raw docs before
+// translation, restoring the consumer's exact segment shape. An empty
+// projection (whole doc) needs nothing.
+func ensureParentColumn(proj bson.D, parentCol string) (bson.D, bool) {
+	if len(proj) == 0 {
+		return proj, false
+	}
+	inclusion := false
+	for _, e := range proj {
+		if v, ok := e.Value.(int); ok && v == 1 && e.Key != "_id" {
+			inclusion = true
+			break
+		}
+	}
+	out := make(bson.D, 0, len(proj)+1)
+	present := false
+	explicitZero := false
+	for _, e := range proj {
+		if e.Key == parentCol {
+			present = true
+			if v, ok := e.Value.(int); ok && v == 0 {
+				explicitZero = true
+				continue // exclusion of the join key: lift it, strip after
+			}
+		}
+		out = append(out, e)
+	}
+	switch {
+	case inclusion && !present:
+		out = append(out, bson.E{Key: parentCol, Value: 1})
+		return out, true
+	case explicitZero:
+		return out, true
+	default:
+		return out, false
+	}
 }
 
 // toGoLegDoc applies to one leg document the same membrane a direct read of

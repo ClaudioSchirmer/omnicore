@@ -118,6 +118,45 @@
                 <code>web.ExportView</code> interface is now just <code>ResolveMaxExportRows</code> +
                 <code>Name</code>). See <a href="#query-side">QueryHandler · CQRS</a> and
                 <a href="#auto-query-handlers">Auto query handlers</a>.</li>
+            <li><strong>Added</strong> — <strong>a boot advisory when a Response↔Result pair misses the
+                optimized mapping.</strong> <code>fwresponses.Map</code> serves the travel with a copier
+                compiled per type pair; a pair whose shape cannot be proven to copy exactly like the JSON
+                round trip keeps that round trip, which costs a marshal+unmarshal per ITEM (multiplied by
+                the page size). The read-side constructors resolve that verdict at Mount and emit one
+                <code>slog.Warn</code> per degraded pair, naming the Response field that blocked it. A
+                compatible pair logs NOTHING — silence means the optimized travel is in effect — and
+                endpoints sharing a pair warn once, since the pair is the single fix site. New surface:
+                <code>responses.MappingFallbackReason(resultType, respType)</code>, which also pre-warms
+                the cache. See <a href="#auto-query-handlers~qry-mapping-fallback">Auto query handlers →
+                Response mapping</a>.</li>
+            <li><strong>Changed</strong> — <strong>read-path performance round — same wire, same
+                semantics, fewer passes and round-trips.</strong> Three internal changes to how a read
+                is served; no surface, envelope or ordering change on any of them.
+                <ul>
+                    <li><strong>The document→Result and Result→Response mappings drop their JSON
+                        round-trips.</strong> <code>queries.ResultFromDoc</code> fills the Result from
+                        the canonical document through a cached reflection plan (per-field JSON
+                        fallback for custom decoders), and <code>responses.Map</code> compiles a
+                        per-(Result, Response) copier at first use — a pair it cannot prove
+                        copy-equivalent keeps the legacy JSON path, decided once and cached. Per page
+                        item this removes up to four <code>encoding/json</code> passes and the bulk of
+                        the read path's allocations.</li>
+                    <li><strong>The listing total runs concurrently with the page fetch.</strong> Both
+                        readers (Mongo and <a href="#relational-view">RelationalSource</a>) issue the
+                        count and the page query in parallel instead of back to back — the response
+                        still carries <code>totalCount</code> on every page; one store round-trip
+                        leaves the latency path. The single exception is the relational bare-backward
+                        window (<code>last=N</code>, no cursor), whose offset anchors on the total and
+                        keeps the sequential order.</li>
+                    <li><strong>A composed view's 1:N leg resolves in ONE aggregation.</strong>
+                        <code>LinkMany</code> used to run one capped find per page parent
+                        (concurrency-bounded); it now runs a single
+                        <code>$match({fk: {$in: page ids}})</code> + <code>$group</code>/<code>$topN</code>
+                        aggregation applying the declared order and the per-parent ceiling server-side
+                        (MongoDB 5.2+, already the framework's floor). Same segments, same truncation,
+                        constant query count per leg. The <a href="#views~views-composed-cost">read
+                        cost model</a> reflects the new bound.</li>
+                </ul></li>
         </ul>
     </div>
     <div class="release">
