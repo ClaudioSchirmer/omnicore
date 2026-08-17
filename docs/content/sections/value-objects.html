@@ -1,5 +1,5 @@
-<h2>Value objects — <code>ValueObject</code> and <code>EnumValueObject</code></h2>
-  <p>A <strong>value object</strong> is a self-validating domain primitive: a field with a rule attached, so the rule lives in exactly one place instead of being copy-pasted into every aggregate that carries the field. There are two kinds, split by <em>who owns the rule</em> — the two sections below.</p>
+<h2>Value objects — <code>ValueObject</code>, <code>EnumValueObject</code> and the composite kind</h2>
+  <p>A <strong>value object</strong> is a self-validating domain primitive: a field with a rule attached, so the rule lives in exactly one place instead of being copy-pasted into every aggregate that carries the field. Two kinds are split by <em>who owns the rule</em>; a third is split by <em>how many fields the value spans</em> — the sections below.</p>
 
   <div class="grid-2">
     <div class="card">
@@ -18,6 +18,10 @@
     UnknownNotification() Notification
 }</code></pre>
     </div>
+  </div>
+
+  <div class="box">
+    <strong>The composite kind — a value that spans several fields.</strong> <code>Address{Street, City, ZipCode}</code>, <code>Money{Amount, Currency}</code>, <code>Period{From, To}</code>: a struct that owns its rule like a raw value object but declares <strong>no <code>Value()</code></strong>, because there is no single scalar to return. It is a plain domain type — the framework adds no interface and no marker — and the <code>TableSchema</code> is the only place that knows it is stored across several columns. Its own section is below.
   </div>
 
   <h3>Value objects — the raw kind</h3>
@@ -131,6 +135,65 @@ d.Relationship.Value() // string → "spouse"</code></pre>
     <strong>Layer boundary.</strong> The domain declares value objects and their notification/description <em>keys</em>; the human string is produced at the pipeline boundary by the translation layer with the <code>AppContext</code> language. A value object never resolves a translation itself.
   </div>
 
+  <h3>Composite value objects</h3>
+
+  <p>DDD allows a value object to carry more than one field, and some concepts are only expressible that way — a rule <em>between</em> two fields (<code>To</code> after <code>From</code>, an amount paired with its currency) has nowhere to live on a single-scalar type. A <strong>composite value object</strong> is exactly that: a struct that owns its rule.</p>
+
+  <h4>What to declare — nothing new</h4>
+  <p>There is no third interface and no marker method. A composite is a struct that declares <code>IsValid</code> and does <strong>not</strong> declare <code>Value()</code>. The entity carries it as an ordinary field, and the framework's automatic pass discovers and validates it exactly like any other value object.</p>
+  <pre><code>type Period struct {
+    From time.Time  `labelKey:"PeriodFromField"`
+    To   *time.Time `labelKey:"PeriodToField"`
+}
+
+// The cross-field rule — the thing a single-scalar value object cannot express.
+func (p Period) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
+    if p.To != nil &amp;&amp; p.To.Before(p.From) {
+        ctx.AddNotification("To", PeriodEndsBeforeStartNotification{})
+        return false
+    }
+    return true
+}
+
+type Contract struct {
+    domain.AggregateRoot
+    Salary vos.Money    // mandatory
+    Trial  *vos.Period  // optional
+}</code></pre>
+  <p>A composite <strong>must</strong> declare <code>IsValid</code> (a boot failure otherwise) and <strong>must not</strong> declare <code>Value()</code>. That single method is the discriminator the framework uses to tell the kinds apart, so it can correct you either way: declaring a composite with <code>Field(...)</code> tells you to decompose it, and decomposing a scalar or enum value object tells you to use <code>Field(...)</code>. Expose a canonical rendering under any other name (<code>String()</code>, <code>Format()</code>).</p>
+  <p>The parts of a composite are validated <strong>inside its own <code>IsValid</code></strong> — the entity's pass validates the composite, not its interior. A part that is itself a value object validates by calling it: <code>a.ZipCode.IsValid("ZipCode", ctx)</code>. Emitting on a part's name (<code>ctx.AddNotification("Street", …)</code>) resolves that part's <code>labelKey</code> from the tag inside the value object, so a part-level notification carries a label without the entity declaring anything.</p>
+
+  <h4>How it is stored — the schema decomposes it</h4>
+  <p>The <code>TableSchema</code> is the only place that knows the value object occupies several columns. It resolves the entity field <strong>by type</strong>, and each part is a field ↔ column pair like any other:</p>
+  <pre><code>NewTableSchema[Contract]("contracts").
+    ID("id").
+    Composite(core.NewCompositeValueObject[vos.Money]().
+        Field("Amount",   "salary_amount").As("SalaryAmount").
+        Field("Currency", "salary_currency").As("SalaryCurrency")).
+    Composite(core.NewCompositeValueObject[vos.Period]().
+        Field("From", "trial_from").As("TrialFrom").
+        Field("To",   "trial_to").As("TrialTo")).
+    CreatedAt("created_at")</code></pre>
+  <p>Each part is registered under its <strong>exposed logical name</strong> — its own name inside the value object by default, or whatever <code>.As(...)</code> renames it to. Those are the same keys a hand-flattened field would produce, which is the point: <strong>nothing downstream learns that a composite exists</strong>. Criteria, the audit timeline, the projected document, the read DTO, filters, <code>orderBy</code>, <code>?fields=</code>, OpenAPI, GraphQL, gRPC and the tabular export all see plain fields. The full declaration surface, the aliasing rule and every boot guard live in <em>Table schema</em>.</p>
+
+  <h4>Absence — the one rule that spans the parts</h4>
+  <p>A composite held <strong>by value</strong> is mandatory, but only as a whole: it has no aggregate NULL rule, and each part follows its own Go type exactly as a scalar value-object field does — a non-pointer part scanning NULL is a loud error, a pointer part scanning NULL is <code>nil</code>.</p>
+  <p>A composite held as a <strong>pointer</strong> is optional, and there the group decides first: writing <code>nil</code> writes NULL to every part column, and on read <strong>every part column NULL reconstructs as <code>nil</code></strong> — the per-part rules are not consulted at all. Any part carrying a value makes the composite present, and then a NULL on a non-pointer part is a half-written row and a loud error.</p>
+  <table>
+    <thead><tr><th><code>trial_from</code></th><th><code>trial_to</code></th><th>Reconstructs as</th></tr></thead>
+    <tbody>
+      <tr><td>NULL</td><td>NULL</td><td><code>Trial == nil</code> — absent</td></tr>
+      <tr><td>set</td><td>NULL</td><td><code>&amp;Period{From, To: nil}</code></td></tr>
+      <tr><td>set</td><td>set</td><td><code>&amp;Period{From, To}</code></td></tr>
+      <tr><td>NULL</td><td>set</td><td>loud error — present, half-written</td></tr>
+    </tbody>
+  </table>
+  <p>An optional composite therefore requires <strong>every</strong> one of its part columns to be NULL-able in the DDL. The framework cannot check your migration; it can only report the row it cannot honor.</p>
+
+  <div class="box">
+    <strong>Migrating off flat fields costs nothing.</strong> An entity that today carries <code>Street</code>/<code>City</code> loose at its root moves to <code>Address vos.Address</code> + <code>Composite</code> keeping <strong>the same columns</strong>, and pins the exposed names with <code>.As("Street")</code>/<code>.As("City")</code>. Nothing outside the domain changes — filters, DTOs, exports, the projected document and the existing audit history all stay valid — so there is no migration and no view rebuild. Introducing NEW columns, or changing an <code>.As(...)</code>, is a different matter: that changes the projection's shape and needs a <code>Version(N)</code> bump (see <em>Mongo schema evolution</em>).
+  </div>
+
   <h3>Persistence &amp; the read side</h3>
   <p>A value-object field persists as its <strong>underlying scalar</strong> — the value <code>Value()</code> returns — and is reconstructed as the VO on the way back. You declare the field with the VO type on both the domain entity and the <code>TableSchema</code> (<code>Field("Email", "email")</code> with <code>Email vos.Email</code>); the framework does the rest, at every schema position (root, sibling, shared-base, aggregate-child, child-sibling):</p>
   <ul>
@@ -139,7 +202,7 @@ d.Relationship.Value() // string → "spouse"</code></pre>
     <li><strong>Both read backings</strong> — the value round-trips identically whether the read is served from the Mongo projection or straight from the relational SoR (<code>RelationalSource</code>): the projected document carries the underlying scalar, and the response DTO field (which may itself be typed <code>vos.Email</code> — or a plain <code>string</code>; both are valid) is populated by the same reflection, with the enum converge applied so the wire matches the entity.</li>
     <li><strong>Every surface</strong> — REST, GraphQL and gRPC bind a VO request field and render a VO response field natively (JSON/Kind-based); OpenAPI and the GraphQL SDL describe a VO by its underlying scalar type; CSV/XLSX export the underlying value.</li>
   </ul>
-  <p>The one rule: a persisted value object is a <strong>named type over a single supported scalar</strong> (<code>type Email string</code>, <code>type UserProfile int</code>) — not a struct with hidden fields. The underlying must belong to the closed persistable set (see <em>Table schema</em>); a VO over an unsupported underlying is a boot failure at the <code>Field(...)</code> call.</p>
+  <p>The one rule for the two scalar kinds: a value object declared with <code>Field(...)</code> is a <strong>named type over a single supported scalar</strong> (<code>type Email string</code>, <code>type UserProfile int</code>). The underlying must belong to the closed persistable set (see <em>Table schema</em>); a VO over an unsupported underlying is a boot failure at the <code>Field(...)</code> call. A value object whose value spans several fields is the composite kind above — declared with <code>Composite</code>, where the same closed-set rule then applies to each <em>part</em>.</p>
 
   <div class="box">
     <strong>Standardized value in, standardized value out.</strong> The REST/GraphQL/gRPC boundary accepts and returns one canonical representation regardless of language — the underlying scalar. <code>EnumDescription</code> stays a deliberate, manual, per-request helper for showing a localized label; it is never woven into persistence or audit, which store the raw value.

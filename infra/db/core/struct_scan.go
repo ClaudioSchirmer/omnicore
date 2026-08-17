@@ -235,7 +235,7 @@ func (t *nullableIDScanTarget) Scan(src any) error {
 // A column without a corresponding entry in byCol is an error — the caller
 // builds both the SELECT list and byCol from the same schema, so a mismatch
 // indicates a construction bug.
-func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string]int) error {
+func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string]FieldPath) error {
 	v := reflect.ValueOf(dst)
 	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return fmt.Errorf("scanRowIntoStruct: dst must be a non-nil pointer, got %T", dst)
@@ -244,15 +244,14 @@ func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string
 	if v.Kind() != reflect.Struct {
 		return fmt.Errorf("scanRowIntoStruct: dst must point to a struct, got %s", v.Kind())
 	}
-	targets := make([]any, len(columns))
-	for i, col := range columns {
-		fieldIndex, ok := byCol[col]
-		if !ok {
-			return fmt.Errorf("scanRowIntoStruct: column %q has no corresponding field in %s", col, v.Type().Name())
-		}
-		targets[i] = scanTargetFor(v.Field(fieldIndex))
+	targets, composites, err := buildScanTargets(v, columns, byCol, "scanRowIntoStruct")
+	if err != nil {
+		return err
 	}
-	return row.Scan(targets...)
+	if err := row.Scan(targets...); err != nil {
+		return err
+	}
+	return composites.finalize()
 }
 
 // keyedRow is satisfied by both the Postgres (pgx.Row/pgx.Rows) and MySQL
@@ -268,7 +267,7 @@ type keyedRow interface {
 // the child foreign key (needed to group batched children by root). The key is
 // scanned into a string — the same uuid→string scan the executor's
 // `RETURNING <pk>` path uses.
-func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]int) (string, error) {
+func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]FieldPath) (string, error) {
 	return ScanLeadingKeyTrailing(row, dst, columns, byCol)
 }
 
@@ -278,7 +277,7 @@ func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]in
 // sql.Null* destinations rather than struct fields, since the entity's carrier
 // slots are unexported. The SELECT must list: leading key, columns..., then the
 // trailing columns in the same order as `trailing`.
-func ScanLeadingKeyTrailing(row keyedRow, dst any, columns []string, byCol map[string]int, trailing ...any) (string, error) {
+func ScanLeadingKeyTrailing(row keyedRow, dst any, columns []string, byCol map[string]FieldPath, trailing ...any) (string, error) {
 	v := reflect.ValueOf(dst)
 	if v.Kind() != reflect.Pointer || v.IsNil() {
 		return "", fmt.Errorf("ScanLeadingKey: dst must be a non-nil pointer, got %T", dst)
@@ -288,15 +287,16 @@ func ScanLeadingKeyTrailing(row keyedRow, dst any, columns []string, byCol map[s
 		return "", fmt.Errorf("ScanLeadingKey: dst must point to a struct, got %s", v.Kind())
 	}
 	var key string
+	fieldTargets, composites, err := buildScanTargets(v, columns, byCol, "ScanLeadingKey")
+	if err != nil {
+		return "", err
+	}
 	targets := make([]any, 0, len(columns)+1+len(trailing))
 	targets = append(targets, &key)
-	for _, col := range columns {
-		fieldIndex, ok := byCol[col]
-		if !ok {
-			return "", fmt.Errorf("ScanLeadingKey: column %q has no corresponding field in %s", col, v.Type().Name())
-		}
-		targets = append(targets, scanTargetFor(v.Field(fieldIndex)))
-	}
+	targets = append(targets, fieldTargets...)
 	targets = append(targets, trailing...)
-	return key, row.Scan(targets...)
+	if err := row.Scan(targets...); err != nil {
+		return key, err
+	}
+	return key, composites.finalize()
 }

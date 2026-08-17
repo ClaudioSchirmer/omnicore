@@ -32,7 +32,28 @@ func unwrapVO(v any) any {
 	if u, ok := domain.ValueObjectValue(v); ok {
 		return u
 	}
-	return nil // nil nullable VO → SQL NULL
+	// No underlying scalar came back. Two very different situations reach here,
+	// and they must not share an answer: a NIL nullable value object (absent —
+	// SQL NULL), or a COMPOSITE value object, which has no single scalar form at
+	// all because its value spans several columns. Tell them apart by the value,
+	// never by the failure — returning NULL for a composite would bind a silent
+	// nil for a value that is actually there.
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil // nil nullable VO → SQL NULL
+		}
+		rv = rv.Elem()
+	}
+	if rv.IsValid() && rv.Kind() == reflect.Struct {
+		// A composite never reaches a bind site through the framework's own paths
+		// (writeFields walks its PARTS, and a criteria on the value object as a
+		// whole cannot resolve — only its parts are declared names). Pass it
+		// through untouched so an out-of-band caller gets the driver's loud
+		// "unsupported type" instead of a silently NULL column.
+		return v
+	}
+	return nil
 }
 
 // UnwrapVO is the exported form — an out-of-package engine's write path reads

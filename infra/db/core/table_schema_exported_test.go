@@ -86,7 +86,7 @@ func TestTableSchema_BoolColumns(t *testing.T) {
 	// A field without a struct index is skipped (defense-in-depth: the public
 	// builder never yields index<0 on a type-anchored schema, so it is planted
 	// directly here).
-	s.fields = append(s.fields, schemaField{goName: "Ghost", column: "ghost", index: -1})
+	s.fields = append(s.fields, schemaField{goName: "Ghost", column: "ghost"})
 	if got := s.BoolColumns(); !reflect.DeepEqual(got, want) {
 		t.Errorf("BoolColumns() with unindexed field = %v, want %v", got, want)
 	}
@@ -100,8 +100,8 @@ func TestTableSchema_ScanPlan_ExportedPK(t *testing.T) {
 	if !reflect.DeepEqual(cols, []string{"id", "name"}) {
 		t.Fatalf("ScanPlan cols = %v, want [id name]", cols)
 	}
-	if byCol["id"] != 0 || byCol["name"] != 1 {
-		t.Errorf("ScanPlan byCol = %v, want id→0 name→1", byCol)
+	if !byCol["id"].equal(FieldPath{0}) || !byCol["name"].equal(FieldPath{1}) {
+		t.Errorf("ScanPlan byCol = %v, want id→{0} name→{1}", byCol)
 	}
 }
 

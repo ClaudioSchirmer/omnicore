@@ -285,6 +285,25 @@ audit:
         emit no <code>fieldLabelKey</code> (omitempty elides it).
     </p>
 
+    <h3>Composite value objects appear as their parts</h3>
+    <p>
+        A <a href="#value-objects">composite value object</a> is stored across several columns, and the timeline
+        follows the storage: each declared part is its own entry, keyed by the part's
+        <strong>exposed logical name</strong> (what <code>.As(...)</code> named it, or the part's own name). So a
+        <code>delta</code> is per part — raise the amount and leave the currency alone, and only
+        <code>SalaryAmount</code> appears:
+    </p>
+    <pre><code>"changes": [
+  { "field": "SalaryAmount", "fieldLabelKey": "MoneyAmountField", "from": 850000, "to": 920000 }
+]</code></pre>
+    <p>
+        Note the two names. <code>field</code> is the alias the schema exposed; <code>fieldLabelKey</code> comes from
+        the <code>labelKey</code> tag <em>inside</em> the value object, because the value object owns its own
+        vocabulary for every entity that uses it. An <strong>absent</strong> optional composite records each of its
+        parts as <code>null</code> — which is exactly what its columns hold. The composite itself never appears as a
+        field: only its parts do.
+    </p>
+
     <h3 id="audit-read">Reading audit rows — backend-neutral reader</h3>
     <p>
         When <code>destinations</code> includes <code>database</code>, the framework ships a generic

@@ -965,7 +965,7 @@ func (l *AggregateLoader[T]) hydrateSiblings(ctx context.Context, entities []T, 
 	return nil
 }
 
-func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string, ent T, sibCols []string, sibByCol map[string]int) error {
+func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string, ent T, sibCols []string, sibByCol map[string]core.FieldPath) error {
 	dialect := l.eng.Dialect()
 	rows, err := l.eng.Querier().Query(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
 	if err != nil {
@@ -1085,7 +1085,7 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 // SELECT after the scanned struct columns, in the same order the caller's
 // trailing scan targets expect. They are read into external destinations, not
 // struct fields, so they never enter scanCols/scanByCol.
-func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]int, placeholders []string, childFilter string, dialect Dialect, trailingCols []string) (string, []string, map[string]int) {
+func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, childFilter string, dialect Dialect, trailingCols []string) (string, []string, map[string]core.FieldPath) {
 	ct := dialect.QuoteIdent(child.Table())
 	sibs := child.Siblings()
 	if len(sibs) == 0 {
@@ -1103,7 +1103,7 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 		sel += ", " + ct + "." + dialect.QuoteIdent(c)
 	}
 	scanCols := append([]string{}, childCols...)
-	scanByCol := make(map[string]int, len(childByCol))
+	scanByCol := make(map[string]core.FieldPath, len(childByCol))
 	for k, v := range childByCol {
 		scanByCol[k] = v
 	}
