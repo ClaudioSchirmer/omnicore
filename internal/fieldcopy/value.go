@@ -199,6 +199,31 @@ func ValueCopier(srcT, dstT reflect.Type, nested NestedBuilder) (Copier, string)
 				dst.Set(out)
 			}, ""
 		}
+	case reflect.Map:
+		// Same key type, convertible values: an element-wise copy, exactly what
+		// the wire form of a map is. A different KEY type is refused — the key
+		// is what a consumer indexes by, so silently converting it would change
+		// the shape the caller reads.
+		if sk == reflect.Map && srcT.Key() == dstT.Key() {
+			valCp, reason := ValueCopier(srcT.Elem(), dstT.Elem(), nested)
+			if reason != "" {
+				return nil, reason
+			}
+			dt := dstT
+			return func(src, dst reflect.Value) {
+				if src.IsNil() {
+					return
+				}
+				out := reflect.MakeMapWithSize(dt, src.Len())
+				iter := src.MapRange()
+				for iter.Next() {
+					v := reflect.New(dt.Elem()).Elem()
+					valCp(iter.Value(), v)
+					out.SetMapIndex(iter.Key(), v)
+				}
+				dst.Set(out)
+			}, ""
+		}
 	}
 	return nil, fmt.Sprintf("no direct conversion from %s to %s", srcT, dstT)
 }

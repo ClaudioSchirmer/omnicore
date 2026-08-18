@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/internal/fieldcopy"
 )
 
 // The field-by-field copier behind [AutoFromResult]: one compiled plan per
@@ -28,8 +28,8 @@ import (
 // read: the Response may expose a SUBSET of the Result. The post-copy
 // normalizations (nil-slice → empty, enum converge) run unchanged.
 
-// fieldCopier copies one source value into one settable destination value.
-type fieldCopier func(src, dst reflect.Value)
+// fieldCopier is the shared copier type (internal/fieldcopy).
+type fieldCopier = fieldcopy.Copier
 
 type pairKey struct{ src, dst reflect.Type }
 
@@ -262,160 +262,12 @@ func hasCustomCodec(t reflect.Type) bool {
 		t.Implements(textUnmarshalerType) || pt.Implements(textUnmarshalerType)
 }
 
-// buildValueCopier compiles the copier for one (source, destination) value
-// shape, or reports the pair unsupported. The supported matrix is exactly the
-// set of shapes whose JSON round-trip equals a structural copy:
-//
-//   - identical types (any kind — a marshal/unmarshal of a well-formed value
-//     of the SAME type is the identity on the wire);
-//   - pointer wrapping/unwrapping on either side (JSON null ↔ nil);
-//   - same-family scalar conversions with the round-trip's exact overflow /
-//     fraction behavior (mismatch leaves the field zero, never truncates);
-//   - domain.ID ↔ string (the ID's declared JSON form IS its string value);
-//   - struct → struct via a nested pair plan; slice → slice element-wise.
-//
-// Everything else — custom codecs across different types, interface sources,
-// maps of different types, narrowing shapes — answers unsupported, and the
-// whole pair keeps the legacy JSON path.
+// buildValueCopier delegates to the shared engine (internal/fieldcopy), which
+// owns the "can this value be assigned to that field" question for BOTH Auto
+// seats. Only the struct walk differs between them — here the RESPONSE drives,
+// on the request side the REQUEST does — so the nested builder is ours.
 func buildValueCopier(srcT, dstT reflect.Type, inProgress map[pairKey]bool) (fieldCopier, string) {
-	// Identical types: structural copy is wire-identical.
-	if srcT == dstT {
-		return func(src, dst reflect.Value) { dst.Set(src) }, ""
-	}
-
-	// Source pointer: nil renders as JSON null (destination untouched);
-	// non-nil recurses on the pointee.
-	if srcT.Kind() == reflect.Pointer {
-		inner, reason := buildValueCopier(srcT.Elem(), dstT, inProgress)
-		if reason != "" {
-			return nil, reason
-		}
-		return func(src, dst reflect.Value) {
-			if src.IsNil() {
-				return
-			}
-			inner(src.Elem(), dst)
-		}, ""
-	}
-
-	// Destination pointer: a present source value allocates through.
-	if dstT.Kind() == reflect.Pointer {
-		inner, reason := buildValueCopier(srcT, dstT.Elem(), inProgress)
-		if reason != "" {
-			return nil, reason
-		}
-		return func(src, dst reflect.Value) {
-			p := reflect.New(dst.Type().Elem())
-			inner(src, p.Elem())
-			dst.Set(p)
-		}, ""
-	}
-
-	// domain.ID ↔ string: the ID's declared JSON form is its plain string
-	// value, so the conversion is exact in both directions.
-	if srcT == domainIDType && dstT.Kind() == reflect.String && !hasCustomCodec(dstT) {
-		return func(src, dst reflect.Value) {
-			dst.SetString(src.Interface().(domain.ID).Value())
-		}, ""
-	}
-	if dstT == domainIDType && srcT.Kind() == reflect.String && !hasCustomCodec(srcT) {
-		return func(src, dst reflect.Value) {
-			dst.Set(reflect.ValueOf(domain.NewID(src.String())))
-		}, ""
-	}
-
-	// Different types with a type-owned codec on either side: the trip runs
-	// logic a structural copy cannot claim to reproduce.
-	if hasCustomCodec(srcT) || hasCustomCodec(dstT) {
-		return nil, "the types differ and one of them declares its own JSON/text codec, whose output a structural copy cannot reproduce"
-	}
-
-	sk, dk := srcT.Kind(), dstT.Kind()
-	switch dk {
-	case reflect.String:
-		if sk == reflect.String {
-			return func(src, dst reflect.Value) { dst.SetString(src.String()) }, ""
-		}
-	case reflect.Bool:
-		if sk == reflect.Bool {
-			return func(src, dst reflect.Value) { dst.SetBool(src.Bool()) }, ""
-		}
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		switch sk {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return func(src, dst reflect.Value) {
-				if i := src.Int(); !dst.OverflowInt(i) {
-					dst.SetInt(i)
-				}
-			}, ""
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return func(src, dst reflect.Value) {
-				u := src.Uint()
-				if u <= 1<<63-1 && !dst.OverflowInt(int64(u)) {
-					dst.SetInt(int64(u))
-				}
-			}, ""
-		}
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		switch sk {
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return func(src, dst reflect.Value) {
-				if u := src.Uint(); !dst.OverflowUint(u) {
-					dst.SetUint(u)
-				}
-			}, ""
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return func(src, dst reflect.Value) {
-				i := src.Int()
-				if i >= 0 && !dst.OverflowUint(uint64(i)) {
-					dst.SetUint(uint64(i))
-				}
-			}, ""
-		}
-	case reflect.Float32, reflect.Float64:
-		switch sk {
-		case reflect.Float32, reflect.Float64:
-			// float32 → float64 must widen through the SHORTEST DECIMAL — the
-			// JSON trip renders the float32 as "3.14159" and parses that into
-			// the float64, not the raw binary widening (3.1415901184…).
-			widenViaDecimal := sk == reflect.Float32 && dk == reflect.Float64
-			return func(src, dst reflect.Value) {
-				f := src.Float()
-				if widenViaDecimal {
-					f, _ = strconv.ParseFloat(strconv.FormatFloat(f, 'g', -1, 32), 64)
-				}
-				if !dst.OverflowFloat(f) {
-					dst.SetFloat(f)
-				}
-			}, ""
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return func(src, dst reflect.Value) { dst.SetFloat(float64(src.Int())) }, ""
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return func(src, dst reflect.Value) { dst.SetFloat(float64(src.Uint())) }, ""
-		}
-	case reflect.Struct:
-		if sk == reflect.Struct {
-			return buildStructCopier(srcT, dstT, inProgress)
-		}
-	case reflect.Slice:
-		if sk == reflect.Slice {
-			elemCp, reason := buildValueCopier(srcT.Elem(), dstT.Elem(), inProgress)
-			if reason != "" {
-				return nil, reason
-			}
-			dt := dstT
-			return func(src, dst reflect.Value) {
-				if src.IsNil() {
-					return // JSON null: leave nil (normalizeSlices empties it after)
-				}
-				n := src.Len()
-				out := reflect.MakeSlice(dt, n, n)
-				for i := 0; i < n; i++ {
-					elemCp(src.Index(i), out.Index(i))
-				}
-				dst.Set(out)
-			}, ""
-		}
-	}
-	return nil, fmt.Sprintf("no direct conversion from %s to %s", srcT, dstT)
+	return fieldcopy.ValueCopier(srcT, dstT, func(s, d reflect.Type) (fieldcopy.Copier, string) {
+		return buildStructCopier(s, d, inProgress)
+	})
 }

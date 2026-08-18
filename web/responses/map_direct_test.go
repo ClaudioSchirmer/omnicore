@@ -267,15 +267,11 @@ func TestDirectMap_NumericPairMatrix(t *testing.T) {
 }
 
 // Each unsupported shape reports a reason (and therefore boot-fails when the
-// Response declares Auto): a map whose value type changes, an interface source
-// into a concrete field, and float -> int (whose fraction handling belongs to
-// the codec, not to a structural copy).
+// Response declares Auto): an interface source into a concrete field, and
+// float -> int (whose fraction handling belongs to the codec, not to a
+// structural copy). Maps are NOT here: a map whose values are convertible under
+// an identical key type copies element-wise, like any other container.
 func TestDirectMap_UnsupportedShapesReportReasons(t *testing.T) {
-	type mSrc struct{ M map[string]int }
-	type mDst struct {
-		Auto
-		M map[string]int64 `json:"m"`
-	}
 	type iSrc struct{ V any }
 	type iDst struct {
 		Auto
@@ -290,7 +286,6 @@ func TestDirectMap_UnsupportedShapesReportReasons(t *testing.T) {
 		name     string
 		src, dst reflect.Type
 	}{
-		{"map value type changes", reflect.TypeOf(mSrc{}), reflect.TypeOf(mDst{})},
 		{"interface source", reflect.TypeOf(iSrc{}), reflect.TypeOf(iDst{})},
 		{"float -> int", reflect.TypeOf(fSrc{}), reflect.TypeOf(fDst{})},
 	}
@@ -442,5 +437,39 @@ func TestAutoFromResultReason_NonStructShapes(t *testing.T) {
 	}
 	if r := AutoFromResultReason(nil, nil); !strings.Contains(r, "not a struct") {
 		t.Fatalf("nil types must be reported, got %q", r)
+	}
+}
+
+// A map field whose value type changes but whose KEY type is identical copies
+// element-wise — the shape the audit surface uses
+// (map[string][]ChildResult → map[string][]ChildOutput). A different key type
+// is refused: the key is what the consumer indexes by.
+func TestDirectMap_MapValuesTravel(t *testing.T) {
+	type childRes struct{ Name string }
+	type childOut struct {
+		Name *string `json:"name,omitempty"`
+	}
+	type mapRes struct{ Children map[string][]childRes }
+	type mapResp struct {
+		Auto
+		Children map[string][]childOut `json:"children,omitempty"`
+	}
+	if r := AutoFromResultReason(reflect.TypeOf(mapRes{}), reflect.TypeOf(mapResp{})); r != "" {
+		t.Fatalf("map with convertible values must auto-map, got %q", r)
+	}
+	got := AutoFromResult[mapResp](mapRes{Children: map[string][]childRes{
+		"addresses": {{Name: "home"}, {Name: "work"}},
+	}})
+	kids := got.Children["addresses"]
+	if len(kids) != 2 || kids[0].Name == nil || *kids[0].Name != "home" {
+		t.Fatalf("map values did not travel: %#v", got.Children)
+	}
+
+	type keyResp struct {
+		Auto
+		Children map[int][]childOut `json:"children,omitempty"`
+	}
+	if r := AutoFromResultReason(reflect.TypeOf(mapRes{}), reflect.TypeOf(keyResp{})); r == "" {
+		t.Fatal("a different map KEY type must be refused")
 	}
 }

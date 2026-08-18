@@ -185,6 +185,10 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
             <code>float32</code> → <code>float64</code> (out of range leaves the field zero)</td></tr>
         <tr><td><code>domain.ID</code> ↔ <code>string</code></td><td>the ID's value IS its string form</td></tr>
         <tr><td>Struct → struct, slice → slice</td><td>resolved recursively by the same rules</td></tr>
+        <tr><td>Map → map, same key type</td><td><code>map[string][]ChildResult</code> →
+            <code>map[string][]ChildOutput</code> — the values travel by the same rules. A different
+            KEY type is refused: the key is what a consumer indexes by, so converting it would change
+            the shape the caller reads.</td></tr>
     </tbody></table>
     <p>
         What forces the hand-written seat is a field whose two sides DIFFER while one of them owns its

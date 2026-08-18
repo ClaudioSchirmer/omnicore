@@ -165,6 +165,13 @@ with `1.0.0`.
     is opt-in; the reference service exercises it on the surfaces that rename a
     field or fold a flat wire address into a nested Command value.
 
+  Supported field shapes: identical types, pointer wrapping/unwrapping,
+  same-family numeric conversion, `domain.ID` ↔ `string`, struct → struct,
+  slice → slice and map → map under an identical key type (the values travel by
+  the same rules; a different key type is refused, since the key is what a
+  consumer indexes by). The engine behind both seats lives in one place
+  (`internal/fieldcopy`).
+
   Migration: embed the marker on every DTO that used `responses.Map`, and
   rename the call to `AutoFromResult`. `queryschema.ValidateResultAlignment` is
   now alignment-only — the "no json tags on a Result" half moved to
