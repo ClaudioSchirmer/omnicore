@@ -19,7 +19,7 @@ import (
 // pointer fields. The canonical usage mirrors the command side:
 //
 //	func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUsersByParamsResponse {
-//	    return fwresponses.Map[FindUsersByParamsResponse](r)
+//	    return fwresponses.AutoFromResult[FindUsersByParamsResponse](r)
 //	}
 //
 // A Response that needs renaming or reshaping beyond the tags writes its
@@ -43,34 +43,42 @@ import (
 // The Result↔Response name alignment is boot-guarded by the constructors
 // (queryschema.ValidateResultAlignment), so a Response field with no Result
 // backing fails at mount, not silently at runtime.
-func Map[TResp any](result any) TResp {
+func AutoFromResult[TResp AutoMapper, TResult any](result TResult) TResp {
 	var out TResp
 	plan := planFor(reflect.TypeOf(out))
-	// The compiled per-pair copier (map_direct.go) replaces the JSON
-	// render→remap→decode trip whenever the pair's shape provably copies
-	// wire-identically; an unsupported pair keeps the legacy trip, decided
-	// once and cached per (source, destination) type pair.
 	srcV := reflect.ValueOf(result)
 	for srcV.Kind() == reflect.Pointer && !srcV.IsNil() {
 		srcV = srcV.Elem()
 	}
-	if cp := pairCopierFor(srcTypeOf(srcV), reflect.TypeOf(out)); cp != nil {
-		cp(srcV, reflect.ValueOf(&out).Elem())
-	} else {
-		doc := goDocOf(result)
-		renamed := remapDoc(doc, plan)
-		if raw, err := json.Marshal(renamed); err == nil {
-			_ = json.Unmarshal(raw, &out)
-		}
+	respType := reflect.TypeOf(out)
+	if !srcV.IsValid() || (srcV.Kind() == reflect.Pointer && srcV.IsNil()) {
+		// No Result to read (a nil pointer Result). There is nothing to copy
+		// and nothing wrong with the pair — answer the zero Response, with the
+		// normalizations below still applied so the wire shape stays regular.
+		normalizeSlices(reflect.ValueOf(&out).Elem(), plan)
+		convergeEnums(reflect.ValueOf(&out).Elem(), plan)
+		return out
 	}
+	cp := pairCopierFor(srcTypeOf(srcV), respType)
+	if cp == nil {
+		// The route constructors validate this very pair at Mount, so a
+		// service wired through them never reaches here. What does is a Map
+		// call the framework never saw — a hand-rolled handler or a test —
+		// carrying a pair that cannot be copied. That is a declaration the
+		// type cannot honor (it embedded Auto), so it fails loudly with the
+		// diagnostic the boot guard would have printed, rather than quietly
+		// costing a serialization round trip on every request.
+		panic(FormatAutoFromResultGuard(reflect.TypeOf(result), respType,
+			AutoFromResultReason(reflect.TypeOf(result), respType)))
+	}
+	cp(srcV, reflect.ValueOf(&out).Elem())
 	normalizeSlices(reflect.ValueOf(&out).Elem(), plan)
 	convergeEnums(reflect.ValueOf(&out).Elem(), plan)
 	return out
 }
 
 // srcTypeOf answers the concrete struct type behind a (deref'd) source value,
-// or nil when there is none — a nil result or a non-struct source keeps the
-// legacy path.
+// or nil when there is none.
 func srcTypeOf(v reflect.Value) reflect.Type {
 	if !v.IsValid() || v.Kind() != reflect.Struct {
 		return nil

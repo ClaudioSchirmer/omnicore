@@ -27,6 +27,7 @@ type sparseAddress struct {
 }
 
 type sparseUser struct {
+	responses.Auto
 	ID        *string         `json:"id,omitempty"`
 	Name      *string         `json:"name,omitempty"`
 	Email     *string         `json:"email,omitempty"`
@@ -37,17 +38,18 @@ type sparseUser struct {
 // FromResult is the canonical consumer projector: the generic name-based
 // Result→Response mapper.
 func (sparseUser) FromResult(r testUserResult) sparseUser {
-	return responses.Map[sparseUser](r)
+	return responses.AutoFromResult[sparseUser](r)
 }
 
 type guardNonPointerScalar struct {
+	responses.Auto
 	Name string `json:"name,omitempty"`
 }
 
 // FromResult exists only so the boot-guard fixture can be mounted the same
 // way a real Response is — the guard panics before it is ever invoked.
 func (guardNonPointerScalar) FromResult(r testUserResult) guardNonPointerScalar {
-	return responses.Map[guardNonPointerScalar](r)
+	return responses.AutoFromResult[guardNonPointerScalar](r)
 }
 
 // ─── QueryWithParams boot guard integration ──────────────────────────

@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -98,11 +99,12 @@ type scalarSliceResult struct {
 }
 
 type scalarSliceResponse struct {
+	Auto
 	Tags []string `json:"tags"`
 }
 
 func TestMap_ScalarSlicePresentPassesThrough(t *testing.T) {
-	got := Map[scalarSliceResponse](scalarSliceResult{Tags: []string{"a", "b"}})
+	got := AutoFromResult[scalarSliceResponse](scalarSliceResult{Tags: []string{"a", "b"}})
 	if len(got.Tags) != 2 || got.Tags[0] != "a" {
 		t.Fatalf("scalar slice should pass through, got %+v", got.Tags)
 	}
@@ -146,12 +148,13 @@ type unexportedFieldResult struct {
 }
 
 type unexportedFieldResponse struct {
+	Auto
 	Name   string `json:"name"`
 	secret string //nolint:unused // exercised via reflection (must be skipped)
 }
 
 func TestBuildPlan_SkipsUnexportedNonAnonymousField(t *testing.T) {
-	got := Map[unexportedFieldResponse](unexportedFieldResult{Name: "n"})
+	got := AutoFromResult[unexportedFieldResponse](unexportedFieldResult{Name: "n"})
 	if got.Name != "n" {
 		t.Errorf("Name: want n, got %q", got.Name)
 	}
@@ -160,16 +163,10 @@ func TestBuildPlan_SkipsUnexportedNonAnonymousField(t *testing.T) {
 	}
 }
 
-// A non-struct TResp yields a nil plan, so normalizeSlices returns at its
-// plan==nil guard and the JSON round-trip is a best-effort no-op.
-func TestMap_NonStructType_NilPlanNoOp(t *testing.T) {
-	type Result struct {
-		X int
-	}
-	if got := Map[int](Result{X: 1}); got != 0 {
-		t.Errorf("non-struct TResp must yield the zero value, got %d", got)
-	}
-}
+// A non-struct Response can no longer reach Map at all: the AutoMapper
+// constraint rejects it at COMPILE time (only a struct can embed Auto), so the
+// old "nil plan, best-effort no-op" path is unreachable by construction. The
+// nil-plan guards themselves stay covered by planFor's own test below.
 
 // normalizeSlices returns early on an invalid reflect.Value (the !v.IsValid()
 // guard) — called directly with a non-nil plan to isolate the branch.
@@ -183,7 +180,7 @@ func TestNormalizeSlices_InvalidValueReturns(t *testing.T) {
 // normalizeSlices' fkSliceOfStruct deref loop (the Result carries a nil element,
 // which marshals to null and unmarshals back to a nil *innerNorm).
 func TestNormalizeSlices_SliceOfPointerStruct_NilElementSkipped(t *testing.T) {
-	got := Map[sliceOfPtrResponse](sliceOfPtrResult{Items: []*innerNormResult{nil}})
+	got := AutoFromResult[sliceOfPtrResponse](sliceOfPtrResult{Items: []*innerNormResult{nil}})
 	if len(got.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(got.Items))
 	}
@@ -201,14 +198,26 @@ type malformedInnerResult struct {
 }
 
 type wrapperResponse struct {
+	Auto
 	Inner innerNorm `json:"inner"`
 }
 
-func TestMap_StructSourceNotAMapPassesThrough(t *testing.T) {
-	got := Map[wrapperResponse](malformedInnerResult{Inner: "scalar"})
-	if got.Inner.Tags == nil {
-		t.Error("nested slice should still normalize to empty even when source was malformed")
-	}
+// A Response that declares Auto over a field it cannot receive (a struct slot
+// fed by a scalar) is a contract violation, not a silent zero: the pair is
+// refused with the same diagnostic the boot guard prints. This used to pass
+// through as an empty struct, which is exactly the silence the marker removed.
+func TestMap_StructSourceNotAMapIsRefused(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("a non-convertible field pair must be refused, not silently zeroed")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "auto-map") || !strings.Contains(msg, "Inner") {
+			t.Fatalf("diagnostic must name the offending field, got: %v", r)
+		}
+	}()
+	_ = AutoFromResult[wrapperResponse](malformedInnerResult{Inner: "scalar"})
 }
 
 // convergeEnums early-return guards: nil plan and invalid value must be no-ops.

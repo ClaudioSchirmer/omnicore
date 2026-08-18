@@ -36,6 +36,7 @@ type wResult struct {
 }
 
 type wResp struct {
+	Auto
 	Name wName  `json:"name"`
 	Tier wTier  `json:"tier"`
 	Rank *wTier `json:"rank,omitempty"`
@@ -47,7 +48,7 @@ type wResp struct {
 // ResultFromDoc converge.
 func TestMap_ValueObjects(t *testing.T) {
 	// valid data: raw VO passes through, enum member preserved
-	r := Map[wResp](wResult{Name: "Ada", Tier: wTierGold})
+	r := AutoFromResult[wResp](wResult{Name: "Ada", Tier: wTierGold})
 	if r.Name != wName("Ada") {
 		t.Errorf("Name = %q want Ada", r.Name)
 	}
@@ -57,17 +58,17 @@ func TestMap_ValueObjects(t *testing.T) {
 
 	// out-of-set enum → Unknown (a stale/tampered Result value never surfaces
 	// as a phantom member on the wire)
-	if got := Map[wResp](wResult{Tier: 99}); got.Tier != wTierUnknown {
+	if got := AutoFromResult[wResp](wResult{Tier: 99}); got.Tier != wTierUnknown {
 		t.Errorf("Tier(99) = %d want wTierUnknown (converge)", got.Tier)
 	}
 
 	// nullable enum: nil → nil (untouched — absence, not Unknown), out-of-set
 	// pointed-to value → &Unknown
-	if got := Map[wResp](wResult{Tier: wTierGold}); got.Rank != nil {
+	if got := AutoFromResult[wResp](wResult{Tier: wTierGold}); got.Rank != nil {
 		t.Errorf("Rank nil = %v want nil", got.Rank)
 	}
 	bad := wTier(99)
-	if got := Map[wResp](wResult{Tier: wTierGold, Rank: &bad}); got.Rank == nil || *got.Rank != wTierUnknown {
+	if got := AutoFromResult[wResp](wResult{Tier: wTierGold, Rank: &bad}); got.Rank == nil || *got.Rank != wTierUnknown {
 		t.Errorf("Rank(99) = %v want &wTierUnknown", got.Rank)
 	}
 }
@@ -89,12 +90,13 @@ type wSegResp struct {
 }
 
 type wNestedResp struct {
+	Auto
 	Segment  wSegResp   `json:"segment"`
 	Segments []wSegResp `json:"segments"`
 }
 
 func TestMap_EnumConverge_NestedDepths(t *testing.T) {
-	got := Map[wNestedResp](wNestedResult{
+	got := AutoFromResult[wNestedResp](wNestedResult{
 		Segment:  wSegResult{Tier: 99},
 		Segments: []wSegResult{{Tier: wTierGold}, {Tier: 42}},
 	})

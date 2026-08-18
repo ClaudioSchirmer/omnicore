@@ -71,6 +71,8 @@ func CommandWithBody[
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	pathSchema := inspectPathTags(reqType)
 	strict, expectedKeys := inspectHandler[TReq](h)
+	validateResponseMapping(reflect.TypeOf((*TResult)(nil)).Elem(), reflect.TypeOf((*TResp)(nil)).Elem())
+	validateRequestMapping(reqType, reflect.TypeOf((*TCmdPtr)(nil)).Elem())
 	warnGroupAMissingPathTag(h, "CommandWithBody", reqType, pathSchema)
 	return func(c fiber.Ctx) error {
 		body := c.Body()
@@ -140,6 +142,8 @@ func CommandWithBodyID[
 		panic(formatPathIDConflict("CommandWithBodyID", reqType))
 	}
 	strict, expectedKeys := inspectHandler[TReq](h)
+	validateResponseMapping(reflect.TypeOf((*TResult)(nil)).Elem(), reflect.TypeOf((*TResp)(nil)).Elem())
+	validateRequestMapping(reqType, reflect.TypeOf((*TCmdPtr)(nil)).Elem())
 	return func(c fiber.Ctx) error {
 		body := c.Body()
 

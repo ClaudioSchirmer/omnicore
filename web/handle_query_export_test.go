@@ -68,6 +68,7 @@ type expAddressResponse struct {
 // Name carries an exportLabelKey so its header renders through the
 // Translator; every other column falls back to its json wire name.
 type expUserResponse struct {
+	responses.Auto
 	ID        *string              `json:"id,omitempty"`
 	Name      *string              `json:"name,omitempty" exportLabelKey:"UserNameField"`
 	Email     *string              `json:"email,omitempty"`
@@ -75,7 +76,7 @@ type expUserResponse struct {
 }
 
 func (expUserResponse) FromResult(r expUserResult) expUserResponse {
-	return responses.Map[expUserResponse](r)
+	return responses.AutoFromResult[expUserResponse](r)
 }
 
 type expCSVQuery struct {

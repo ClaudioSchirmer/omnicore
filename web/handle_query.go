@@ -50,10 +50,8 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 	for resultType.Kind() == reflect.Pointer {
 		resultType = resultType.Elem()
 	}
+	validateResponseMapping(resultType, respType)
 	if respType.Kind() == reflect.Struct {
-		if errs := queryschema.ValidateResultAlignment(resultType, respType); len(errs) > 0 {
-			panic(queryschema.FormatResultAlignmentGuard(resultType, respType, errs))
-		}
 		if errs := queryschema.ValidateComputedSources(resultType, respType); len(errs) > 0 {
 			panic(queryschema.FormatComputedSourcesGuard(resultType, respType, errs))
 		}
@@ -61,7 +59,6 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 			panic(queryschema.FormatComputedFiltersGuard(reqType, respType, errs))
 		}
 	}
-	warnMappingFallback(reqType, resultType, respType)
 	// projSchema is the Response-side mapping (wire path → doc path) used to
 	// validate and translate `?fields=` AND `?orderBy=` values when the Request
 	// DTO opts in to either parameter. Built once and shared between the two
@@ -224,12 +221,7 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any
 	for resultType.Kind() == reflect.Pointer {
 		resultType = resultType.Elem()
 	}
-	if respType.Kind() == reflect.Struct {
-		if errs := queryschema.ValidateResultAlignment(resultType, respType); len(errs) > 0 {
-			panic(queryschema.FormatResultAlignmentGuard(resultType, respType, errs))
-		}
-	}
-	warnMappingFallback(reqType, resultType, respType)
+	validateResponseMapping(resultType, respType)
 	includeArchivedOptIn := queryschema.ExtractRequestSchema(reqType).Reserved[queryschema.KeyIncludeArchived]
 	return func(c fiber.Ctx) error {
 		if bad, ok := validateByIDQuery(c, includeArchivedOptIn); !ok {

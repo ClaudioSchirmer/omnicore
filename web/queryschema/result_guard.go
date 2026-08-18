@@ -38,9 +38,38 @@ func ValidateResultAlignment(resultType, respType reflect.Type) []string {
 		errs = append(errs, fmt.Sprintf("result type %s is not a struct", resultType.String()))
 		return errs
 	}
-	walkResultTags(resultType, "", &errs, map[reflect.Type]bool{})
 	walkAlignment(resultType, respType, "", &errs, map[reflect.Type]bool{})
 	return errs
+}
+
+// ValidateResultPurity checks the half of the contract that binds EVERY
+// Result, auto-mapped or not: an application-layer Result carries no json wire
+// tags (the three-name model — wire naming lives in web/). Split out of
+// ValidateResultAlignment because that one answers "does this Response line up
+// with this Result", a question only an auto-mapped Response asks, while this
+// one is a property of the Result alone.
+func ValidateResultPurity(resultType reflect.Type) []string {
+	var errs []string
+	resultType = derefType(resultType)
+	if resultType.Kind() != reflect.Struct {
+		return errs
+	}
+	walkResultTags(resultType, "", &errs, map[reflect.Type]bool{})
+	return errs
+}
+
+// FormatResultPurityGuard assembles the boot-panic diagnostic for json tags
+// found on an application-layer Result.
+func FormatResultPurityGuard(resultType reflect.Type, errs []string) string {
+	sortedErrs := append([]string(nil), errs...)
+	sort.Strings(sortedErrs)
+	var b strings.Builder
+	fmt.Fprintf(&b, "[result] %s carries wire tags:\n", resultType.String())
+	for _, line := range sortedErrs {
+		fmt.Fprintf(&b, "  - %s\n", line)
+	}
+	b.WriteString("An application-layer Result is wire-agnostic — json tags belong to the Response DTO in web/ (the three-name model). Drop the tags from the Result.")
+	return b.String()
 }
 
 // FormatResultAlignmentGuard assembles the boot-panic diagnostic for a
@@ -54,7 +83,7 @@ func FormatResultAlignmentGuard(resultType, respType reflect.Type, errs []string
 	for _, line := range sortedErrs {
 		fmt.Fprintf(&b, "  - %s\n", line)
 	}
-	b.WriteString("Every Response field maps from the same-named Result field (the generic TResult→TResp mapper is name-based), and the Result carries no wire tags — declare the field on the Result, or drop it from the Response.")
+	b.WriteString("This Response declares fwresponses.Auto, so every field maps from the same-named Result field — declare the field on the Result, drop it from the Response, or drop fwresponses.Auto and write FromResult by hand.")
 	return b.String()
 }
 

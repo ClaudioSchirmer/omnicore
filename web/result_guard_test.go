@@ -59,12 +59,13 @@ func (guardAlignHandler) Handle(_ *configuration.AppContext, _ *guardAlignQuery)
 // guardUnbackedResponse declares Nickname, which no Result field backs — the
 // mapper would silently emit a permanently empty wire field.
 type guardUnbackedResponse struct {
+	responses.Auto
 	ID       *string `json:"id,omitempty"`
 	Nickname *string `json:"nickname,omitempty"`
 }
 
 func (guardUnbackedResponse) FromResult(r guardAlignResult) guardUnbackedResponse {
-	return responses.Map[guardUnbackedResponse](r)
+	return responses.AutoFromResult[guardUnbackedResponse](r)
 }
 
 func TestQueryWithParams_BootPanicsOnUnbackedResponseField(t *testing.T) {
@@ -163,12 +164,13 @@ func (guardTaggedHandler) Handle(_ *configuration.AppContext, _ *guardTaggedQuer
 
 // guardTaggedResponse is perfectly aligned — the violation is on the Result.
 type guardTaggedResponse struct {
+	responses.Auto
 	ID   *string `json:"id,omitempty"`
 	Name *string `json:"name,omitempty"`
 }
 
 func (guardTaggedResponse) FromResult(r guardTaggedResult) guardTaggedResponse {
-	return responses.Map[guardTaggedResponse](r)
+	return responses.AutoFromResult[guardTaggedResponse](r)
 }
 
 func TestQueryWithParams_BootPanicsOnJSONTaggedResultField(t *testing.T) {
@@ -229,12 +231,13 @@ func (guardSparseHandler) Handle(_ *configuration.AppContext, _ *guardSparseQuer
 // ,omitempty), so the Response-side guard passes and the Result-side guard is
 // unambiguously the one that fires.
 type guardSparseResponse struct {
+	responses.Auto
 	ID   *string `json:"id,omitempty"`
 	Name *string `json:"name,omitempty"`
 }
 
 func (guardSparseResponse) FromResult(r guardSparseResult) guardSparseResponse {
-	return responses.Map[guardSparseResponse](r)
+	return responses.AutoFromResult[guardSparseResponse](r)
 }
 
 func TestQueryWithParams_BootPanicsOnNonPointerResultFieldWithFields(t *testing.T) {

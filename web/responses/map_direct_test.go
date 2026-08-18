@@ -64,6 +64,7 @@ type dEmbedResp struct {
 }
 
 type dResp struct {
+	Auto
 	dEmbedResp
 
 	ID       string       `json:"id"` // domain.ID → string
@@ -112,7 +113,7 @@ func dFixture() dResult {
 
 func TestDirectMap_ParityWithLegacyTrip(t *testing.T) {
 	in := dFixture()
-	got := Map[dResp](in)
+	got := AutoFromResult[dResp](in)
 	want := legacyMap[dResp](in)
 	if !reflect.DeepEqual(got, want) {
 		gotJSON, _ := json.Marshal(got)
@@ -138,7 +139,7 @@ func TestDirectMap_ParityWithLegacyTrip(t *testing.T) {
 
 func TestDirectMap_ParityOnZeroAndNilShapes(t *testing.T) {
 	in := dResult{} // everything zero: nil slices, nil pointers, zero scalars
-	got := Map[dResp](in)
+	got := AutoFromResult[dResp](in)
 	want := legacyMap[dResp](in)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("zero-value copy diverged:\n got: %#v\nwant: %#v", got, want)
@@ -156,43 +157,52 @@ func TestDirectMap_ParityOnZeroAndNilShapes(t *testing.T) {
 func TestDirectMap_OverflowLeavesZero(t *testing.T) {
 	type nRes struct{ N int64 }
 	type nResp struct {
+		Auto
 		N int8 `json:"n"`
 	}
-	got := Map[nResp](nRes{N: 300})
+	got := AutoFromResult[nResp](nRes{N: 300})
 	want := legacyMap[nResp](nRes{N: 300})
 	if got.N != want.N || got.N != 0 {
 		t.Fatalf("expected zero on overflow (legacy parity), got %d want %d", got.N, want.N)
 	}
-	ok := Map[nResp](nRes{N: 42})
+	ok := AutoFromResult[nResp](nRes{N: 42})
 	if ok.N != 42 {
 		t.Fatalf("expected the in-range value copied, got %d", ok.N)
 	}
 }
 
-// A pair the compiler cannot prove copy-equivalent (time.Time source into a
-// string destination — a type-owned codec across different types) falls back
-// to the legacy JSON path and still renders correctly.
-func TestDirectMap_UnsupportedPairFallsBackToLegacy(t *testing.T) {
+// A pair the copier cannot prove equivalent (time.Time into a string — only
+// the type's own JSON codec knows the RFC 3339 rendering) is REFUSED. There is
+// no serialization fallback: a Response that declared Auto over a field it
+// cannot receive is a contract violation, surfaced with the field named.
+func TestDirectMap_UnsupportedPairIsRefused(t *testing.T) {
 	type tRes struct{ When time.Time }
 	type tResp struct {
+		Auto
 		When string `json:"when"`
 	}
-	in := tRes{When: time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)}
-	got := Map[tResp](in)
-	if got.When != "2024-12-31T23:59:59Z" {
-		t.Fatalf("expected the legacy fallback to render the RFC 3339 form, got %q", got.When)
+	reason := AutoFromResultReason(reflect.TypeOf(tRes{}), reflect.TypeOf(tResp{}))
+	if reason == "" {
+		t.Fatal("time.Time -> string must not be auto-mappable")
 	}
-	if pairCopierFor(reflect.TypeOf(tRes{}), reflect.TypeOf(tResp{})) != nil {
-		t.Fatal("expected the pair marked unsupported (legacy path)")
+	if !strings.Contains(reason, "When") || !strings.Contains(reason, "codec") {
+		t.Fatalf("reason must name the field and the cause, got %q", reason)
 	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Map must refuse the pair instead of degrading silently")
+		}
+	}()
+	_ = AutoFromResult[tResp](tRes{When: time.Date(2024, 12, 31, 23, 59, 59, 0, time.UTC)})
 }
 
 func TestDirectMap_StringToDomainID(t *testing.T) {
 	type sRes struct{ ID string }
 	type sResp struct {
+		Auto
 		ID domain.ID `json:"id"`
 	}
-	got := Map[sResp](sRes{ID: "abc"})
+	got := AutoFromResult[sResp](sRes{ID: "abc"})
 	want := legacyMap[sResp](sRes{ID: "abc"})
 	if got.ID.Value() != "abc" || want.ID.Value() != "abc" {
 		t.Fatalf("expected the string promoted into domain.ID on both paths, got %q / %q", got.ID.Value(), want.ID.Value())
@@ -232,6 +242,7 @@ func TestDirectMap_NumericPairMatrix(t *testing.T) {
 		G int32
 	}
 	type dstAll struct {
+		Auto
 		A int64   `json:"a"` // widening int
 		B int32   `json:"b"` // narrowing int (overflow → zero)
 		C uint64  `json:"c"` // widening uint
@@ -247,7 +258,7 @@ func TestDirectMap_NumericPairMatrix(t *testing.T) {
 		{B: -3, G: 300},
 	}
 	for _, in := range cases {
-		got := Map[dstAll](in)
+		got := AutoFromResult[dstAll](in)
 		want := legacyMap[dstAll](in)
 		if got != want {
 			t.Fatalf("src %+v: direct %+v, legacy %+v", in, got, want)
@@ -255,43 +266,38 @@ func TestDirectMap_NumericPairMatrix(t *testing.T) {
 	}
 }
 
-// TestDirectMap_UnsupportedShapesFallBack proves each unsupported pair shape
-// answers a nil copier and Map still renders through the legacy trip.
-func TestDirectMap_UnsupportedShapesFallBack(t *testing.T) {
+// Each unsupported shape reports a reason (and therefore boot-fails when the
+// Response declares Auto): a map whose value type changes, an interface source
+// into a concrete field, and float -> int (whose fraction handling belongs to
+// the codec, not to a structural copy).
+func TestDirectMap_UnsupportedShapesReportReasons(t *testing.T) {
 	type mSrc struct{ M map[string]int }
 	type mDst struct {
-		M map[string]int64 `json:"m"` // map conversion: unsupported
+		Auto
+		M map[string]int64 `json:"m"`
 	}
-	if pairCopierFor(reflect.TypeOf(mSrc{}), reflect.TypeOf(mDst{})) != nil {
-		t.Fatal("map-of-different-value pair must be unsupported")
-	}
-	got := Map[mDst](mSrc{M: map[string]int{"k": 3}})
-	if got.M["k"] != 3 {
-		t.Fatalf("legacy fallback must still map the value, got %#v", got.M)
-	}
-
 	type iSrc struct{ V any }
 	type iDst struct {
-		V string `json:"v"` // interface source into concrete: unsupported
+		Auto
+		V string `json:"v"`
 	}
-	if pairCopierFor(reflect.TypeOf(iSrc{}), reflect.TypeOf(iDst{})) != nil {
-		t.Fatal("interface-source pair must be unsupported")
-	}
-	if got := Map[iDst](iSrc{V: "x"}); got.V != "x" {
-		t.Fatalf("legacy fallback must still render, got %q", got.V)
-	}
-
 	type fSrc struct{ F float64 }
 	type fDst struct {
-		F int64 `json:"f"` // float → int: unsupported (fraction semantics)
+		Auto
+		F int64 `json:"f"`
 	}
-	if pairCopierFor(reflect.TypeOf(fSrc{}), reflect.TypeOf(fDst{})) != nil {
-		t.Fatal("float→int pair must be unsupported")
+	cases := []struct {
+		name     string
+		src, dst reflect.Type
+	}{
+		{"map value type changes", reflect.TypeOf(mSrc{}), reflect.TypeOf(mDst{})},
+		{"interface source", reflect.TypeOf(iSrc{}), reflect.TypeOf(iDst{})},
+		{"float -> int", reflect.TypeOf(fSrc{}), reflect.TypeOf(fDst{})},
 	}
-	gotInt := Map[fDst](fSrc{F: 5})
-	wantInt := legacyMap[fDst](fSrc{F: 5})
-	if gotInt != wantInt {
-		t.Fatalf("fallback parity: direct %+v, legacy %+v", gotInt, wantInt)
+	for _, c := range cases {
+		if reason := AutoFromResultReason(c.src, c.dst); reason == "" {
+			t.Errorf("%s: expected the pair refused, got no reason", c.name)
+		}
 	}
 }
 
@@ -303,13 +309,14 @@ func TestDirectMap_IdenticalMapsAndInterfaces(t *testing.T) {
 		V any
 	}
 	type xDst struct {
+		Auto
 		M map[string]int `json:"m"`
 		V any            `json:"v"`
 	}
 	if pairCopierFor(reflect.TypeOf(xSrc{}), reflect.TypeOf(xDst{})) == nil {
 		t.Fatal("identical-typed fields must compile a copier")
 	}
-	got := Map[xDst](xSrc{M: map[string]int{"k": 1}, V: "s"})
+	got := AutoFromResult[xDst](xSrc{M: map[string]int{"k": 1}, V: "s"})
 	if got.M["k"] != 1 || got.V != "s" {
 		t.Fatalf("identical types must copy through, got %#v", got)
 	}
@@ -322,13 +329,14 @@ func TestDirectMap_PointerChains(t *testing.T) {
 		B *int32
 	}
 	type pDst struct {
+		Auto
 		A *string `json:"a,omitempty"`
 		B int64   `json:"b"`
 	}
 	s := "deep"
 	sp := &s
 	in := pSrc{A: &sp, B: nil}
-	got := Map[pDst](in)
+	got := AutoFromResult[pDst](in)
 	want := legacyMap[pDst](in)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("pointer-chain parity: direct %#v, legacy %#v", got, want)
@@ -342,7 +350,7 @@ func BenchmarkMap_Direct(b *testing.B) {
 	in := dFixture()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = Map[dResp](in)
+		_ = AutoFromResult[dResp](in)
 	}
 }
 
@@ -364,6 +372,7 @@ func TestDirectMap_WireNamesComeFromTags(t *testing.T) {
 		ID, Code, Name, Category, Status *string
 	}
 	type gadgetResp struct {
+		Auto
 		ID       *string `json:"id,omitempty"`
 		Code     *string `json:"code,omitempty"`
 		Name     *string `json:"name,omitempty"`
@@ -373,7 +382,7 @@ func TestDirectMap_WireNamesComeFromTags(t *testing.T) {
 	s := func(v string) *string { return &v }
 	in := gadgetResult{ID: s("g1"), Code: s("RX-1"), Name: s("Read Extra 1"), Category: s("rx"), Status: s("active")}
 
-	directJSON, _ := json.Marshal(Map[gadgetResp](in))
+	directJSON, _ := json.Marshal(AutoFromResult[gadgetResp](in))
 	legacyJSON, _ := json.Marshal(legacyMap[gadgetResp](in))
 	if string(directJSON) != string(legacyJSON) {
 		t.Fatalf("paths disagree:\n direct: %s\n legacy: %s", directJSON, legacyJSON)
@@ -384,15 +393,15 @@ func TestDirectMap_WireNamesComeFromTags(t *testing.T) {
 	}
 }
 
-// TestMappingFallbackReason_NamesTheBlockingField proves the diagnostic seat
+// TestAutoFromResultReason_NamesTheBlockingField proves the diagnostic seat
 // the boot advisory consults: "" when the pair is optimized, and otherwise a
 // reason naming the Response field that forced the JSON fallback.
-func TestMappingFallbackReason_NamesTheBlockingField(t *testing.T) {
-	if r := MappingFallbackReason(reflect.TypeOf(dResult{}), reflect.TypeOf(dResp{})); r != "" {
+func TestAutoFromResultReason_NamesTheBlockingField(t *testing.T) {
+	if r := AutoFromResultReason(reflect.TypeOf(dResult{}), reflect.TypeOf(dResp{})); r != "" {
 		t.Fatalf("the supported pair must report no reason, got %q", r)
 	}
 	// Pointers on either side deref to the same verdict.
-	if r := MappingFallbackReason(reflect.TypeOf(&dResult{}), reflect.TypeOf(&dResp{})); r != "" {
+	if r := AutoFromResultReason(reflect.TypeOf(&dResult{}), reflect.TypeOf(&dResp{})); r != "" {
 		t.Fatalf("pointer types must deref to the same verdict, got %q", r)
 	}
 
@@ -404,7 +413,7 @@ func TestMappingFallbackReason_NamesTheBlockingField(t *testing.T) {
 		ID   string `json:"id"`
 		When string `json:"when"`
 	}
-	r := MappingFallbackReason(reflect.TypeOf(badResult{}), reflect.TypeOf(badResp{}))
+	r := AutoFromResultReason(reflect.TypeOf(badResult{}), reflect.TypeOf(badResp{}))
 	if !strings.Contains(r, "When") || !strings.Contains(r, "codec") {
 		t.Fatalf("reason must name the field and the cause, got %q", r)
 	}
@@ -418,20 +427,20 @@ func TestMappingFallbackReason_NamesTheBlockingField(t *testing.T) {
 	type outerResp struct {
 		Inner innerResp `json:"inner"`
 	}
-	nested := MappingFallbackReason(reflect.TypeOf(outerResult{}), reflect.TypeOf(outerResp{}))
+	nested := AutoFromResultReason(reflect.TypeOf(outerResult{}), reflect.TypeOf(outerResp{}))
 	if !strings.Contains(nested, "Inner") || !strings.Contains(nested, "Score") {
 		t.Fatalf("nested reason must carry the path, got %q", nested)
 	}
 }
 
-func TestMappingFallbackReason_NonStructShapes(t *testing.T) {
-	if r := MappingFallbackReason(reflect.TypeOf(map[string]any{}), reflect.TypeOf(dResp{})); !strings.Contains(r, "not a struct") {
+func TestAutoFromResultReason_NonStructShapes(t *testing.T) {
+	if r := AutoFromResultReason(reflect.TypeOf(map[string]any{}), reflect.TypeOf(dResp{})); !strings.Contains(r, "not a struct") {
 		t.Fatalf("a map Result must be reported, got %q", r)
 	}
-	if r := MappingFallbackReason(reflect.TypeOf(dResult{}), reflect.TypeOf("")); !strings.Contains(r, "not a struct") {
+	if r := AutoFromResultReason(reflect.TypeOf(dResult{}), reflect.TypeOf("")); !strings.Contains(r, "not a struct") {
 		t.Fatalf("a non-struct Response must be reported, got %q", r)
 	}
-	if r := MappingFallbackReason(nil, nil); !strings.Contains(r, "not a struct") {
+	if r := AutoFromResultReason(nil, nil); !strings.Contains(r, "not a struct") {
 		t.Fatalf("nil types must be reported, got %q", r)
 	}
 }

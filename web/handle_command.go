@@ -54,6 +54,7 @@ func CommandByID[
 	h pipeline.Handler[TCmdPtr, TResult],
 	successStatus int,
 ) fiber.Handler {
+	validateResponseMapping(reflect.TypeOf((*TResult)(nil)).Elem(), reflect.TypeOf((*TResp)(nil)).Elem())
 	return func(c fiber.Ctx) error {
 		cmd := TCmdPtr(new(TCmd))
 		cmd.SetPathID(c.Params("id"))

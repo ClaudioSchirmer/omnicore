@@ -49,11 +49,12 @@ func (specParamsReq) ToQuery(criteria queries.ReadCriteria) *specParamsQuery {
 
 // specPageItem is the wire Response — the shape the RouteSpec advertises.
 type specPageItem struct {
+	responses.Auto
 	ID string `json:"id"`
 }
 
 func (specPageItem) FromResult(r specResult) specPageItem {
-	return responses.Map[specPageItem](r)
+	return responses.AutoFromResult[specPageItem](r)
 }
 
 type specParamsHandler struct{}

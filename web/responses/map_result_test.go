@@ -46,6 +46,7 @@ type addrFixture struct {
 }
 
 type userFixture struct {
+	Auto
 	ID        string        `json:"id"`
 	Name      string        `json:"name"`
 	Email     string        `json:"email"`
@@ -77,7 +78,7 @@ func TestMap_HappyPath_AllFieldsPopulated(t *testing.T) {
 			Country:      "US",
 		}},
 	}
-	got := Map[userFixture](r)
+	got := AutoFromResult[userFixture](r)
 
 	if got.ID != "user-1" {
 		t.Errorf("ID: want user-1, got %q", got.ID)
@@ -134,9 +135,10 @@ func TestMap_JSONTag_RenamesToWireName(t *testing.T) {
 		Nickname string
 	}
 	type R struct {
+		Auto
 		Nickname string `json:"apelido"`
 	}
-	got := Map[R](Result{Nickname: "Janete"})
+	got := AutoFromResult[R](Result{Nickname: "Janete"})
 	if got.Nickname != "Janete" {
 		t.Errorf("json rename failed — want Janete, got %q", got.Nickname)
 	}
@@ -152,10 +154,11 @@ func TestMap_NoJSONTag_FallsBackToGoFieldName(t *testing.T) {
 		ZipCode string
 	}
 	type R struct {
+		Auto
 		Name    string
 		ZipCode string
 	}
-	got := Map[R](Result{Name: "Alice", ZipCode: "12345"})
+	got := AutoFromResult[R](Result{Name: "Alice", ZipCode: "12345"})
 	if got.Name != "Alice" {
 		t.Errorf("Go field name fallback (Name): want Alice, got %q", got.Name)
 	}
@@ -169,9 +172,10 @@ func TestMap_JSONTagWithOmitempty_NameOnlyTakesFirstSegment(t *testing.T) {
 		Phone string
 	}
 	type R struct {
+		Auto
 		Phone string `json:"phone,omitempty"`
 	}
-	got := Map[R](Result{Phone: "555"})
+	got := AutoFromResult[R](Result{Phone: "555"})
 	if got.Phone != "555" {
 		t.Errorf(",omitempty stripping failed — want 555, got %q", got.Phone)
 	}
@@ -183,10 +187,11 @@ func TestMap_JSONTagSkipsField(t *testing.T) {
 		Secret string
 	}
 	type R struct {
+		Auto
 		ID     string `json:"id"`
 		Secret string `json:"-"`
 	}
-	got := Map[R](Result{ID: "x", Secret: "leak"})
+	got := AutoFromResult[R](Result{ID: "x", Secret: "leak"})
 	if got.ID != "x" {
 		t.Errorf("ID: want x, got %q", got.ID)
 	}
@@ -206,9 +211,10 @@ func TestMap_ResultFieldsAbsentFromResponse_Dropped(t *testing.T) {
 		Internal  string
 	}
 	type R struct {
+		Auto
 		ID string `json:"id"`
 	}
-	got := Map[R](Result{ID: "u1", Internal: "ignored"})
+	got := AutoFromResult[R](Result{ID: "u1", Internal: "ignored"})
 	if got.ID != "u1" {
 		t.Errorf("ID: want u1, got %q", got.ID)
 	}
@@ -226,10 +232,11 @@ func TestMap_NilSlice_NormalizedToEmpty(t *testing.T) {
 		Addresses []addrResult
 	}
 	type R struct {
+		Auto
 		ID        string        `json:"id"`
 		Addresses []addrFixture `json:"addresses"`
 	}
-	got := Map[R](Result{ID: "x"})
+	got := AutoFromResult[R](Result{ID: "x"})
 	if got.Addresses == nil {
 		t.Fatal("nil slice should be normalized to empty")
 	}
@@ -248,9 +255,10 @@ func TestMap_PopulatedSlice_ContentPreserved(t *testing.T) {
 		Addresses []addrResult
 	}
 	type R struct {
+		Auto
 		Addresses []addrFixture `json:"addresses"`
 	}
-	got := Map[R](Result{Addresses: []addrResult{{ID: "a1", Street: "S", ZipCode: "00000"}}})
+	got := AutoFromResult[R](Result{Addresses: []addrResult{{ID: "a1", Street: "S", ZipCode: "00000"}}})
 	if len(got.Addresses) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(got.Addresses))
 	}
@@ -264,9 +272,10 @@ func TestMap_NilScalarSlice_NormalizedToEmpty(t *testing.T) {
 		Tags []string
 	}
 	type R struct {
+		Auto
 		Tags []string `json:"tags"`
 	}
-	got := Map[R](Result{})
+	got := AutoFromResult[R](Result{})
 	if got.Tags == nil || len(got.Tags) != 0 {
 		t.Errorf("scalar slice nil not normalized — got %v", got.Tags)
 	}
@@ -287,9 +296,10 @@ func TestMap_NestedNilSlice_NormalizedInsideEachElement(t *testing.T) {
 		Tags []string `json:"tags"`
 	}
 	type R struct {
+		Auto
 		Items []Inner `json:"items"`
 	}
-	got := Map[R](Result{Items: []InnerResult{{}}}) // element with nil Tags
+	got := AutoFromResult[R](Result{Items: []InnerResult{{}}}) // element with nil Tags
 	if len(got.Items) != 1 {
 		t.Fatalf("expected 1 item")
 	}
@@ -305,9 +315,10 @@ func TestMap_PointerField_NilStaysNil(t *testing.T) {
 		Phone *string
 	}
 	type R struct {
+		Auto
 		Phone *string `json:"phone,omitempty"`
 	}
-	got := Map[R](Result{})
+	got := AutoFromResult[R](Result{})
 	if got.Phone != nil {
 		t.Errorf("nil optional should stay nil — got %v", got.Phone)
 	}
@@ -324,9 +335,10 @@ func TestMap_PointerField_PopulatedWhenPresent(t *testing.T) {
 		Phone *string
 	}
 	type R struct {
+		Auto
 		Phone *string `json:"phone,omitempty"`
 	}
-	got := Map[R](Result{Phone: &phone})
+	got := AutoFromResult[R](Result{Phone: &phone})
 	if got.Phone == nil || *got.Phone != "555" {
 		t.Errorf("present optional should populate — got %v", got.Phone)
 	}
@@ -342,11 +354,12 @@ func TestMap_SparseResult_MixedPresence(t *testing.T) {
 		Email *string
 	}
 	type R struct {
+		Auto
 		ID    *string `json:"id,omitempty"`
 		Name  *string `json:"name,omitempty"`
 		Email *string `json:"email,omitempty"`
 	}
-	got := Map[R](Result{Name: &name})
+	got := AutoFromResult[R](Result{Name: &name})
 	if got.Name == nil || *got.Name != "Jane" {
 		t.Errorf("requested field must populate — got %v", got.Name)
 	}
@@ -365,9 +378,10 @@ func TestMap_Int64Precision_SurvivesRoundTrip(t *testing.T) {
 		Count int64
 	}
 	type R struct {
+		Auto
 		Count int64 `json:"count"`
 	}
-	got := Map[R](Result{Count: big})
+	got := AutoFromResult[R](Result{Count: big})
 	if got.Count != big {
 		t.Errorf("int64 precision lost: want %d, got %d", big, got.Count)
 	}
@@ -386,10 +400,11 @@ func TestMap_Int64Precision_NestedAndUint64(t *testing.T) {
 		N int64 `json:"n"`
 	}
 	type R struct {
+		Auto
 		Items []Inner `json:"items"`
 		U     uint64  `json:"u"`
 	}
-	got := Map[R](Result{Items: []InnerResult{{N: big}}, U: 18446744073709551615})
+	got := AutoFromResult[R](Result{Items: []InnerResult{{N: big}}, U: 18446744073709551615})
 	if len(got.Items) != 1 || got.Items[0].N != big {
 		t.Errorf("nested int64 precision lost: got %+v", got.Items)
 	}
@@ -414,10 +429,11 @@ func TestMap_EmbeddedStruct_FieldsPromoted(t *testing.T) {
 		UpdatedAt string `json:"updatedAt"`
 	}
 	type R struct {
+		Auto
 		withTimestamps        // anonymous embed
 		ID             string `json:"id"`
 	}
-	got := Map[R](Result{
+	got := AutoFromResult[R](Result{
 		timestampsResult: timestampsResult{CreatedAt: "2026-06-01", UpdatedAt: "2026-06-02"},
 		ID:               "u1",
 	})
@@ -449,9 +465,10 @@ func TestMap_JSONTagInsideSliceElement_RenamesPerElement(t *testing.T) {
 		Code string `json:"codigo"`
 	}
 	type R struct {
+		Auto
 		Items []Item `json:"items"`
 	}
-	got := Map[R](Result{Items: []ItemResult{{Code: "A"}, {Code: "B"}}})
+	got := AutoFromResult[R](Result{Items: []ItemResult{{Code: "A"}, {Code: "B"}}})
 	if len(got.Items) != 2 || got.Items[0].Code != "A" || got.Items[1].Code != "B" {
 		t.Errorf("nested rename failed — got %+v", got.Items)
 	}
@@ -465,10 +482,13 @@ func TestMap_JSONTagInsideSliceElement_RenamesPerElement(t *testing.T) {
 
 func TestMap_NilResult_ReturnsZeroWithNormalizedSlices(t *testing.T) {
 	type R struct {
+		Auto
 		ID        string        `json:"id"`
 		Addresses []addrFixture `json:"addresses"`
 	}
-	got := Map[R](nil)
+	// A nil Result is now a TYPED nil (Map infers the Result type from its
+	// argument), which is the shape a handler returning *Result can produce.
+	got := AutoFromResult[R]((*addrFixture)(nil))
 	if got.ID != "" {
 		t.Errorf("ID should be empty — got %q", got.ID)
 	}
@@ -482,9 +502,10 @@ func TestMap_ZeroResult_ReturnsZeroWithNormalizedSlices(t *testing.T) {
 		Addresses []addrResult
 	}
 	type R struct {
+		Auto
 		Addresses []addrFixture `json:"addresses"`
 	}
-	got := Map[R](Result{})
+	got := AutoFromResult[R](Result{})
 	if got.Addresses == nil {
 		t.Error("Addresses slice still nil after zero result")
 	}

@@ -118,17 +118,45 @@
                 <code>web.ExportView</code> interface is now just <code>ResolveMaxExportRows</code> +
                 <code>Name</code>). See <a href="#query-side">QueryHandler · CQRS</a> and
                 <a href="#auto-query-handlers">Auto query handlers</a>.</li>
-            <li><strong>Added</strong> — <strong>a boot advisory when a Response↔Result pair misses the
-                optimized mapping.</strong> <code>fwresponses.Map</code> serves the travel with a copier
-                compiled per type pair; a pair whose shape cannot be proven to copy exactly like the JSON
-                round trip keeps that round trip, which costs a marshal+unmarshal per ITEM (multiplied by
-                the page size). The read-side constructors resolve that verdict at Mount and emit one
-                <code>slog.Warn</code> per degraded pair, naming the Response field that blocked it. A
-                compatible pair logs NOTHING — silence means the optimized travel is in effect — and
-                endpoints sharing a pair warn once, since the pair is the single fix site. New surface:
-                <code>responses.MappingFallbackReason(resultType, respType)</code>, which also pre-warms
-                the cache. See <a href="#auto-query-handlers~qry-mapping-fallback">Auto query handlers →
-                Response mapping</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the generic mappers became
+                OPT-IN, and what they promise is now enforced at boot:
+                <code>fwresponses.Auto</code> / <code>fwrequests.Auto</code>.</strong> Every mapping seat in
+                this framework is hand-written by default — <code>ToCommand</code>, <code>ApplyTo</code>,
+                <code>FromEntity</code>, <code>ToCriteria</code>, <code>FromResult</code>. The generic
+                helpers were the exception: they applied themselves, and a shape they could not map
+                degraded silently into a serialization round trip. Now a DTO must ask for the help.
+                <ul>
+                    <li>A Response embeds <code>fwresponses.Auto</code> and calls
+                        <code>fwresponses.AutoFromResult[Resp](result)</code> (renamed from
+                        <code>responses.Map</code>). A Request embeds <code>fwrequests.Auto</code> and calls
+                        <code>fwrequests.AutoFromRequest[*Cmd](req)</code> — the new write-side twin that
+                        replaces a hand-written <code>ToCommand</code> when the shapes align.</li>
+                    <li><strong>Without the marker the helper does not COMPILE</strong> (the constraint is a
+                        sealed interface granted only by the embed), so the opt-in can be neither skipped
+                        nor forged.</li>
+                    <li><strong>With the marker the pair is validated at Mount</strong> by all five route
+                        constructors — the COMMAND side validated nothing before, so a misaligned command
+                        Response used to ship a silent <code>null</code>. Names must align AND every mapped
+                        field pair must be directly assignable; a violation is a boot panic naming the field.</li>
+                    <li><strong>The serialization fallback is gone.</strong> An auto pair is proven copyable
+                        at boot, so the helpers no longer marshal anything: what used to be a silent
+                        per-item cost is a boot failure.</li>
+                    <li><strong>The rule, by layer: a type in <code>web/</code> (Request, Response) must be
+                        fully connected; a type in <code>application/</code> (Command, Result) may carry
+                        more.</strong> A Result may hold fields no Response exposes (a deliberate cut); a
+                        Command may hold what the wire never sends (its path id, an identity overlay). A
+                        wire field with no counterpart is refused in both directions — the client would
+                        either receive <code>null</code> forever or have its value dropped in silence.</li>
+                    <li><strong>A DTO without the marker is untouched</strong> — no guard, no generic
+                        mapper, the method written by hand, free to rename, flatten or fold. That escape
+                        hatch is why the marker is opt-in.</li>
+                </ul>
+                <em>Migration:</em> embed the marker on every DTO that used <code>responses.Map</code> and
+                rename the call. <code>queryschema.ValidateResultAlignment</code> is now alignment-only —
+                the "no json tags on a Result" half moved to <code>ValidateResultPurity</code>, which runs
+                for every Result, marker or not. See
+                <a href="#auto-query-handlers~qry-mapping-fallback">Auto query handlers → Auto mapping</a>
+                and <a href="#auto-handlers~cmd-auto">Auto handlers → fwrequests.Auto</a>.</li>
             <li><strong>Changed</strong> — <strong>read-path performance round — same wire, same
                 semantics, fewer passes and round-trips.</strong> Three internal changes to how a read
                 is served; no surface, envelope or ordering change on any of them.

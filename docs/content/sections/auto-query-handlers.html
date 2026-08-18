@@ -111,55 +111,91 @@
         violation is a boot panic naming every offending field path — a Response field with no Result
         backing can never ship as a silently-null column.
     </p>
-    <h4 id="qry-mapping-fallback">Response mapping — the optimized travel and its fallback</h4>
+    <h4 id="qry-mapping-fallback">Auto mapping — <code>fwresponses.Auto</code> and the boot guard</h4>
     <p>
-        <code>fwresponses.Map</code> serves the Result→Response travel with a <strong>copier compiled
-        once per type pair</strong>, at first use, and cached — a direct field-to-field copy, no
-        serialization involved. A pair whose shape cannot be proven to copy <em>exactly</em> like the
-        JSON round trip the copier replaced keeps that round trip instead: the Result is marshalled,
-        the keys renamed and the bytes decoded into the Response. Both paths produce the same wire
-        payload — the fallback is a performance property, never a semantic one — but the JSON path
-        costs extra CPU and allocations <strong>per item</strong>, which on a page read multiplies by
-        the page size.
+        Every mapping seat in this framework is hand-written by default —
+        <code>ToCommand</code>, <code>ApplyTo</code>, <code>FromEntity</code>, <code>ToCriteria</code>,
+        <code>FromResult</code>. <code>fwresponses.AutoFromResult</code> is the framework's offer to
+        write <code>FromResult</code> for you, and a Response ACCEPTS the offer by embedding
+        <code>fwresponses.Auto</code>:
     </p>
+    <pre><code>type FindUsersByParamsResponse struct {
+    fwresponses.Auto                       // opt-in: the framework maps this
+
+    ID   *string `json:"id,omitempty"`
+    Name *string `json:"name,omitempty"`
+}
+
+func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUsersByParamsResponse {
+    return fwresponses.AutoFromResult[FindUsersByParamsResponse](r)
+}</code></pre>
+    <p>What the declaration buys, and what it costs:</p>
+    <ul>
+        <li><strong><code>AutoFromResult</code> becomes callable.</strong> Without the marker it does
+            not COMPILE — the generic constraint rejects the type — so a Response can never silently
+            ride a mapping it did not ask for. The marker's method is sealed (unexported, granted only
+            by the embed), so the opt-in cannot be forged either.</li>
+        <li><strong>The pair is validated at Mount (boot).</strong> Every Response field must have a
+            same-named Result field, and every mapped pair must be directly assignable. A violation is
+            a boot panic naming the field — never a wire field that renders <code>null</code> forever,
+            and never a silent per-request serialization cost.</li>
+    </ul>
     <p>
-        The decision is invisible at runtime, so the read-side constructors resolve it at
-        <strong>Mount</strong> and emit ONE <code>slog.Warn</code> per degraded pair, naming the
-        Response field that blocked it. A compatible pair logs nothing: silence means the optimized
-        travel is in effect. The warning is advisory — the endpoint works correctly either way — and
-        several endpoints sharing one pair warn once, because the pair is the single fix site.
+        A Response WITHOUT the marker keeps the default posture: no guard, no generic mapper,
+        <code>FromResult</code> written by hand — free to rename (<code>Result.Name</code> →
+        <code>Response.Nickname</code>), flatten a nested segment, or fold two Result fields into one
+        wire value. That escape hatch is the reason the marker is opt-in rather than automatic.
     </p>
-    <p>A pair takes the optimized travel when every mapped field is one of:</p>
+
+    <h5 id="qry-auto-rule">The one rule, on both seats</h5>
+    <p>
+        The same contract governs the write side (<a href="#auto-handlers~cmd-auto">
+        <code>fwrequests.Auto</code></a>), and it is easiest to remember by LAYER:
+    </p>
+    <div class="note">
+        <strong>A type in <code>web/</code> (Request, Response) must be fully connected. A type in
+        <code>application/</code> (Command, Result) may carry more.</strong>
+    </div>
+    <table>
+        <tbody><tr><th>Type</th><th>Layer</th><th>May have a field the other side lacks?</th><th>Why</th></tr>
+        <tr><td><code>FindUsersResponse</code></td><td><code>web/</code></td><td><strong>No</strong></td>
+            <td>the field would render <code>null</code> on every response</td></tr>
+        <tr><td><code>FindUsersResult</code></td><td><code>application/</code></td><td><strong>Yes</strong></td>
+            <td>a deliberate cut — the read model keeps it, the wire does not show it</td></tr>
+        <tr><td><code>InsertUserRequest</code></td><td><code>web/</code></td><td><strong>No</strong></td>
+            <td>the client would send the value and it would be dropped in silence</td></tr>
+        <tr><td><code>InsertUserCommand</code></td><td><code>application/</code></td><td><strong>Yes</strong></td>
+            <td>filled another way — the path id, an identity overlay, a handler default</td></tr>
+    </tbody></table>
+    <p>
+        Both refusals protect the same thing: a wire field that is not connected to anything. Both
+        allowances say the same thing: the application side is free to carry state that does not make
+        that particular trip.
+    </p>
+
+    <h5 id="qry-auto-shapes">What travels</h5>
+    <p>A pair maps automatically when every mapped field is one of:</p>
     <table>
         <tbody><tr><th>Field shape</th><th>Example</th></tr>
-        <tr><td>Identical types on both sides</td><td><code>string</code> → <code>string</code>,
+        <tr><td>Identical types</td><td><code>string</code> → <code>string</code>,
             <code>time.Time</code> → <code>time.Time</code>, a value object → itself</td></tr>
-        <tr><td>Pointer wrapping or unwrapping</td><td><code>string</code> → <code>*string</code>,
-            <code>*int</code> → <code>int</code> (a nil source leaves the field zero, as JSON null does)</td></tr>
+        <tr><td>Pointer wrapping / unwrapping</td><td><code>string</code> → <code>*string</code>
+            (a nil source leaves the field zero, as an absent value does)</td></tr>
         <tr><td>Same-family numeric conversion</td><td><code>int32</code> → <code>int64</code>,
-            <code>uint16</code> → <code>uint64</code>, <code>float32</code> → <code>float64</code>
-            (an out-of-range value leaves the field zero, exactly as the JSON path left it)</td></tr>
-        <tr><td><code>domain.ID</code> ↔ <code>string</code></td><td>the ID's declared JSON form
-            <em>is</em> its string value, so the conversion is exact in both directions</td></tr>
+            <code>float32</code> → <code>float64</code> (out of range leaves the field zero)</td></tr>
+        <tr><td><code>domain.ID</code> ↔ <code>string</code></td><td>the ID's value IS its string form</td></tr>
         <tr><td>Struct → struct, slice → slice</td><td>resolved recursively by the same rules</td></tr>
     </tbody></table>
     <p>
-        What forces the fallback is a field whose two sides <strong>differ</strong> while one of them
-        owns its own JSON or text codec — <code>time.Time</code> → <code>string</code> is the common
-        one, since only <code>MarshalJSON</code> knows the RFC 3339 rendering — or a conversion the
-        framework will not invent, such as <code>float64</code> → <code>int64</code> (whose fraction
-        handling belongs to the codec) or a map whose value type changes. A Result or Response that is
-        not a plain struct (a <code>map[string]any</code> Result, an <code>any</code> Response) never
-        takes the direct path either. The remedy, when the cost matters, is to make the two sides agree
-        on the field's type and let the Query's
-        <a href="#query-side~qry-result"><code>FromQueryResult</code></a> hook produce the rendered
-        value — which is where read-side computation belongs anyway.
+        What forces the hand-written seat is a field whose two sides DIFFER while one of them owns its
+        own JSON or text codec — <code>time.Time</code> → <code>string</code> is the common one, since
+        only <code>MarshalJSON</code> knows the RFC 3339 rendering — or a conversion the framework will
+        not invent, such as <code>float64</code> → <code>int64</code> (whose rounding belongs to the
+        codec). The boot panic names the field and the cause; the remedy is to align the two types and
+        let the Query's <a href="#query-side~qry-result"><code>FromQueryResult</code></a> hook produce
+        the rendered value — which is where read-side computation belongs anyway.
     </p>
-    <div class="note">
-        A <strong>hand-written</strong> <code>FromResult</code> is unaffected: it never calls
-        <code>Map</code>, so the advisory (which reasons about the type pair, not the function body)
-        can be ignored for those endpoints.
-    </div>
+
     <p>
         <strong>The Response carries <code>json:</code> only — no source-key override exists.</strong>
         The typed Response struct declares <code>json:"&lt;wire&gt;"</code> tags (plus the optional

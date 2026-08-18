@@ -131,17 +131,49 @@ with `1.0.0`.
   `ViewDefinition.ExportPlan()` family (the `web.ExportView` interface is now
   just `ResolveMaxExportRows` + `Name`).
 
-- **Boot advisory when a Response↔Result pair misses the optimized mapping.**
-  `responses.Map` serves the travel with a copier compiled per type pair; a
-  pair whose shape cannot be proven to copy exactly like the JSON round trip
-  keeps that round trip, which costs a marshal+unmarshal per ITEM. The
-  read-side constructors now resolve that verdict at Mount and emit one
-  `slog.Warn` per degraded pair, naming the Response field that blocked it and
-  pointing at the manual. A compatible pair logs nothing — silence means the
-  optimized travel is in effect — and several endpoints sharing one pair warn
-  once. New surface: `responses.MappingFallbackReason(resultType, respType)`,
-  the diagnostic seat (also usable from a consumer's own tests); it doubles as
-  a cache pre-warm, so the first request no longer pays the compilation.
+- **BREAKING — `fwresponses.Auto` / `fwrequests.Auto`: the framework's generic
+  mappers became OPT-IN, and what they promise is now enforced at boot.** Every
+  mapping seat here is hand-written by default — `ToCommand`, `ApplyTo`,
+  `FromEntity`, `ToCriteria`, `FromResult`. The two generic helpers were the
+  exception: they applied themselves, and a shape they could not map degraded
+  silently. Now a DTO must ask.
+
+  - A Response embeds `fwresponses.Auto` and calls
+    `fwresponses.AutoFromResult[Resp](result)` (renamed from `responses.Map`).
+    A Request embeds `fwrequests.Auto` and calls
+    `fwrequests.AutoFromRequest[*Cmd](req)` — the new write-side twin, which
+    replaces a hand-written `ToCommand` when the shapes align.
+  - **Without the marker the helper does not COMPILE.** The constraint is a
+    sealed interface granted only by the embed, so the opt-in can be neither
+    skipped nor forged.
+  - **With the marker the pair is validated at Mount** by all five route
+    constructors (`QueryWithParams`, `QueryByID`, `CommandByID`,
+    `CommandWithBody`, `CommandWithBodyID` — the command side validated nothing
+    before): names must align AND every mapped field pair must be directly
+    assignable. A violation is a boot panic naming the field.
+  - **The serialization fallback is gone.** An auto pair is proven copyable at
+    boot, so `AutoFromResult`/`AutoFromRequest` no longer marshal anything —
+    what used to be a silent per-item round trip is now a boot failure.
+  - **The rule, by layer: a type in `web/` (Request, Response) must be fully
+    connected; a type in `application/` (Command, Result) may carry more.** A
+    Result may hold fields no Response exposes (a deliberate cut); a Command may
+    hold what the wire never sends (the path id, an identity overlay). A wire
+    field with no counterpart is refused in both directions.
+  - **A DTO without the marker is untouched**: no guard, no generic mapper,
+    the method written by hand — free to rename (`Result.Name` →
+    `Response.Nickname`), flatten or fold. That escape hatch is why the marker
+    is opt-in; the reference service exercises it on the surfaces that rename a
+    field or fold a flat wire address into a nested Command value.
+
+  Migration: embed the marker on every DTO that used `responses.Map`, and
+  rename the call to `AutoFromResult`. `queryschema.ValidateResultAlignment` is
+  now alignment-only — the "no json tags on a Result" half moved to
+  `ValidateResultPurity`, which still runs for every Result, marker or not.
+  New surface: `responses.Auto`, `responses.AutoFromResult`,
+  `responses.AutoFromResultReason`, `responses.FormatAutoFromResultGuard`,
+  `requests.Auto`, `requests.AutoFromRequest`, `requests.AutoRequestReason`,
+  `requests.FormatAutoRequestGuard`, `queryschema.ValidateResultPurity`,
+  `queryschema.FormatResultPurityGuard`. Removed: `responses.Map`.
 
 - **Read-path performance round — same wire, same semantics, fewer passes and
   round-trips.** Three internal changes to how a read is served; no surface,

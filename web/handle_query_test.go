@@ -268,12 +268,13 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 // ,omitempty so encoding/json elides absent values cleanly. Its FromResult
 // delegates to the generic name-based mapper — the canonical consumer pattern.
 type testUserSummary struct {
+	responses.Auto
 	ID   *string `json:"id,omitempty"`
 	Name *string `json:"name,omitempty"`
 }
 
 func (testUserSummary) FromResult(r testUserResult) testUserSummary {
-	return responses.Map[testUserSummary](r)
+	return responses.AutoFromResult[testUserSummary](r)
 }
 
 // fixedParamsHandler returns a hardcoded PageOf regardless of the incoming Query.

@@ -12,22 +12,21 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// The direct Result→Response copy: Map's hot path. The generic mapper used to
-// render the Result as JSON, remap the keys and decode into TResp — four codec
-// passes per item on every read. Both types are static at the call site, so
-// this file compiles a per-(source, destination) copier once, caches it, and
-// Map runs a plain reflection copy instead. Semantics are preserved by
-// CONSTRUCTION, not by emulation: a field pair the compiler cannot prove
-// equivalent to the JSON trip (custom marshalers across different types,
-// narrowing shapes, interface sources) marks the WHOLE pair unsupported, and
-// Map falls back to the legacy JSON path for that pair — cached too, so the
-// decision costs nothing per request.
+// The field-by-field copier behind [AutoFromResult]: one compiled plan per
+// (Result, Response) pair, built on first use and cached. No serialization is
+// involved — the values travel by assignment.
 //
-// Field matching mirrors the legacy path: destination fields come from the
-// same typePlan (json:"-" skipped, embedded fields promoted) and each reads
-// the same-named source field (exact name first, then case-insensitive — the
-// encoding/json key folding), missing sources leaving the field zero. The
-// post-fill normalizations (nil-slice → empty, enum converge) run unchanged.
+// A pair whose shape cannot be copied exactly is not silently degraded: the
+// reason is reported (see [AutoFromResultReason]) and the route constructors
+// turn it into a boot panic, because a Response that embedded [Auto] declared
+// that this travel works.
+//
+// Destination fields come from the typePlan (json:"-" skipped, embedded fields
+// promoted) and each reads the same-named source field (exact name first, then
+// case-insensitive — the encoding/json key folding). A Response field with no
+// source stays zero, and source fields the Response does not declare are never
+// read: the Response may expose a SUBSET of the Result. The post-copy
+// normalizations (nil-slice → empty, enum converge) run unchanged.
 
 // fieldCopier copies one source value into one settable destination value.
 type fieldCopier func(src, dst reflect.Value)
@@ -35,7 +34,7 @@ type fieldCopier func(src, dst reflect.Value)
 type pairKey struct{ src, dst reflect.Type }
 
 // pairEntry caches one (src, dst) verdict: the compiled copier, or a nil
-// copier plus the reason the pair must take the legacy JSON path.
+// copier plus the reason the pair cannot be auto-mapped.
 type pairEntry struct {
 	copier fieldCopier
 	reason string
@@ -59,7 +58,7 @@ func pairEntryFor(srcT, dstT reflect.Type) *pairEntry {
 }
 
 // pairCopierFor returns the compiled struct copier for (srcT, dstT), or nil
-// when the pair must take the legacy path. Both must be plain struct types.
+// when the pair cannot be copied. Both must be plain struct types.
 func pairCopierFor(srcT, dstT reflect.Type) fieldCopier {
 	if srcT == nil || dstT == nil || srcT.Kind() != reflect.Struct || dstT.Kind() != reflect.Struct {
 		return nil
@@ -67,18 +66,22 @@ func pairCopierFor(srcT, dstT reflect.Type) fieldCopier {
 	return pairEntryFor(srcT, dstT).copier
 }
 
-// MappingFallbackReason reports why [Map] cannot serve the Result→Response
-// travel with its compiled direct copier, or "" when it can. It is the
-// diagnostic seat the read-side constructors consult at Mount so a degraded
-// mapping surfaces as ONE boot warning instead of silent per-request cost.
+// AutoFromResultReason reports why [AutoFromResult] cannot serve the
+// Result→Response travel with its compiled copier, or "" when it can. It is the
+// diagnostic seat the route constructors consult at Mount: a Response that
+// declared [Auto] and cannot honor the declaration is a boot panic naming the
+// offending field, never a silent null or a silent per-request slowdown.
 //
-// The verdict is a pure function of the two types — the same one Map itself
-// caches — so calling this at boot also pre-warms the cache: the first request
+// The verdict is a pure function of the two types — the same one
+// [AutoFromResult] itself caches — so calling it at boot also pre-warms the cache: the first request
 // no longer pays the compilation.
+//
+// Only the fields the RESPONSE declares are examined, so a Result may carry
+// anything beyond them (the Response is free to expose a subset).
 //
 // Types are dereferenced through pointers. A non-struct on either side (a map
 // Result, an `any` Response) can never take the direct path and reports so.
-func MappingFallbackReason(resultType, respType reflect.Type) string {
+func AutoFromResultReason(resultType, respType reflect.Type) string {
 	src, srcOK := derefStructType(resultType)
 	dst, dstOK := derefStructType(respType)
 	if !srcOK {
@@ -189,7 +192,7 @@ func buildStructCopier(srcT, dstT reflect.Type, inProgress map[pairKey]bool) (fi
 		if !ok {
 			srcIndex, ok = src.byFold[strings.ToLower(f.sourceKey)]
 			if !ok {
-				continue // no source field: destination stays zero (legacy parity)
+				continue // no source field: destination stays zero
 			}
 		}
 		sfT := srcT.FieldByIndex(srcIndex)

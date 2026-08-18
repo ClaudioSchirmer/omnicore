@@ -23,13 +23,14 @@ type innerNorm struct {
 }
 
 type ptrStructResponse struct {
+	Auto
 	ID    string     `json:"id"`
 	Inner *innerNorm `json:"inner,omitempty"`
 }
 
 func TestNormalizeSlices_PointerStructPresent_NestedSliceNormalized(t *testing.T) {
 	// Inner present but its Tags slice nil → nested nil slice → []
-	got := Map[ptrStructResponse](ptrStructResult{ID: "u1", Inner: &innerNormResult{}})
+	got := AutoFromResult[ptrStructResponse](ptrStructResult{ID: "u1", Inner: &innerNormResult{}})
 	if got.Inner == nil {
 		t.Fatal("Inner pointer struct should be populated")
 	}
@@ -45,7 +46,7 @@ func TestNormalizeSlices_PointerStructPresent_NestedSliceNormalized(t *testing.T
 func TestNormalizeSlices_PointerStructNil_StaysNil(t *testing.T) {
 	// Inner nil → the *struct field stays a nil pointer; normalizeSlices must
 	// hit the nil-pointer break and leave it nil without panicking.
-	got := Map[ptrStructResponse](ptrStructResult{ID: "u1"})
+	got := AutoFromResult[ptrStructResponse](ptrStructResult{ID: "u1"})
 	if got.Inner != nil {
 		t.Errorf("nil *struct must stay nil, got %+v", got.Inner)
 	}
@@ -56,11 +57,12 @@ type sliceOfPtrResult struct {
 }
 
 type sliceOfPtrResponse struct {
+	Auto
 	Items []*innerNorm `json:"items"`
 }
 
 func TestNormalizeSlices_SliceOfPointerStruct_NormalizesEachElement(t *testing.T) {
-	got := Map[sliceOfPtrResponse](sliceOfPtrResult{Items: []*innerNormResult{
+	got := AutoFromResult[sliceOfPtrResponse](sliceOfPtrResult{Items: []*innerNormResult{
 		{},                    // nil Tags → becomes []
 		{Tags: []string{"a"}}, // populated
 	}})
@@ -80,7 +82,7 @@ func TestNormalizeSlices_SliceOfPointerStruct_NormalizesEachElement(t *testing.T
 }
 
 func TestNormalizeSlices_SliceOfPointerStruct_NilSliceNormalizedToEmpty(t *testing.T) {
-	got := Map[sliceOfPtrResponse](sliceOfPtrResult{})
+	got := AutoFromResult[sliceOfPtrResponse](sliceOfPtrResult{})
 	if got.Items == nil {
 		t.Error("nil []*struct must be normalized to an empty slice")
 	}

@@ -138,13 +138,14 @@ func (searchGadgetsWithSearchDTO) ToQuery(c queries.ReadCriteria) *searchGadgets
 // gadgetItemDTO is the list Response DTO — the read_mask/sort vocabulary
 // AND the Result→item projection target (the responseProjection seat).
 type gadgetItemDTO struct {
+	fwresponses.Auto
 	ID   string  `json:"id"`
 	Name string  `json:"name"`
 	Kind *string `json:"kind,omitempty"`
 }
 
 func (gadgetItemDTO) FromResult(r gadgetSearchResult) gadgetItemDTO {
-	return fwresponses.Map[gadgetItemDTO](r)
+	return fwresponses.AutoFromResult[gadgetItemDTO](r)
 }
 
 type getGadgetDTO struct {
@@ -164,10 +165,11 @@ type gadgetDetailResult struct {
 }
 
 type getGadgetResponseDTO struct {
+	fwresponses.Auto
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
 func (getGadgetResponseDTO) FromResult(r gadgetDetailResult) getGadgetResponseDTO {
-	return fwresponses.Map[getGadgetResponseDTO](r)
+	return fwresponses.AutoFromResult[getGadgetResponseDTO](r)
 }
