@@ -165,6 +165,15 @@ with `1.0.0`.
     is opt-in; the reference service exercises it on the surfaces that rename a
     field or fold a flat wire address into a nested Command value.
 
+  Where the check runs: the five canonical route constructors validate at
+  Mount. A call site they do not cover — a hand-written handler, GraphQL, gRPC,
+  the tabular export, any surface added later — has no Mount seat, so the same
+  contract is enforced on first use and the recovered panic surfaces as a 500.
+  Both diagnostics (boot and runtime) carry the failing field, what the rule
+  means, three concrete ways out and the table of what travels; the runtime one
+  adds why it arrived on a request instead of at startup, and points at
+  `AutoFromResultReason`/`AutoRequestReason` for turning that into a red build.
+
   Supported field shapes: identical types, pointer wrapping/unwrapping,
   same-family numeric conversion, `domain.ID` ↔ `string`, struct → struct,
   slice → slice and map → map under an identical key type (the values travel by

@@ -56,7 +56,7 @@ func AutoFromRequest[TCmd any, TReq AutoMapper](req TReq) TCmd {
 
 	entry := pairEntryFor(reqV.Type(), target.Type())
 	if entry.copier == nil {
-		panic(FormatAutoRequestGuard(reqV.Type(), cmdType, entry.reason))
+		panic(formatRuntimeGuard(reqV.Type(), cmdType, entry.reason))
 	}
 	entry.copier(reqV, target)
 	return cmd

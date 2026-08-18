@@ -343,6 +343,11 @@ func (r InsertUserRequest) ToCommand() *commands.InsertUserCommand {
             <code>CommandWithBody</code> / <code>CommandWithBodyID</code>: every Request field must have
             a same-named Command field it can be assigned to. A violation is a boot panic naming the
             field — never a value the client sent that quietly goes nowhere.</li>
+        <li><strong>A call site the constructors do not cover</strong> — a hand-written handler that
+            builds the Command itself, the gRPC surface, any surface added later — has no Mount seat,
+            so the same contract is enforced on FIRST USE and the recovered panic surfaces as a 500.
+            The panic text explains that timing, and carries the same diagnosis and the same ways out.
+            See <a href="#auto-query-handlers~qry-auto-when-checked">Where the check happens</a>.</li>
     </ul>
     <p>
         The contract is the SAME one the read side applies to

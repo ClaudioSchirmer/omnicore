@@ -68,7 +68,7 @@ func AutoFromResult[TResp AutoMapper, TResult any](result TResult) TResp {
 		// type cannot honor (it embedded Auto), so it fails loudly with the
 		// diagnostic the boot guard would have printed, rather than quietly
 		// costing a serialization round trip on every request.
-		panic(FormatAutoFromResultGuard(reflect.TypeOf(result), respType,
+		panic(formatRuntimeGuard(reflect.TypeOf(result), respType,
 			AutoFromResultReason(reflect.TypeOf(result), respType)))
 	}
 	cp(srcV, reflect.ValueOf(&out).Elem())

@@ -140,6 +140,33 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
             a boot panic naming the field — never a wire field that renders <code>null</code> forever,
             and never a silent per-request serialization cost.</li>
     </ul>
+
+    <h5 id="qry-auto-when-checked">Where the check happens — and where it cannot</h5>
+    <p>
+        The Mount-time check lives in the CANONICAL route constructors
+        (<code>QueryWithParams</code>, <code>QueryByID</code>, <code>CommandByID</code>,
+        <code>CommandWithBody</code>, <code>CommandWithBodyID</code>): they receive both the Result and
+        the Response as type parameters, so they can check the pair before the service serves anything.
+        Every OTHER call site maps on its own and has no such seat — a hand-written
+        <code>fiber.Handler</code> that projects the Result itself, the GraphQL and gRPC surfaces, the
+        CSV/XLSX export, or any surface added later.
+    </p>
+    <p>
+        There, the identical contract is enforced on FIRST USE instead: the mapper refuses the pair and
+        the recovered panic surfaces as a 500. The failure is not different and the endpoint was never
+        partly working — the pair could never have been mapped; only the moment of discovery moved,
+        which is why it can appear on a rarely-hit endpoint long after deploy. The panic text says so
+        in as many words, and carries the same diagnosis, the same three ways out and the same table of
+        what travels, so the reader never has to come back here to act on it.
+    </p>
+    <div class="note">
+        <strong>Want boot-time (or CI-time) detection on those surfaces?</strong> Assert the pairs
+        yourself: <code>responses.AutoFromResultReason(resultType, respType)</code> and
+        <code>requests.AutoRequestReason(reqType, cmdType)</code> return the empty string when the pair
+        travels and the diagnosis when it does not. A unit test sweeping your service's pairs turns a
+        production 500 into a red build — and it covers the canonical routes too, which unit tests
+        otherwise never exercise, since nothing mounts the routes there.
+    </div>
     <p>
         A Response WITHOUT the marker keeps the default posture: no guard, no generic mapper,
         <code>FromResult</code> written by hand — free to rename (<code>Result.Name</code> →

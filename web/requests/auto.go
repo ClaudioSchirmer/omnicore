@@ -67,16 +67,62 @@ type AutoMapper interface {
 
 // FormatAutoRequestGuard assembles the diagnostic for a Request that declared
 // [Auto] but whose field travel cannot be served. The command constructors
-// raise it at Mount; [AutoFromRequest] raises the identical text if it ever
-// meets such a pair outside them.
+// raise it at Mount, before the service serves anything.
 func FormatAutoRequestGuard(reqType, cmdType reflect.Type, reason string) string {
 	return fmt.Sprintf(
-		"[auto-request] %s declares fwrequests.Auto but cannot build %s:\n  - %s\n"+
-			"An auto-built Command travels field by field: each Request field writes the same-named "+
-			"Command field and must be directly assignable to it. Align the two types, or drop "+
-			"fwrequests.Auto and write ToCommand by hand (renaming and reshaping are exactly what the "+
-			"hand-written seat is for).",
+		"[auto-request] %s declares fwrequests.Auto but cannot build %s:\n"+
+			"  - %s\n"+
+			"\n"+
+			"WHAT THIS MEANS\n"+
+			"  An auto-built Command travels field by field: every Request field writes the SAME-NAMED\n"+
+			"  field on the Command and must be directly assignable to it. No serialization is involved,\n"+
+			"  so a pair the builder cannot prove is exact is refused rather than silently degraded.\n"+
+			"\n"+
+			"HOW TO FIX IT — pick one\n"+
+			"  1. Align the two types, so the wire field and the Command field share a name and a shape.\n"+
+			"  2. Drop fwrequests.Auto from %[1]s and write ToCommand by hand. That is the escape hatch for\n"+
+			"     exactly this: renaming a field (document on the wire, DocumentKey on the Command),\n"+
+			"     folding a flat wire shape into a nested Command value, or computing anything on the way.\n"+
+			"  3. Remove the field from the Request if nothing consumes it. The Command is free to carry\n"+
+			"     MORE than the wire sends — its path id via SetPathID, an identity-derived field, a\n"+
+			"     handler default. The reverse is what this guard refuses: a wire field with nowhere to\n"+
+			"     land means the client sends a value that is dropped in silence.\n"+
+			"\n"+
+			"WHAT TRAVELS AUTOMATICALLY\n"+
+			"  identical types · pointer wrapping and unwrapping · same-family numeric conversion\n"+
+			"  (int32→int64, float32→float64; out of range leaves the field zero) · domain.ID ↔ string ·\n"+
+			"  struct→struct, slice→slice and map→map under an identical key type, resolved recursively.\n"+
+			"  What does NOT: two DIFFERENT types where one owns its own JSON/text codec (string→time.Time\n"+
+			"  is the usual one), a conversion whose rounding belongs to the codec, an interface\n"+
+			"  destination, or a map whose KEY type changes.",
 		typeLabel(reqType), typeLabel(cmdType), reason)
+}
+
+// formatRuntimeGuard is the same diagnostic raised from [AutoFromRequest]
+// itself, plus the one thing the boot text cannot say: WHY it arrived on a
+// request instead of at startup. See the Response-side twin for the full
+// rationale — the Mount check only exists where both types are known before a
+// request does.
+func formatRuntimeGuard(reqType, cmdType reflect.Type, reason string) string {
+	return FormatAutoRequestGuard(reqType, cmdType, reason) +
+		"\n" +
+		"\nWHY THIS SURFACED ON A REQUEST AND NOT AT BOOT" +
+		"\n  The pair is normally validated at Mount by the canonical command constructors —" +
+		"\n  CommandWithBody and CommandWithBodyID — which receive both the Request and the Command as" +
+		"\n  type parameters and can check them before the service serves anything. This call did not" +
+		"\n  come through one of them, so no boot moment existed to check it. That is expected for a" +
+		"\n  hand-written fiber.Handler that builds the Command itself, the gRPC surface, or any future" +
+		"\n  surface that calls the builder directly." +
+		"\n" +
+		"\n  This is NOT a different failure from the boot one, and the endpoint is not partly working:" +
+		"\n  the pair could never have been built. Only the moment of discovery moved, from startup to" +
+		"\n  the first request that exercised this path — which is why it can appear on a rarely-hit" +
+		"\n  endpoint long after deploy. The fix is identical to the boot case above." +
+		"\n" +
+		"\n  To get boot-time (or CI-time) detection on a surface the constructors do not cover, assert" +
+		"\n  the pair yourself: requests.AutoRequestReason(reqType, cmdType) returns the empty string" +
+		"\n  when the pair builds, and this same reason when it does not. A test that sweeps your" +
+		"\n  service's (Request, Command) pairs turns this into a red build instead of a 500."
 }
 
 func typeLabel(t reflect.Type) string {
