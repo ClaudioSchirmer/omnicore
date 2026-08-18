@@ -172,6 +172,13 @@ var resultPlanCache sync.Map // map[reflect.Type]*resultPlan
 // resultPlanFor returns (and memoizes) the plan for t. Pointer types are
 // dereferenced; non-struct types yield nil (normalization degrades to a
 // no-op).
+//
+// The plan graph is built OFF-CACHE and published only once complete — a
+// half-built plan visible to a concurrent reader is a data race on the
+// fields slice. `building` is this goroutine's private in-progress set; it
+// breaks self-referential cycles, and the pointer it hands back on a cycle
+// is complete before anything can read it, because nothing is published
+// until the top-level build returns.
 func resultPlanFor(t reflect.Type) *resultPlan {
 	if t == nil {
 		return nil
@@ -185,14 +192,31 @@ func resultPlanFor(t reflect.Type) *resultPlan {
 	if v, ok := resultPlanCache.Load(t); ok {
 		return v.(*resultPlan)
 	}
-	plan := &resultPlan{}
-	// Store BEFORE recursing so self-referential types terminate.
-	resultPlanCache.Store(t, plan)
-	buildResultPlan(plan, t, nil)
+	building := map[reflect.Type]*resultPlan{}
+	plan := resultPlanOf(t, building)
+	for bt, bp := range building {
+		resultPlanCache.LoadOrStore(bt, bp)
+	}
 	return plan
 }
 
-func buildResultPlan(plan *resultPlan, t reflect.Type, basePath []int) {
+// resultPlanOf answers the plan for one struct type DURING a build: the
+// published one when it exists, the in-progress one on a cycle, a freshly
+// built one (recorded in building, never in the cache) otherwise.
+func resultPlanOf(t reflect.Type, building map[reflect.Type]*resultPlan) *resultPlan {
+	if v, ok := resultPlanCache.Load(t); ok {
+		return v.(*resultPlan)
+	}
+	if p, ok := building[t]; ok {
+		return p
+	}
+	plan := &resultPlan{}
+	building[t] = plan
+	buildResultPlan(plan, t, nil, building)
+	return plan
+}
+
+func buildResultPlan(plan *resultPlan, t reflect.Type, basePath []int, building map[reflect.Type]*resultPlan) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		path := append(append([]int{}, basePath...), i)
@@ -206,7 +230,7 @@ func buildResultPlan(plan *resultPlan, t reflect.Type, basePath []int) {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				buildResultPlan(plan, ft, path)
+				buildResultPlan(plan, ft, path, building)
 				continue
 			}
 		}
@@ -226,7 +250,7 @@ func buildResultPlan(plan *resultPlan, t reflect.Type, basePath []int) {
 		switch ft.Kind() {
 		case reflect.Struct:
 			entry.kind = rfkStruct
-			entry.nested = resultPlanFor(ft)
+			entry.nested = resultPlanOf(ft, building)
 		case reflect.Slice:
 			elem := ft.Elem()
 			for elem.Kind() == reflect.Pointer {
@@ -234,7 +258,7 @@ func buildResultPlan(plan *resultPlan, t reflect.Type, basePath []int) {
 			}
 			if elem.Kind() == reflect.Struct {
 				entry.kind = rfkSliceOfStruct
-				entry.nested = resultPlanFor(elem)
+				entry.nested = resultPlanOf(elem, building)
 			} else {
 				entry.kind = rfkSlice
 			}

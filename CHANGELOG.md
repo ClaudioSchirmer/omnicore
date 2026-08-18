@@ -318,19 +318,33 @@ with `1.0.0`.
     keeps the whole-document trip). Together with the Auto mapping above —
     which copies the Result into the Response field by field rather than
     rendering and re-parsing it — this removes up to four `encoding/json`
-    passes per page item, and the bulk of the read path's allocations.
+    passes per page item, and the bulk of the read path's allocations, on
+    REST and the tabular exports. GraphQL is the one surface that keeps a
+    JSON round-trip per node: its executor trims a wire-named value tree, now
+    rendered from the projected Response (so the Response DTO is the wire
+    authority there too) instead of walked off the raw document.
   - The listing total runs concurrently with the page fetch on both readers
     (Mongo `CountDocuments` ∥ `Find`; relational `CountEntities` ∥
     `FindAllEntities`) — `totalCount` still arrives on every page; one store
     round-trip leaves the latency path. Exception: the relational
     bare-backward window (`last=N`, no cursor) anchors its offset on the total
-    and stays sequential.
+    and stays sequential. The cost of the latency win: each paged read holds
+    TWO store operations for the duration of the fetch — on the relational
+    twin, a second pooled connection — so a service running near its
+    `relational.pool` ceiling sizes the pool for it.
   - A composed view's `LinkMany` leg resolves in ONE aggregation —
     `$match({fk: {$in: page ids}})` + `$group`/`$topN` (n = the resolved
     per-parent ceiling, sortBy = declared order + `_id` tiebreak; MongoDB
     5.2+, already the framework's floor) — instead of one capped find per page
     parent. Same segments, same deterministic truncation, constant query count
-    per leg; the read cost model in `views.html` reflects the new bound.
+    per leg. The trade is server-side: `$group` is a blocking stage, so it
+    examines every child of the page's parents that matches the leg filter
+    before `$topN` truncates its OUTPUT — the retired walk read at most n per
+    parent, but paid one query each. The wire bound (≤ page × n documents) is
+    unchanged, and the `fk` index keeps the scan to the page's parents, never
+    the whole collection; a leg whose parents carry very large child sets
+    pays that scan. The read cost model in `views.html` spells out both
+    sides.
 
 ## [0.52.0] - 2026-08-16
 

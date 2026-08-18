@@ -10,13 +10,14 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// Map converts an application-layer Result into the typed wire Response
-// TResp using TResp's json tags — the generic TResult→TResp mapper behind
-// every Response's FromResult method. The Result is application-pure (no
-// wire tags), so its JSON form is keyed by Go field name; Map reads each
-// Response field's same-named Result field and writes it under the field's
-// json wire name, recursing through nested structs, slices of structs and
-// pointer fields. The canonical usage mirrors the command side:
+// AutoFromResult converts an application-layer Result into the typed wire
+// Response TResp — the generic TResult→TResp mapper behind every opted-in
+// Response's FromResult method. The Result is application-pure (no wire
+// tags), so matching is by Go field name: each Response field is filled from
+// the same-named Result field through the compiled per-pair copier,
+// recursing through nested structs, slices of structs and pointer fields;
+// the json tags then name the wire output when the Response serializes. The
+// canonical usage mirrors the command side:
 //
 //	func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUsersByParamsResponse {
 //	    return fwresponses.AutoFromResult[FindUsersByParamsResponse](r)
@@ -62,8 +63,8 @@ func AutoFromResult[TResp AutoMapper, TResult any](result TResult) TResp {
 	cp := pairCopierFor(srcTypeOf(srcV), respType)
 	if cp == nil {
 		// The route constructors validate this very pair at Mount, so a
-		// service wired through them never reaches here. What does is a Map
-		// call the framework never saw — a hand-rolled handler or a test —
+		// service wired through them never reaches here. What does is an
+		// AutoFromResult call the framework never saw — a hand-rolled handler or a test —
 		// carrying a pair that cannot be copied. That is a declaration the
 		// type cannot honor (it embedded Auto), so it fails loudly with the
 		// diagnostic the boot guard would have printed, rather than quietly
@@ -205,7 +206,7 @@ type fieldEntry struct {
 }
 
 // typePlan is the cached projection plan for one TResp type. Built once per
-// reflect.Type via planFor; consulted on every call to Map.
+// reflect.Type via planFor; consulted on every AutoFromResult call.
 type typePlan struct {
 	fields []fieldEntry
 }
@@ -214,7 +215,14 @@ var planCache sync.Map // map[reflect.Type]*typePlan
 
 // planFor returns (and memoizes) the projection plan for t. Pointer types
 // are dereferenced; non-struct types yield nil (the helper degrades to a
-// no-op renaming step, leaving encoding/json to do whatever it can).
+// no-op normalization step).
+//
+// The plan graph is built OFF-CACHE and published only once complete — a
+// half-built plan visible to a concurrent reader is a data race on the
+// fields slice. `building` is this goroutine's private in-progress set; it
+// breaks self-referential cycles, and the pointer it hands back on a cycle
+// is complete before anything can read it, because nothing is published
+// until the top-level build returns.
 func planFor(t reflect.Type) *typePlan {
 	if t == nil {
 		return nil
@@ -228,18 +236,34 @@ func planFor(t reflect.Type) *typePlan {
 	if v, ok := planCache.Load(t); ok {
 		return v.(*typePlan)
 	}
+	building := map[reflect.Type]*typePlan{}
+	plan := planOf(t, building)
+	for bt, bp := range building {
+		planCache.LoadOrStore(bt, bp)
+	}
+	return plan
+}
+
+// planOf answers the plan for one struct type DURING a build: the published
+// one when it exists, the in-progress one on a cycle, a freshly built one
+// (recorded in building, never in the cache) otherwise.
+func planOf(t reflect.Type, building map[reflect.Type]*typePlan) *typePlan {
+	if v, ok := planCache.Load(t); ok {
+		return v.(*typePlan)
+	}
+	if p, ok := building[t]; ok {
+		return p
+	}
 	plan := &typePlan{}
-	// Store BEFORE recursing so self-referential types terminate (the in-
-	// progress plan is consulted by nested calls and filled in afterwards).
-	planCache.Store(t, plan)
-	buildPlan(plan, t, nil)
+	building[t] = plan
+	buildPlan(plan, t, nil, building)
 	return plan
 }
 
 // buildPlan walks t's fields and accumulates entries into plan. basePath
 // carries the field index path used for FieldByIndex when t is an embedded
 // (anonymous) struct being promoted from an enclosing type.
-func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
+func buildPlan(plan *typePlan, t reflect.Type, basePath []int, building map[reflect.Type]*typePlan) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		path := append(append([]int{}, basePath...), i)
@@ -254,7 +278,7 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				buildPlan(plan, ft, path)
+				buildPlan(plan, ft, path, building)
 				continue
 			}
 		}
@@ -288,7 +312,7 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 		switch ft.Kind() {
 		case reflect.Struct:
 			entry.kind = fkStruct
-			entry.nested = planFor(ft)
+			entry.nested = planOf(ft, building)
 		case reflect.Slice:
 			elem := ft.Elem()
 			for elem.Kind() == reflect.Pointer {
@@ -296,7 +320,7 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 			}
 			if elem.Kind() == reflect.Struct {
 				entry.kind = fkSliceOfStruct
-				entry.nested = planFor(elem)
+				entry.nested = planOf(elem, building)
 			} else {
 				entry.kind = fkSlice
 			}

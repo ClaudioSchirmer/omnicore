@@ -88,6 +88,15 @@ var (
 // not a plain struct type — the caller then keeps the legacy whole-doc JSON
 // round-trip. Pointer TResults deliberately yield nil: their downstream
 // normalization contract predates this fill and is preserved untouched.
+//
+// The plan graph is built OFF-CACHE and published only once complete: a plan
+// visible to another goroutine while its maps are still being written is a
+// concurrent map read/write — a runtime crash, not a recoverable panic — and
+// the first requests after boot are exactly the moment two goroutines race
+// for the same not-yet-cached type. `building` is this goroutine's private
+// in-progress set; it breaks self-referential cycles, and the pointer it
+// hands back on a cycle is complete before anything can read it, because
+// nothing is published until the top-level build returns.
 func fillPlanFor(t reflect.Type) *fillPlan {
 	if t == nil || t.Kind() != reflect.Struct {
 		return nil
@@ -95,14 +104,31 @@ func fillPlanFor(t reflect.Type) *fillPlan {
 	if v, ok := fillPlanCache.Load(t); ok {
 		return v.(*fillPlan)
 	}
-	plan := &fillPlan{byName: map[string]int{}, byFold: map[string]int{}}
-	// Store BEFORE recursing so self-referential types terminate.
-	fillPlanCache.Store(t, plan)
-	buildFillPlan(plan, t, nil)
+	building := map[reflect.Type]*fillPlan{}
+	plan := fillPlanOf(t, building)
+	for bt, bp := range building {
+		fillPlanCache.LoadOrStore(bt, bp)
+	}
 	return plan
 }
 
-func buildFillPlan(plan *fillPlan, t reflect.Type, basePath []int) {
+// fillPlanOf answers the plan for one struct type DURING a build: the
+// published one when it exists, the in-progress one on a cycle, a freshly
+// built one (recorded in building, never in the cache) otherwise.
+func fillPlanOf(t reflect.Type, building map[reflect.Type]*fillPlan) *fillPlan {
+	if v, ok := fillPlanCache.Load(t); ok {
+		return v.(*fillPlan)
+	}
+	if p, ok := building[t]; ok {
+		return p
+	}
+	plan := &fillPlan{byName: map[string]int{}, byFold: map[string]int{}}
+	building[t] = plan
+	buildFillPlan(plan, t, nil, building)
+	return plan
+}
+
+func buildFillPlan(plan *fillPlan, t reflect.Type, basePath []int, building map[reflect.Type]*fillPlan) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		path := append(append([]int{}, basePath...), i)
@@ -116,7 +142,7 @@ func buildFillPlan(plan *fillPlan, t reflect.Type, basePath []int) {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				buildFillPlan(plan, ft, path)
+				buildFillPlan(plan, ft, path, building)
 				continue
 			}
 		}
@@ -128,7 +154,7 @@ func buildFillPlan(plan *fillPlan, t reflect.Type, basePath []int) {
 		plan.fields = append(plan.fields, fillField{
 			name:   f.Name,
 			index:  path,
-			target: fillTargetFor(f.Type),
+			target: fillTargetFor(f.Type, building),
 		})
 		if _, dup := plan.byName[f.Name]; !dup {
 			plan.byName[f.Name] = idx
@@ -141,7 +167,7 @@ func buildFillPlan(plan *fillPlan, t reflect.Type, basePath []int) {
 }
 
 // fillTargetFor classifies the (deref'd) type a value will be written into.
-func fillTargetFor(t reflect.Type) fillTarget {
+func fillTargetFor(t reflect.Type, building map[reflect.Type]*fillPlan) fillTarget {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -171,10 +197,10 @@ func fillTargetFor(t reflect.Type) fillTarget {
 		ft.kind = fkFloat
 	case reflect.Struct:
 		ft.kind = fkStruct
-		ft.nested = fillPlanFor(t)
+		ft.nested = fillPlanOf(t, building)
 	case reflect.Slice:
 		ft.kind = fkSlice
-		elem := fillTargetFor(t.Elem())
+		elem := fillTargetFor(t.Elem(), building)
 		ft.elem = &elem
 	}
 	return ft

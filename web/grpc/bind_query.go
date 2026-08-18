@@ -300,8 +300,11 @@ func compileListEnvelope(
 // handler — the full opt-in gate, the directional rule and the only-total
 // conflict matrix, shared verbatim with REST and GraphQL. The computed cut of
 // the field vocabulary rides along so read_mask pushes a computed field's
-// sources and sort refuses it, exactly as `?fields=`/`?orderBy=` do.
-func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCriteria, error) {
+// sources and sort refuses it, exactly as `?fields=`/`?orderBy=` do. The
+// second return value names the sources read ONLY to feed a masked computed
+// field (HiddenComputedSources) — the wrapper blanks them on each Result
+// before projection, so they never leak onto the masked wire.
+func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCriteria, []string, error) {
 	b := NewCriteria().Fields(plan.fields).ComputedFields(plan.computed)
 	if plan.page != nil && msg.Has(plan.page) {
 		if p, ok := msg.Get(plan.page).Message().Interface().(*pb.PaginationRequest); ok {
@@ -322,7 +325,7 @@ func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCrit
 		}
 	}
 	if violations := queryschema.ValidateControls(plan.reserved, b.Controls(), nil); len(violations) > 0 {
-		return queries.ReadCriteria{}, controlViolationError(violations)
+		return queries.ReadCriteria{}, nil, controlViolationError(violations)
 	}
 	var opErrs []string
 	source := msg
@@ -346,9 +349,15 @@ func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCrit
 	}
 	crit, err := b.Build()
 	if len(opErrs) > 0 {
-		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %s", strings.Join(opErrs, "; "))
+		return queries.ReadCriteria{}, nil, fmt.Errorf("grpc criteria: %s", strings.Join(opErrs, "; "))
 	}
-	return crit, err
+	if err != nil {
+		return queries.ReadCriteria{}, nil, err
+	}
+	// The computed cut the RENDER needs: sources read only to feed a masked
+	// computed field, blanked on each Result before projection so read_mask
+	// shapes the wire exactly as `?fields=` does on REST and the exports.
+	return crit, b.HiddenComputedSources(), nil
 }
 
 // apply feeds one wrapper into the builder, enforcing the leaf's operator

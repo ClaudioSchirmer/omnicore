@@ -244,8 +244,8 @@ func panicNow() { panic("boom") }
 func TestHandleQuerySuccessAndConversion(t *testing.T) {
 	pipe := pipeline.New(nil)
 	fn := handleQueryWithParams(pipe,
-		func(pb *testpb.ListGadgetsRequest) (*listGadgetsQuery, error) {
-			return &listGadgetsQuery{NameContains: pb.GetNameContains()}, nil
+		func(pb *testpb.ListGadgetsRequest) (*listGadgetsQuery, []string, error) {
+			return &listGadgetsQuery{NameContains: pb.GetNameContains()}, nil, nil
 		},
 		listGadgetsHandler{},
 		fromGadgetsPage)
@@ -257,7 +257,9 @@ func TestHandleQuerySuccessAndConversion(t *testing.T) {
 	}
 
 	failing := handleQueryWithParams(pipe,
-		func(*testpb.ListGadgetsRequest) (*listGadgetsQuery, error) { return nil, errors.New("bad") },
+		func(*testpb.ListGadgetsRequest) (*listGadgetsQuery, []string, error) {
+			return nil, nil, errors.New("bad")
+		},
 		listGadgetsHandler{},
 		func(queries.PageOf[listGadgetResult]) (*testpb.ListGadgetsResponse, error) {
 			return &testpb.ListGadgetsResponse{}, nil

@@ -13,6 +13,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // handleCommandWithBody adapts a pipeline command handler to a Connect RPC
@@ -74,25 +75,37 @@ func handleCommandWithBody[
 // handleQueryWithParams is the read-side sibling of
 // web.QueryWithParams: same flow, queries.QueryWithParams constraint and
 // a typed queries.PageOf result, no strict presence (queries have no
-// FullBody contract).
+// FullBody contract). toQuery additionally answers the Result Go paths that
+// were read ONLY to feed a masked computed field — the wrapper blanks them
+// on each page item before projection, so a read_mask shapes the wire
+// exactly as `?fields=` does on REST and the exports.
 func handleQueryWithParams[
 	PB, RPB any,
 	TQ queries.QueryWithParams[TResult],
 	TResult any,
 ](
 	pipe *pipeline.Pipeline,
-	toQuery func(*PB) (TQ, error),
+	toQuery func(*PB) (TQ, []string, error),
 	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	fromResult func(queries.PageOf[TResult]) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
 		appCtx := AppContextFrom(ctx)
-		q, err := toQuery(req.Msg)
+		q, hidden, err := toQuery(req.Msg)
 		if err != nil {
 			return nil, conversionError[queries.PageOf[TResult]](pipe, appCtx, err)
 		}
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
-		return responseFromResult(result, fromResult)
+		project := fromResult
+		if len(hidden) > 0 {
+			project = func(p queries.PageOf[TResult]) (*RPB, error) {
+				for i := range p.Items {
+					p.Items[i] = queryschema.BlankResultPaths(p.Items[i], hidden)
+				}
+				return fromResult(p)
+			}
+		}
+		return responseFromResult(result, project)
 	}
 }
 

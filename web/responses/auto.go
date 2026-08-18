@@ -10,8 +10,8 @@ import (
 // Every seat in this framework is hand-written by default — ToCommand,
 // ApplyTo, ApplyPartiallyTo, FromEntity, ToCriteria, ToQuery. The Result→
 // Response travel is no exception: FromResult is YOUR method, and the body is
-// yours to write. [Map] is the framework's offer to write it for you, and
-// this marker is how a Response ACCEPTS that offer.
+// yours to write. [AutoFromResult] is the framework's offer to write it for
+// you, and this marker is how a Response ACCEPTS that offer.
 //
 // Embed it to declare the type auto-mapped:
 //

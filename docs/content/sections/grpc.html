@@ -444,7 +444,9 @@ reg.Register(fwgrpc.QueryByID[usersv1.GetUserRequest, usersv1.GetUserResponse](
         field resolves through the same vocabulary allowlist and then substitutes its declared
         sources into the projection; the computed path itself never goes down, because no column
         would resolve it. Sources the Response does not declare are read and dropped at the wire
-        boundary, exactly as on <code>?fields=</code>.</li>
+        boundary, exactly as on <code>?fields=</code> — and a source that IS a declared Response
+        field is blanked on each Result before projection when the mask did not name it, so a mask
+        naming only the computed field answers the computed field alone, never its ingredients.</li>
     <li><strong><code>order_by</code> is refused.</strong> Ordering happens in the store and the
         keyset cursor is built from stored ordering values, so a derived value is not expressible.
         The refusal is <code>INVALID_ARGUMENT</code> carrying
@@ -468,7 +470,10 @@ reg.Register(fwgrpc.QueryByID[usersv1.GetUserRequest, usersv1.GetUserResponse](
     Build()</code></pre>
 <p>
     A nil map keeps the previous behavior, so a raw procedure with no computed field declares
-    nothing.
+    nothing. After <code>Build</code>, <code>b.HiddenComputedSources()</code> names the Result Go
+    paths the mask read only to feed a computed field — the raw handler blanks them on each Result
+    before its own projection (<code>queryschema.BlankResultPaths</code>), which is exactly what the
+    Auto path does, so a hand-mounted list keeps the mask-shapes-the-wire parity.
 </p>
 
 <h3>The outbound side — <code>infra/grpcclient</code></h3>

@@ -196,7 +196,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResu
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		if result.IsSuccess() {
 			return RespondPaged(c, fiber.StatusOK, result.Value(), func(r TResult) TResp {
-				return responseProjection(blankResultPaths(r, hidden))
+				return responseProjection(queryschema.BlankResultPaths(r, hidden))
 			})
 		}
 		return RespondFromResult(c, result, fiber.StatusOK)

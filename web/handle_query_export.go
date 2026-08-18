@@ -162,7 +162,7 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult],
 		hidden := queryschema.UnrequestedComputedSources(projSchema, selectedWire)
 		items := make([]TResp, len(page.Items))
 		for i, r := range page.Items {
-			items[i] = responseProjection(blankResultPaths(r, hidden))
+			items[i] = responseProjection(queryschema.BlankResultPaths(r, hidden))
 		}
 
 		// Buffer up to maxRows worth of rows (the ceiling already bounds memory)

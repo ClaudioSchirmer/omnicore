@@ -269,13 +269,13 @@ func QueryWithParams[
 		if err != nil {
 			bootFail("%v", err)
 		}
-		toQuery := func(msg *PB) (TQ, error) {
-			crit, err := plan.buildCriteria(any(msg).(proto.Message).ProtoReflect())
+		toQuery := func(msg *PB) (TQ, []string, error) {
+			crit, hidden, err := plan.buildCriteria(any(msg).(proto.Message).ProtoReflect())
 			if err != nil {
 				var zero TQ
-				return zero, err
+				return zero, nil, err
 			}
-			return sample.ToQuery(crit), nil
+			return sample.ToQuery(crit), hidden, nil
 		}
 		fromPage := func(p queries.PageOf[TResult]) (*RPB, error) {
 			return buildListResponse[RPB](env, responseProjection, p)

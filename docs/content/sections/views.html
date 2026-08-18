@@ -86,6 +86,12 @@
     total, so it must count first. Nothing about the wire changes: <code>totalCount</code> is present on every
     page, carrying the same number it always did, and a count failure fails the read.
 </p>
+<p>
+    The concurrency has a resource cost the latency win pays for: each paged read holds <strong>two</strong>
+    store operations for the duration of the fetch — on the RelationalSource twin, a second pooled connection
+    from <code>relational.pool</code>. A service running near its pool ceiling under paged-read load should size
+    the pool for roughly two connections per concurrent listing, not one.
+</p>
 
 <h3 id="views-plain">query.View — the aggregate's own projection</h3>
 <p>
@@ -1012,7 +1018,13 @@ same envelope, same projector, same pagination block as any view read</div>
                 the declared order and the ceiling <em>per group</em> server-side — the per-parent
                 cap a plain <code>find</code> limit could never express, which is why this used to
                 cost one subquery per parent. One fat parent cannot starve the others: every group
-                truncates at <code>c</code> independently.</td>
+                truncates at <code>c</code> independently. The ceiling caps the OUTPUT, not the
+                scan: <code>$group</code> is a blocking stage, so it examines every matching child
+                of the page's parents before <code>$topN</code> truncates — the <code>fk</code>
+                index bounds that scan to the page's parents, never the whole collection, but a leg
+                whose parents carry very large child sets pays it server-side (the retired
+                per-parent walk read at most <code>c</code> each, at the price of <code>p</code>
+                queries).</td>
         </tr>
         <tr>
             <td>By-id read</td>
@@ -1024,9 +1036,12 @@ same envelope, same projector, same pagination block as any view read</div>
     <p>
         <strong>Total per request: <code>1 + (#1:1 legs) + (#1:N legs)</code> queries, every one
         index-driven, moving at most <code>p + p·(#1:1) + p·c·(#1:N)</code> documents.</strong>
-        There is no unbounded axis: the query count is CONSTANT in the page size, every fetch is
-        capped by a ceiling (<code>maxLimit</code>, one-doc-per-key uniqueness, <code>$topN</code>'s
-        per-group <code>n</code>), and no fan-out exceeds the declared bounds. What keeps each
+        No query count and no document moved exceeds the declared bounds: the query count is
+        CONSTANT in the page size, and every fetch caps what crosses the wire (<code>maxLimit</code>,
+        one-doc-per-key uniqueness, <code>$topN</code>'s per-group <code>n</code>). One axis is
+        bounded by the DATA rather than by a knob: the 1:N <code>$group</code> scans all matching
+        children of the page's parents server-side before truncating (see the row above) — the wire
+        stays ≤ p·c, but that scan grows with the parents' child cardinality. What keeps each
         promise honest:
     </p>
     <ul>

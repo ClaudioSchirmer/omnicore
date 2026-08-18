@@ -259,22 +259,35 @@
                         keeps the whole-document trip), and the Auto mapping above copies the Result
                         into the Response field by field rather than rendering and re-parsing it.
                         Together they remove up to four <code>encoding/json</code> passes per page item,
-                        and the bulk of the read path's allocations.</li>
+                        and the bulk of the read path's allocations, on REST and the tabular exports.
+                        GraphQL is the one surface that keeps a JSON round-trip per node: its executor
+                        trims a wire-named value tree, now rendered from the projected Response (so the
+                        Response DTO is the wire authority there too) instead of walked off the raw
+                        document.</li>
                     <li><strong>The listing total runs concurrently with the page fetch.</strong> Both
                         readers (Mongo and <a href="#relational-view">RelationalSource</a>) issue the
                         count and the page query in parallel instead of back to back — the response
                         still carries <code>totalCount</code> on every page; one store round-trip
                         leaves the latency path. The single exception is the relational bare-backward
                         window (<code>last=N</code>, no cursor), whose offset anchors on the total and
-                        keeps the sequential order.</li>
+                        keeps the sequential order. The cost of the latency win: each paged read holds
+                        TWO store operations for the duration of the fetch — on the relational twin, a
+                        second pooled connection — so a service running near its
+                        <code>relational.pool</code> ceiling sizes the pool for it.</li>
                     <li><strong>A composed view's 1:N leg resolves in ONE aggregation.</strong>
                         <code>LinkMany</code> used to run one capped find per page parent
                         (concurrency-bounded); it now runs a single
                         <code>$match({fk: {$in: page ids}})</code> + <code>$group</code>/<code>$topN</code>
                         aggregation applying the declared order and the per-parent ceiling server-side
                         (MongoDB 5.2+, already the framework's floor). Same segments, same truncation,
-                        constant query count per leg. The <a href="#views~views-composed-cost">read
-                        cost model</a> reflects the new bound.</li>
+                        constant query count per leg. The trade is server-side: <code>$group</code> is
+                        a blocking stage, so it examines every child of the page's parents that matches
+                        the leg filter before <code>$topN</code> truncates its OUTPUT — the retired walk
+                        read at most n per parent, but paid one query each. The wire bound is unchanged
+                        and the <code>fk</code> index keeps the scan to the page's parents, never the
+                        whole collection; a leg whose parents carry very large child sets pays that
+                        scan. The <a href="#views~views-composed-cost">read cost model</a> spells out
+                        both sides.</li>
                 </ul></li>
         </ul>
     </div>

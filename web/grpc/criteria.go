@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"time"
 
@@ -43,6 +44,9 @@ type CriteriaBuilder struct {
 	// refused as a typed notification (not a prose error) so the envelope
 	// tells the consumer WHY, exactly like the REST 400.
 	computedSorts []string
+	// masked records the read_mask's wire paths, so HiddenComputedSources can
+	// tell "the mask asked for this" from "we read it as a computed source".
+	masked map[string]bool
 }
 
 // NewCriteria starts a builder with an empty filter map.
@@ -196,10 +200,14 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 	if b.crit.Projection == nil {
 		b.crit.Projection = map[string]int{}
 	}
+	if b.masked == nil {
+		b.masked = map[string]bool{}
+	}
 	for _, path := range m.GetPaths() {
 		if path == "" {
 			continue
 		}
+		b.masked[path] = true
 		goPath, ok := b.goField("fields", path)
 		if !ok {
 			continue
@@ -213,6 +221,57 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 		b.crit.Projection[goPath] = 1
 	}
 	return b
+}
+
+// HiddenComputedSources returns the Result Go paths that were read ONLY to
+// feed a masked computed field and that the mask did not name — the gRPC
+// twin of queryschema.UnrequestedComputedSources. A computed field's sources
+// must reach the store, but the read_mask shapes the WIRE: a source that is
+// itself a declared field of the vocabulary would otherwise render beside
+// the computed value even though the mask never named it. The Auto path
+// blanks these paths on each Result before projection
+// (queryschema.BlankResultPaths); a MountRaw consumer that maps by hand
+// calls this after Build and does the same, keeping raw parity with
+// `?fields=` on REST.
+//
+// A source the Response never declares needs no blanking — it has no wire
+// slot to leak into. Returns nil when no mask was applied, nothing masked is
+// computed, or every source was masked outright. Deterministic order.
+func (b *CriteriaBuilder) HiddenComputedSources() []string {
+	if len(b.computed) == 0 || len(b.masked) == 0 {
+		return nil
+	}
+	// Go path → wire path, to answer "does this source have a wire slot".
+	wireByGo := make(map[string]string, len(b.fields))
+	for wire, goPath := range b.fields {
+		wireByGo[goPath] = wire
+	}
+	hidden := map[string]bool{}
+	for wire := range b.masked {
+		sources, isComputed := b.computed[wire]
+		if !isComputed {
+			continue
+		}
+		for _, src := range sources {
+			srcWire, onTheWire := wireByGo[src]
+			if !onTheWire {
+				continue // read-only source: no wire slot, nothing to hide
+			}
+			if b.masked[srcWire] {
+				continue // the mask asked for it too
+			}
+			hidden[src] = true
+		}
+	}
+	if len(hidden) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(hidden))
+	for p := range hidden {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // String wires a StringFilter onto goFieldPath. nil / empty filters are

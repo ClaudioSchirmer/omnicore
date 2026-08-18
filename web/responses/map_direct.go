@@ -1,14 +1,11 @@
 package responses
 
 import (
-	"encoding"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
 
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/internal/fieldcopy"
 )
 
@@ -241,25 +238,6 @@ func dstFieldAlloc(v reflect.Value, index []int) reflect.Value {
 		v = v.Field(x)
 	}
 	return v
-}
-
-var (
-	jsonMarshalerType   = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
-	jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
-	textMarshalerType   = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
-	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
-	domainIDType        = reflect.TypeOf(domain.ID{})
-)
-
-// hasCustomCodec reports whether t (or *t) declares its own JSON or text
-// codec — the signal that a marshal/unmarshal trip runs type-owned logic a
-// structural copy cannot claim to reproduce across DIFFERENT types.
-func hasCustomCodec(t reflect.Type) bool {
-	pt := reflect.PointerTo(t)
-	return t.Implements(jsonMarshalerType) || pt.Implements(jsonMarshalerType) ||
-		t.Implements(jsonUnmarshalerType) || pt.Implements(jsonUnmarshalerType) ||
-		t.Implements(textMarshalerType) || pt.Implements(textMarshalerType) ||
-		t.Implements(textUnmarshalerType) || pt.Implements(textUnmarshalerType)
 }
 
 // buildValueCopier delegates to the shared engine (internal/fieldcopy), which

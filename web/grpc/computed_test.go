@@ -72,6 +72,103 @@ func TestComputedFieldMaskPushesSources(t *testing.T) {
 	}
 }
 
+// TestHiddenComputedSources — the builder names the sources that were read
+// ONLY to feed a masked computed field: a source the mask also named is not
+// hidden, and a source with no wire slot (absent from the vocabulary) needs
+// no hiding. No mask, or no computed entry in it, answers nil.
+func TestHiddenComputedSources(t *testing.T) {
+	fields := map[string]string{"id": "ID", "name": "Name", "display": "Display"}
+	computed := map[string][]string{"display": {"Name", "UserName"}}
+
+	// Mask names only the computed field: Name (on the wire) hides,
+	// UserName (no wire slot) does not.
+	b := NewCriteria().Fields(fields).ComputedFields(computed).
+		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"display"}})
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if got := b.HiddenComputedSources(); !reflect.DeepEqual(got, []string{"Name"}) {
+		t.Fatalf("hidden sources: %v", got)
+	}
+
+	// Mask names the source too: nothing to hide.
+	b = NewCriteria().Fields(fields).ComputedFields(computed).
+		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"display", "name"}})
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if got := b.HiddenComputedSources(); got != nil {
+		t.Fatalf("a masked source must not hide, got %v", got)
+	}
+
+	// No mask at all: nil.
+	b = NewCriteria().Fields(fields).ComputedFields(computed)
+	if got := b.HiddenComputedSources(); got != nil {
+		t.Fatalf("no mask must answer nil, got %v", got)
+	}
+
+	// Mask carries no computed path: nil.
+	b = NewCriteria().Fields(fields).ComputedFields(computed).
+		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"id"}})
+	if got := b.HiddenComputedSources(); got != nil {
+		t.Fatalf("a mask without computed paths must answer nil, got %v", got)
+	}
+}
+
+// TestComputedAutoPath_MaskBlanksUnrequestedSources — the read_mask shapes
+// the WIRE, not just the store projection: a mask naming only the computed
+// field answers the computed value alone, with the sources it fed — which
+// ARE declared Response fields — blanked before projection, exactly as
+// REST's `?fields=<computed>` elides them. A source the mask also names
+// stays.
+func TestComputedAutoPath_MaskBlanksUnrequestedSources(t *testing.T) {
+	var saw queries.ReadCriteria
+	client := newComputedGadgetClient(t, "/omnicore.grpctest.v1.GadgetService/SearchGadgetsComputedBlank", &saw)
+
+	res, err := client.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{
+		Fields: &fieldmaskpb.FieldMask{Paths: []string{"kind"}},
+	}))
+	if err != nil {
+		t.Fatalf("masked read: %v", err)
+	}
+	items := res.Msg.GetItems()
+	if len(items) != 1 {
+		t.Fatalf("items: %+v", items)
+	}
+	if items[0].GetKind() != "tool" {
+		t.Fatalf("the computed field must answer, got %q", items[0].GetKind())
+	}
+	if items[0].GetId() != "" || items[0].GetName() != "" {
+		t.Fatalf("sources read only to feed the computed field must be blanked, got id=%q name=%q",
+			items[0].GetId(), items[0].GetName())
+	}
+
+	// Mixed mask: a source the mask names outright is kept.
+	res, err = client.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{
+		Fields: &fieldmaskpb.FieldMask{Paths: []string{"kind", "name"}},
+	}))
+	if err != nil {
+		t.Fatalf("mixed mask: %v", err)
+	}
+	items = res.Msg.GetItems()
+	if items[0].GetName() != "Drill" || items[0].GetKind() != "tool" {
+		t.Fatalf("a masked source must stay, got %+v", items[0])
+	}
+	if items[0].GetId() != "" {
+		t.Fatalf("the unmasked source must still blank, got id=%q", items[0].GetId())
+	}
+
+	// No mask: the full response, nothing blanked.
+	res, err = client.CallUnary(context.Background(), connect.NewRequest(&testpb.SearchGadgetsRequest{}))
+	if err != nil {
+		t.Fatalf("unmasked read: %v", err)
+	}
+	items = res.Msg.GetItems()
+	if items[0].GetId() != "g-1" || items[0].GetName() != "Drill" {
+		t.Fatalf("an unmasked read must keep every field, got %+v", items[0])
+	}
+}
+
 // TestComputedSortIsRefused — order_by over a computed field is a wire-
 // contract violation carrying the typed ComputedFieldNotSortableNotification
 // (semantic Schema), reported under the sort entry as the wire spelled it.
