@@ -110,8 +110,9 @@ with `1.0.0`.
     the CSV/XLSX exports, `graphql.QueryWithParams`/`QueryByID`,
     `grpc.QueryWithParams`/`QueryByID`) takes the SAME
     `responseProjection func(TResult) TResp` seat the command wrappers already
-    took, typically the Response's `FromResult`. The new generic
-    `responses.Map[TResp](result)` implements the trivial name-based mapping.
+    took, typically the Response's `FromResult`. A Response that wants the
+    framework to write that method declares it — see the Auto mapping entry
+    below.
   - The export derives its columns from the Response (`export.PlanFor`), so a
     field outside the DTO exports nowhere and `?fields=`/`?orderBy=` speak the
     json wire vocabulary shared with the JSON listing. Column headers come from
@@ -119,90 +120,82 @@ with `1.0.0`.
     request language (fallback: the json name — previously the Go field name).
     Cell values are the projected Response values, so enum convergence now
     applies to CSV/XLSX too.
-  - New boot guards: `queryschema.ValidateResultAlignment` (every Response
-    field must have a same-named Result field; a Result carrying json tags is
-    rejected), `ValidateFieldsResult` (the `?fields=` sparse contract on the
-    Result), and a GraphQL SDL guard that boot-fails when two Response DTOs
-    registered under one entity name expose different wire field sets
-    (previously an honor-system comment).
+  - New boot guards: `queryschema.ValidateResultPurity` (a Result carries no
+    json wire tags — the three-name model), `ValidateFieldsResult` (the
+    `?fields=` sparse contract on the Result), and a GraphQL SDL guard that
+    boot-fails when two Response DTOs registered under one entity name expose
+    different wire field sets (previously an honor-system comment).
 
   Removed: `responses.AutoFromDoc`, `responses.RawDoc`, `web.ParseCriteria`
   (use `web.NewQueryParser` + `Parse`), `queries.ExportPlan` and the
   `ViewDefinition.ExportPlan()` family (the `web.ExportView` interface is now
   just `ResolveMaxExportRows` + `Name`).
 
-- **BREAKING — `fwresponses.Auto` / `fwrequests.Auto`: the framework's generic
-  mappers became OPT-IN, and what they promise is now enforced at boot.** Every
-  mapping seat here is hand-written by default — `ToCommand`, `ApplyTo`,
-  `FromEntity`, `ToCriteria`, `FromResult`. The two generic helpers were the
-  exception: they applied themselves, and a shape they could not map degraded
-  silently. Now a DTO must ask.
+- **`fwresponses.Auto` / `fwrequests.Auto` — the generic mappers are OPT-IN,
+  and what they promise is enforced.** Every mapping seat in this framework is
+  hand-written by default: `ToCommand`, `ApplyTo`, `FromEntity`, `ToCriteria`,
+  `FromResult`. The framework offers to write two of them for you, and a DTO
+  accepts the offer by embedding a marker.
 
   - A Response embeds `fwresponses.Auto` and calls
-    `fwresponses.AutoFromResult[Resp](result)` (renamed from `responses.Map`).
-    A Request embeds `fwrequests.Auto` and calls
-    `fwrequests.AutoFromRequest[*Cmd](req)` — the new write-side twin, which
-    replaces a hand-written `ToCommand` when the shapes align.
+    `fwresponses.AutoFromResult[Resp](result)`. A Request embeds
+    `fwrequests.Auto` and calls `fwrequests.AutoFromRequest[*Cmd](req)`, which
+    writes `ToCommand` the same way.
   - **Without the marker the helper does not COMPILE.** The constraint is a
     sealed interface granted only by the embed, so the opt-in can be neither
-    skipped nor forged.
-  - **With the marker the pair is validated at Mount** by all five route
+    skipped nor forged — and a DTO that never asked can never silently ride a
+    mapping.
+  - **With the marker the pair is validated at Mount** by the five route
     constructors (`QueryWithParams`, `QueryByID`, `CommandByID`,
-    `CommandWithBody`, `CommandWithBodyID` — the command side validated nothing
-    before): names must align AND every mapped field pair must be directly
-    assignable. A violation is a boot panic naming the field.
-  - **The serialization fallback is gone.** An auto pair is proven copyable at
-    boot, so `AutoFromResult`/`AutoFromRequest` no longer marshal anything —
-    what used to be a silent per-item round trip is now a boot failure.
+    `CommandWithBody`, `CommandWithBodyID`): names must align AND every mapped
+    field pair must be directly assignable. A violation is a boot panic naming
+    the field.
+  - **The mapping never serializes.** Values travel field by field through a
+    copier compiled once per type pair, so a shape that cannot be copied is
+    refused at boot rather than degraded into a marshal/unmarshal round trip.
   - **The rule, by layer: a type in `web/` (Request, Response) must be fully
     connected; a type in `application/` (Command, Result) may carry more.** A
     Result may hold fields no Response exposes (a deliberate cut); a Command may
-    hold what the wire never sends (the path id, an identity overlay). A wire
-    field with no counterpart is refused in both directions.
-  - **A DTO without the marker is untouched**: no guard, no generic mapper,
-    the method written by hand — free to rename (`Result.Name` →
-    `Response.Nickname`), flatten or fold. That escape hatch is why the marker
-    is opt-in; the reference service exercises it on the surfaces that rename a
-    field or fold a flat wire address into a nested Command value.
+    hold what the wire never sends (its path id, an identity overlay, a handler
+    default). A wire field with no counterpart is refused in both directions —
+    it would either render null forever or drop the client's value in silence.
+  - **A DTO without the marker is untouched**: no guard, no generic mapper, the
+    method written by hand — free to rename (`Result.Name` →
+    `Response.Nickname`), flatten a nested segment or fold two fields into one.
+    That escape hatch is why the marker is opt-in; the reference service
+    exercises it on the surfaces that rename a field or fold a flat wire address
+    into a nested Command value.
+  - Field shapes that travel: identical types, pointer wrapping/unwrapping,
+    same-family numeric conversion, `domain.ID` ↔ `string`, struct → struct,
+    slice → slice, and map → map under an identical key type (a different key
+    type is refused — the key is what a consumer indexes by).
+  - **Where the check cannot run, the diagnosis carries itself.** The Mount
+    check exists only where both types are known before a request does. A
+    hand-written handler, the GraphQL and gRPC surfaces and the tabular export
+    map on their own, so the same contract is enforced on first use there. Both
+    diagnostics name the failing field, explain the rule, list three concrete
+    ways out and tabulate what travels; the runtime one adds why it arrived on a
+    request instead of at startup, and points at `AutoFromResultReason` /
+    `AutoRequestReason` for turning that into a red build.
 
-  Where the check runs: the five canonical route constructors validate at
-  Mount. A call site they do not cover — a hand-written handler, GraphQL, gRPC,
-  the tabular export, any surface added later — has no Mount seat, so the same
-  contract is enforced on first use and the recovered panic surfaces as a 500.
-  Both diagnostics (boot and runtime) carry the failing field, what the rule
-  means, three concrete ways out and the table of what travels; the runtime one
-  adds why it arrived on a request instead of at startup, and points at
-  `AutoFromResultReason`/`AutoRequestReason` for turning that into a red build.
-
-  Supported field shapes: identical types, pointer wrapping/unwrapping,
-  same-family numeric conversion, `domain.ID` ↔ `string`, struct → struct,
-  slice → slice and map → map under an identical key type (the values travel by
-  the same rules; a different key type is refused, since the key is what a
-  consumer indexes by). The engine behind both seats lives in one place
-  (`internal/fieldcopy`).
-
-  Migration: embed the marker on every DTO that used `responses.Map`, and
-  rename the call to `AutoFromResult`. `queryschema.ValidateResultAlignment` is
-  now alignment-only — the "no json tags on a Result" half moved to
-  `ValidateResultPurity`, which still runs for every Result, marker or not.
   New surface: `responses.Auto`, `responses.AutoFromResult`,
   `responses.AutoFromResultReason`, `responses.FormatAutoFromResultGuard`,
   `requests.Auto`, `requests.AutoFromRequest`, `requests.AutoRequestReason`,
   `requests.FormatAutoRequestGuard`, `queryschema.ValidateResultPurity`,
-  `queryschema.FormatResultPurityGuard`. Removed: `responses.Map`.
+  `queryschema.FormatResultPurityGuard`. `queryschema.ValidateResultAlignment`
+  is alignment-only and runs for opt-in pairs.
 
 - **Read-path performance round — same wire, same semantics, fewer passes and
   round-trips.** Three internal changes to how a read is served; no surface,
   envelope or ordering change on any of them.
   - `queries.ResultFromDoc` fills the Result from the canonical document
     through a cached reflection plan instead of a whole-document
-    `json.Marshal` + `Unmarshal` round-trip (per-field JSON fallback preserves
-    custom decoders and coercion edge cases; non-struct Results keep the
-    legacy path). `responses.Map` compiles a per-(Result, Response) copier at
-    first use — a pair it cannot prove copy-equivalent to the JSON trip keeps
-    the legacy path, decided once and cached per type pair. Per page item this
-    removes up to four `encoding/json` passes and the bulk of the read path's
-    allocations.
+    `json.Marshal` + `Unmarshal` round-trip (a per-field JSON fallback
+    preserves custom decoders and coercion edge cases; a non-struct Result
+    keeps the whole-document trip). Together with the Auto mapping above —
+    which copies the Result into the Response field by field rather than
+    rendering and re-parsing it — this removes up to four `encoding/json`
+    passes per page item, and the bulk of the read path's allocations.
   - The listing total runs concurrently with the page fetch on both readers
     (Mongo `CountDocuments` ∥ `Find`; relational `CountEntities` ∥
     `FindAllEntities`) — `totalCount` still arrives on every page; one store
