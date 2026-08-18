@@ -14,11 +14,12 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // The attachment surface mirrors the REST Spec constructors exactly — the
 // SAME ingredients (the Request DTO with its ToCommand/ToQuery, the
-// Response DTO's FromResult or an AutoFromDoc projector), plus the
+// Response DTO's FromResult), plus the
 // generated procedure constant and the pb types as explicit type
 // parameters (Go cannot infer them from a procedure string):
 //
@@ -53,11 +54,13 @@ type Procedure struct {
 // one Request DTO serves both wires.
 type RequestDTO[TCmd any] interface{ ToCommand() TCmd }
 
-type HasToParamsQuery[TQ queries.QueryWithParams] interface {
+type HasToParamsQuery[TQ any] interface {
 	ToQuery(criteria queries.ReadCriteria) TQ
 }
 
-type HasToIDQuery[TQ queries.QueryByID] interface{ ToQuery() TQ }
+type HasToIDQuery[TQ any] interface {
+	ToQuery(criteria queries.ReadCriteria) TQ
+}
 
 // ProcedureOption configures one constructor call.
 type ProcedureOption func(*procedureConfig)
@@ -234,22 +237,23 @@ func CommandByID[
 // QueryWithParams attaches a list query. The request composes the shared
 // omnicore.v1 components (discovered by type at boot); filters bind to the
 // SAME Request DTO the REST list consumes and inherit its `filter:` tag
-// operator allowlist; read_mask/sort resolve against the projector's
-// Response DTO — then ToQuery(criteria) receives the INPUT criteria,
-// exactly what the REST parser hands it. The response composes one
-// repeated items message + omnicore.v1.PaginationInfo, filled from the same
-// projector seat REST uses (fwresponses.AutoFromDoc or a hand-written
-// FromDoc).
+// operator allowlist; read_mask/sort resolve against the Response DTO —
+// then ToQuery(criteria) receives the INPUT criteria, exactly what the REST
+// parser hands it. The response composes one repeated items message +
+// omnicore.v1.PaginationInfo, filled from the same responseProjection seat
+// REST uses (the Response's FromResult) over the typed PageOf the
+// application handler returned.
 func QueryWithParams[
 	PB, RPB any,
 	TReq HasToParamsQuery[TQ],
-	TQ queries.QueryWithParams,
+	TQ queries.QueryWithParams[TResult],
+	TResult any,
 	R any,
 ](
 	procedure string,
 	sample TReq,
-	projector func(map[string]any) R,
-	h pipeline.Handler[TQ, queries.Page],
+	responseProjection func(TResult) R,
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	opts ...ProcedureOption,
 ) Procedure {
 	cfg := resolveProcedureOptions(opts)
@@ -265,16 +269,16 @@ func QueryWithParams[
 		if err != nil {
 			bootFail("%v", err)
 		}
-		toQuery := func(msg *PB) (TQ, error) {
-			crit, err := plan.buildCriteria(any(msg).(proto.Message).ProtoReflect())
+		toQuery := func(msg *PB) (TQ, []string, error) {
+			crit, hidden, err := plan.buildCriteria(any(msg).(proto.Message).ProtoReflect())
 			if err != nil {
 				var zero TQ
-				return zero, err
+				return zero, nil, err
 			}
-			return sample.ToQuery(crit), nil
+			return sample.ToQuery(crit), hidden, nil
 		}
-		fromPage := func(p queries.Page) (*RPB, error) {
-			return buildListResponse[RPB](env, projector, p)
+		fromPage := func(p queries.PageOf[TResult]) (*RPB, error) {
+			return buildListResponse[RPB](env, responseProjection, p)
 		}
 		fn := handleQueryWithParams(r.Pipeline(), toQuery, h, fromPage)
 		return connect.NewUnaryHandler(procedure, guarded(r, cfg.permission, fn), r.HandlerOptions()...)
@@ -283,18 +287,20 @@ func QueryWithParams[
 
 // QueryByID attaches a get-one query: the request mirrors the REST by-id
 // DTO (id exempt — it rides SetPathID via idFrom), the response mirrors
-// the projector's Response DTO directly (no envelope).
+// the Response DTO directly (no envelope), filled from the same
+// responseProjection seat every surface uses over the typed Result.
 func QueryByID[
 	PB, RPB any,
 	TReq HasToIDQuery[TQ],
-	TQ queries.QueryByID,
+	TQ queries.QueryByID[TResult],
+	TResult any,
 	R any,
 ](
 	procedure string,
 	idFrom func(*PB) string,
 	sample TReq,
-	projector func(map[string]any) R,
-	h pipeline.Handler[TQ, map[string]any],
+	responseProjection func(TResult) R,
+	h pipeline.Handler[TQ, TResult],
 	opts ...ProcedureOption,
 ) Procedure {
 	_ = sample
@@ -311,18 +317,26 @@ func QueryByID[
 		if err != nil {
 			bootFail("%v", err)
 		}
+		includeArchivedOptIn := queryschema.ExtractRequestSchema(reflect.TypeOf(sample)).Reserved[queryschema.KeyIncludeArchived]
 		toQuery := func(msg *PB) (TQ, error) {
 			req, err := pbToDTO[TReq](reqPlan, any(msg).(proto.Message))
 			if err != nil {
 				var zero TQ
 				return zero, err
 			}
-			return req.ToQuery(), nil
+			// The by-id criteria seat: one reserved control is the whole wire
+			// vocabulary here (the paged sibling composes the omnicore.v1
+			// components instead), read back off the DTO the bind plan filled.
+			crit := queries.ReadCriteria{Filter: map[string]any{}}
+			if includeArchivedOptIn {
+				crit.IncludeArchived = queryschema.ReadIncludeArchived(reflect.ValueOf(req))
+			}
+			return req.ToQuery(crit), nil
 		}
-		fromDoc := func(doc map[string]any) (*RPB, error) {
-			return dtoToPB[RPB](respPlan, projector(doc))
+		fromResult := func(res TResult) (*RPB, error) {
+			return dtoToPB[RPB](respPlan, responseProjection(res))
 		}
-		fn := handleQueryByID(r.Pipeline(), idFrom, toQuery, h, fromDoc)
+		fn := handleQueryByID(r.Pipeline(), idFrom, toQuery, h, fromResult)
 		return connect.NewUnaryHandler(procedure, guarded(r, cfg.permission, fn), r.HandlerOptions()...)
 	}}
 }

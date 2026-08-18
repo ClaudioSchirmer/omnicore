@@ -128,7 +128,7 @@ func TestJsonMarshalDTO_Errors(t *testing.T) {
 }
 
 func TestBuildListResponse_NonProtoEnvelope(t *testing.T) {
-	if _, err := buildListResponse[int](&listEnvelope{}, func(map[string]any) gadgetItemDTO { return gadgetItemDTO{} }, queries.Page{}); err == nil ||
+	if _, err := buildListResponse[int](&listEnvelope{}, func(map[string]any) gadgetItemDTO { return gadgetItemDTO{} }, queries.PageOf[map[string]any]{}); err == nil ||
 		!strings.Contains(err.Error(), "not a proto.Message") {
 		t.Fatalf("expected the non-proto envelope error, got %v", err)
 	}

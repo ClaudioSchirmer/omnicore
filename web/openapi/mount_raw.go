@@ -16,7 +16,7 @@ import (
 // Whoami (replies with a fiber.Map), Echo (writes raw bytes / parses
 // multipart / streams SSE), Showcase Keycloak/HTTPClient (assembles
 // vendor-shaped DTOs the consumer owns). Anything that does NOT chain
-// BodyParser/ParseCriteria/BindPath at the request boundary belongs
+// BodyParser/QueryParser.Parse/BindPath at the request boundary belongs
 // here; otherwise Mount + RouteSpec is the right call.
 //
 // When registry is nil, MountRaw is a thin passthrough — only

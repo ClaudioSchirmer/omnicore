@@ -11,9 +11,10 @@ func (coreNL) Language() configuration.Language { return configuration.LangNL }
 func (coreNL) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":   "Verplicht veld.",
-		"SchemaViolationNotification": "De inhoud van de verzoekbody komt niet overeen met het verwachte schema.",
-		"LimitExceededNotification":   "De gevraagde limiet overschrijdt het toegestane maximum.",
+		"RequiredFieldNotification":            "Verplicht veld.",
+		"SchemaViolationNotification":          "De inhoud van de verzoekbody komt niet overeen met het verwachte schema.",
+		"LimitExceededNotification":            "De gevraagde limiet overschrijdt het toegestane maximum.",
+		"ComputedFieldNotSortableNotification": "Berekende velden kunnen niet worden gebruikt om te sorteren.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Kan een record met een bestaande primaire sleutel niet invoegen.",
@@ -88,6 +89,22 @@ func (coreNL) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route niet gevonden.",
 		"MethodNotAllowedNotification":    "HTTP-methode niet toegestaan voor deze route.",
 		"PayloadTooLargeNotification":     "Verzoekbody overschrijdt de toegestane omvang.",
+
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Autorisatie",
+		"Pipeline":      "Pipeline",
+		"Request":       "Verzoek",
+		"Route":         "Route",
+		"Schema":        "Schema",
+		"Server":        "Server",
 
 		// Language descriptions
 		"Language.UNKNOWN": "Onbekend",

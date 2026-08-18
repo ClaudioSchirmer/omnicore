@@ -252,15 +252,35 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 
 	col := r.mongo.collFn(r.resolver.Active(view).String())
 
-	total, err := col.CountDocuments(ctx, filter)
-	if err != nil {
-		return queries.Page{}, err
-	}
-
 	// Only-total short-circuit: skip Find + projection + cursor walk. The
 	// dedicated wire envelope (TotalOnlyPagination) consumes solely TotalCount.
 	if c.OnlyTotal {
+		total, err := col.CountDocuments(ctx, filter)
+		if err != nil {
+			return queries.Page{}, err
+		}
 		return queries.Page{OnlyTotal: true, TotalCount: total}, nil
+	}
+
+	// The listing total counts the whole filtered set — the filter BEFORE the
+	// keyset clause — and is independent of the page fetch, so it runs
+	// CONCURRENTLY with the Find below instead of serializing one round trip
+	// after the other. The count goroutine reads `filter` and nothing ever
+	// mutates it again: the keyset clause lands on `findFilter`, a top-level
+	// copy taken before the goroutine starts (appendKeysetClause rewrites only
+	// top-level entries, and the shared $and slice is cloned on write there).
+	type countResult struct {
+		total int64
+		err   error
+	}
+	countCh := make(chan countResult, 1)
+	go func() {
+		total, err := col.CountDocuments(ctx, filter)
+		countCh <- countResult{total: total, err: err}
+	}()
+	findFilter := make(bson.M, len(filter)+1)
+	for k, v := range filter {
+		findFilter[k] = v
 	}
 
 	// Direction: an explicit Backward request (`last` — every surface sets the
@@ -316,7 +336,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 			direction = -1
 		}
 		keyset := buildKeysetFilter(cursor.K, colSort, direction)
-		appendKeysetClause(filter, keyset)
+		appendKeysetClause(findFilter, keyset)
 	}
 
 	// Projection — if the consumer requested ?fields= AND the active sort
@@ -343,7 +363,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		findOpts.SetProjection(buildProjection(colProj, autoIncluded))
 	}
 
-	cur, err := col.Find(ctx, filter, findOpts)
+	cur, err := col.Find(ctx, findFilter, findOpts)
 	if err != nil {
 		return queries.Page{}, err
 	}
@@ -353,6 +373,14 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	if err := cur.All(ctx, &docs); err != nil {
 		return queries.Page{}, err
 	}
+
+	// Join the concurrent count — the page carries TotalCount on every read,
+	// so a count failure fails the read exactly as it did when it ran first.
+	counted := <-countCh
+	if counted.err != nil {
+		return queries.Page{}, counted.err
+	}
+	total := counted.total
 
 	// The +1 trick: a returned slice strictly bigger than `limit` proves
 	// there is at least one more doc in the queried direction.
@@ -496,12 +524,10 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 // normalizeBSONValues rewrites driver-specific BSON scalars into their plain
 // Go equivalents, recursively through nested maps and slices (the child
 // collections), so EVERY consumer downstream of the reader sees Go-typed
-// values: a BSON datetime becomes time.Time (UTC). The typed-Response JSON
-// path already tolerated the driver types via its unmarshal round-trip, but
-// consumers of the raw document — the tabular export, RawDoc handlers —
-// received bson.DateTime and rendered epoch milliseconds. The reader is the
-// membrane that promises Go vocabulary (it already translates column names);
-// values follow the same rule.
+// values: a BSON datetime becomes time.Time (UTC). The reader is the membrane
+// that promises Go vocabulary (it already translates column names); values
+// follow the same rule, so the Result fill and every consumer above it see
+// Go types rather than driver types.
 func normalizeBSONValues(m map[string]any) {
 	for k, v := range m {
 		m[k] = normalizeBSONValue(v)
@@ -603,10 +629,17 @@ func sortFieldAt(sortFields []queries.OrderByField, i int) string {
 // $and arrays via applyFilter; in that case we append the keyset clause as a
 // new $and entry. When no $and exists we can lift the keyset $or to the top
 // level (Mongo treats top-level field entries as AND).
+//
+// The $and slice is CLONED, never appended in place: the caller hands in a
+// top-level copy of the base filter whose nested values are shared with the
+// concurrently-running count query, so writing into the shared backing array
+// is off the table.
 func appendKeysetClause(filter bson.M, keyset bson.M) {
 	if existing, ok := filter["$and"]; ok {
 		if arr, isArr := existing.(bson.A); isArr {
-			filter["$and"] = append(arr, keyset)
+			merged := make(bson.A, 0, len(arr)+1)
+			merged = append(merged, arr...)
+			filter["$and"] = append(merged, keyset)
 			return
 		}
 	}

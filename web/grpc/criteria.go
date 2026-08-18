@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"time"
 
@@ -36,8 +37,16 @@ import (
 type CriteriaBuilder struct {
 	crit     queries.ReadCriteria
 	controls queryschema.Controls
-	fields   map[string]string // wire (proto snake_case) → Go field path
+	fields   map[string]string   // wire (proto snake_case) → Go field path
+	computed map[string][]string // wire → Go source paths (COMPUTED fields)
 	errs     []error
+	// computedSorts collects the sort entries that named a COMPUTED field —
+	// refused as a typed notification (not a prose error) so the envelope
+	// tells the consumer WHY, exactly like the REST 400.
+	computedSorts []string
+	// masked records the read_mask's wire paths, so HiddenComputedSources can
+	// tell "the mask asked for this" from "we read it as a computed source".
+	masked map[string]bool
 }
 
 // NewCriteria starts a builder with an empty filter map.
@@ -63,6 +72,28 @@ func (b *CriteriaBuilder) Controls() queryschema.Controls {
 // bypass ToCriteria overlays such as Restrict.
 func (b *CriteriaBuilder) Fields(wireToGo map[string]string) *CriteriaBuilder {
 	b.fields = wireToGo
+	return b
+}
+
+// ComputedFields declares which of the Fields entries are COMPUTED — a
+// Response field carrying a `computed:"…"` tag, derived by the Query's
+// FromQueryResult after the read instead of read from a column — mapped to the
+// Go source paths that feed it. The Auto path passes the compiled plan's cut;
+// a raw (MountRaw) consumer passes its own, or nothing at all.
+//
+// The declaration splits the two consumers of the vocabulary the way REST
+// splits `?fields=` from `?orderBy=`:
+//
+//   - read_mask (FieldMask) over a computed path pushes its SOURCES down, so
+//     the reader returns what the derivation needs; the computed path itself
+//     resolves to no column and never reaches the store.
+//   - order_by over a computed path is REFUSED with
+//     ComputedFieldNotSortableNotification (semantic Schema →
+//     INVALID_ARGUMENT): ordering happens in the store and the keyset cursor
+//     is built from stored ordering values, so a derived value is not
+//     expressible.
+func (b *CriteriaBuilder) ComputedFields(wireToSources map[string][]string) *CriteriaBuilder {
+	b.computed = wireToSources
 	return b
 }
 
@@ -130,13 +161,21 @@ func (b *CriteriaBuilder) Page(p *pb.PaginationRequest) *CriteriaBuilder {
 
 // OrderBy appends ordering fields in the declared order. Field names are WIRE
 // names (proto snake_case), resolved against the Fields vocabulary — an
-// undeclared field fails Build as a SchemaViolation.
+// undeclared field fails Build as a SchemaViolation, a COMPUTED one (see
+// ComputedFields) as a ComputedFieldNotSortableNotification.
 func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
 	for _, f := range fields {
 		if f == nil || f.GetField() == "" {
 			continue
 		}
 		b.controls.OrderBy = true
+		// A computed field IS in the vocabulary (it is selectable), so the
+		// refusal has to come first — otherwise the resolution below would
+		// hand the reader a Go path with no column behind it.
+		if _, isComputed := b.computed[f.GetField()]; isComputed {
+			b.computedSorts = append(b.computedSorts, f.GetField())
+			continue
+		}
 		goPath, ok := b.goField("orderBy", f.GetField())
 		if !ok {
 			continue
@@ -150,7 +189,9 @@ func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
 // the conventional request field name is `fields`). Paths are WIRE names
 // (FieldMask's canonical snake_case — protojson converts the JSON camelCase
 // form to snake for you), resolved against the Fields vocabulary; an
-// undeclared path fails Build as a SchemaViolation.
+// undeclared path fails Build as a SchemaViolation. A COMPUTED path (see
+// ComputedFields) contributes its SOURCES instead of itself — the REST
+// `?fields=<computed>` pushdown, on the proto wire.
 func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 	if m == nil || len(m.GetPaths()) == 0 {
 		return b
@@ -159,17 +200,78 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 	if b.crit.Projection == nil {
 		b.crit.Projection = map[string]int{}
 	}
+	if b.masked == nil {
+		b.masked = map[string]bool{}
+	}
 	for _, path := range m.GetPaths() {
 		if path == "" {
 			continue
 		}
+		b.masked[path] = true
 		goPath, ok := b.goField("fields", path)
 		if !ok {
+			continue
+		}
+		if sources, isComputed := b.computed[path]; isComputed {
+			for _, src := range sources {
+				b.crit.Projection[src] = 1
+			}
 			continue
 		}
 		b.crit.Projection[goPath] = 1
 	}
 	return b
+}
+
+// HiddenComputedSources returns the Result Go paths that were read ONLY to
+// feed a masked computed field and that the mask did not name — the gRPC
+// twin of queryschema.UnrequestedComputedSources. A computed field's sources
+// must reach the store, but the read_mask shapes the WIRE: a source that is
+// itself a declared field of the vocabulary would otherwise render beside
+// the computed value even though the mask never named it. The Auto path
+// blanks these paths on each Result before projection
+// (queryschema.BlankResultPaths); a MountRaw consumer that maps by hand
+// calls this after Build and does the same, keeping raw parity with
+// `?fields=` on REST.
+//
+// A source the Response never declares needs no blanking — it has no wire
+// slot to leak into. Returns nil when no mask was applied, nothing masked is
+// computed, or every source was masked outright. Deterministic order.
+func (b *CriteriaBuilder) HiddenComputedSources() []string {
+	if len(b.computed) == 0 || len(b.masked) == 0 {
+		return nil
+	}
+	// Go path → wire path, to answer "does this source have a wire slot".
+	wireByGo := make(map[string]string, len(b.fields))
+	for wire, goPath := range b.fields {
+		wireByGo[goPath] = wire
+	}
+	hidden := map[string]bool{}
+	for wire := range b.masked {
+		sources, isComputed := b.computed[wire]
+		if !isComputed {
+			continue
+		}
+		for _, src := range sources {
+			srcWire, onTheWire := wireByGo[src]
+			if !onTheWire {
+				continue // read-only source: no wire slot, nothing to hide
+			}
+			if b.masked[srcWire] {
+				continue // the mask asked for it too
+			}
+			hidden[src] = true
+		}
+	}
+	if len(hidden) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(hidden))
+	for p := range hidden {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // String wires a StringFilter onto goFieldPath. nil / empty filters are
@@ -293,10 +395,15 @@ var rawPathReserved = map[string]bool{
 // (INVALID_ARGUMENT), the same rejection an unknown REST operator gets.
 // The canonical control gateway runs here for the raw path (directional
 // rule + only-total conflicts); the Auto path additionally applies the DTO
-// opt-in gate at its compiled plan before reaching Build.
+// opt-in gate at its compiled plan before reaching Build. A sort over a
+// COMPUTED field is refused right after the gateway, as its own typed
+// notification rather than a prose error.
 func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
 	if violations := queryschema.ValidateControls(rawPathReserved, b.controls, nil); len(violations) > 0 {
 		return queries.ReadCriteria{}, controlViolationError(violations)
+	}
+	if len(b.computedSorts) > 0 {
+		return queries.ReadCriteria{}, computedSortError(b.computedSorts)
 	}
 	if len(b.errs) > 0 {
 		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %w", errors.Join(b.errs...))
@@ -319,6 +426,25 @@ func controlViolationError(violations []queryschema.ControlViolation) error {
 			msg.FieldValue = fmt.Sprintf("control not enabled on this endpoint — declare query:%q on its Request DTO", v.Key)
 		}
 		nctx.AddNotificationMessage(msg)
+	}
+	return domain.NewDomainError([]*domain.NotificationContext{nctx})
+}
+
+// computedSortError renders the refused computed-field sort entries the same
+// way controlViolationError renders a gateway violation — a
+// NotificationCarrier under the "Schema" context, so conversionError funnels
+// it through the pipeline's translation and the Connect shell emits
+// INVALID_ARGUMENT (semantic Schema) with one google.rpc ErrorInfo per entry,
+// reason=ComputedFieldNotSortableNotification. The field name is the sort
+// entry exactly as the wire spelled it (proto snake_case), the gRPC dialect of
+// REST's `orderBy[<token>]`.
+func computedSortError(entries []string) error {
+	nctx := domain.NewNotificationContext("Schema")
+	for _, entry := range entries {
+		nctx.AddNotificationMessage(domain.NotificationMessage{
+			FieldName:    entry,
+			Notification: domain.ComputedFieldNotSortableNotification{},
+		})
 	}
 	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/internal/testpb"
 	omnicorepb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
-	fwresponses "github.com/ClaudioSchirmer/omnicore/web/responses"
 )
 
 func TestNormalizeName(t *testing.T) {
@@ -312,43 +311,43 @@ func TestBootFailures(t *testing.T) {
 	expectBootFail(t, "shared read contract", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.ListGadgetsRequest, testpb.SearchGadgetsResponse]("/x.v1.S/M",
-			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			searchGadgetsDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 
 	// QueryWithParams: filter without a `filter:`-tagged DTO leaf
 	expectBootFail(t, "filter:", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse]("/x.v1.S/M",
-			narrowSearchDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			narrowSearchDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 
 	// QueryWithParams: two filter groups
 	expectBootFail(t, "two filter groups", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.TwoGroupsRequest, testpb.SearchGadgetsResponse]("/x.v1.S/M",
-			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			searchGadgetsDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 
 	// list envelope shapes
 	expectBootFail(t, "two repeated message fields", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.TwoRepeatsResponse]("/x.v1.S/M",
-			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			searchGadgetsDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 	expectBootFail(t, "no repeated items message", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.OnlyPaginationInfoResponse]("/x.v1.S/M",
-			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			searchGadgetsDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 	expectBootFail(t, "two PaginationInfo fields", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.TwoPaginationInfosResponse]("/x.v1.S/M",
-			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			searchGadgetsDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 	expectBootFail(t, "not part of the list envelope", func() {
 		reg := New(pipe)
 		reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.ListGadgetsResponse]("/x.v1.S/M",
-			searchGadgetsDTO{}, fwresponses.AutoFromDoc[gadgetItemDTO], searchGadgetsHandler{}))
+			searchGadgetsDTO{}, gadgetItemDTO{}.FromResult, searchGadgetsHandler{}))
 	})
 
 	// QueryByID: request field with no DTO counterpart (id is exempt, the
@@ -358,7 +357,7 @@ func TestBootFailures(t *testing.T) {
 		reg.Register(QueryByID[testpb.GetGadgetRequest, testpb.GetGadgetResponse]("/x.v1.S/M",
 			(*testpb.GetGadgetRequest).GetId,
 			bareGetDTO{},
-			fwresponses.AutoFromDoc[getGadgetResponseDTO],
+			getGadgetResponseDTO{}.FromResult,
 			getGadgetHandler{}))
 	})
 }
@@ -437,7 +436,7 @@ func TestBridgeRuntimeErrors(t *testing.T) {
 		func(map[string]any) mismatchedItemDTO {
 			return mismatchedItemDTO{ID: "g", Name: "n", Kind: struct{ X bool }{true}}
 		},
-		queries.Page{Items: []map[string]any{{"ID": "g"}}, TotalCount: 1})
+		queries.PageOf[map[string]any]{Items: []map[string]any{{"ID": "g"}}, TotalCount: 1})
 	if err == nil {
 		t.Fatalf("item bridge failure must propagate")
 	}
@@ -474,7 +473,7 @@ func TestFilterAliasBindsTheLeaf(t *testing.T) {
 	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
 		"/omnicore.grpctest.v1.GadgetService/SearchGadgets",
 		searchGadgetsDTO{},
-		fwresponses.AutoFromDoc[gadgetItemDTO],
+		gadgetItemDTO{}.FromResult,
 		searchGadgetsHandler{sawCriteria: &crit},
 		Alias("name", "Name"), // redundant pairing, exercises the filter alias seam
 	))
@@ -537,7 +536,7 @@ func TestBootFailuresOnResponseSide(t *testing.T) {
 		reg.Register(QueryByID[testpb.GetGadgetRequest, testpb.GetGadgetResponse]("/x.v1.S/M",
 			(*testpb.GetGadgetRequest).GetId,
 			getGadgetDTO{},
-			fwresponses.AutoFromDoc[lonelyDTO],
+			func(gadgetDetailResult) lonelyDTO { return lonelyDTO{} },
 			getGadgetHandler{}))
 	})
 }
@@ -564,7 +563,9 @@ func (narrowSearchDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {
 // include_archived field.
 type bareGetDTO struct{}
 
-func (bareGetDTO) ToQuery() *getGadgetQuery { return &getGadgetQuery{} }
+func (bareGetDTO) ToQuery(criteria queries.ReadCriteria) *getGadgetQuery {
+	return &getGadgetQuery{Criteria: criteria}
+}
 
 // searchServer registers the Search RPC and returns a typed caller.
 func searchServer(t *testing.T, sawCriteria *queries.ReadCriteria, opts ...ProcedureOption) func(*testpb.SearchGadgetsRequest) (*testpb.SearchGadgetsResponse, error) {
@@ -573,7 +574,7 @@ func searchServer(t *testing.T, sawCriteria *queries.ReadCriteria, opts ...Proce
 	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
 		"/omnicore.grpctest.v1.GadgetService/SearchGadgets",
 		searchGadgetsDTO{},
-		fwresponses.AutoFromDoc[gadgetItemDTO],
+		gadgetItemDTO{}.FromResult,
 		searchGadgetsHandler{sawCriteria: sawCriteria},
 		opts...,
 	))
@@ -645,8 +646,8 @@ func TestReadMaskAndSortSpeakItemWireNames(t *testing.T) {
 	call := searchServer(t, &crit)
 
 	if _, err := call(&testpb.SearchGadgetsRequest{
-		OrderBy:     []*omnicorepb.OrderByField{{Field: "name", Desc: true}},
-		Fields: &fieldmaskpb.FieldMask{Paths: []string{"id", "kind"}},
+		OrderBy: []*omnicorepb.OrderByField{{Field: "name", Desc: true}},
+		Fields:  &fieldmaskpb.FieldMask{Paths: []string{"id", "kind"}},
 	}); err != nil {
 		t.Fatalf("declared mask/sort paths must pass: %v", err)
 	}

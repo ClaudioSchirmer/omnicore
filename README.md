@@ -37,15 +37,15 @@ Each row links to its manual page.
 | Sealed domain | `ValidEntity` only produced by `domain`; boundaries checked at compile time | [architecture](https://claudioschirmer.github.io/omnicore/#architecture) |
 | Aggregate persistence | Root + children in one write; universal symmetric archive/unarchive cascade | [aggregate-persistence](https://claudioschirmer.github.io/omnicore/#aggregate-persistence) |
 | Transactional outbox | Domain rows + outbox row + audit row in a single `pgx.Tx` | [write lifecycle](https://claudioschirmer.github.io/omnicore/#lifecycle-map) |
-| Audit | One event per write; `snapshot` / `delta` / `transition` bodies; DB + slog routing | [audit](https://claudioschirmer.github.io/omnicore/#audit) |
+| Audit | One event per write; `snapshot` / `delta` / `transition` bodies; DB + slog routing; optional framework-served read endpoint over the trail | [audit](https://claudioschirmer.github.io/omnicore/#audit) |
 
 ### Read side (CQRS)
 | Capability | In one line | Docs |
 |---|---|---|
-| Mongo projections | Eventually-consistent views; keyset pagination; sparse `?fields=` responses | [query-side](https://claudioschirmer.github.io/omnicore/#query-side) |
+| Mongo projections | Eventually-consistent views; keyset pagination; sparse `?fields=` responses; a typed application Result — the document never leaves the application layer | [query-side](https://claudioschirmer.github.io/omnicore/#query-side) |
 | Relational views | Opt-in `.RelationalSource(loader)` reads a plain view straight from the SoR — read-your-writes with no CDC lag, for dashboards / freshest queries / MVPs; root-only controls, no embed/link/composed/shared | [relational-view](https://claudioschirmer.github.io/omnicore/#relational-view) |
 | Projection integrity | At-least-once delivery with a per-message outcome; failed events retry, park in a relational ledger and auto-replay; opt-in revision-parity reconciliation audits every view against its source | [views](https://claudioschirmer.github.io/omnicore/#views) |
-| Auto query handlers | Filter-operator allowlist by tag; CSV / Excel export of any view | [auto-query-handlers](https://claudioschirmer.github.io/omnicore/#auto-query-handlers) |
+| Auto query handlers | Filter-operator allowlist by tag; one Response DTO drives every surface — the JSON body, the `?fields=` vocabulary and the CSV / Excel columns | [auto-query-handlers](https://claudioschirmer.github.io/omnicore/#auto-query-handlers) |
 | View composition | Join by key with the same two legs (a local view or another service's mirrored data), choosing when you pay: materialized on write (`Embed`) or composed per request (`Link`) — with a per-leg field allowlist (`Fields`) that doubles as the segment's archive switch | [views](https://claudioschirmer.github.io/omnicore/#views) |
 | Cross-service reads | Another service's data projected locally from its event stream — never a call on the request path | [service-to-service](https://claudioschirmer.github.io/omnicore/#service-to-service) |
 | Schema evolution | Declarative `Version(N)`, drift detection, online blue-green rebuild (zero-downtime) | [mongo-schema-evolution](https://claudioschirmer.github.io/omnicore/#mongo-schema-evolution) |

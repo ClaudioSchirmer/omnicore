@@ -406,6 +406,7 @@ func (s *SyncEngine) reconcileLocked(ctx context.Context, view *ViewDefinition, 
 		slog.Int("stale", rep.Stale),
 		slog.Int("repaired", rep.Repaired),
 		slog.Int("unrepaired", rep.Unrepaired),
-		slog.Duration("duration", rep.Duration))
+		// Milliseconds, not slog.Duration — see view.rebuild.end.
+		slog.Float64("durationMs", float64(rep.Duration.Nanoseconds())/1e6))
 	return &rep, nil
 }

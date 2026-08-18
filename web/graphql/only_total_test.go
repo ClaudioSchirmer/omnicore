@@ -13,7 +13,7 @@ import (
 // short-circuit to CountDocuments is keyed on it.
 
 func TestCountOnly_TotalCountAloneSetsOnlyTotal(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{OnlyTotal: true, TotalCount: 5}}
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{OnlyTotal: true, TotalCount: 5}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users { totalCount } }`, nil, "")
@@ -29,10 +29,10 @@ func TestCountOnly_TotalCountAloneSetsOnlyTotal(t *testing.T) {
 }
 
 func TestCountOnly_EdgesSelectionKeepsFullRead(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{
-		Items:       []map[string]any{{"ID": "u1", "Name": "alice"}},
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{
+		Items:       []execResult{{ID: sp("u1"), Name: sp("alice")}},
 		ItemCursors: []string{"c1"},
-		TotalCount:       1,
+		TotalCount:  1,
 	}}
 	reg, ctx := newExecRegistry(h)
 
@@ -46,7 +46,7 @@ func TestCountOnly_EdgesSelectionKeepsFullRead(t *testing.T) {
 }
 
 func TestCountOnly_PageInfoSelectionKeepsFullRead(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{TotalCount: 1}}
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{TotalCount: 1}}
 	reg, ctx := newExecRegistry(h)
 
 	// pageInfo cursors derive from the page items, so totalCount + pageInfo
@@ -61,7 +61,7 @@ func TestCountOnly_PageInfoSelectionKeepsFullRead(t *testing.T) {
 }
 
 func TestCountOnly_CountsFilteredSubset(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{OnlyTotal: true, TotalCount: 3}}
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{OnlyTotal: true, TotalCount: 3}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx,
@@ -96,7 +96,7 @@ func TestCountOnly_PaginationArgConflictRejected(t *testing.T) {
 		`{ users(orderBy: [{field: NAME, direction: DESC}]) { totalCount } }`,
 		`{ users(after: "abc") { totalCount } }`,
 	} {
-		h := &fakeReadHandler{page: queries.Page{}}
+		h := &fakeReadHandler{}
 		reg, ctx := newExecRegistry(h)
 
 		resp := reg.Execute(ctx, q, nil, "")

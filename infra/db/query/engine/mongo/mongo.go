@@ -20,6 +20,7 @@ import (
 // without a live MongoDB. Index/collection management (IndexView, createCol)
 // stays on the concrete *mongo.Database handle and remains integration-only.
 type mongoColl interface {
+	Aggregate(ctx context.Context, pipeline any, opts ...options.Lister[options.AggregateOptions]) (*mongo.Cursor, error)
 	CountDocuments(ctx context.Context, filter any, opts ...options.Lister[options.CountOptions]) (int64, error)
 	Find(ctx context.Context, filter any, opts ...options.Lister[options.FindOptions]) (*mongo.Cursor, error)
 	FindOne(ctx context.Context, filter any, opts ...options.Lister[options.FindOneOptions]) *mongo.SingleResult
@@ -62,7 +63,7 @@ func NewMongoDB(ctx context.Context, uri, dbName string, opts ...MongoOption) (*
 	// arrays land as bson.M (= map[string]any), matching the top-level
 	// shape. Without it the driver decodes array-of-doc elements as bson.D
 	// (an ordered []KV), which breaks any consumer that walks the doc by
-	// key — including fwresponses.AutoFromDoc and any custom FromDoc. The
+	// key — including the Result fill and any custom projection. The
 	// read side's downstream contract (ViewReader returns map[string]any)
 	// already implies "documents are maps"; this flag enforces it at the
 	// boundary so the trap stops leaking into projector code.

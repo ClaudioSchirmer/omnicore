@@ -5,99 +5,238 @@
         pre-composed Mongo view — the framework ships <strong>ready-made generic query
         handlers</strong> plus the HTTP wrappers that wire them. The consumer writes zero handler
         code; it declares the Request DTO allowlist (which fields and operators the endpoint
-        accepts) and the Response shape, and the framework owns the rest: query-string parsing,
-        allowlist enforcement, the <code>ReadCriteria</code> assembly, the <code>ViewReader</code>
-        call, pagination, and projection.
+        accepts), the application <a href="#query-side~qry-result">Result</a> and the Response shape, and
+        the framework owns the rest: query-string parsing, allowlist enforcement, the
+        <code>ReadCriteria</code> assembly, the <code>ViewReader</code> call, the Result fill,
+        pagination, and the wire projection.
     </p>
     <table>
         <tbody><tr><th>Operation</th><th>HTTP wrapper</th><th>Auto handler</th><th>ViewReader call</th></tr>
-        <tr><td>Paged listing (<code>GET /users</code>)</td><td><code>fwweb.QueryWithParams</code></td><td><code>FindByParamsQueryHandler[*Q]</code></td><td><code>ReadPage</code></td></tr>
-        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.QueryByID</code></td><td><code>FindByIDQueryHandler[*Q]</code></td><td><code>ReadByID</code></td></tr>
+        <tr><td>Paged listing (<code>GET /users</code>)</td><td><code>fwweb.QueryWithParams</code></td><td><code>FindByParamsQueryHandler[*Q, TResult]</code></td><td><code>ReadPage</code></td></tr>
+        <tr><td>By-id lookup (<code>GET /users/:id</code>)</td><td><code>fwweb.QueryByID</code></td><td><code>FindByIDQueryHandler[*Q, TResult]</code></td><td><code>ReadByID</code></td></tr>
     </tbody></table>
     <p>
-        The <a href="#query-side">QueryHandler · CQRS</a> page covers the concept and the end-to-end flow
-        of a GET; the <a href="#custom-query-handler">Custom query handler</a> page covers the manual
-        escape hatch. This page is the full reference for the <strong>automatic path</strong>: the two
-        wrappers and the projector contract, the <em>Automatic × Manual</em> split, the query-string
-        capabilities the wrappers enforce, and the complete end-to-end example.
+        The <a href="#query-side">QueryHandler · CQRS</a> page covers the concept, the end-to-end flow
+        of a GET and the Result anatomy; the <a href="#custom-query-handler">Custom query handler</a> page
+        covers the manual escape hatch. This page is the full reference for the <strong>automatic
+        path</strong>: the two wrappers and the response-projection seat, the <em>Automatic ×
+        Manual</em> split, the query-string capabilities the wrappers enforce, and the complete
+        end-to-end example.
     </p>
-    <h3 id="qry-wrappers">The wrappers and the projector contract</h3>
+    <h3 id="qry-wrappers">The wrappers and the response projection</h3>
     <p>
         The wire boundary lives in two HTTP wrappers in <code>web/</code>:
     </p>
     <ul>
-        <li><code>fwweb.QueryWithParams(pipe, sample, projector, h)</code> — paged listing (<code>GET /users</code>).
+        <li><code>fwweb.QueryWithParams[TReq, TQ, TResult, TResp](pipe, sample, responseProjection, h)</code> —
+            paged listing (<code>GET /users</code>).
             Validates the query string against the Request DTO's <code>query:"X" filter:"ops"</code> tags,
             assembles a <code>queries.ReadCriteria</code>, calls
             <code>req.ToQuery(criteria)</code> — pure body mapping at the boundary, no ctx.
             <code>AppContext</code> reaches the application layer through <code>q.ToCriteria(ctx)</code>,
-            which the framework's <code>FindByParamsQueryHandler[*Q]</code> calls before forwarding
+            which the framework's <code>FindByParamsQueryHandler[*Q, TResult]</code> calls before forwarding
             to <code>ViewReader.ReadPage</code> — where JWT-derived overlays (tenant id, owner id)
-            layer onto the criteria. Success projects each <code>page.Items</code> document via
-            <code>projector</code> and returns the standard <code>Response</code> envelope with
+            layer onto the criteria. The handler returns a typed
+            <code>queries.PageOf[TResult]</code>; on success the wrapper maps each item through
+            <code>responseProjection</code> and returns the standard <code>Response</code> envelope with
             <code>data</code> as the projected items array and <code>pagination</code> as a top-level
             field.</li>
-        <li><code>fwweb.QueryByID(pipe, sample, projector, h)</code> — by-id lookup (<code>GET /users/:id</code>).
+        <li><code>fwweb.QueryByID[TReq, TQ, TResult, TResp](pipe, sample, responseProjection, h)</code> —
+            by-id lookup (<code>GET /users/:id</code>).
             Only <code>?includeArchived=true</code> is reserved — and it obeys the DTO like every control: honored only when the Request DTO declares <code>query:"includeArchived"</code>, rejected as the canonical NotDeclared 400 otherwise. Any other query parameter produces 400.
-            Calls <code>req.ToQuery()</code> (no ctx), injects the path id via <code>q.SetPathID(...)</code>,
-            dispatches via <code>FindByIDQueryHandler[*Q]</code> which calls <code>q.ToCriteria(ctx)</code>
+            Calls <code>req.ToQuery(criteria)</code> (no ctx) — the <strong>same seat</strong> the paged wrapper feeds, over the same <code>ReadCriteria</code>; a by-id read's wire vocabulary is simply smaller, so the criteria the wrapper builds carries <code>IncludeArchived</code> and nothing else (read off the bound DTO via <code>queryschema.ReadIncludeArchived</code>, the shared seat REST and gRPC use; GraphQL reads its own argument). It then injects the path id via <code>q.SetPathID(...)</code>,
+            dispatches via <code>FindByIDQueryHandler[*Q, TResult]</code> which calls <code>q.ToCriteria(ctx)</code>
             and forwards both id + criteria (IncludeArchived flag + any JWT overlay) to
-            <code>ViewReader.ReadByID</code> — symmetric DTO with <code>ReadPage</code>. Projects
-            <code>result.Value()</code> via <code>projector</code>; not-found produces 404 with
+            <code>ViewReader.ReadByID</code> — symmetric DTO with <code>ReadPage</code>. The handler
+            returns <code>TResult</code>, which the wrapper maps through
+            <code>responseProjection</code>; not-found produces 404 with
             <code>RecordNotFoundNotification</code>. An overlay filter that filters the doc out
             is indistinguishable from absence at this layer: both surface as 404.</li>
     </ul>
+    <p>
+        Both wrappers have <code>*Spec</code> siblings —
+        <code>QueryWithParamsSpec</code> / <code>QueryByIDSpec</code> — carrying the same type parameters
+        and the same argument order, and returning <code>(handler, openapi.RouteSpec)</code> for the
+        canonical <a href="#openapi"><code>fwopenapi.Mount</code></a> path.
+    </p>
     <div class="note">
         <strong>Deterministic rule</strong>, same as the write side: the base to embed on the Query is the
         constructor name plus the <code>Base</code> suffix — <code>QueryWithParams</code> →
         <code>queries.QueryWithParamsBase</code>, <code>QueryByID</code> → <code>queries.QueryByIDBase</code>.
-        The same names are the role interfaces the constructors demand (<code>queries.QueryWithParams</code>
-        requires <code>ToCriteria(ctx)</code>; <code>queries.QueryByID</code> adds
+        The same names are the role interfaces the constructors demand, each generic over the Result
+        (<code>queries.QueryWithParams[TResult]</code> requires <code>ToCriteria(ctx)</code> and
+        <code>FromQueryResult(ctx, r)</code>; <code>queries.QueryByID[TResult]</code> adds
         <code>SetPathID</code>/<code>PathID()</code> — the exact pair <code>pipeline.CommandByID</code> carries on
         the write side — plus <code>ContextName()</code>). The rule holds on GraphQL
-        (<code>graphql.QueryWithParams</code>; by-id reads are a <code>where</code> filter on the connection, by
-        design) and gRPC (<code>grpc.QueryWithParams</code>, <code>grpc.QueryByID</code>).
+        (<code>graphql.QueryWithParams</code>, <code>graphql.QueryByID</code>) and gRPC
+        (<code>grpc.QueryWithParams</code>, <code>grpc.QueryByID</code>).
     </div>
     <p>
-        The projector (third argument) is mandatory and has signature
-        <code>func(map[string]any) R</code>. Three canonical projectors ship with the framework:
+        The <strong>response projection</strong> (third argument) is mandatory and has signature
+        <code>func(TResult) TResp</code> — the exact seat the
+        <a href="#auto-handlers">command wrappers</a> already take. It is the ONE place the wire shape is
+        decided, and every other surface (the CSV/XLSX export, GraphQL, gRPC) takes the same seat, so a
+        Response is projected identically everywhere:
     </p>
     <table>
-        <tbody><tr><th>Projector</th><th>Use when</th></tr>
+        <tbody><tr><th>Response projection</th><th>Use when</th></tr>
         <tr>
-            <td><code>fwresponses.AutoFromDoc[R]</code></td>
-            <td>Tag-driven projection — the default. <code>R</code> is a typed Response struct
-                with <code>json:"&lt;wire&gt;"</code> tags only. The doc handed to the projector is
-                already Go-keyed (the reader translated columns → Go field names via the view's
-                <code>TableSchema</code>), so <code>AutoFromDoc</code> keys by the Go field name and
-                the <code>json:</code> tag governs only the wire shape — there is no source-key
-                override. Recursive through nested structs, slices of structs, and pointer-to-struct
-                fields. Normalizes top-level <code>_id → id</code> and nil slices → empty typed slices
-                at every depth. Drop it in place of a manually-written <code>FromDoc</code> whenever
-                the projection is mechanical.</td>
+            <td><code>Response{}.FromResult</code> delegating to <code>fwresponses.Map[Response]</code></td>
+            <td>Tag-driven mapping — the default. <code>fwresponses.Map[TResp](result)</code> is the
+                generic name-based mapper: it reads each Response field's <strong>same-named</strong>
+                Result field and writes it under the field's <code>json:</code> wire name, recursing
+                through nested structs, slices of structs and pointer fields, normalizing nil slices to
+                empty typed slices and converging out-of-set enum values to <code>Unknown</code>. Wire
+                naming is the only thing the Response decides.</td>
         </tr>
         <tr>
-            <td><code>fwresponses.RawDoc</code></td>
-            <td>Identity passthrough — <code>func(map[string]any) map[string]any</code>. Use
-                when the view doc shape IS the wire contract and a typed Response would just
-                mirror it.</td>
-        </tr>
-        <tr>
-            <td>Consumer-declared <code>R{}.FromDoc</code> method</td>
-            <td>Custom logic — derived fields, conditional projection, ctx-aware shaping, or
-                anything beyond tag-driven. The wrapper signature accepts any
-                <code>func(map[string]any) R</code>.</td>
+            <td>A hand-written <code>Response{}.FromResult</code></td>
+            <td>Renaming or reshaping the tags cannot express — flattening a nested Result segment,
+                folding two Result fields into one wire field. The constructors accept any
+                <code>func(TResult) TResp</code>, so the method body is yours.</td>
         </tr>
     </tbody></table>
+    <div class="note">
+        <strong>Read-side COMPUTATION does not belong in <code>FromResult</code>.</strong> Derived fields,
+        ctx-aware shaping and anything that can fail live in the Query's
+        <a href="#query-side~qry-result"><code>FromQueryResult</code></a> hook, in the application layer — so
+        REST, the exports, GraphQL and gRPC all render the same values. <code>FromResult</code> is wire
+        naming, nothing more.
+    </div>
+    <p>
+        <strong>Result↔Response alignment is boot-guarded.</strong> At wrapper construction
+        <code>queryschema.ValidateResultAlignment</code> walks the Response recursively: every exported,
+        non-<code>json:"-"</code> field must have a same-named field on the Result, and the Result must
+        carry <strong>no json tags at all</strong> (wire naming belongs to <code>web/</code>). Either
+        violation is a boot panic naming every offending field path — a Response field with no Result
+        backing can never ship as a silently-null column.
+    </p>
+    <h4 id="qry-mapping-fallback">Auto mapping — <code>fwresponses.Auto</code> and the boot guard</h4>
+    <p>
+        Every mapping seat in this framework is hand-written by default —
+        <code>ToCommand</code>, <code>ApplyTo</code>, <code>FromEntity</code>, <code>ToCriteria</code>,
+        <code>FromResult</code>. <code>fwresponses.AutoFromResult</code> is the framework's offer to
+        write <code>FromResult</code> for you, and a Response ACCEPTS the offer by embedding
+        <code>fwresponses.Auto</code>:
+    </p>
+    <pre><code>type FindUsersByParamsResponse struct {
+    fwresponses.Auto                       // opt-in: the framework maps this
+
+    ID   *string `json:"id,omitempty"`
+    Name *string `json:"name,omitempty"`
+}
+
+func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUsersByParamsResponse {
+    return fwresponses.AutoFromResult[FindUsersByParamsResponse](r)
+}</code></pre>
+    <p>What the declaration buys, and what it costs:</p>
+    <ul>
+        <li><strong><code>AutoFromResult</code> becomes callable.</strong> Without the marker it does
+            not COMPILE — the generic constraint rejects the type — so a Response can never silently
+            ride a mapping it did not ask for. The marker's method is sealed (unexported, granted only
+            by the embed), so the opt-in cannot be forged either.</li>
+        <li><strong>The pair is validated at Mount (boot).</strong> Every Response field must have a
+            same-named Result field, and every mapped pair must be directly assignable. A violation is
+            a boot panic naming the field — never a wire field that renders <code>null</code> forever,
+            and never a silent per-request serialization cost.</li>
+    </ul>
+
+    <h5 id="qry-auto-when-checked">Where the check happens — and where it cannot</h5>
+    <p>
+        The Mount-time check lives in the CANONICAL route constructors
+        (<code>QueryWithParams</code>, <code>QueryByID</code>, <code>CommandByID</code>,
+        <code>CommandWithBody</code>, <code>CommandWithBodyID</code>): they receive both the Result and
+        the Response as type parameters, so they can check the pair before the service serves anything.
+        Every OTHER call site maps on its own and has no such seat — a hand-written
+        <code>fiber.Handler</code> that projects the Result itself, the GraphQL and gRPC surfaces, the
+        CSV/XLSX export, or any surface added later.
+    </p>
+    <p>
+        There, the identical contract is enforced on FIRST USE instead: the mapper refuses the pair and
+        the recovered panic surfaces as a 500. The failure is not different and the endpoint was never
+        partly working — the pair could never have been mapped; only the moment of discovery moved,
+        which is why it can appear on a rarely-hit endpoint long after deploy. The panic text says so
+        in as many words, and carries the same diagnosis, the same three ways out and the same table of
+        what travels, so the reader never has to come back here to act on it.
+    </p>
+    <div class="note">
+        <strong>Want boot-time (or CI-time) detection on those surfaces?</strong> Assert the pairs
+        yourself: <code>responses.AutoFromResultReason(resultType, respType)</code> and
+        <code>requests.AutoRequestReason(reqType, cmdType)</code> return the empty string when the pair
+        travels and the diagnosis when it does not. A unit test sweeping your service's pairs turns a
+        production 500 into a red build — and it covers the canonical routes too, which unit tests
+        otherwise never exercise, since nothing mounts the routes there.
+    </div>
+    <p>
+        A Response WITHOUT the marker keeps the default posture: no guard, no generic mapper,
+        <code>FromResult</code> written by hand — free to rename (<code>Result.Name</code> →
+        <code>Response.Nickname</code>), flatten a nested segment, or fold two Result fields into one
+        wire value. That escape hatch is the reason the marker is opt-in rather than automatic.
+    </p>
+
+    <h5 id="qry-auto-rule">The one rule, on both seats</h5>
+    <p>
+        The same contract governs the write side (<a href="#auto-handlers~cmd-auto">
+        <code>fwrequests.Auto</code></a>), and it is easiest to remember by LAYER:
+    </p>
+    <div class="note">
+        <strong>A type in <code>web/</code> (Request, Response) must be fully connected. A type in
+        <code>application/</code> (Command, Result) may carry more.</strong>
+    </div>
+    <table>
+        <tbody><tr><th>Type</th><th>Layer</th><th>May have a field the other side lacks?</th><th>Why</th></tr>
+        <tr><td><code>FindUsersResponse</code></td><td><code>web/</code></td><td><strong>No</strong></td>
+            <td>the field would render <code>null</code> on every response</td></tr>
+        <tr><td><code>FindUsersResult</code></td><td><code>application/</code></td><td><strong>Yes</strong></td>
+            <td>a deliberate cut — the read model keeps it, the wire does not show it</td></tr>
+        <tr><td><code>InsertUserRequest</code></td><td><code>web/</code></td><td><strong>No</strong></td>
+            <td>the client would send the value and it would be dropped in silence</td></tr>
+        <tr><td><code>InsertUserCommand</code></td><td><code>application/</code></td><td><strong>Yes</strong></td>
+            <td>filled another way — the path id, an identity overlay, a handler default</td></tr>
+    </tbody></table>
+    <p>
+        Both refusals protect the same thing: a wire field that is not connected to anything. Both
+        allowances say the same thing: the application side is free to carry state that does not make
+        that particular trip.
+    </p>
+
+    <h5 id="qry-auto-shapes">What travels</h5>
+    <p>A pair maps automatically when every mapped field is one of:</p>
+    <table>
+        <tbody><tr><th>Field shape</th><th>Example</th></tr>
+        <tr><td>Identical types</td><td><code>string</code> → <code>string</code>,
+            <code>time.Time</code> → <code>time.Time</code>, a value object → itself</td></tr>
+        <tr><td>Pointer wrapping / unwrapping</td><td><code>string</code> → <code>*string</code>
+            (a nil source leaves the field zero, as an absent value does)</td></tr>
+        <tr><td>Same-family numeric conversion</td><td><code>int32</code> → <code>int64</code>,
+            <code>float32</code> → <code>float64</code> (out of range leaves the field zero)</td></tr>
+        <tr><td><code>domain.ID</code> ↔ <code>string</code></td><td>the ID's value IS its string form</td></tr>
+        <tr><td>Struct → struct, slice → slice</td><td>resolved recursively by the same rules</td></tr>
+        <tr><td>Map → map, same key type</td><td><code>map[string][]ChildResult</code> →
+            <code>map[string][]ChildOutput</code> — the values travel by the same rules. A different
+            KEY type is refused: the key is what a consumer indexes by, so converting it would change
+            the shape the caller reads.</td></tr>
+    </tbody></table>
+    <p>
+        What forces the hand-written seat is a field whose two sides DIFFER while one of them owns its
+        own JSON or text codec — <code>time.Time</code> → <code>string</code> is the common one, since
+        only <code>MarshalJSON</code> knows the RFC 3339 rendering — or a conversion the framework will
+        not invent, such as <code>float64</code> → <code>int64</code> (whose rounding belongs to the
+        codec). The boot panic names the field and the cause; the remedy is to align the two types and
+        let the Query's <a href="#query-side~qry-result"><code>FromQueryResult</code></a> hook produce
+        the rendered value — which is where read-side computation belongs anyway.
+    </p>
+
     <p>
         <strong>The Response carries <code>json:</code> only — no source-key override exists.</strong>
-        The typed Response struct declares <code>json:"&lt;wire&gt;"</code> tags and nothing else. The
-        document handed to <code>AutoFromDoc</code> is <em>already Go-keyed</em>: the reader
-        (MongoViewReader) translated each physical column to its Go field name using the view's
-        <code>TableSchema</code> tree before the doc ever reaches the projector. So there is no
-        <code>view:</code> tag and no <code>PascalToSnake</code> at the Response layer — the
-        <code>json:</code> tag governs the wire shape (Go field → JSON), and the
-        <code>TableSchema</code> on the infra side governs the column shape (Go field → column):
+        The typed Response struct declares <code>json:"&lt;wire&gt;"</code> tags (plus the optional
+        <code>exportLabelKey</code> header key the <a href="#auto-query-handlers~qry-export">tabular
+        export</a> reads) and nothing else. The Result it maps from is keyed by Go field name, and the
+        reader (MongoViewReader) already translated each physical column to its Go field name using the
+        view's <code>TableSchema</code> tree. So there is no <code>view:</code> tag and no
+        <code>PascalToSnake</code> at the Response layer — the <code>json:</code> tag governs the wire
+        shape (Go field → JSON), and the <code>TableSchema</code> on the infra side governs the column
+        shape (Go field → column):
     </p>
     <pre><code>type AddressOutput struct {
     Street     string `json:"street"`        // Go field Street → wire "street"
@@ -111,17 +250,18 @@
         field name and its wire name.
     </p>
     <p class="note">
-        <strong>Managed slots have FIXED Go names — whatever the physical column.</strong> The source key is the
-        field's Go name, and for <code>ID</code>, <code>ParentID</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>
-        and <code>DeletedAt</code> that name is locked by the framework: a Response field named after the column
+        <strong>Managed slots have FIXED Go names — whatever the physical column.</strong> The document key is
+        the field's Go name, and for <code>ID</code>, <code>ParentID</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>
+        and <code>DeletedAt</code> that name is locked by the framework: a Result field named after the column
         (<code>ArchivedOn</code> for <code>DeletedAt("archived_on")</code>) reads nothing and stays silently null.
         The full naming contract lives in <a href="#table-schema~three-name-model">The three-name model</a>.
     </p>
     <p>
         Consumers typically declare a typed <code>FindXxxResponse</code> struct in
-        <code>web/requests/find_xxx_request.go</code> (co-located with the Request) and pair it
-        with <code>fwresponses.AutoFromDoc[FindXxxResponse]</code> at the route. The Response
-        type carries the wire contract; the helper carries the projection logic.
+        <code>web/requests/find_xxx.go</code> (co-located with the Request) with a
+        <code>FromResult</code> method over the Query's <code>FindXxxResult</code>, and pass
+        <code>requests.FindXxxResponse{}.FromResult</code> at the route. The Result owns field
+        existence, the Response owns the wire names.
     </p>
 
     <h3 id="qry-auto-vs-manual">Automatic × Manual</h3>
@@ -139,12 +279,13 @@
         <tr><td>DB-per-service guard (foreign-collection detection)</td><td><span class="tag auto">automatic</span></td><td><code>mongo.CheckServiceRegistry</code> runs at boot via <code>bootstrap.Run</code>. Service writes a marker doc under <code>omnicore_service_registry</code>, then lists collections and reports any outside the declared view set + the framework-owned allowlist. <code>APP_PROFILE=dev</code> → <code>slog.Warn</code> (lets hot-reload + ad-hoc mongosh work); any other profile → boot aborts with the foreign list.</td></tr>
         <tr><td>Set up <code>SyncEngine</code> to populate the view</td><td><span class="tag manual">manual</span></td><td>service boot</td></tr>
         <tr><td>Declare the allowlist of fields + operators</td><td><span class="tag manual">manual</span></td><td>Request DTO struct tags (<code>query:"X" filter:"ops"</code>)</td></tr>
-        <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> tags only (the doc is already Go-keyed by the reader — no source-key override), co-located with the Request in the same <code>web/requests/find_xxx_request.go</code> file. Pair with <code>fwresponses.AutoFromDoc[Response]</code> (tag-driven default), <code>fwresponses.RawDoc</code> (raw passthrough), or a consumer <code>Response{}.FromDoc</code> method (custom logic).</td></tr>
+        <tr><td>Declare the application Result (what the read produces)</td><td><span class="tag manual">manual</span></td><td>a tagless Go struct in <code>application/queries/</code> whose field names are the canonical document's Go keys — see <a href="#query-side~qry-result">the Result</a>. The framework fills it (<code>queries.ResultFromDoc</code>) and hands it to the Query's <code>FromQueryResult</code>.</td></tr>
+        <tr><td>Declare the wire output shape</td><td><span class="tag manual">manual</span></td><td>Response DTO struct with <code>json:"&lt;wire&gt;"</code> tags (plus optional <code>exportLabelKey</code>), co-located with the Request in the same <code>web/requests/find_xxx.go</code> file, carrying a <code>FromResult(TResult) TResp</code> method — <code>fwresponses.Map[Response](r)</code> for the mechanical case, hand-written when the tags cannot express the shape.</td></tr>
         <tr><td>Query string parsing (filters, orderBy, fields, pagination)</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> wrapper</td></tr>
         <tr><td>Reject unknown field / disallowed operator with 400</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> + <code>SchemaViolationNotification</code></td></tr>
-        <tr><td>Project each <code>page.Items</code> doc to the wire shape</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> applies the consumer's projector per doc; <code>fwweb.ProjectPage</code> / <code>fwweb.RespondPaged</code> available for manual handlers</td></tr>
-        <tr><td>Validate the query string in a manual handler (typed Response, may opt into <code>?fields=</code> / <code>?orderBy=</code>)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>.</td></tr>
-        <tr><td>Validate the query string in a manual handler (RawDoc Response OR no reserved-key opt-in)</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.ParseCriteria(c, requestDTO)</code> — same reflection-based allowlist, projection schema nil (pass-through); pair with <code>fwweb.RespondSchemaViolation</code></td></tr>
+        <tr><td>Fill one Result per document + run the <code>FromQueryResult</code> hook</td><td><span class="tag auto">automatic</span></td><td><code>queries.ResultFromDoc</code> + <code>queries.PageOfFrom</code>, called by <code>FindByParamsQueryHandler</code>; a manual handler reaches the same pair directly</td></tr>
+        <tr><td>Project each <code>PageOf.Items</code> Result to the wire shape</td><td><span class="tag auto">automatic</span></td><td><code>QueryWithParams</code> applies the consumer's <code>responseProjection</code> per item; <code>fwweb.ProjectPage</code> / <code>fwweb.RespondPaged</code> available for manual handlers</td></tr>
+        <tr><td>Validate the query string in a manual handler</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>. It is the single manual parsing seat.</td></tr>
         <tr><td>Filter operators (<code>.gte/.lte/.gt/.lt/.ne/.in/.nin</code>)</td><td><span class="tag auto">automatic</span></td><td><code>queryschema.ApplyFilterParam</code></td></tr>
         <tr><td>Type coercion (int/float/bool/string)</td><td><span class="tag auto">automatic</span></td><td><code>coerceValue</code></td></tr>
         <tr><td>DeletedAt filter (<code>deleted_at = null</code>)</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader</code> applies when <code>!IncludeArchived</code></td></tr>
@@ -209,8 +350,8 @@
     <p>
         A struct-typed field carrying <code>query:"prefix"</code> (no <code>filter:</code>) is an
         <strong>embed group</strong> — the walker recurses, and every leaf below it produces a wire key
-        prefixed by <code>prefix.</code>. Symmetric with the Response side, where nested structs
-        project nested doc paths via <code>AutoFromDoc</code>.
+        prefixed by <code>prefix.</code>. Symmetric with the Response side, where a nested struct maps
+        from the same-named nested Result segment.
     </p>
     <pre><code>type FindUsersByParamsRequest struct {
     Name      *string             `query:"name"  filter:"eq,startswith"`
@@ -258,16 +399,19 @@ type AddressFilterParams struct {
         framework strips everything else end to end. The Request DTO opts in by declaring
         <code>Fields *string `query:"fields"`</code> (no <code>filter:</code> tag — it's a reserved
         control key, not a filter leaf). When the parameter is declared <em>and</em> the wrapper's
-        Response type <code>R</code> is a struct, three things happen automatically:
+        Response type <code>TResp</code> is a struct, three things happen automatically:
     </p>
     <ol>
         <li>
-            <strong>Boot guard.</strong> At wrapper construction
-            (<code>QueryWithParams</code> /
-            <code>QueryWithParamsSpec</code>), the framework walks <code>R</code> recursively
-            and panics if any exported field is not <code>*T</code> (or a slice/map) <em>and</em>
-            does not carry <code>,omitempty</code> in its <code>json</code> tag. The panic
-            diagnostic names every offending field path
+            <strong>Boot guard — on BOTH shapes.</strong> At wrapper construction
+            (<code>QueryWithParams</code> / <code>QueryWithParamsSpec</code> / the export wrappers), the
+            framework walks the pair recursively:
+            <code>queryschema.ValidateFieldsResponse</code> panics when any exported
+            <code>TResp</code> field is not <code>*T</code> (or a slice/map) <em>and</em>
+            carrying <code>,omitempty</code> in its <code>json</code> tag, and
+            <code>ValidateFieldsResult</code> panics when any exported <code>TResult</code> field is not
+            a pointer, slice or map (the tagless Result carries no <code>omitempty</code> — it only has
+            to distinguish absent from zero). Each diagnostic names every offending field path
             (<code>FindXxxResponse.addresses.zipCode: missing ,omitempty…</code>) — fail loud at
             boot so the contract cannot ship.
         </li>
@@ -290,33 +434,30 @@ type AddressFilterParams struct {
             <code>id</code>, the framework adds <code>_id: 0</code> to the projection so the typed
             Response stays clean (no phantom <code>id</code> the consumer didn't ask for). When
             <code>id</code> is among the tokens, no <code>_id: 0</code> is added — Mongo returns
-            both <code>id</code> and <code>_id</code>, and <code>AutoFromDoc</code>'s existing
-            fallback (<code>id ← _id</code> when <code>id</code> absent) keeps the wire output
+            both <code>id</code> and <code>_id</code>, and the Result fill's
+            <code>ID ← _id</code> fallback keeps the wire output
             stable across both cases. Mongo's projection rules allow <code>_id: 0</code> to be
             mixed with inclusion entries — it is the only permitted exclusion in an otherwise-
             inclusion projection.
         </li>
     </ol>
     <p>
-        Why the boot guard? Mongo strips the unwanted columns from the document; the projector
-        (<code>AutoFromDoc[R]</code> by default) populates only the fields it finds in the doc; the
-        remaining fields stay at their zero value. For pointer fields with <code>omitempty</code>,
+        Why the boot guard? Mongo strips the unwanted columns from the document; the Result fill
+        populates only the fields it finds in the doc and the response projection carries them across;
+        the remaining fields stay at their zero value. For pointer fields with <code>omitempty</code>,
         <code>encoding/json</code> elides them on the wire. For non-pointer fields (or pointer
         fields missing <code>omitempty</code>), the zero value still renders
         (<code>"name":""</code>, <code>"addresses":[]</code>), defeating the point of
-        <code>?fields=</code>. The contract enforced at boot is the cheapest way to keep wire
-        output coherent with what the consumer asked for.
+        <code>?fields=</code>. Enforcing the same rule on the Result closes the other half: a
+        non-pointer Result field would fill as a zero the Response could not tell from an absence.
+        The contract enforced at boot is the cheapest way to keep wire output coherent with what the
+        consumer asked for.
     </p>
     <p>
         The boot guard is opt-in by declaration: a Request DTO that does not carry
-        <code>query:"fields"</code> imposes no constraint on its Response type; the
-        <code>QueryWithParams</code> wrapper paired with a custom projector returning
-        <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
-        guard — there is no typed Response shape to enforce. Manual handlers via
-        <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?fields=</code>
-        token becomes an inclusion entry verbatim, no allowlist, no translation, no
-        <code>_id: 0</code> auto-exclusion. The canonical surface is the
-        <code>QueryWithParams</code> wrapper.
+        <code>query:"fields"</code> imposes no constraint on the Result/Response pair. When it does,
+        the guard applies on every surface that mounts the pair — the JSON listing, the
+        <code>*Spec</code> siblings and the CSV/XLSX exports run the same boot scan.
     </p>
     <pre><code>// Request DTO opts in to the parameter.
 type FindUsersByParamsRequest struct {
@@ -327,9 +468,21 @@ type FindUsersByParamsRequest struct {
     Fields *string `query:"fields"`   // declares the parameter
 }
 
-// Response satisfies the sparse-render contract: every field — at every
+// The Result satisfies the sparse-FILL contract: every field — at every
+// depth — is *T, a slice or a map, so a projected-out column stays
+// distinguishable from a zero. No wire tags: this is the application layer.
+type FindUsersByParamsResult struct {
+    ID        *string
+    Name      *string
+    Email     *string
+    Phone     *string
+    Addresses []FindUsersByParamsAddressResult
+}
+
+// Response satisfies the sparse-RENDER contract: every field — at every
 // depth — is *T (or a slice) and carries ,omitempty. Slice fields can stay
-// []T because omitempty already handles nil/empty slices.
+// []T because omitempty already handles nil/empty slices. Field names align
+// with the Result's, one to one (boot-guarded).
 type FindUsersByParamsResponse struct {
     ID        *string                          `json:"id,omitempty"`
     Name      *string                          `json:"name,omitempty"`
@@ -342,11 +495,17 @@ type FindUsersByParamsAddressOutput struct {
     ID      *string `json:"id,omitempty"`
     City    *string `json:"city,omitempty"`
     ZipCode *string `json:"zipCode,omitempty"` // column zip_code via the view TableSchema
+}
+
+func (FindUsersByParamsResponse) FromResult(
+    r FindUsersByParamsResult,
+) FindUsersByParamsResponse {
+    return fwresponses.Map[FindUsersByParamsResponse](r)
 }</code></pre>
     <table>
         <tbody><tr><th>Wire form</th><th>Mongo projection emitted</th><th>Notes</th></tr>
         <tr><td><code>?fields=name,email</code></td><td><code>{name:1, email:1, _id:0}</code></td><td><code>id</code> not requested → <code>_id:0</code> added; wire response omits <code>id</code></td></tr>
-        <tr><td><code>?fields=id,name</code></td><td><code>{id:1, name:1}</code></td><td><code>id</code> requested → no <code>_id:0</code>; Mongo auto-includes <code>_id</code>; <code>AutoFromDoc</code> resolves <code>id</code> from the doc</td></tr>
+        <tr><td><code>?fields=id,name</code></td><td><code>{id:1, name:1}</code></td><td><code>id</code> requested → no <code>_id:0</code>; Mongo auto-includes <code>_id</code>; the Result fill resolves <code>ID</code> from the doc</td></tr>
         <tr><td><code>?fields=addresses</code></td><td><code>{addresses:1, _id:0}</code></td><td>Whole nested subtree returned</td></tr>
         <tr><td><code>?fields=addresses.zipCode</code></td><td><code>{"addresses.zip_code":1, _id:0}</code></td><td>The view's <code>TableSchema</code> maps <code>ZipCode</code> → <code>zip_code</code>; only that leaf per element is populated; siblings render absent via <code>omitempty</code></td></tr>
         <tr><td><code>?fields=bogus</code></td><td>(none — request rejected)</td><td>400 with <code>SchemaViolationNotification</code> on field <code>fields[bogus]</code></td></tr>
@@ -358,6 +517,72 @@ type FindUsersByParamsAddressOutput struct {
         <code>"addresses":[]</code> when the consumer did not ask for it; consistent with the
         sparse-render contract.
     </p>
+
+    <h3 id="qry-computed">Computed fields — a wire field with no column</h3>
+    <p>
+        Not every value a consumer needs is stored. A Response field may be DERIVED after the read:
+        declare it on the Response with <code>computed:"Src1,Src2"</code> beside its
+        <code>json</code> tag, and produce it in the Query's <code>FromQueryResult</code> hook from
+        the named <strong>Result</strong> fields. Because the derivation happens in the application
+        layer, before any transport sees the value, every surface renders the same result — the JSON
+        listing, the CSV/XLSX columns, the GraphQL node and the gRPC item.
+    </p>
+    <pre><code class="language-go">// application — the Result carries the sources AND the derived field
+type FindUsersResult struct {
+    Name     *string
+    UserName *string          // a source the Response need not declare
+    Display  *string          // derived below; no column backs it
+}
+
+func (q FindUsersQuery) FromQueryResult(_ *configuration.AppContext, r FindUsersResult) (FindUsersResult, error) {
+    if r.Name != nil &amp;&amp; r.UserName != nil {
+        s := *r.Name + " (@" + *r.UserName + ")"
+        r.Display = &amp;s
+    }
+    return r, nil
+}
+
+// web — the Response names the Result fields that feed it
+type FindUsersResponse struct {
+    Name    *string `json:"name,omitempty"`
+    Display *string `json:"display,omitempty" computed:"Name,UserName"`
+}</code></pre>
+    <p>
+        The sources are <strong>optional on the Response</strong>. One that is declared there (like
+        <code>Name</code> above) also renders on the wire and stays individually selectable; one that
+        is not (<code>UserName</code>) is read so the derivation has data and then never leaves the
+        application layer. What is mandatory is that every source exists on the <em>Result</em> —
+        the boot guard rejects a tag naming a field the Result does not carry, and rejects a source
+        that is itself computed.
+    </p>
+    <ul>
+        <li><strong><code>?fields=display</code> pushes the SOURCES.</strong> A computed path has no
+            column to project, so the framework sends <code>Name</code> and <code>UserName</code> to
+            the store in its place. A source read only to feed the derivation is then blanked before
+            the Response projection, so the answer carries <code>display</code> alone — the parameter
+            keeps shaping the wire even when a source shares the Response.</li>
+        <li><strong><code>?orderBy=display</code> is refused with 400.</strong> Ordering happens in
+            the store and the keyset cursor is built from stored ordering values, so a derived value
+            is not expressible. The refusal carries its own translated
+            <code>ComputedFieldNotSortableNotification</code> on the wire token
+            (<code>orderBy[display]</code>) — distinguishable from the plain
+            <code>SchemaViolationNotification</code> an unknown token still produces, while a stored
+            field on the same Response keeps sorting normally.</li>
+        <li><strong>A <code>filter:</code> tag over a computed field is a boot panic.</strong>
+            Filtering is evaluated in the store, so the predicate could never run: the framework
+            fails at construction rather than shipping an endpoint that 400s on every call. Filter
+            one of the sources instead, or materialize the value as a real view column.</li>
+        <li><strong>The tabular exports keep the column.</strong> Its header comes from
+            <code>exportLabelKey</code> like any other, and selecting only the computed field keeps
+            its column: the projection echo names the sources, so the pruning is told about the
+            computed selection explicitly.</li>
+    </ul>
+    <div class="box">
+        <strong>When NOT to compute.</strong> A computed field is read-time derivation: it cannot be
+        filtered, cannot be ordered by, and its sources are read on every request that selects it. A
+        value consumers routinely filter or sort by belongs in the view as a real column — the
+        write side materializes it, and every control works on it unchanged.
+    </div>
 
     <h3 id="qry-sort">Sortable response paths via <code>?orderBy=</code></h3>
     <p>
@@ -403,13 +628,11 @@ type FindUsersByParamsAddressOutput struct {
     </p>
     <p>
         The allowlist is opt-in by declaration: a Request DTO without <code>query:"orderBy"</code>
-        does not get the allowlist (and does not consume the <code>?orderBy=</code> wire key);
-        <code>QueryWithParams</code> paired with a custom projector returning
-        <code>map[string]any</code> (e.g. <code>fwresponses.RawDoc</code>) also bypasses the
-        allowlist — there is no typed Response shape to enforce. Manual handlers via
-        <code>fwweb.ParseCriteria</code> operate in pass-through mode: each <code>?orderBy=</code>
-        token becomes a <code>OrderByField</code> verbatim (no allowlist, no translation, no boot
-        warning). The canonical surface is the <code>QueryWithParams</code> wrapper.
+        does not get the allowlist (and does not consume the <code>?orderBy=</code> wire key). When it
+        does declare it, the allowlist is the Response DTO's projection schema — the same one
+        <code>?fields=</code> consumes — on the canonical wrappers, on the
+        <code>*Spec</code> siblings, on the CSV/XLSX exports, and on a manual route built with
+        <code>fwweb.NewQueryParser[Req, Resp]()</code>.
     </p>
     <table>
         <tbody><tr><th>Wire form</th><th>OrderByField emitted</th><th>Notes</th></tr>
@@ -609,12 +832,13 @@ query:
         <code>hasNextPage: false</code> / empty cursors that would mislead the consumer in count mode.
     </p>
     <p>
-        Manual handlers via <code>fwweb.ParseCriteria</code> get the same treatment: the
+        Manual handlers via <code>fwweb.NewQueryParser</code> get the same treatment: the
         <code>OnlyTotal</code> flag flows into <code>ReadCriteria.OnlyTotal</code> and conflicts
         are rejected with the same field shape, so the canonical wire contract is shared with the
-        canonical wrapper path. The downstream branch on <code>queries.Page.OnlyTotal</code> is
-        what <code>RespondPaged</code> consumes to pick the envelope shape; manual handlers that
-        assemble the envelope by hand can read the same field on the returned Page.
+        canonical wrapper path. The downstream branch on <code>queries.PageOf.OnlyTotal</code> is
+        what <code>RespondPaged</code> consumes to pick the envelope shape (the flag is copied
+        verbatim from the reader-level <code>Page</code>); manual handlers that assemble the
+        envelope by hand can read the same field on the returned page.
     </p>
 
     <div class="note">
@@ -628,23 +852,25 @@ query:
     <h3 id="qry-export">Tabular export — CSV / Excel (format-pluggable)</h3>
     <p>
         Alongside the JSON list, a view can be exposed as a downloadable flat file. The
-        OpenAPI-aware wrapper <code>fwweb.QueryAsCSVSpec[TReq, TQ]</code> (and
-        <code>QueryAsXLSXSpec</code>) reuses the <strong>same Request DTO and the same query
-        handler</strong> as <code>QueryWithParams</code> — no second handler, no second query,
-        no hand-written CSV — and returns <code>(handler, openapi.RouteSpec)</code>, so it mounts on
+        OpenAPI-aware wrapper <code>fwweb.QueryAsCSVSpec[TReq, TQ, TResult, TResp]</code> (and
+        <code>QueryAsXLSXSpec</code>) reuses the <strong>same Request DTO, the same query
+        handler, the same Result AND the same Response DTO</strong> as
+        <code>QueryWithParams</code> — no second handler, no second query, no hand-written CSV —
+        and returns <code>(handler, openapi.RouteSpec)</code>, so it mounts on
         the <strong>canonical <code>fwopenapi.Mount</code></strong> exactly like the JSON list. The
         returned <code>RouteSpec</code> carries <code>RequestType</code> (so the filters render in
         Swagger) and <code>FileResponse</code> (so the 200 is documented as a download), keeping
         <code>MountRaw</code> out of the picture:
     </p>
     <pre><code>csvH, csvSpec := fwweb.QueryAsCSVSpec(d.Pipeline,
-    requests.FindUsersByParamsRequest{},   // same Request DTO as the JSON list → filters in Swagger
-    view,                                  // web.ExportView → plan, row ceiling, filename (view.Name())
-    d.Export,                              // web.ExportDeps{Translator, MaxExportRows} pre-packaged on Deps
-    &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+    requests.FindUsersByParamsRequest{},               // same Request DTO as the JSON list → filters in Swagger
+    requests.FindUsersByParamsResponse{}.FromResult,   // same response projection → same columns, same values
+    view,                                              // web.ExportView → row ceiling + filename (view.Name())
+    d.Export,                                          // web.ExportDeps{Translator, MaxExportRows} from Deps
+    &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery, queries.FindUsersResult]{
         Reader: d.ViewReader, View: view.Name(),
     },
-    export.WithDelimiter(';'))             // CSV-specific option, fixed at mount
+    export.WithDelimiter(';'))                         // CSV-specific option, fixed at mount
 fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csvSpec,
     fwopenapi.Doc{Summary: "Export users as CSV", Tags: []string{"Users"}},
     fwopenapi.RequirePermission("users:read"))
@@ -658,53 +884,78 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
     </p>
     <p>
         <strong>Inputs.</strong> Every export wrapper takes the view as a
-        <code>web.ExportView</code> interface — the <code>*ViewDefinition</code> satisfies it
-        structurally, so <code>web</code> never imports <code>infra</code> — plus a
+        <code>web.ExportView</code> interface — <code>{ ResolveMaxExportRows(int64) int64; Name() string }</code>,
+        which the <code>*ViewDefinition</code> satisfies structurally, so <code>web</code> never
+        imports <code>infra</code> — plus a
         <code>web.ExportDeps{Translator, MaxExportRows}</code> bundle pre-packaged on
-        <code>Deps.Export</code> (the Translator for labelKey headers + the yaml
-        <code>query.maxExportRows</code> default). The wrapper resolves the column plan
-        (<code>view.ExportPlan()</code>), the effective row ceiling
-        (<code>view.ResolveMaxExportRows(...)</code>), and the download filename base
-        (<code>view.Name()</code>) internally — so a route passes just <code>view, d.Export</code>
-        instead of spelling those out by hand at every export endpoint.
+        <code>Deps.Export</code> (the Translator for the header labels + the yaml
+        <code>query.maxExportRows</code> default). The view supplies exactly two things: the effective
+        row ceiling (<code>view.ResolveMaxExportRows(...)</code>) and the download filename base
+        (<code>view.Name()</code>). The <strong>columns come from the Response DTO</strong>, not from
+        the view — so a route passes just <code>view, d.Export</code> instead of spelling those out by
+        hand at every export endpoint.
     </p>
     <p>
-        <strong>Columns follow the effective read projection — <code>ToCriteria</code> is the single
-        source of truth.</strong> The export prunes its column plan to <code>page.Projection</code>
+        <strong>Columns are the Response DTO's — one wire authority, one <code>?fields=</code>
+        vocabulary.</strong> The column plan is derived from <code>TResp</code>
+        (<code>export.PlanFor</code>): each <code>json:</code> tag is the wire token, each struct or
+        slice-of-struct field a nested level, to the DTO's full depth. Three consequences follow, and
+        they are the point of the design:
+    </p>
+    <ul>
+        <li><strong>A field outside the Response DTO exports nowhere.</strong> A column the view
+            projects but the Response does not declare has no wire name and therefore no column —
+            exactly as it has no JSON key.</li>
+        <li><strong><code>?fields=</code> and <code>?orderBy=</code> speak the SAME tokens as the JSON
+            listing</strong>, validated against the same projection schema
+            (<code>queryschema.ParseProjection</code> / <code>ParseOrderByWithSchema</code>), rejecting
+            with the same canonical 400 spelling (<code>fields[&lt;token&gt;]</code> /
+            <code>orderBy[&lt;token&gt;]</code>). <code>id</code> is a legal token and an exported
+            column whenever the Response declares it.</li>
+        <li><strong>Cells carry the projected Response values</strong>, so the Query's
+            <code>FromQueryResult</code> computation and the Response's <code>FromResult</code> shaping both
+            reach the spreadsheet — including the enum convergence to <code>Unknown</code>. Value
+            objects are unwrapped to their underlying scalar, the same form the JSON renders.</li>
+    </ul>
+    <p>
+        <strong>Columns then follow the effective read projection — <code>ToCriteria</code> is the single
+        source of truth.</strong> The export prunes that plan to <code>page.Projection</code>
         (the projection the read actually used, echoed by <code>MongoViewReader.ReadPage</code> from the
-        post-<code>ToCriteria</code> criteria) via <code>ExportPlan.PruneToProjection</code>. So a field
+        post-<code>ToCriteria</code> criteria) via <code>Plan.PruneToProjection</code>. So a field
         a Query removes from the criteria — a <code>ReadCriteria.Restrict</code> call, a tenant/owner
         overlay, or just <code>?fields=</code> — drops its CSV/XLSX <em>column and header</em>, not only
         its cell values. JSON and the tabular export narrow by the same source, so they never disagree
         on which fields surface.
     </p>
     <p>
-        <strong>Hierarchical layout — one column per nesting level.</strong> The view's embed tree
-        is rendered depth-first: root columns start at column A, each embed one column to the right
-        (addresses at column B, a grandchild collection at column C, …), to the view's full depth.
+        <strong>Hierarchical layout — one column per nesting level.</strong> The Response DTO's tree
+        is rendered depth-first: root columns start at column A, each nested segment one column to the
+        right (addresses at column B, a grandchild collection at column C, …), to the DTO's full depth.
         For each parent row the wrapper emits the parent's data, then — offset one column — a header
-        row plus a data row per child, recursively. A column's header is its
-        <code>labelKey</code> rendered through the <code>Translator</code> in the request's
-        <code>Accept-Language</code>, falling back to the Go field name when a column carries no
-        label. A column flattened from a <strong>type-less schema</strong> is labeled by the Go type
-        that carries it: a <code>SharedBase</code>'s shared columns take the <code>labelKey</code>
-        tag off the ROLE struct that holds them flat (a <code>SharedBaseView</code> consults its
-        declared roles in declaration order), exactly as the audit timeline composes them — an
-        inline label on the base itself still wins. A <code>JoinUpstream</code> source has no such
-        struct and declares its labels inline. A <strong>blank separator line</strong> follows each item's cascade once it
+        row plus a data row per child, recursively. A struct that renders as a single cell
+        (<code>time.Time</code>, <code>domain.ID</code>, a value object — anything self-marshaling, and
+        any struct with no exported fields) stays a column instead of becoming a segment.
+        A <strong>blank separator line</strong> follows each item's cascade once it
         concludes, so every aggregate (and sub-aggregate) is visually delimited; consecutive blanks
         from several levels concluding at once collapse into one. This applies identically to
         locally-mapped embeds and cross-service external (<code>JoinUpstream</code>) embeds, in both
         CSV (an empty record) and Excel (an empty worksheet row).
     </p>
     <p>
-        <strong>Columns.</strong> By default every business column the view's <code>TableSchema</code>
-        declares (the surrogate id and the framework-managed <code>created_at</code>/<code>updated_at</code>/<code>deleted_at</code>
-        are excluded). <code>?fields=</code> narrows them, exactly like the JSON list — the allowlist
-        is driven by the view schema (not a Response DTO), so <code>?fields=name,addresses.zipCode</code>
-        keeps only those columns at their proper depth, and an unknown token returns
-        <code>400 SchemaViolationNotification{field:"fields[&lt;token&gt;]"}</code>.
+        <strong>Headers — the <code>exportLabelKey</code> tag.</strong> A column's header is the
+        translation-catalog key declared on the Response field as
+        <code>exportLabelKey:"&lt;catalog key&gt;"</code>, rendered through the <code>Translator</code>
+        in the request's <code>Accept-Language</code>. A field carrying no such tag falls back to its
+        <strong>json wire name</strong> — the same token the consumer would pass to
+        <code>?fields=</code>. Reusing the entity's own <code>labelKey</code> value on the tag
+        converges the export header on the same translation the write side already uses for
+        notifications and the audit timeline:
     </p>
+    <pre><code>type FindUsersByParamsResponse struct {
+    ID    *string `json:"id,omitempty"`                                            // header: "id"
+    Name  *string `json:"name,omitempty"  exportLabelKey:"UserNameField"`           // header: translated
+    Email *string `json:"email,omitempty" exportLabelKey:"UserEmailField"`          // header: translated
+}</code></pre>
     <p>
         <strong>Scope.</strong> Filters, <code>?search</code>, <code>?orderBy</code>, and
         <code>?includeArchived</code> behave like the JSON list. User pagination
@@ -720,10 +971,10 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         and <code>?includeArchived</code> still render, exactly as on the JSON list.
     </p>
     <p>
-        <strong>Format is pluggable.</strong> The walk, the per-level offset, the labelKey headers,
-        and the <code>?fields=</code> pruning are format-neutral — a <code>queries.ExportPlan</code>
-        plus the read documents are turned into a stream of <code>export.Row</code> events that a
-        <code>export.Encoder</code> serializes. Two encoders ship:
+        <strong>Format is pluggable.</strong> The walk, the per-level offset, the translated headers,
+        and the <code>?fields=</code> pruning are format-neutral — an <code>export.Plan</code>
+        plus the projected Response values are turned into a stream of <code>export.Row</code> events
+        that an <code>export.Encoder</code> serializes. Two encoders ship:
         <code>export.CSV(export.WithDelimiter(r))</code> (delimiter chosen at mount) and
         <code>export.XLSX(export.WithSheetName(s))</code> (Excel — bold header rows, numeric/typed
         cells kept typed, built on <code>excelize</code>'s streaming writer). The matching
@@ -769,8 +1020,10 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
         type-less <code>NewExternalSchema</code>) or another LOCAL view (<code>JoinView</code> — see
         <a href="#views~views-embed-view">Views</a>). A <strong>write-anchored embed source is a boot error</strong>
         (an aggregate's own closure projects automatically — never declare it twice), as is a redundant embed whose
-        segment clashes with a child the schema already projects. Tabular export (CSV/XLSX) walks the same full tree —
-        siblings, SharedBase, and nested children all contribute columns.
+        segment clashes with a child the schema already projects. Everything the document carries —
+        siblings, SharedBase, nested children, embed segments — is filterable and sortable; what
+        SURFACES on any wire (JSON, CSV/XLSX, GraphQL, gRPC) is what the Result and the Response DTO
+        declare.
     </div>
     <pre><code>// internal/views/customer.go
 package views
@@ -846,16 +1099,18 @@ var HotTierUserView = query.View("users").
     Schema(views.UserSchema()).   // addresses (a .Child of UserSchema) auto-project
     DeleteOnArchive()</code></pre>
 
-    <h4>2. Declare the Request DTO (allowlist) + Query (transport)</h4>
+    <h4>2. Declare the Request DTO (allowlist) + Query + Result + Response</h4>
     <p>
         The Request DTO lives in <code>web/requests/</code> and declares the wire allowlist
         through struct tags. <code>ToQuery</code> is pure body mapping with no ctx — the
         web→application boundary stays dumb. The Query lives in <code>application/queries/</code>
-        and owns its persistence shape end to end via <code>ToCriteria(ctx)</code> — that is
-        where <code>*AppContext</code> is consumed and where JWT-derived overlays (tenant id,
-        owner id) layer onto the <code>ReadCriteria.Filter</code>.
+        alongside its <a href="#query-side~qry-result">Result</a>, and owns its persistence shape end
+        to end via <code>ToCriteria(ctx)</code> — that is where <code>*AppContext</code> is consumed
+        and where JWT-derived overlays (tenant id, owner id) layer onto the
+        <code>ReadCriteria.Filter</code> — plus its output shape via <code>FromQueryResult</code>. The
+        Response DTO sits next to the Request and owns the wire names.
     </p>
-    <pre><code>// internal/web/requests/find_users_by_params_request.go
+    <pre><code>// internal/web/requests/find_users_by_params.go
 package requests
 
 type FindUsersByParamsRequest struct {
@@ -882,8 +1137,32 @@ func (r FindUsersByParamsRequest) ToQuery(
     return &amp;appqueries.FindUserByParamsQuery{Criteria: criteria}
 }
 
+// The wire shape + its mapping seat. Every field is *T + ,omitempty because
+// the Request opts into ?fields= (the sparse-render contract).
+type FindUsersByParamsResponse struct {
+    ID    *string `json:"id,omitempty"`
+    Name  *string `json:"name,omitempty"  exportLabelKey:"UserNameField"`
+    Email *string `json:"email,omitempty" exportLabelKey:"UserEmailField"`
+    Phone *string `json:"phone,omitempty" exportLabelKey:"UserPhoneField"`
+}
+
+func (FindUsersByParamsResponse) FromResult(
+    r appqueries.FindUsersByParamsResult,
+) FindUsersByParamsResponse {
+    return fwresponses.Map[FindUsersByParamsResponse](r)
+}
+
 // internal/application/queries/find_user_by_params_query.go
 package queries
+
+// The Result — application-pure, NO wire tags, field names = the document's
+// Go keys. It owns field EXISTENCE: a field absent here reaches no surface.
+type FindUsersByParamsResult struct {
+    ID    *string
+    Name  *string
+    Email *string
+    Phone *string
+}
 
 type FindUserByParamsQuery struct {
     fwqueries.QueryWithParamsBase
@@ -915,30 +1194,58 @@ func (q FindUserByParamsQuery) ToCriteria(
     return crit, err
 }
 
-// By-id companion — same pattern. The Query owns IncludeArchived + JWT overlays
-// inside its ToCriteria(ctx); the Request boundary is body-only.
+// FromQueryResult is MANDATORY — the read-side twin of a command's FromEntity. The
+// framework fills one Result per returned document (queries.ResultFromDoc)
+// and hands it here BEFORE any transport sees it, so derived fields and
+// ctx-aware shaping land once and every surface renders the same values.
+// This listing needs none: return the filled Result unchanged.
+func (q FindUserByParamsQuery) FromQueryResult(
+    _ *configuration.AppContext, r FindUsersByParamsResult,
+) (FindUsersByParamsResult, error) {
+    return r, nil
+}
+
+// By-id companion — LITERALLY the same pattern: the DTO field is the opt-in
+// declaration (it is what makes ?includeArchived legal on this endpoint), the
+// wrapper parses it into the ReadCriteria, and ToQuery stores that criteria.
+// The Query owns the JWT overlays inside its ToCriteria(ctx).
 type FindUserByIDRequest struct {
     IncludeArchived *bool `query:"includeArchived"`
 }
-func (r FindUserByIDRequest) ToQuery() *FindUserByIDQuery {
-    arch := false
-    if r.IncludeArchived != nil { arch = *r.IncludeArchived }
-    return &amp;FindUserByIDQuery{IncludeArchived: arch}
+func (r FindUserByIDRequest) ToQuery(criteria fwqueries.ReadCriteria) *FindUserByIDQuery {
+    return &amp;FindUserByIDQuery{Criteria: criteria}
+}
+
+type FindUserByIDResult struct {
+    ID    *string
+    Name  *string
+    Email *string
+    Phone *string
 }
 
 type FindUserByIDQuery struct {
     fwqueries.QueryByIDBase
-    IncludeArchived bool
+    Criteria fwqueries.ReadCriteria
 }
 
 // ToCriteria(ctx) returns the same DTO used by QueryWithParams — the
-// ViewReader port has a single ReadCriteria contract. ReadByID honors
-// Filter (overlays) + IncludeArchived; Limit/Sort/After/Before/Search/
-// Projection are ignored by ReadByID by design.
+// ViewReader port has a single ReadCriteria contract, so the by-id body is
+// the by-params body: hand back the wire criteria, plus any identity-derived
+// overlay. ReadByID honors Filter (overlays) + IncludeArchived;
+// Limit/OrderBy/After/Before/Search/Projection are ignored by ReadByID by
+// design.
 func (q FindUserByIDQuery) ToCriteria(
     _ *configuration.AppContext,
 ) (fwqueries.ReadCriteria, error) {
-    return fwqueries.ReadCriteria{IncludeArchived: q.IncludeArchived}, nil
+    return q.Criteria, nil
+}
+
+// FromQueryResult — mandatory here too; FindByIDQueryHandler returns the value it
+// gives back.
+func (q FindUserByIDQuery) FromQueryResult(
+    _ *configuration.AppContext, r FindUserByIDResult,
+) (FindUserByIDResult, error) {
+    return r, nil
 }
 
 // ContextName seeds the NotificationContext of the 404 emitted when the
@@ -955,21 +1262,22 @@ func (q FindUserByIDQuery) ContextName() string { return "User" }</code></pre>
         consumer-side handler code.
     </p>
     <pre><code>// internal/web/routes.go
-// The third arg (projector) is mandatory. Pass fwresponses.AutoFromDoc[R]
-// for tag-driven projection (the default), fwresponses.RawDoc to pass the
-// view document through verbatim, or a consumer-declared Response{}.FromDoc
-// method for custom projection logic.
+// The third arg (responseProjection, func(TResult) TResp) is mandatory —
+// the same seat every other surface takes. Typically the Response's
+// FromResult method; the Result type is named on the handler.
 users.Get("/", fwweb.QueryWithParams(d.Pipeline,
     requests.FindUsersByParamsRequest{},
-    fwresponses.AutoFromDoc[requests.FindUsersByParamsResponse],
-    &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery]{
+    requests.FindUsersByParamsResponse{}.FromResult,
+    &amp;handlers.FindByParamsQueryHandler[*queries.FindUserByParamsQuery,
+                                       queries.FindUsersByParamsResult]{
         Reader: d.ViewReader, View: views.CustomerView.Name(),
     }))
 
 users.Get("/:id", fwweb.QueryByID(d.Pipeline,
     requests.FindUserByIDRequest{},
-    fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
-    &amp;handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
+    requests.FindUserByIDResponse{}.FromResult,
+    &amp;handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery,
+                                   queries.FindUserByIDResult]{
         Reader: d.ViewReader, View: views.CustomerView.Name(),
     }))</code></pre>
 
@@ -1099,6 +1407,7 @@ GET /users?role=admin
         <li><strong>Cursors bind to the composed listing context</strong> — segment filters included:
             changing <code>?notes.text=</code> mid-navigation invalidates the cursor (400) exactly like
             changing a row filter does; request page 1 of the new context.</li>
-        <li><strong>Exports carry the leg branches</strong>: the composed export plan is the primary's
-            tree plus one nested level per leg, exactly the shape an embed produces.</li>
+        <li><strong>Exports carry the leg branches</strong>: declare each leg as a nested struct (or
+            slice of structs) on the Response DTO and it renders as one further nested level in the
+            CSV/XLSX, exactly the shape an embed produces.</li>
     </ul>

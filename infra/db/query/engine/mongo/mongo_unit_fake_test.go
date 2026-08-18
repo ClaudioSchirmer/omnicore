@@ -11,6 +11,7 @@ import (
 // Aliases for the driver's option-lister variadics, so the fakeColl method
 // signatures match the mongoColl interface exactly while staying readable.
 type (
+	aggOpt     = options.Lister[options.AggregateOptions]
 	countOpt   = options.Lister[options.CountOptions]
 	findOpt    = options.Lister[options.FindOptions]
 	findOneOpt = options.Lister[options.FindOneOptions]
@@ -60,6 +61,15 @@ func (c *fakeColl) CountDocuments(ctx context.Context, filter any, opts ...count
 }
 
 func (c *fakeColl) Find(ctx context.Context, filter any, opts ...findOpt) (*mongo.Cursor, error) {
+	if c.findErr != nil {
+		return nil, c.findErr
+	}
+	return mongo.NewCursorFromDocuments(append([]any{}, c.docs...), nil, nil)
+}
+
+// Aggregate mirrors Find's posture: programmable docs, forced error via
+// findErr (the read paths treat both verbs as "the leg fetch").
+func (c *fakeColl) Aggregate(ctx context.Context, pipeline any, opts ...aggOpt) (*mongo.Cursor, error) {
 	if c.findErr != nil {
 		return nil, c.findErr
 	}

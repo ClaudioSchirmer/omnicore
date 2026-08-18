@@ -9,9 +9,59 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
+
+// ─── canonical read-side fixtures (Result + Query + Request) ────────────────
+//
+// The read side mirrors the write side's Result anatomy: the fixtures below
+// declare the application-layer Result (tagless, pointer/slice fields so the
+// `?fields=` sparse guard passes), the Query implementing
+// queries.QueryWithParams[TResult], and the Request DTO owning the wire
+// allowlist. Response DTOs live near the tests that assert their wire shape.
+
+// strPtr is the tiny address-of helper the fixtures share.
+func strPtr(s string) *string { return &s }
+
+// testAddressResult is the nested Result segment backing sparseAddress.
+type testAddressResult struct {
+	ID      *string
+	City    *string
+	ZipCode *string
+	State   *string
+}
+
+// testUserResult is the canonical application-layer Result: tagless, every
+// field *T or slice (the Result-side sparse contract), field names backing
+// every Response fixture in the package (sparseUser, testUserSummary, …).
+type testUserResult struct {
+	ID        *string
+	Name      *string
+	Email     *string
+	Phone     *string
+	Addresses []testAddressResult
+}
+
+// rawItem projects the canonical Result into a loose wire map — the stand-in
+// for the removed responses.RawDoc in tests that only assert criteria
+// assembly / envelope framing. A map Response keeps the wrapper in
+// pass-through mode: no projection schema, no Result↔Response alignment
+// guard, `?orderBy=`/`?fields=` tokens land verbatim.
+func rawItem(r testUserResult) map[string]any {
+	out := map[string]any{}
+	if r.ID != nil {
+		out["id"] = *r.ID
+	}
+	if r.Name != nil {
+		out["name"] = *r.Name
+	}
+	if r.Email != nil {
+		out["email"] = *r.Email
+	}
+	return out
+}
 
 // testFindParamsRequest declares an allowlist for the params endpoint:
 // name accepts only equality; email accepts equality + in; the remaining
@@ -32,6 +82,8 @@ type testFindParamsRequest struct {
 // only layer that consumes *AppContext on the read side, so SeenLang is
 // captured there (mirroring the production pattern where identity-derived
 // overlays — tenant id etc. — layer onto the criteria inside ToCriteria).
+// FromQueryResult is the mandatory doc→Result hook; the trivial implementation
+// passes the framework-filled Result through unchanged.
 type testFindParamsQuery struct {
 	pipeline.QueryBase
 	Criteria queries.ReadCriteria
@@ -43,23 +95,28 @@ func (q *testFindParamsQuery) ToCriteria(ctx *configuration.AppContext) (queries
 	return q.Criteria, nil
 }
 
+func (q *testFindParamsQuery) FromQueryResult(_ *configuration.AppContext, r testUserResult) (testUserResult, error) {
+	return r, nil
+}
+
 func (r testFindParamsRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery {
 	return &testFindParamsQuery{Criteria: crit}
 }
 
 // capturingParamsHandler records the Query received and invokes ToCriteria so
-// the SeenLang assertion still proves ctx propagation end to end.
+// the SeenLang assertion still proves ctx propagation end to end. Returns the
+// typed PageOf the wrappers now consume.
 type capturingParamsHandler struct {
 	got *testFindParamsQuery
 }
 
-func (h *capturingParamsHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.Page, error) {
+func (h *capturingParamsHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.PageOf[testUserResult], error) {
 	h.got = q
 	_, _ = q.ToCriteria(ctx)
-	return queries.Page{
-		Items:   []map[string]any{{"id": "abc"}},
+	return queries.PageOf[testUserResult]{
+		Items:       []testUserResult{{ID: strPtr("abc")}},
 		HasNextPage: true,
-		TotalCount:   1,
+		TotalCount:  1,
 	}, nil
 }
 
@@ -68,7 +125,7 @@ func TestHandleQueryWithParams_UnknownFieldReturns400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users?role=admin", nil))
 	if err != nil {
@@ -88,7 +145,7 @@ func TestHandleQueryWithParams_OperatorOutsideDeclaredListReturns400(t *testing.
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	// name has `filter:"eq"` only — using .in must 400.
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?name.in=Jane,Mary", nil))
@@ -105,7 +162,7 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?email.in=a@x.com,b@y.com&first=20&orderBy=-name", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -136,7 +193,7 @@ func TestHandleQueryWithParams_EmptyQueryStringStillCallsHandler(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -156,7 +213,7 @@ func TestHandleQueryWithParams_AppContextFlowsIntoToCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	req := httptest.NewRequest("GET", "/users", nil)
 	req.Header.Set("Accept-Language", "en")
@@ -174,7 +231,7 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -201,51 +258,49 @@ func TestHandleQueryWithParams_ResponseEnvelopeShape(t *testing.T) {
 	}
 }
 
-// TestHandleQueryWithParams_CustomProjectorReshapesData proves the projector
-// parameter is honored — the wire data array carries the typed Response shape
-// the consumer declared, not the raw view doc.
+// TestHandleQueryWithParams_ResponseProjectionReshapesData proves the
+// responseProjection parameter is honored — the wire data array carries the
+// typed Response shape the consumer declared, not the Result's full field set.
 //
 // testUserSummary follows the sparse-render contract enforced by the boot
 // guard whenever a Request DTO declares `query:"fields"` and is consumed
 // by QueryWithParams with a struct Response: every field is *T +
-// ,omitempty so encoding/json elides absent values cleanly.
+// ,omitempty so encoding/json elides absent values cleanly. Its FromResult
+// delegates to the generic name-based mapper — the canonical consumer pattern.
 type testUserSummary struct {
+	responses.Auto
 	ID   *string `json:"id,omitempty"`
 	Name *string `json:"name,omitempty"`
 }
 
-// summaryFromDoc is the projector used by every test that pairs a Page
-// with the testUserSummary shape. Returns a struct whose pointer fields
-// carry the doc value when present.
-func summaryFromDoc(doc map[string]any) testUserSummary {
-	id := docStringField(doc, "id")
-	name := docStringField(doc, "name")
-	return testUserSummary{ID: &id, Name: &name}
+func (testUserSummary) FromResult(r testUserResult) testUserSummary {
+	return responses.AutoFromResult[testUserSummary](r)
 }
 
-// fixedParamsHandler returns a hardcoded Page regardless of the incoming Query.
+// fixedParamsHandler returns a hardcoded PageOf regardless of the incoming Query.
 type fixedParamsHandler struct {
-	page queries.Page
+	page queries.PageOf[testUserResult]
 }
 
-func (h *fixedParamsHandler) Handle(_ *configuration.AppContext, _ *testFindParamsQuery) (queries.Page, error) {
+func (h *fixedParamsHandler) Handle(_ *configuration.AppContext, _ *testFindParamsQuery) (queries.PageOf[testUserResult], error) {
 	return h.page, nil
 }
 
-func TestHandleQueryWithParams_CustomProjectorReshapesData(t *testing.T) {
+func TestHandleQueryWithParams_ResponseProjectionReshapesData(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	// Handler returns docs with id + email; the projector keeps only id + name
-	// (email absent in the output — exercises that the projector controls the wire shape).
-	h := &fixedParamsHandler{page: queries.Page{
-		Items: []map[string]any{
-			{"id": "u1", "name": "Alice", "email": "a@x.com"},
-			{"id": "u2", "name": "Bob"},
+	// Handler returns Results with id + name + email; the Response declares
+	// only id + name (email absent in the output — exercises that the
+	// projection controls the wire shape).
+	h := &fixedParamsHandler{page: queries.PageOf[testUserResult]{
+		Items: []testUserResult{
+			{ID: strPtr("u1"), Name: strPtr("Alice"), Email: strPtr("a@x.com")},
+			{ID: strPtr("u2"), Name: strPtr("Bob")},
 		},
 		TotalCount: 2,
 	}}
 
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, summaryFromDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, testUserSummary{}.FromResult, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users", nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -262,7 +317,7 @@ func TestHandleQueryWithParams_CustomProjectorReshapesData(t *testing.T) {
 		t.Errorf("first item mismatch: %v", first)
 	}
 	if _, leaked := first["email"]; leaked {
-		t.Errorf("projector should have stripped 'email' from wire shape, got: %v", first)
+		t.Errorf("response projection should have stripped 'email' from wire shape, got: %v", first)
 	}
 }
 
@@ -274,32 +329,31 @@ type testFindIDRequest struct {
 
 type testFindIDQuery struct {
 	queries.QueryByIDBase
-	IncludeArchived bool
-	SeenLang        configuration.Language
+	Criteria queries.ReadCriteria
+	SeenLang configuration.Language
 }
 
 func (q *testFindIDQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadCriteria, error) {
 	q.SeenLang = ctx.Language()
-	return queries.ReadCriteria{IncludeArchived: q.IncludeArchived}, nil
+	return q.Criteria, nil
 }
 func (q *testFindIDQuery) ContextName() string { return "" }
+func (q *testFindIDQuery) FromQueryResult(_ *configuration.AppContext, r testUserResult) (testUserResult, error) {
+	return r, nil
+}
 
-func (r testFindIDRequest) ToQuery() *testFindIDQuery {
-	arch := false
-	if r.IncludeArchived != nil {
-		arch = *r.IncludeArchived
-	}
-	return &testFindIDQuery{IncludeArchived: arch}
+func (r testFindIDRequest) ToQuery(criteria queries.ReadCriteria) *testFindIDQuery {
+	return &testFindIDQuery{Criteria: criteria}
 }
 
 type capturingIDHandler struct {
 	got *testFindIDQuery
 }
 
-func (h *capturingIDHandler) Handle(ctx *configuration.AppContext, q *testFindIDQuery) (map[string]any, error) {
+func (h *capturingIDHandler) Handle(ctx *configuration.AppContext, q *testFindIDQuery) (testUserResult, error) {
 	h.got = q
 	_, _ = q.ToCriteria(ctx)
-	return map[string]any{"id": q.PathID().String()}, nil
+	return testUserResult{ID: strPtr(q.PathID().String())}, nil
 }
 
 func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
@@ -307,7 +361,7 @@ func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?includeArchived=true", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -317,8 +371,8 @@ func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if !h.got.IncludeArchived {
-		t.Error("expected IncludeArchived=true to flow from ?includeArchived=true")
+	if !h.got.Criteria.IncludeArchived {
+		t.Error("expected Criteria.IncludeArchived=true to flow from ?includeArchived=true")
 	}
 	if h.got.PathID().Value() != "abc" {
 		t.Errorf("expected PathID()='abc', got %q", h.got.PathID().Value())
@@ -330,7 +384,7 @@ func TestHandleQueryByID_RejectsExtraParamWith400(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?role=admin", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -346,14 +400,14 @@ func TestHandleQueryByID_NoQueryStringDefaults(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if h.got == nil || h.got.IncludeArchived {
-		t.Errorf("expected IncludeArchived=false by default")
+	if h.got == nil || h.got.Criteria.IncludeArchived {
+		t.Errorf("expected Criteria.IncludeArchived=false by default")
 	}
 }
 
@@ -363,7 +417,7 @@ func TestHandleQueryByID_AppContextFlowsIntoToCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingIDHandler{}
 
-	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, responses.RawDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
 	req := httptest.NewRequest("GET", "/users/abc", nil)
 	req.Header.Set("Accept-Language", "fr")
@@ -376,22 +430,22 @@ func TestHandleQueryByID_AppContextFlowsIntoToCriteria(t *testing.T) {
 	}
 }
 
-// idDocHandler returns a fixed doc with the path id injected.
+// idDocHandler returns a fixed Result with the path id injected.
 type idDocHandler struct{}
 
-func (h *idDocHandler) Handle(_ *configuration.AppContext, q *testFindIDQuery) (map[string]any, error) {
-	return map[string]any{"id": q.PathID().String(), "name": "Carol", "email": "c@x.com"}, nil
+func (h *idDocHandler) Handle(_ *configuration.AppContext, q *testFindIDQuery) (testUserResult, error) {
+	return testUserResult{ID: strPtr(q.PathID().String()), Name: strPtr("Carol"), Email: strPtr("c@x.com")}, nil
 }
 
-// TestHandleQueryByID_CustomProjectorReshapesData proves the projector
+// TestHandleQueryByID_ResponseProjectionReshapesData proves the projection
 // applies on the by-id success path — the wire data carries the typed shape,
-// not the raw doc.
-func TestHandleQueryByID_CustomProjectorReshapesData(t *testing.T) {
+// not the Result's full field set.
+func TestHandleQueryByID_ResponseProjectionReshapesData(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &idDocHandler{}
 
-	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, summaryFromDoc, h))
+	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, testUserSummary{}.FromResult, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
 	body, _ := io.ReadAll(resp.Body)
@@ -407,19 +461,25 @@ func TestHandleQueryByID_CustomProjectorReshapesData(t *testing.T) {
 		t.Errorf("data mismatch: %v", data)
 	}
 	if _, leaked := data["email"]; leaked {
-		t.Errorf("projector should have stripped 'email' from wire shape, got: %v", data)
+		t.Errorf("response projection should have stripped 'email' from wire shape, got: %v", data)
 	}
 }
 
-// --- ParseCriteria / RespondSchemaViolation ---
+// --- NewQueryParser (manual-route parsing) / RespondSchemaViolation ---
+//
+// web.ParseCriteria was REMOVED — manual handlers construct a typed
+// QueryParser at mount time. The cases below keep the removed helper's
+// behavioral assertions alive on the replacement surface (a map Response
+// keeps the parser in pass-through mode, matching the old default).
 
-func TestParseCriteria_HappyPath(t *testing.T) {
+func TestQueryParser_Parse_HappyPath(t *testing.T) {
+	parser := NewQueryParser[testFindParamsRequest, map[string]any]()
 	app := fiber.New()
 	var got queries.ReadCriteria
-	var gotBad string
+	var gotViolation *queryschema.Violation
 	var gotOK bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		got, gotBad, gotOK = ParseCriteria(c, testFindParamsRequest{})
+		got, gotViolation, gotOK = parser.Parse(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -427,8 +487,8 @@ func TestParseCriteria_HappyPath(t *testing.T) {
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	if !gotOK || gotBad != "" {
-		t.Errorf("expected ok=true, badField empty; got ok=%v, badField=%q", gotOK, gotBad)
+	if !gotOK || gotViolation != nil {
+		t.Errorf("expected ok=true, no violation; got ok=%v, violation=%+v", gotOK, gotViolation)
 	}
 	if got.Filter["Name"] != "Jane" {
 		t.Errorf("expected filter name=Jane, got %v", got.Filter["Name"])
@@ -438,12 +498,13 @@ func TestParseCriteria_HappyPath(t *testing.T) {
 	}
 }
 
-func TestParseCriteria_UnknownKey(t *testing.T) {
+func TestQueryParser_Parse_UnknownKey(t *testing.T) {
+	parser := NewQueryParser[testFindParamsRequest, map[string]any]()
 	app := fiber.New()
-	var gotBad string
+	var gotViolation *queryschema.Violation
 	var gotOK bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		_, gotBad, gotOK = ParseCriteria(c, testFindParamsRequest{})
+		_, gotViolation, gotOK = parser.Parse(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -451,17 +512,18 @@ func TestParseCriteria_UnknownKey(t *testing.T) {
 	if gotOK {
 		t.Error("expected ok=false for unknown key")
 	}
-	if gotBad != "role" {
-		t.Errorf("expected badField=role, got %q", gotBad)
+	if gotViolation == nil || gotViolation.Field != "role" {
+		t.Errorf("expected badField=role, got %+v", gotViolation)
 	}
 }
 
-func TestParseCriteria_BadOperator(t *testing.T) {
+func TestQueryParser_Parse_BadOperator(t *testing.T) {
+	parser := NewQueryParser[testFindParamsRequest, map[string]any]()
 	app := fiber.New()
-	var gotBad string
+	var gotViolation *queryschema.Violation
 	var gotOK bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		_, gotBad, gotOK = ParseCriteria(c, testFindParamsRequest{})
+		_, gotViolation, gotOK = parser.Parse(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -470,8 +532,8 @@ func TestParseCriteria_BadOperator(t *testing.T) {
 	if gotOK {
 		t.Error("expected ok=false for disallowed operator")
 	}
-	if gotBad != "name.in" {
-		t.Errorf("expected badField=name.in, got %q", gotBad)
+	if gotViolation == nil || gotViolation.Field != "name.in" {
+		t.Errorf("expected badField=name.in, got %+v", gotViolation)
 	}
 }
 
@@ -515,7 +577,7 @@ func TestRespondSchemaViolation_EmitsCanonical400(t *testing.T) {
 // --- ProjectPage / RespondPaged ---
 
 func TestProjectPage_EmptyItems(t *testing.T) {
-	items, pag := ProjectPage(queries.Page{}, responses.RawDoc)
+	items, pag := ProjectPage(queries.PageOf[testUserResult]{}, rawItem)
 	if len(items) != 0 {
 		t.Errorf("expected empty items, got %d", len(items))
 	}
@@ -524,17 +586,17 @@ func TestProjectPage_EmptyItems(t *testing.T) {
 	}
 }
 
-func TestProjectPage_AppliesProjectorPerDoc(t *testing.T) {
-	page := queries.Page{
-		Items: []map[string]any{
-			{"id": "1", "name": "A"},
-			{"id": "2", "name": "B"},
+func TestProjectPage_AppliesProjectionPerItem(t *testing.T) {
+	page := queries.PageOf[testUserResult]{
+		Items: []testUserResult{
+			{ID: strPtr("1"), Name: strPtr("A")},
+			{ID: strPtr("2"), Name: strPtr("B")},
 		},
-		HasNextPage:    true,
-		EndCursor: "cur-xyz",
-		TotalCount:      2,
+		HasNextPage: true,
+		EndCursor:   "cur-xyz",
+		TotalCount:  2,
 	}
-	items, pag := ProjectPage(page, summaryFromDoc)
+	items, pag := ProjectPage(page, testUserSummary{}.FromResult)
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
@@ -549,12 +611,12 @@ func TestProjectPage_AppliesProjectorPerDoc(t *testing.T) {
 func TestRespondPaged_EmitsEnvelope(t *testing.T) {
 	app := fiber.New()
 	app.Get("/x", func(c fiber.Ctx) error {
-		page := queries.Page{
-			Items:   []map[string]any{{"id": "1", "name": "A"}},
+		page := queries.PageOf[testUserResult]{
+			Items:       []testUserResult{{ID: strPtr("1"), Name: strPtr("A")}},
 			HasNextPage: false,
-			TotalCount:   1,
+			TotalCount:  1,
 		}
-		return RespondPaged(c, fiber.StatusOK, page, summaryFromDoc)
+		return RespondPaged(c, fiber.StatusOK, page, testUserSummary{}.FromResult)
 	})
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/x", nil))
@@ -582,46 +644,19 @@ func TestRespondPaged_EmitsEnvelope(t *testing.T) {
 	}
 }
 
-// --- RawDoc identity projector ---
-
-func TestRawDoc_IsIdentity(t *testing.T) {
-	in := map[string]any{"id": "x", "n": 1}
-	out := responses.RawDoc(in)
-	// We don't assert pointer equality (Go maps are reference types — the same
-	// header is passed back); instead ensure no key was stripped or added.
-	if len(out) != 2 || out["id"] != "x" || out["n"] != 1 {
-		t.Errorf("expected identity output, got %v", out)
-	}
-}
-
-// docStringField is a tiny helper used by the projector test fixtures —
-// the consumer is expected to ship its own equivalent in web/responses/*.
-func docStringField(doc map[string]any, key string) string {
-	if v, ok := doc[key]; ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
 // ─── runtime ?orderBy= behavior ───────────────────────────────────────────────
 //
-// The reserved `sort` key is symmetric to `fields`: the Request DTO opts in
+// The reserved `orderBy` key is symmetric to `fields`: the Request DTO opts in
 // by declaring `Sort *string query:"orderBy"`; when the wrapper is paired with
 // a typed Response struct, each comma-separated token is validated against
 // the Response's declared wire paths and translated to the doc-side path.
-// Manual handlers via ParseCriteria (or wrappers paired with a RawDoc-style
-// projector) get pass-through behavior — the legacy contract before the
-// allowlist landed.
+// Wrappers paired with a map Response get pass-through behavior.
 
 func TestSortParam_UnknownTokenReturns400WithBracketedField(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -647,9 +682,7 @@ func TestSortParam_UnknownTokenWithMinusPrefixPreservesPrefixInError(t *testing.
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=-bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -672,9 +705,7 @@ func TestSortParam_KnownTokenTranslatesToDocPath(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=addresses.zipCode", nil))
 	if h.got == nil {
@@ -684,20 +715,18 @@ func TestSortParam_KnownTokenTranslatesToDocPath(t *testing.T) {
 		t.Fatalf("expected 1 OrderByField, got %d", len(h.got.Criteria.OrderBy))
 	}
 	if h.got.Criteria.OrderBy[0].Field != "Addresses.ZipCode" {
-		t.Errorf("expected Field=addresses.zip_code (PascalToSnake), got %q", h.got.Criteria.OrderBy[0].Field)
+		t.Errorf("expected Field=Addresses.ZipCode (Go field path), got %q", h.got.Criteria.OrderBy[0].Field)
 	}
 	if h.got.Criteria.OrderBy[0].Desc {
 		t.Errorf("expected Desc=false on bare token, got true")
 	}
 }
 
-func TestSortParam_NestedViewTagOverride(t *testing.T) {
+func TestSortParam_NestedTokenTranslatesToGoPath(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=addresses.state", nil))
 	if h.got == nil {
@@ -707,7 +736,7 @@ func TestSortParam_NestedViewTagOverride(t *testing.T) {
 		t.Fatalf("expected 1 OrderByField, got %d", len(h.got.Criteria.OrderBy))
 	}
 	if h.got.Criteria.OrderBy[0].Field != "Addresses.State" {
-		t.Errorf("expected Field=addresses.st (view: override), got %q", h.got.Criteria.OrderBy[0].Field)
+		t.Errorf("expected Field=Addresses.State, got %q", h.got.Criteria.OrderBy[0].Field)
 	}
 }
 
@@ -715,9 +744,7 @@ func TestSortParam_MinusPrefixSetsDesc(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=-name", nil))
 	if h.got == nil {
@@ -735,9 +762,7 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=name,-email", nil))
 	if h.got == nil {
@@ -747,32 +772,10 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 		t.Fatalf("expected 2 OrderByFields, got %d", len(h.got.Criteria.OrderBy))
 	}
 	if h.got.Criteria.OrderBy[0].Field != "Name" || h.got.Criteria.OrderBy[0].Desc {
-		t.Errorf("expected first OrderByField=name asc, got %+v", h.got.Criteria.OrderBy[0])
+		t.Errorf("expected first OrderByField=Name asc, got %+v", h.got.Criteria.OrderBy[0])
 	}
 	if h.got.Criteria.OrderBy[1].Field != "Email" || !h.got.Criteria.OrderBy[1].Desc {
-		t.Errorf("expected second OrderByField=email desc, got %+v", h.got.Criteria.OrderBy[1])
-	}
-}
-
-func TestSortParam_PassThroughModeOnParseCriteria(t *testing.T) {
-	// ParseCriteria passes nil projSchema → no allowlist, no translation,
-	// each token becomes a OrderByField verbatim (the manual handler knows the
-	// doc shape and assembled its own wire→doc mapping upstream).
-	app := fiber.New()
-	var got queries.ReadCriteria
-	app.Get("/x", func(c fiber.Ctx) error {
-		got, _, _ = ParseCriteria(c, testFindParamsRequest{})
-		return c.SendStatus(fiber.StatusOK)
-	})
-	_, _ = app.Test(httptest.NewRequest("GET", "/x?orderBy=-anything,foo.bar", nil))
-	if len(got.OrderBy) != 2 {
-		t.Fatalf("expected 2 OrderByFields in pass-through mode, got %d", len(got.OrderBy))
-	}
-	if got.OrderBy[0].Field != "anything" || !got.OrderBy[0].Desc {
-		t.Errorf("expected first OrderByField=anything desc (verbatim), got %+v", got.OrderBy[0])
-	}
-	if got.OrderBy[1].Field != "foo.bar" || got.OrderBy[1].Desc {
-		t.Errorf("expected second OrderByField=foo.bar asc (verbatim), got %+v", got.OrderBy[1])
+		t.Errorf("expected second OrderByField=Email desc, got %+v", h.got.Criteria.OrderBy[1])
 	}
 }
 
@@ -792,9 +795,7 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, sparseUser{}.FromResult, h))
 
 	// Allowlist must fire even though the DTO did not declare `Fields`.
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=bogus", nil))
@@ -802,12 +803,10 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 		t.Fatalf("expected 400 from sort allowlist (sort opt-in alone), got %d", resp.StatusCode)
 	}
 
-	// Valid token must translate via PascalToSnake.
+	// Valid token must translate to the Go field path.
 	h2 := &capturingParamsHandler{}
 	app2 := fiber.New()
-	app2.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h2))
+	app2.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, sparseUser{}.FromResult, h2))
 	_, _ = app2.Test(httptest.NewRequest("GET", "/users?orderBy=-addresses.zipCode", nil))
 	if h2.got == nil {
 		t.Fatal("expected handler called")
@@ -815,17 +814,17 @@ func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
 	if len(h2.got.Criteria.OrderBy) != 1 ||
 		h2.got.Criteria.OrderBy[0].Field != "Addresses.ZipCode" ||
 		!h2.got.Criteria.OrderBy[0].Desc {
-		t.Errorf("expected OrderByField=addresses.zip_code desc, got %+v", h2.got.Criteria.OrderBy)
+		t.Errorf("expected OrderByField=Addresses.ZipCode desc, got %+v", h2.got.Criteria.OrderBy)
 	}
 }
 
-func TestSortParam_RawDocResponseFallsBackToPassThrough(t *testing.T) {
-	// R = map[string]any (responses.RawDoc) → projSchema stays nil → tokens
-	// land verbatim with no allowlist enforcement (same fallback fields uses).
+func TestSortParam_MapResponseFallsBackToPassThrough(t *testing.T) {
+	// TResp = map[string]any → projSchema stays nil → tokens land verbatim
+	// with no allowlist enforcement (same fallback fields uses).
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=anything,-not_in_any_schema", nil))
 	if h.got == nil {

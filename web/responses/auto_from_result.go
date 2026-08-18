@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -9,51 +10,103 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// AutoFromDoc projects a view document into the typed wire shape R using R's
-// json tags. The MongoViewReader returns documents already keyed by Go field
-// name (it translated the physical columns via the view's TableSchema), so this
-// projector simply reads doc[<GoFieldName>] and writes it under the field's
-// json wire name — the canonical tag-driven projector for
-// QueryWith{Params,ID}:
+// AutoFromResult converts an application-layer Result into the typed wire
+// Response TResp — the generic TResult→TResp mapper behind every opted-in
+// Response's FromResult method. The Result is application-pure (no wire
+// tags), so matching is by Go field name: each Response field is filled from
+// the same-named Result field through the compiled per-pair copier,
+// recursing through nested structs, slices of structs and pointer fields;
+// the json tags then name the wire output when the Response serializes. The
+// canonical usage mirrors the command side:
 //
-//	users.Get("/:id", fwweb.QueryByID(d.Pipeline,
-//	    requests.FindUserByIDRequest{},
-//	    fwresponses.AutoFromDoc[requests.FindUserByIDResponse],
-//	    handler))
+//	func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUsersByParamsResponse {
+//	    return fwresponses.AutoFromResult[FindUsersByParamsResponse](r)
+//	}
+//
+// A Response that needs renaming or reshaping beyond the tags writes its
+// FromResult by hand instead — the constructors accept any func(TResult)
+// TResp. Read-side COMPUTATION does not belong here: derived fields,
+// ctx-aware shaping and error paths live in the Query's FromQueryResult hook in
+// the application layer, so every transport surface sees the same values.
 //
 // Tag semantics:
 //
 //	json:"<wire>"  declares the field's name on the outgoing JSON envelope.
 //	               Same meaning as encoding/json everywhere else. The source
-//	               key inside the (Go-keyed) document is the Go field name.
-//	               Recurses through nested structs, slices of structs, and
-//	               pointer-to-struct fields.
+//	               key is the field's Go name on the Result.
 //
 // Normalizations applied:
-//   - Top-level "ID" ← _id when "ID" is absent and "_id" is a string (covers
-//     schema-less / RawDoc paths).
-//   - Nil slice fields → empty typed slice at every level. Wire output
-//     carries "[]" rather than "null".
+//   - Nil slice fields → empty typed slice at every level (wire output
+//     carries "[]" rather than "null" on non-sparse shapes).
+//   - EnumValueObject fields carrying an out-of-set value converge to the
+//     Unknown sentinel (idempotent with the application-side fill).
 //
-// For wire shapes that need logic beyond tag-driven projection (derived
-// fields, conditional projection, ctx-aware shaping) the consumer declares
-// its own FromDoc method — the wrapper signature func(map[string]any) R
-// accepts either.
-func AutoFromDoc[R any](doc map[string]any) R {
-	var out R
+// The Result↔Response name alignment is boot-guarded by the constructors
+// (queryschema.ValidateResultAlignment), so a Response field with no Result
+// backing fails at mount, not silently at runtime.
+func AutoFromResult[TResp AutoMapper, TResult any](result TResult) TResp {
+	var out TResp
 	plan := planFor(reflect.TypeOf(out))
-	renamed := remapDoc(applyIDFallback(doc), plan)
-	if raw, err := json.Marshal(renamed); err == nil {
-		_ = json.Unmarshal(raw, &out)
+	srcV := reflect.ValueOf(result)
+	for srcV.Kind() == reflect.Pointer && !srcV.IsNil() {
+		srcV = srcV.Elem()
 	}
+	respType := reflect.TypeOf(out)
+	if !srcV.IsValid() || (srcV.Kind() == reflect.Pointer && srcV.IsNil()) {
+		// No Result to read (a nil pointer Result). There is nothing to copy
+		// and nothing wrong with the pair — answer the zero Response, with the
+		// normalizations below still applied so the wire shape stays regular.
+		normalizeSlices(reflect.ValueOf(&out).Elem(), plan)
+		convergeEnums(reflect.ValueOf(&out).Elem(), plan)
+		return out
+	}
+	cp := pairCopierFor(srcTypeOf(srcV), respType)
+	if cp == nil {
+		// The route constructors validate this very pair at Mount, so a
+		// service wired through them never reaches here. What does is an
+		// AutoFromResult call the framework never saw — a hand-rolled handler or a test —
+		// carrying a pair that cannot be copied. That is a declaration the
+		// type cannot honor (it embedded Auto), so it fails loudly with the
+		// diagnostic the boot guard would have printed, rather than quietly
+		// costing a serialization round trip on every request.
+		panic(formatRuntimeGuard(reflect.TypeOf(result), respType,
+			AutoFromResultReason(reflect.TypeOf(result), respType)))
+	}
+	cp(srcV, reflect.ValueOf(&out).Elem())
 	normalizeSlices(reflect.ValueOf(&out).Elem(), plan)
 	convergeEnums(reflect.ValueOf(&out).Elem(), plan)
 	return out
 }
 
+// srcTypeOf answers the concrete struct type behind a (deref'd) source value,
+// or nil when there is none.
+func srcTypeOf(v reflect.Value) reflect.Type {
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return nil
+	}
+	return v.Type()
+}
+
+// goDocOf renders a (tagless) Result value as its Go-field-keyed document
+// via a JSON round-trip. Numbers decode as json.Number so 64-bit integers
+// survive the trip without float64 truncation.
+func goDocOf(result any) map[string]any {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return nil
+	}
+	return doc
+}
+
 // convergeEnums walks v per plan and maps every EnumValueObject field whose
 // populated value is out of its declared member set to the Unknown sentinel —
-// the read-side twin of the entity reconstruction's converge (D3). Recurses into
+// the read-side twin of the entity reconstruction's converge. Recurses into
 // nested structs and slice-of-struct elements so an enum at any depth is covered.
 func convergeEnums(v reflect.Value, plan *typePlan) {
 	if plan == nil || !v.IsValid() {
@@ -124,34 +177,6 @@ func convergeEnumField(field reflect.Value) {
 	}
 }
 
-// applyIDFallback returns a doc with the Go ID field "ID" ← _id when "ID" is
-// absent and "_id" is a string. The reader maps the ID column to the Go field
-// "ID"; this covers schema-less / RawDoc paths where the doc carries only the
-// Mongo _id. Top-level only. Does not mutate the input; allocates a shallow
-// copy only when a rewrite is needed.
-func applyIDFallback(doc map[string]any) map[string]any {
-	if doc == nil {
-		return doc
-	}
-	if _, hasID := doc["ID"]; hasID {
-		return doc
-	}
-	v, ok := doc["_id"]
-	if !ok {
-		return doc
-	}
-	s, ok := v.(string)
-	if !ok {
-		return doc
-	}
-	patched := make(map[string]any, len(doc)+1)
-	for k, val := range doc {
-		patched[k] = val
-	}
-	patched["ID"] = s
-	return patched
-}
-
 // fieldKind classifies a destination field for the walker so remap and
 // normalizeSlices can branch without re-running reflection.
 type fieldKind int
@@ -175,13 +200,13 @@ type fieldEntry struct {
 	// enumType is non-nil when the field is an EnumValueObject (deref'd of any
 	// pointer). After the JSON round-trip populates the field, convergeEnums maps
 	// an out-of-set value to the Unknown sentinel — parity with the write-side
-	// entity reconstruction (D3), so a document carrying a stale/tampered enum
+	// entity reconstruction, so a document carrying a stale/tampered enum
 	// value never surfaces as a phantom member on the wire.
 	enumType reflect.Type
 }
 
-// typePlan is the cached projection plan for one R type. Built once per
-// reflect.Type via planFor; consulted on every call to AutoFromDoc.
+// typePlan is the cached projection plan for one TResp type. Built once per
+// reflect.Type via planFor; consulted on every AutoFromResult call.
 type typePlan struct {
 	fields []fieldEntry
 }
@@ -190,7 +215,14 @@ var planCache sync.Map // map[reflect.Type]*typePlan
 
 // planFor returns (and memoizes) the projection plan for t. Pointer types
 // are dereferenced; non-struct types yield nil (the helper degrades to a
-// no-op renaming step, leaving encoding/json to do whatever it can).
+// no-op normalization step).
+//
+// The plan graph is built OFF-CACHE and published only once complete — a
+// half-built plan visible to a concurrent reader is a data race on the
+// fields slice. `building` is this goroutine's private in-progress set; it
+// breaks self-referential cycles, and the pointer it hands back on a cycle
+// is complete before anything can read it, because nothing is published
+// until the top-level build returns.
 func planFor(t reflect.Type) *typePlan {
 	if t == nil {
 		return nil
@@ -204,18 +236,34 @@ func planFor(t reflect.Type) *typePlan {
 	if v, ok := planCache.Load(t); ok {
 		return v.(*typePlan)
 	}
+	building := map[reflect.Type]*typePlan{}
+	plan := planOf(t, building)
+	for bt, bp := range building {
+		planCache.LoadOrStore(bt, bp)
+	}
+	return plan
+}
+
+// planOf answers the plan for one struct type DURING a build: the published
+// one when it exists, the in-progress one on a cycle, a freshly built one
+// (recorded in building, never in the cache) otherwise.
+func planOf(t reflect.Type, building map[reflect.Type]*typePlan) *typePlan {
+	if v, ok := planCache.Load(t); ok {
+		return v.(*typePlan)
+	}
+	if p, ok := building[t]; ok {
+		return p
+	}
 	plan := &typePlan{}
-	// Store BEFORE recursing so self-referential types terminate (the in-
-	// progress plan is consulted by nested calls and filled in afterwards).
-	planCache.Store(t, plan)
-	buildPlan(plan, t, nil)
+	building[t] = plan
+	buildPlan(plan, t, nil, building)
 	return plan
 }
 
 // buildPlan walks t's fields and accumulates entries into plan. basePath
 // carries the field index path used for FieldByIndex when t is an embedded
 // (anonymous) struct being promoted from an enclosing type.
-func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
+func buildPlan(plan *typePlan, t reflect.Type, basePath []int, building map[reflect.Type]*typePlan) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		path := append(append([]int{}, basePath...), i)
@@ -230,7 +278,7 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				buildPlan(plan, ft, path)
+				buildPlan(plan, ft, path, building)
 				continue
 			}
 		}
@@ -242,9 +290,9 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 		if skip {
 			continue
 		}
-		// The reader returns documents keyed by Go field name (it translated
-		// the physical columns via the view's TableSchema). So the source key
-		// is the Go field name; the json tag names the wire output.
+		// The Result's JSON form is keyed by Go field name (Results carry no
+		// wire tags). So the source key is the Go field name; the json tag
+		// names the wire output.
 		sourceKey := f.Name
 
 		entry := fieldEntry{
@@ -264,7 +312,7 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 		switch ft.Kind() {
 		case reflect.Struct:
 			entry.kind = fkStruct
-			entry.nested = planFor(ft)
+			entry.nested = planOf(ft, building)
 		case reflect.Slice:
 			elem := ft.Elem()
 			for elem.Kind() == reflect.Pointer {
@@ -272,7 +320,7 @@ func buildPlan(plan *typePlan, t reflect.Type, basePath []int) {
 			}
 			if elem.Kind() == reflect.Struct {
 				entry.kind = fkSliceOfStruct
-				entry.nested = planFor(elem)
+				entry.nested = planOf(elem, building)
 			} else {
 				entry.kind = fkSlice
 			}
@@ -302,7 +350,7 @@ func wireName(f reflect.StructField) (string, bool) {
 
 // remapDoc produces a new doc where each entry's key is the wire name and
 // each value has been recursively remapped according to plan. Entries that
-// the plan does not declare are dropped (they would not land in R anyway).
+// the plan does not declare are dropped (they would not land in TResp anyway).
 // Returns the input unchanged when plan is nil — the helper falls back to a
 // plain JSON round-trip in that case.
 func remapDoc(doc map[string]any, plan *typePlan) map[string]any {
@@ -344,12 +392,9 @@ func remapValue(v any, f fieldEntry) any {
 	return v
 }
 
-// asMap normalizes any "string-keyed map-like" value — plain map[string]any
-// as well as the mongo-driver's bson.M (a named type sharing the same
-// underlying shape but distinct under a type assertion) — into the uniform
-// map[string]any the recursion expects. Reflection avoids importing bson in
-// the web layer; reflect.Kind sees through any named map type and is
-// type-system honest.
+// asMap normalizes any "string-keyed map-like" value into the uniform
+// map[string]any the recursion expects. Reflection sees through named map
+// types and is type-system honest.
 func asMap(v any) (map[string]any, bool) {
 	if m, ok := v.(map[string]any); ok {
 		return m, true
@@ -370,10 +415,9 @@ func asMap(v any) (map[string]any, bool) {
 }
 
 // asSliceOfMaps normalizes any slice-like value carrying map-like elements
-// into the uniform []map[string]any shape. Covers the mongo-driver's bson.A
-// (a named []any) plus plain []any and []map[string]any. Returns (_, false)
-// when the value is not a slice of documents (e.g. []string), letting the
-// caller fall through and copy the value verbatim.
+// into the uniform []map[string]any shape. Returns (_, false) when the value
+// is not a slice of documents (e.g. []string), letting the caller fall
+// through and copy the value verbatim.
 func asSliceOfMaps(v any) ([]map[string]any, bool) {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Slice {

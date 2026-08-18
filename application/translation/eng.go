@@ -11,9 +11,10 @@ func (coreENG) Language() configuration.Language { return configuration.LangENG 
 func (coreENG) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":   "Required field.",
-		"SchemaViolationNotification": "Request body content does not match the expected schema.",
-		"LimitExceededNotification":   "Requested limit exceeds the maximum allowed.",
+		"RequiredFieldNotification":            "Required field.",
+		"SchemaViolationNotification":          "Request body content does not match the expected schema.",
+		"LimitExceededNotification":            "Requested limit exceeds the maximum allowed.",
+		"ComputedFieldNotSortableNotification": "Computed fields cannot be used for ordering.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Cannot insert a record with an existing primary key.",
@@ -88,6 +89,22 @@ func (coreENG) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route not found.",
 		"MethodNotAllowedNotification":    "HTTP method not allowed for this route.",
 		"PayloadTooLargeNotification":     "Request payload exceeds the allowed size.",
+
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Authorization",
+		"Pipeline":      "Pipeline",
+		"Request":       "Request",
+		"Route":         "Route",
+		"Schema":        "Schema",
+		"Server":        "Server",
 
 		// Language descriptions
 		"Language.UNKNOWN": "Unknown",

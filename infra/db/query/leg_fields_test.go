@@ -270,32 +270,6 @@ func TestStripArchivedChildren_CappedSegmentNeverStripped(t *testing.T) {
 	}
 }
 
-// ─── export ──────────────────────────────────────────────────────────────────
-
-func TestExportPlan_FieldsRestrictBranch(t *testing.T) {
-	src := fieldsSourceView()
-	v := fieldsEmbedder(JoinView(src, "Src", "src").Fields("Name"))
-	plan := v.ExportPlan()
-	var branch bool
-	for _, ch := range plan.Root.Children {
-		if ch.GoSegment != "Src" {
-			continue
-		}
-		branch = true
-		for _, c := range ch.Columns {
-			if c.GoField != "Name" {
-				t.Errorf("capped column %q must not be advertised by the export", c.GoField)
-			}
-		}
-		if len(ch.Children) != 0 {
-			t.Errorf("unlisted segments must be cut from the export branch, got %v", ch.Children)
-		}
-	}
-	if !branch {
-		t.Fatalf("embed branch missing from export plan")
-	}
-}
-
 func TestChildEmbedTrimSet_AndDocsTrim(t *testing.T) {
 	src := fieldsSourceView()
 	ce := childEmbedDef{childSchema: fieldsSrcNoteSchema(), leg: JoinView(src, "Src", "src").Fields("Name"), joinCol: "src_id"}

@@ -182,4 +182,3 @@ func TestErrorHandler_CarrierEscapes_RespondCarrier(t *testing.T) {
 		t.Fatalf("expected RecordNotFoundNotification envelope, got %+v", body)
 	}
 }
-

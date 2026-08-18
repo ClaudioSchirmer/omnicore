@@ -11,9 +11,10 @@ func (coreFR) Language() configuration.Language { return configuration.LangFR }
 func (coreFR) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":   "Champ obligatoire.",
-		"SchemaViolationNotification": "Le contenu du corps de la requête ne correspond pas au schéma attendu.",
-		"LimitExceededNotification":   "La limite demandée dépasse le maximum autorisé.",
+		"RequiredFieldNotification":            "Champ obligatoire.",
+		"SchemaViolationNotification":          "Le contenu du corps de la requête ne correspond pas au schéma attendu.",
+		"LimitExceededNotification":            "La limite demandée dépasse le maximum autorisé.",
+		"ComputedFieldNotSortableNotification": "Les champs calculés ne peuvent pas être utilisés pour le tri.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossible d'insérer un enregistrement avec une clé primaire existante.",
@@ -88,6 +89,22 @@ func (coreFR) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route introuvable.",
 		"MethodNotAllowedNotification":    "Méthode HTTP non autorisée pour cette route.",
 		"PayloadTooLargeNotification":     "La charge utile de la requête dépasse la taille autorisée.",
+
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Autorisation",
+		"Pipeline":      "Pipeline",
+		"Request":       "Requête",
+		"Route":         "Route",
+		"Schema":        "Schéma",
+		"Server":        "Serveur",
 
 		// Language descriptions
 		"Language.UNKNOWN": "Inconnu",

@@ -225,8 +225,8 @@ base := write.BaseRepository[*User]{
     <p>
         Almost every aggregate-aware Repository has the same shape: <code>BaseRepository[T]</code> (writes) +
         <code>*AggregateLoader[T]</code> (FindByID/FindArchivedByID). <code>read.BaseAggregateRepository[T]</code>
-        bundles both and promotes the trivial wrappers — the service no longer declares
-        <code>FindByID</code> and <code>FindArchivedByID</code> manually. The common case fits in 8–10 lines.
+        bundles both and promotes <code>FindByID</code> / <code>FindArchivedByID</code>, so a repository
+        that embeds it declares neither. The common case fits in 8–10 lines.
     </p>
     <pre><code>type UserRepository struct {
     read.BaseAggregateRepository[*User]
@@ -377,8 +377,8 @@ distinctCategories := len(groups)              // itself a business fact</code><
         threshold checks ("no category may exceed N") are an <code>if</code> inside the loop — the grouped
         SELECT already reduced the data to one row per group, so there is no HAVING escape hatch to learn.
         Typical rules this unlocks: per-key caps ("at most N active X per category"), distinct-key limits
-        ("no more than K categories"), and balance/skew checks across groups — each previously a
-        fetch-and-bucket anti-pattern.
+        ("no more than K categories"), and balance/skew checks across groups — each answered by one
+        grouped SELECT, without loading the rows to bucket them in Go.
     </p>
 
     <h4 id="criteria-engine">Loading by criteria — <code>FindOne</code> / <code>FindAll</code></h4>
@@ -546,8 +546,8 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
     </p>
     <pre><code>// Manual mode selects the schema's columns (never SELECT *) and hands you a
 // column-keyed map — read BY NAME, order-independent and stable across an online
-// ADD COLUMN. Populate the id and SetID (the framework no longer injects it on
-// the criteria path), then decode the rest however you like.
+// ADD COLUMN. Populate the id and SetID — the criteria path carries no input id,
+// so the scanner owns it — then decode the rest however you like.
 r.loader = read.NewAggregateLoader[*User](eng, factory).
     WithRootScanner(func(m map[string]any) (*User, error) {
         u := &amp;User{}

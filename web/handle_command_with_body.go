@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -70,6 +71,8 @@ func CommandWithBody[
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	pathSchema := inspectPathTags(reqType)
 	strict, expectedKeys := inspectHandler[TReq](h)
+	validateResponseMapping(reflect.TypeOf((*TResult)(nil)).Elem(), reflect.TypeOf((*TResp)(nil)).Elem())
+	validateRequestMapping(reqType, reflect.TypeOf((*TCmdPtr)(nil)).Elem())
 	warnGroupAMissingPathTag(h, "CommandWithBody", reqType, pathSchema)
 	return func(c fiber.Ctx) error {
 		body := c.Body()
@@ -139,6 +142,8 @@ func CommandWithBodyID[
 		panic(formatPathIDConflict("CommandWithBodyID", reqType))
 	}
 	strict, expectedKeys := inspectHandler[TReq](h)
+	validateResponseMapping(reflect.TypeOf((*TResult)(nil)).Elem(), reflect.TypeOf((*TResp)(nil)).Elem())
+	validateRequestMapping(reqType, reflect.TypeOf((*TCmdPtr)(nil)).Elem())
 	return func(c fiber.Ctx) error {
 		body := c.Body()
 
@@ -242,11 +247,21 @@ func respondMissingFieldsAsSchema[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline
 // the JSON path of the error (e.g. "addresses[0].zipCode" in case of type
 // mismatch) or "" when the entire body is malformed. Always 400.
 func respondSchemaViolation[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, field string) error {
+	return respondViolation[TRes](c, pipe, queryschema.SchemaViolation(field))
+}
+
+// respondViolation emits the canonical 400 envelope for a TYPED read-control
+// rejection: the violation carries both the wire spelling of the offending
+// field and the notification explaining it, so a refusal the framework can
+// name (ordering by a computed field, say) reaches the consumer as its own
+// translated message instead of a generic schema error. A nil violation
+// degrades to the bare SchemaViolationNotification with no field.
+func respondViolation[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, v *queryschema.Violation) error {
+	if v == nil {
+		v = queryschema.SchemaViolation("")
+	}
 	ctx := domain.NewNotificationContext("Schema")
-	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    field,
-		Notification: domain.SchemaViolationNotification{},
-	})
+	ctx.AddNotificationMessage(v.Message())
 	err := domain.NewDomainError([]*domain.NotificationContext{ctx})
 	result := pipeline.Run(pipe, AppContext(c), func() (TRes, error) {
 		var zero TRes

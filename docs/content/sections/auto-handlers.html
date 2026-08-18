@@ -317,6 +317,64 @@ users.Post("/", fwweb.CommandWithBody(d.Pipeline,
         Repo: repo,
     },
     fiber.StatusCreated))</code></pre>
+
+    <h3 id="cmd-auto"><code>fwrequests.Auto</code> — letting the framework build the Command</h3>
+    <p>
+        <code>ToCommand</code> is hand-written by default, like every other mapping seat in this
+        framework. When the Request and the Command line up field for field, the mapping is mechanical
+        and <code>fwrequests.AutoFromRequest</code> writes it for you — but only if the Request ASKS,
+        by embedding <code>fwrequests.Auto</code>:
+    </p>
+    <pre><code>type InsertUserRequest struct {
+    fwrequests.Auto                        // opt-in: the framework builds the Command
+
+    Name  string  `json:"name"`
+    Phone *string `json:"phone,omitempty"`
+}
+
+func (r InsertUserRequest) ToCommand() *commands.InsertUserCommand {
+    return fwrequests.AutoFromRequest[*commands.InsertUserCommand](r)
+}</code></pre>
+    <ul>
+        <li><strong>Without the marker <code>AutoFromRequest</code> does not COMPILE</strong> — the
+            generic constraint rejects the type, and the marker's method is sealed (granted only by the
+            embed), so the opt-in can be neither skipped nor forged.</li>
+        <li><strong>With it, the pair is validated at Mount (boot)</strong> by
+            <code>CommandWithBody</code> / <code>CommandWithBodyID</code>: every Request field must have
+            a same-named Command field it can be assigned to. A violation is a boot panic naming the
+            field — never a value the client sent that quietly goes nowhere.</li>
+        <li><strong>A call site the constructors do not cover</strong> — a hand-written handler that
+            builds the Command itself, the gRPC surface, any surface added later — has no Mount seat,
+            so the same contract is enforced on FIRST USE and the recovered panic surfaces as a 500.
+            The panic text explains that timing, and carries the same diagnosis and the same ways out.
+            See <a href="#auto-query-handlers~qry-auto-when-checked">Where the check happens</a>.</li>
+    </ul>
+    <p>
+        The contract is the SAME one the read side applies to
+        <a href="#auto-query-handlers~qry-mapping-fallback"><code>fwresponses.Auto</code></a>, and it
+        reads best by layer:
+    </p>
+    <div class="note">
+        <strong>A type in <code>web/</code> (Request, Response) must be fully connected. A type in
+        <code>application/</code> (Command, Result) may carry more.</strong>
+    </div>
+    <p>
+        So a Command is free to hold what the wire never sends — the path id it receives through
+        <code>SetPathID</code>, an identity-derived field, a default the handler fills — while a Request
+        field with no Command slot is refused, because the client would be sending a value into
+        nothing. The supported field shapes (identical types, pointer wrapping, same-family numeric
+        widening, <code>domain.ID</code> ↔ <code>string</code>, structs and slices recursively) are
+        listed under <a href="#auto-query-handlers~qry-auto-shapes">What travels</a>.
+    </p>
+    <p>
+        <strong>A Request WITHOUT the marker is untouched</strong>: no guard, no generic builder,
+        <code>ToCommand</code> written by hand — which is exactly what a rename or a reshape needs. Both
+        shapes occur in the reference service: one surface sends the address flat on the wire and folds
+        it into a nested <code>Address</code> value on the Command; another names a field
+        <code>document</code> on the wire and <code>DocumentKey</code> on the Command. Neither can be
+        automatic, and neither should be.
+    </p>
+
     <p>
         <strong>Request ≡ Command shape ruler</strong>: required field → <code>string</code> on both
         (absence in JSON triggers 400 before dispatch); optional field → <code>*string</code> on both

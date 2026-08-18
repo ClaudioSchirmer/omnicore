@@ -15,6 +15,10 @@ import (
 // deleted_at gate; the pagination knobs on the same DTO are ignored by
 // design (they only make sense on a paged read).
 //
+// On a hit, the document is filled into a TResult (ResultFromDoc) and
+// passed through the Query's FromQueryResult hook — the handler returns the
+// typed value, never the raw document.
+//
 // Returns a *DomainError carrying RecordNotFoundNotification when the
 // ViewReader reports the document does not exist — that becomes a 404 at
 // the wire via the kernel's SemanticNotFound mapping. An overlay filter
@@ -28,37 +32,39 @@ import (
 //
 //	users.Get("/:id", fwweb.QueryByID(d.Pipeline,
 //	    requests.FindUserByIDRequest{},
-//	    requests.FindUserByIDResponse{}.FromDoc,
-//	    &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery]{
+//	    requests.FindUserByIDResponse{}.FromResult,
+//	    &handlers.FindByIDQueryHandler[*queries.FindUserByIDQuery, appqueries.FindUserResult]{
 //	        Reader: d.ViewReader, View: view.Name(),
 //	    }))
 //
-// The projector (third arg) is mandatory — pass fwresponses.RawDoc to keep
-// the raw view doc shape on the wire, or a consumer-defined R{}.FromDoc to
-// declare a typed wire contract.
-type FindByIDQueryHandler[Q queries.QueryByID] struct {
+// The response projection (third constructor arg) is the web-side
+// TResult→TResp mapping — typically the Response's FromResult method,
+// mirroring the command wrappers' responseProjection seat.
+type FindByIDQueryHandler[TQ queries.QueryByID[TResult], TResult any] struct {
 	pipeline.PathIDRequired
 	Reader queries.ViewReader
 	View   string
 }
 
-func (h *FindByIDQueryHandler[Q]) Handle(ctx *configuration.AppContext, q Q) (map[string]any, error) {
+func (h *FindByIDQueryHandler[TQ, TResult]) Handle(ctx *configuration.AppContext, q TQ) (TResult, error) {
+	var zero TResult
 	RequirePathID(q.PathID().Value(), "FindByIDQueryHandler")
 	id := q.PathID().String()
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	doc, found, err := h.Reader.ReadByID(ctx, h.View, id, crit)
 	if err != nil {
-		return nil, err
+		return zero, err
 	}
 	if !found {
 		ctxName := q.ContextName()
 		if ctxName == "" {
 			ctxName = h.View
 		}
-		return nil, domain.NotFoundError(ctxName, "id", id)
+		return zero, domain.NotFoundError(ctxName, "id", id)
 	}
-	return doc, nil
+	r := queries.ResultFromDoc[TResult](doc)
+	return q.FromQueryResult(ctx, r)
 }

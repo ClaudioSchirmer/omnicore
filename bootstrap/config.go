@@ -7,7 +7,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/audit"
 	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
@@ -124,6 +123,14 @@ type Config struct {
 		// 0 → no read timeout (the default).
 		ReadTimeoutSeconds *int `yaml:"readTimeoutSeconds"`
 
+		// AccessLog toggles the inbound request log — one structured record
+		// per served request (web.AccessLog), emitted through the service
+		// logger so it carries threadId and, with tracing on, traceId/spanId.
+		// nil (unset) → enabled, the framework default; false silences it for
+		// a service whose access logging is done at the ingress/mesh and
+		// would otherwise be paid for twice.
+		AccessLog *bool `yaml:"accessLog"`
+
 		// IdleTimeoutSeconds bounds how long an idle keep-alive connection is held
 		// open awaiting the next request. Also transport-level, but unlike the read
 		// timeout it produces NO response: fasthttp silently closes the idle
@@ -203,12 +210,15 @@ type Config struct {
 	Auth AuthConfig `yaml:"auth"`
 
 	// Audit selects where the framework routes the AuditEvent produced by
-	// every successful write. Defaults to both destinations (slog echo +
-	// audit_events row in the same TX as the data row); operators can flip
-	// to one or the other, or set destinations: [] to turn audit off. The
-	// concrete type lives in infra/audit so the relational persister can read
-	// it without crossing the dependency boundary back to bootstrap.
-	Audit audit.Config `yaml:"audit"`
+	// every successful write, and — optionally — which read surfaces the
+	// framework serves over the audit trail. Destinations default to both
+	// (slog echo + audit_events row in the same TX as the data row);
+	// operators can flip to one or the other, or set destinations: [] to turn
+	// audit off. The write half's concrete type lives in infra/audit so the
+	// relational persister can read it without crossing the dependency
+	// boundary back to bootstrap; the read half (audit.endpoint) is typed
+	// here, where transport vocabulary belongs. See AuditConfig.
+	Audit AuditConfig `yaml:"audit"`
 
 	// Observability carries the cross-cutting telemetry block. Currently the
 	// opt-in distributed-tracing sub-block (observability.tracing); default off,
@@ -1013,6 +1023,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 	if err := c.GraphQL.validate(); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
+	}
+	// Cross-block: the audit read surface is validated against the OTHER
+	// self-mounted surfaces and against the authorization posture, which
+	// AuditConfig.Validate cannot see from inside its own block.
+	if err := c.validateAuditEndpointWiring(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 	if err := c.GRPC.validate(); err != nil {

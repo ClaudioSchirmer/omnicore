@@ -91,8 +91,9 @@ func (f grpcFeature) MountGRPC(reg *fwgrpc.Registry, _ Deps) {
 	}
 }
 
-// gqlFieldReq/Query/Resp/Handler are the minimal DTOs a real GraphQL query
-// field needs, used to register a NAMED field on the registry so a cross-feature
+// gqlFieldReq/Query/Result/Resp/Handler are the minimal read-fixture set a
+// real GraphQL query field needs (Request + Query + application Result +
+// Response), used to register a NAMED field on the registry so a cross-feature
 // name collision can be exercised end to end (Fix #5).
 type gqlFieldReq struct {
 	Name *string `query:"name" filter:"eq"`
@@ -111,21 +112,32 @@ func (q *gqlFieldQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCri
 	return q.crit, nil
 }
 
+func (q *gqlFieldQuery) FromQueryResult(_ *configuration.AppContext, r gqlFieldResult) (gqlFieldResult, error) {
+	return r, nil
+}
+
+// gqlFieldResult is the application-layer Result: pure data, NO wire tags.
+type gqlFieldResult struct {
+	ID string
+}
+
 type gqlFieldResp struct {
 	ID string `json:"id"`
 }
 
+func (gqlFieldResp) FromResult(r gqlFieldResult) gqlFieldResp { return gqlFieldResp{ID: r.ID} }
+
 type gqlFieldHandler struct{}
 
-func (gqlFieldHandler) Handle(_ *configuration.AppContext, _ *gqlFieldQuery) (queries.Page, error) {
-	return queries.Page{}, nil
+func (gqlFieldHandler) Handle(_ *configuration.AppContext, _ *gqlFieldQuery) (queries.PageOf[gqlFieldResult], error) {
+	return queries.PageOf[gqlFieldResult]{}, nil
 }
 
 // gqlFieldFeature is a GraphQLFeature that registers ONE query field of the given
 // name — two of them with the same name collide in the schema.
 func gqlFieldFeature(name string) graphQLFeature {
 	return graphQLFeature{register: func(r *graphql.Registry) {
-		r.Register(graphql.QueryWithParams[gqlFieldReq, gqlFieldResp](name, "GqlField", gqlFieldHandler{}))
+		r.Register(graphql.QueryWithParams[gqlFieldReq](name, "GqlField", gqlFieldResp{}.FromResult, gqlFieldHandler{}))
 	}}
 }
 

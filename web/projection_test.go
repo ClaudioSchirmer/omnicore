@@ -8,12 +8,16 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
 // Response fixtures for the runtime ?fields= behavior. The reflection of these
 // shapes (projection paths, sparse-render guard) is unit-tested in
-// web/queryschema; here they drive the end-to-end wrapper behavior.
+// web/queryschema; here they drive the end-to-end wrapper behavior. Each one
+// is backed field-for-field by the canonical Result fixtures
+// (testUserResult / testAddressResult) the Result↔Response alignment guard
+// now enforces at mount time.
 
 type sparseAddress struct {
 	ID      *string `json:"id,omitempty"`
@@ -23,6 +27,7 @@ type sparseAddress struct {
 }
 
 type sparseUser struct {
+	responses.Auto
 	ID        *string         `json:"id,omitempty"`
 	Name      *string         `json:"name,omitempty"`
 	Email     *string         `json:"email,omitempty"`
@@ -30,8 +35,21 @@ type sparseUser struct {
 	Addresses []sparseAddress `json:"addresses,omitempty"`
 }
 
+// FromResult is the canonical consumer projector: the generic name-based
+// Result→Response mapper.
+func (sparseUser) FromResult(r testUserResult) sparseUser {
+	return responses.AutoFromResult[sparseUser](r)
+}
+
 type guardNonPointerScalar struct {
+	responses.Auto
 	Name string `json:"name,omitempty"`
+}
+
+// FromResult exists only so the boot-guard fixture can be mounted the same
+// way a real Response is — the guard panics before it is ever invoked.
+func (guardNonPointerScalar) FromResult(r testUserResult) guardNonPointerScalar {
+	return responses.AutoFromResult[guardNonPointerScalar](r)
 }
 
 // ─── QueryWithParams boot guard integration ──────────────────────────
@@ -50,9 +68,7 @@ func TestHandleQueryWithParams_BootPanicsOnBadResponse(t *testing.T) {
 		}
 	}()
 	app := fiber.New()
-	app.Get("/x", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) guardNonPointerScalar {
-		return guardNonPointerScalar{}
-	}, h))
+	app.Get("/x", QueryWithParams(pipe, testFindParamsRequest{}, guardNonPointerScalar{}.FromResult, h))
 }
 
 // ─── runtime ?fields= behavior ─────────────────────────────────────────────
@@ -61,9 +77,7 @@ func TestFieldsParam_UnknownTokenReturns400WithBracketedField(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?fields=name,bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -86,9 +100,7 @@ func TestFieldsParam_ProjectionIncludesAutoIDExclusionWhenIDNotRequested(t *test
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=name,email", nil))
 	got := h.got.Criteria.Projection
@@ -107,9 +119,7 @@ func TestFieldsParam_ProjectionOmitsIDExclusionWhenIDRequested(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=id,name", nil))
 	got := h.got.Criteria.Projection
@@ -128,9 +138,7 @@ func TestFieldsParam_NestedPathTranslatesViaAutoSnake(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses.zipCode", nil))
 	got := h.got.Criteria.Projection
@@ -146,9 +154,7 @@ func TestFieldsParam_NestedPathHonorsViewOverride(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses.state", nil))
 	got := h.got.Criteria.Projection
@@ -161,9 +167,7 @@ func TestFieldsParam_WholeAggregateProjectsSubtree(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, func(_ map[string]any) sparseUser {
-		return sparseUser{}
-	}, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, sparseUser{}.FromResult, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses", nil))
 	got := h.got.Criteria.Projection
@@ -175,13 +179,16 @@ func TestFieldsParam_WholeAggregateProjectsSubtree(t *testing.T) {
 	}
 }
 
-func TestFieldsParam_PassThroughModeOnParseCriteria(t *testing.T) {
-	// ParseCriteria passes nil projSchema → no allowlist, no translation,
-	// each token becomes an inclusion entry verbatim.
+func TestFieldsParam_PassThroughModeOnQueryParser(t *testing.T) {
+	// A map Response keeps the manual parser in pass-through mode (no
+	// projection schema is built) → no allowlist, no translation, each token
+	// becomes an inclusion entry verbatim. This is the surface that replaced
+	// the removed web.ParseCriteria helper.
+	parser := NewQueryParser[testFindParamsRequest, map[string]any]()
 	app := fiber.New()
 	var got queries.ReadCriteria
 	app.Get("/x", func(c fiber.Ctx) error {
-		got, _, _ = ParseCriteria(c, testFindParamsRequest{})
+		got, _, _ = parser.Parse(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
 	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar", nil))

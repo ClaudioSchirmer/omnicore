@@ -11,9 +11,10 @@ func (coreDE) Language() configuration.Language { return configuration.LangDE }
 func (coreDE) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":   "Pflichtfeld.",
-		"SchemaViolationNotification": "Der Inhalt des Anfragerumpfs entspricht nicht dem erwarteten Schema.",
-		"LimitExceededNotification":   "Das angeforderte Limit überschreitet das zulässige Maximum.",
+		"RequiredFieldNotification":            "Pflichtfeld.",
+		"SchemaViolationNotification":          "Der Inhalt des Anfragerumpfs entspricht nicht dem erwarteten Schema.",
+		"LimitExceededNotification":            "Das angeforderte Limit überschreitet das zulässige Maximum.",
+		"ComputedFieldNotSortableNotification": "Berechnete Felder können nicht zur Sortierung verwendet werden.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Ein Datensatz mit bereits vorhandenem Primärschlüssel kann nicht eingefügt werden.",
@@ -88,6 +89,22 @@ func (coreDE) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route nicht gefunden.",
 		"MethodNotAllowedNotification":    "HTTP-Methode für diese Route nicht erlaubt.",
 		"PayloadTooLargeNotification":     "Anfragerumpf überschreitet die zulässige Größe.",
+
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Autorisierung",
+		"Pipeline":      "Pipeline",
+		"Request":       "Anfrage",
+		"Route":         "Route",
+		"Schema":        "Schema",
+		"Server":        "Server",
 
 		// Language descriptions
 		"Language.UNKNOWN": "Unbekannt",

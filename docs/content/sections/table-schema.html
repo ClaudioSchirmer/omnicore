@@ -17,7 +17,7 @@
     everywhere automatically — write, criteria, scan, and the Mongo view all move together.
 </p>
 
-<h3>Why it exists — and why it is mandatory</h3>
+<h3 id="why-it-exists-and-why-it-is-mandatory">Why it exists — and why it is mandatory</h3>
 <p>
     The schema is declared <strong>by hand, and is required</strong>. That is a deliberate design stance, not an
     oversight — it buys three things a convention-based scheme cannot, and unlocks a fourth capability convention could
@@ -179,10 +179,12 @@
     <code>Revision</code> (the only declaration that <em>changes</em> name, to the reserved <code>_revision</code>).
 </p>
 <div class="box warn">
-    <strong>The trap this table exists to kill — the Response DTO's field NAME is the lookup key; the
-    <code>json:</code> tag is not.</strong> <code>AutoFromDoc</code> fills a Response by reading
+    <strong>The trap this table exists to kill — the Result's field NAME is the lookup key; the
+    Response's <code>json:</code> tag is not.</strong> <code>queries.ResultFromDoc</code> fills a Result by reading
     <code>doc[&lt;GoFieldName&gt;]</code> from the Go-keyed document, so a field named after the physical column
-    reads nothing — and stays zero <em>silently</em> (projection is by name; absence is legal):
+    reads nothing — and stays zero <em>silently</em> (the fill is by name; absence is legal). The
+    Response is free to call it whatever the wire wants, as long as its field name matches the
+    Result's (that pairing IS boot-guarded):
 </div>
 <pre><code>core.NewTableSchema[*Order]("orders").
     ID("id").
@@ -190,16 +192,22 @@
 
 // WRONG — silently empty: the document carries "DeletedAt";
 // this field reads doc["ArchivedOn"], finds nothing, stays null. No error.
+type OrderResult struct {
+    ArchivedOn *time.Time
+}
 type OrderResponse struct {
-    ArchivedOn *time.Time `json:"archivedOn"`
+    ArchivedOn *time.Time `json:"archivedOn"`   // aligned with the Result, but fed by nothing
 }
 
 // RIGHT — the Go field name is the fixed logical name; the wire name is still yours.
+type OrderResult struct {
+    DeletedAt *time.Time
+}
 type OrderResponse struct {
     DeletedAt *time.Time `json:"archivedOn"`
 }</code></pre>
 <p>
-    <strong>Symptom → cause.</strong> A Response field that is always <code>null</code>/zero with no error: its Go
+    <strong>Symptom → cause.</strong> A wire field that is always <code>null</code>/zero with no error: the Result's Go
     name does not match the view's logical name — a managed slot renamed (as above) or a <code>Field</code> Go name
     typo. The Request side fails LOUDLY for the same mistake: a <code>?filter</code>/<code>?orderBy</code>/<code>?fields=</code>
     token that resolves to no logical name is <code>400 SchemaViolationNotification</code>. Silent on the way out,
@@ -552,10 +560,11 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
 </p>
 <p>
     Filter keys on the read side are always Go paths (the request DTO's <code>filter:</code> leaves resolve to Go field
-    names, translated to columns by the schema). Sort and projection translate Go → column only when a typed Response is
-    in scope; <code>RawDoc</code> / <code>ParseCriteria</code> callers pass through verbatim. The typed Response projector
-    (<code>AutoFromDoc</code>) keys by the Go field name — the reader already translated the doc — so the
-    <code>view:</code> source-key override is gone; the only tag that governs the wire shape is <code>json:</code>.
+    names, translated to columns by the schema). Sort and projection translate Go → column through the Response
+    DTO's projection schema, the one <code>?fields=</code>/<code>?orderBy=</code> vocabulary every surface
+    speaks. The application Result keys by the Go field name — the reader already translated the doc — so
+    there is no <code>view:</code> source-key override; the only tag that governs the wire shape is
+    <code>json:</code>, on the Response.
 </p>
 <p>
     <strong>External (cross-service) embeds — no local struct.</strong> When a view embeds data owned by another service
@@ -1080,7 +1089,7 @@ func StudentSchema() *core.TableSchema {
     (the <code>core.NewSharedBaseSchema</code> identity) is <a href="#table-schema~shared-base">above</a>.
 </p>
 
-<h3>Supported column shapes</h3>
+<h3 id="supported-column-shapes">Supported column shapes</h3>
 <div class="box">
     <strong>The relational store is PostgreSQL, MySQL, SQL Server, Oracle, <em>or</em> SQLite; the read projection is MongoDB — except for views that opt into <a href="#relational-view">RelationalSource()</a>, which serve straight from the relational store.</strong>
     The write path, the entity-search <code>criteria</code> engine, and the auto-scan read-back run against the relational
@@ -1578,7 +1587,7 @@ func StudentSchema() *core.TableSchema {
     <code>case_sensitive_like</code> pragma). A known limitation of the MVP posture, not a bug.</p>
 </div>
 
-<h3>Out of scope</h3>
+<h3 id="out-of-scope">Out of scope</h3>
 <ul>
     <li><strong>Adapting to non-conforming structural conventions.</strong> The schema maps <em>names</em>, it does not
         reshape a schema. Mapping a renamed column on an otherwise-conforming legacy table <a href="#table-schema~why-it-exists-and-why-it-is-mandatory">is supported</a>;

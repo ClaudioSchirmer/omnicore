@@ -70,6 +70,29 @@
     <a href="#views~views-sync">How views stay current</a> below.
 </p>
 
+<h4 id="views-read-count">The listing total rides alongside the page, not behind it</h4>
+<p>
+    Every paged read of a view answers with a <code>pagination.totalCount</code>: how many documents match the
+    request's filters, independent of the page window. That count is a SECOND store query — it spans the whole
+    filtered set, while the page query stops at the window — so the reader issues the two
+    <strong>concurrently</strong> and joins them before responding. A page read costs the LATENCY of the slower
+    of the two, not their sum, which matters most exactly where the count is expensive: a large collection under
+    a selective filter.
+</p>
+<p>
+    The behaviour is a property of the read path, not of the backing: the
+    <a href="#relational-view">RelationalSource</a> twin does the same with its <code>COUNT(*)</code>, with one
+    deliberate exception — a bare backward window (<code>last=N</code> with no cursor) anchors its offset ON the
+    total, so it must count first. Nothing about the wire changes: <code>totalCount</code> is present on every
+    page, carrying the same number it always did, and a count failure fails the read.
+</p>
+<p>
+    The concurrency has a resource cost the latency win pays for: each paged read holds <strong>two</strong>
+    store operations for the duration of the fetch — on the RelationalSource twin, a second pooled connection
+    from <code>relational.pool</code>. A service running near its pool ceiling under paged-read load should size
+    the pool for roughly two connections per concurrent listing, not one.
+</p>
+
 <h3 id="views-plain">query.View — the aggregate's own projection</h3>
 <p>
     The plain view reuses the SAME <code>TableSchema</code> the write repository declares, so the composer (physical
@@ -215,9 +238,9 @@
     segment: <code>?user.userName=ana</code>, <code>?employee.dependents.relationship=daughter</code>,
     sort and projection likewise. On a default read an ARCHIVED role's whole segment is hidden (the
     single-map counterpart of the archived-entry strip on child collections);
-    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Exports render
-    each role as a nested branch (role fields + siblings, then its child collections), never repeating
-    the base columns.
+    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Declare each role as
+    a nested struct on the Response DTO and the exports render it as a nested branch (role fields +
+    siblings, then its child collections), never repeating the base columns.
 </p>
 
 <h4>Rules &amp; validation</h4>
@@ -545,11 +568,12 @@ func SaleView() *query.ViewDefinition {
     too. Every writer of the segment applies the same cut — first compose, batch rebuild, the surgical ripple and the
     1:1 repair — so a trimmed segment is byte-identical whichever writer produced it. On the read side the cut is a
     contract, not an accident: the segment's translator knows only the allowlist (no archived gate when
-    <code>"DeletedAt"</code> is capped, no strip path, no translation for a capped leaf), and the tabular export stops
-    advertising columns the segment does not store. On the wire, declare the Request/Response DTOs to MIRROR the cut —
+    <code>"DeletedAt"</code> is capped, no strip path, no translation for a capped leaf). On the wire, declare the
+    Request/Response DTOs to MIRROR the cut —
     the DTO is the read-side allowlist, so a token it does not declare (<code>?brand.deletedAt</code> on a capped
     segment) is <code>400 SchemaViolationNotification</code> at the membrane; a DTO that over-declares a capped field
-    gets the LEFT answer (the field never materializes, so a filter on it matches nothing).
+    gets the LEFT answer (the field never materializes, so a filter on it matches nothing, and its
+    JSON key and its CSV/XLSX column render empty — the Response DTO is what both surfaces advertise).
 </p>
 <div class="box">
     <strong>THE ARCHIVE SWITCH — one entry in or out of <code>Fields</code> decides whether the segment follows the
@@ -945,9 +969,9 @@ ComposedViewReader (decorates the framework ViewReader; composed names only)
    │      + the leg's own archived gate + segment projection → group by _id → attach
    │      sub-document or explicit null
    │   ▼
-   ├─► 3. per 1:N leg: one small indexed find per parent ({fk: parent._id}, declared
-   │      order + _id tiebreaker, LIMIT = resolved ceiling), concurrency-bounded →
-   │      attach array (empty when none)
+   ├─► 3. per 1:N leg: ONE aggregation — $match({fk: {$in: [page ids]}} + segment
+   │      filters + archived gate) → $group by fk with $topN(n = resolved ceiling,
+   │      sortBy = declared order + _id tiebreaker) → attach array (empty when none)
    │   ▼
    └─► 4. page returned: items enriched; total/cursors/has_* = the primary's
    │
@@ -972,9 +996,10 @@ same envelope, same projector, same pagination block as any view read</div>
         <tbody><tr><th>Step</th><th>Mongo queries</th><th>Documents moved</th><th>Why it is bounded</th></tr>
         <tr>
             <td>Primary page</td>
-            <td><strong>O(1)</strong> — one find (+ one count)</td>
+            <td><strong>O(1)</strong> — one find, <em>concurrent</em> with one count</td>
             <td>≤ p</td>
-            <td><code>maxLimit</code> cascade; identical to a plain view read.</td>
+            <td><code>maxLimit</code> cascade; identical to a plain view read (see
+                <a href="#views~views-read-count">the listing total</a>).</td>
         </tr>
         <tr>
             <td>Each 1:1 leg</td>
@@ -986,12 +1011,20 @@ same envelope, same projector, same pagination block as any view read</div>
         </tr>
         <tr>
             <td>Each 1:N leg</td>
-            <td><strong>O(p)</strong> — one indexed subquery per page parent, 8 in flight</td>
+            <td><strong>O(1)</strong> — ONE <code>$in</code>-matched aggregation</td>
             <td>≤ p × c</td>
-            <td>Each subquery is <code>find({fk: parent})</code> + declared order +
-                <code>LIMIT c</code>. The per-parent ceiling is what forbids a single global-limit
-                <code>$in</code> here — Mongo limits are per QUERY, not per group, so one fat parent
-                would starve the others' segments.</td>
+            <td>An indexed <code>$match({fk: {$in: page ids}})</code> feeds a <code>$group</code>
+                whose <code>$topN</code> accumulator (MongoDB 5.2+, the framework's floor) applies
+                the declared order and the ceiling <em>per group</em> server-side — the per-parent
+                cap a plain <code>find</code> limit could never express, which is why this used to
+                cost one subquery per parent. One fat parent cannot starve the others: every group
+                truncates at <code>c</code> independently. The ceiling caps the OUTPUT, not the
+                scan: <code>$group</code> is a blocking stage, so it examines every matching child
+                of the page's parents before <code>$topN</code> truncates — the <code>fk</code>
+                index bounds that scan to the page's parents, never the whole collection, but a leg
+                whose parents carry very large child sets pays it server-side (the retired
+                per-parent walk read at most <code>c</code> each, at the price of <code>p</code>
+                queries).</td>
         </tr>
         <tr>
             <td>By-id read</td>
@@ -1001,27 +1034,33 @@ same envelope, same projector, same pagination block as any view read</div>
         </tr>
     </tbody></table>
     <p>
-        <strong>Total per request: <code>1 + (#1:1 legs) + (#1:N legs × p)</code> queries, every one
+        <strong>Total per request: <code>1 + (#1:1 legs) + (#1:N legs)</code> queries, every one
         index-driven, moving at most <code>p + p·(#1:1) + p·c·(#1:N)</code> documents.</strong>
-        There is no unbounded axis: no query without a <code>LIMIT</code>, no N+1 that grows with the
-        dataset (the query count grows with the PAGE, which you cap), no fan-out beyond the declared
-        ceilings. What keeps each promise honest:
+        No query count and no document moved exceeds the declared bounds: the query count is
+        CONSTANT in the page size, and every fetch caps what crosses the wire (<code>maxLimit</code>,
+        one-doc-per-key uniqueness, <code>$topN</code>'s per-group <code>n</code>). One axis is
+        bounded by the DATA rather than by a knob: the 1:N <code>$group</code> scans all matching
+        children of the page's parents server-side before truncating (see the row above) — the wire
+        stays ≤ p·c, but that scan grows with the parents' child cardinality. What keeps each
+        promise honest:
     </p>
     <ul>
         <li><strong>The 1:N ParentID must be index-covered — enforced at boot.</strong> Without an index
-            whose first key is the ParentID column, each per-parent subquery is a full collection scan —
-            <code>O(p × leg collection size)</code> per request, the classic silent monster. An
+            whose first key is the ParentID column, the leg's <code>$match</code> is a full collection
+            scan per request — the classic silent monster. An
             internal leg whose view declares no covering index is a <strong>fatal boot</strong>; for
             an external leg (an upstream collection, whose indexes the operator owns) the same rule
             applies as a hard operational requirement. A compound index starting with the ParentID (e.g.
             <code>(gadget_id, text)</code>) additionally serves the declared order for free.</li>
-        <li><strong>Deep pages multiply legs.</strong> Raising <code>maxLimit</code> raises the 1:N
-            query count linearly (<code>p</code> subqueries per 1:N leg). A composed view meant for
-            wide listings should keep its page ceiling modest — or the composition belongs on the
-            materialization path.</li>
+        <li><strong>Deep pages widen the aggregation, not the query count.</strong> Raising
+            <code>maxLimit</code> grows the 1:N leg's <code>$in</code> key list and the documents the
+            server groups — the round-trip count stays constant. A composed view meant for wide
+            listings still keeps its page ceiling modest: <code>p × c</code> documents per 1:N leg is
+            the axis that grows.</li>
         <li><strong>Export is the deliberate heavy case.</strong> CSV/XLSX ignores pagination and
             walks the filtered set up to <code>maxExportRows</code> (default 10,000): the 1:1
-            <code>$in</code> batches thousands of keys and each 1:N leg runs thousands of subqueries.
+            <code>$in</code> and each 1:N leg's aggregation batch thousands of keys, grouping
+            thousands of parents server-side.
             That is the read-time analogue of what the materialized path pays continuously in
             recompose — concentrated in the export request. The knobs are the existing ones:
             <code>maxExportRows</code> / per-view <code>MaxExportRows</code> (a composed export
@@ -1032,12 +1071,13 @@ same envelope, same projector, same pagination block as any view read</div>
             never use; split it into two composed views instead.</li>
     </ul>
     <div class="note">
-        Rule of thumb: a composed read costs <code>O(1)</code> extra round-trips per 1:1 leg and
-        <code>O(page)</code> tiny indexed lookups per 1:N leg. If the read is hot enough that
-        <code>O(page)</code> subqueries hurt, or consumers need to FILTER/SORT rows by the joined
-        data, that is the signal the composition has outgrown read time — materialize it
-        (<code>Embed</code>/<code>SharedBaseView</code>) and pay at write time instead. The two-paths
-        table below is the decision matrix.
+        Rule of thumb: a composed read costs <code>O(1)</code> extra round-trips per leg — a
+        <code>$in</code> point-lookup batch for 1:1, a <code>$topN</code>-grouped aggregation for
+        1:N. The growing axis is documents moved (<code>p × c</code> per 1:N leg), not queries. If
+        the read is hot enough that the per-request joins hurt, or consumers need to FILTER/SORT
+        rows by the joined data, that is the signal the composition has outgrown read time —
+        materialize it (<code>Embed</code>/<code>SharedBaseView</code>) and pay at write time
+        instead. The two-paths table below is the decision matrix.
     </div>
 
     <h4 id="views-composed-authz">Per-leg authorization — the <code>ToCriteria</code> seam, unchanged</h4>
@@ -1051,13 +1091,12 @@ same envelope, same projector, same pagination block as any view read</div>
         <code>ToCriteria</code></strong>, exactly as tenant scoping is on every view today.
     </p>
     <pre><code>func (q FindGadgetFullByIDQuery) ToCriteria(_ *configuration.AppContext) (fwqueries.ReadCriteria, error) {
-    return fwqueries.ReadCriteria{
-        IncludeArchived: q.IncludeArchived,
-        // Per-leg overlay: the composed surface never exposes internal notes,
-        // regardless of what the wire asked. Segment paths resolve at every
-        // level of the linked document.
-        Filter: map[string]any{"Notes.Kind": "public"},
-    }, nil
+    crit := q.Criteria   // the wire criteria the wrapper handed ToQuery (includeArchived)
+    // Per-leg overlay: the composed surface never exposes internal notes,
+    // regardless of what the wire asked. Segment paths resolve at every
+    // level of the linked document.
+    crit.Filter = map[string]any{"Notes.Kind": "public"}
+    return crit, nil
 }</code></pre>
     <div class="note">
         Overlay filters participate in the cursor's listing context and <strong>compose freely with

@@ -1,5 +1,5 @@
 // Package export is the format-neutral tabular-export core shared by the
-// framework's view-export wrappers. A view's queries.ExportPlan plus the
+// framework's view-export wrappers. The Response-derived export.Plan plus the
 // documents a read returns are walked once into a stream of Row events; a
 // pluggable Encoder (CSV today, XLSX later) turns that stream into the wire
 // bytes. The plan walk, the per-level column offset ("espaçar uma coluna por

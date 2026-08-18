@@ -7,7 +7,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -33,6 +32,12 @@ func (q *testCoerceQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadC
 	return q.Criteria, nil
 }
 
+// FromQueryResult is the mandatory doc→Result hook; the coercion tests observe the
+// criteria only, so the framework-filled Result passes through untouched.
+func (q *testCoerceQuery) FromQueryResult(_ *configuration.AppContext, r testUserResult) (testUserResult, error) {
+	return r, nil
+}
+
 func (r testCoerceRequest) ToQuery(crit queries.ReadCriteria) *testCoerceQuery {
 	return &testCoerceQuery{Criteria: crit}
 }
@@ -41,9 +46,9 @@ type capturingCoerceHandler struct {
 	got *testCoerceQuery
 }
 
-func (h *capturingCoerceHandler) Handle(_ *configuration.AppContext, q *testCoerceQuery) (queries.Page, error) {
+func (h *capturingCoerceHandler) Handle(_ *configuration.AppContext, q *testCoerceQuery) (queries.PageOf[testUserResult], error) {
 	h.got = q
-	return queries.Page{}, nil
+	return queries.PageOf[testUserResult]{}, nil
 }
 
 func dispatchCoerce(t *testing.T, query string) (queries.ReadCriteria, int) {
@@ -51,7 +56,7 @@ func dispatchCoerce(t *testing.T, query string) (queries.ReadCriteria, int) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &capturingCoerceHandler{}
-	app.Get("/x", QueryWithParams(pipe, testCoerceRequest{}, responses.RawDoc, h))
+	app.Get("/x", QueryWithParams(pipe, testCoerceRequest{}, rawItem, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/x"+query, nil))
 	if err != nil {

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // stringifyCell remaining branches: int32, float32, fmt.Stringer, default.
@@ -43,15 +41,9 @@ func (s *errSink) Write(r Row) error { s.writes++; return errors.New("sink boom"
 func (s *errSink) Close() error      { return nil }
 
 func TestGenerate_PropagatesSinkErrorAndShortCircuits(t *testing.T) {
-	plan := &queries.ExportPlan{Root: &queries.ExportNode{
-		Columns: []queries.ExportColumn{{GoField: "Name", WireLeaf: "name"}},
-		Children: []*queries.ExportNode{{
-			GoSegment: "Addresses", WireSegment: "addresses",
-			Columns: []queries.ExportColumn{{GoField: "City", WireLeaf: "city"}},
-		}},
-	}}
-	items := []map[string]any{
-		{"Name": "John", "Addresses": []map[string]any{{"City": "NYC"}}},
+	plan := planOf[exportUserResponse](t)
+	items := []exportUserResponse{
+		{Name: "John", Addresses: []exportAddressResponse{{City: "NYC"}}},
 	}
 	sink := &errSink{}
 	err := Generate(plan, items, idLabel, sink)
@@ -69,8 +61,19 @@ func TestGenerate_NilPlanAndNilRoot(t *testing.T) {
 	if err := Generate(nil, nil, idLabel, &captureSink{}); err != nil {
 		t.Fatalf("nil plan must be a no-op, got %v", err)
 	}
-	if err := Generate(&queries.ExportPlan{Root: nil}, nil, idLabel, &captureSink{}); err != nil {
+	if err := Generate(&Plan{Root: nil}, nil, idLabel, &captureSink{}); err != nil {
 		t.Fatalf("nil root must be a no-op, got %v", err)
+	}
+}
+
+func TestGenerate_NonSliceItemsIsANoOp(t *testing.T) {
+	plan := planOf[exportFlatResponse](t)
+	sink := &captureSink{}
+	if err := Generate(plan, "not-a-slice", idLabel, sink); err != nil {
+		t.Fatalf("non-slice items must be a no-op, got %v", err)
+	}
+	if len(sink.rows) != 0 {
+		t.Fatalf("expected no rows for non-slice items, got %+v", sink.rows)
 	}
 }
 

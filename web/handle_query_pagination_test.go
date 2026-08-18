@@ -10,7 +10,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -35,6 +34,12 @@ func (q *pagQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria
 	return q.Criteria, nil
 }
 
+// FromQueryResult is the mandatory doc→Result hook; pagination tests care only
+// about criteria assembly, so the framework-filled Result passes through.
+func (q *pagQuery) FromQueryResult(_ *configuration.AppContext, r testUserResult) (testUserResult, error) {
+	return r, nil
+}
+
 func (r pagFindRequest) ToQuery(crit queries.ReadCriteria) *pagQuery {
 	return &pagQuery{Criteria: crit}
 }
@@ -43,16 +48,16 @@ type pagHandler struct {
 	got *pagQuery
 }
 
-func (h *pagHandler) Handle(_ *configuration.AppContext, q *pagQuery) (queries.Page, error) {
+func (h *pagHandler) Handle(_ *configuration.AppContext, q *pagQuery) (queries.PageOf[testUserResult], error) {
 	h.got = q
-	return queries.Page{}, nil
+	return queries.PageOf[testUserResult]{}, nil
 }
 
 func mountPaginationWrapper() (*fiber.App, *pagHandler) {
 	app := fiber.New()
 	pipe := pipeline.New(translation.Default())
 	h := &pagHandler{}
-	app.Get("/users", QueryWithParams(pipe, pagFindRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, pagFindRequest{}, rawItem, h))
 	return app, h
 }
 

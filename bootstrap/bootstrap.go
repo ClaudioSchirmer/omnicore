@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -31,14 +30,15 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
+	"github.com/ClaudioSchirmer/omnicore/web/auditapi"
 	"github.com/ClaudioSchirmer/omnicore/web/authcore"
 	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
 	"connectrpc.com/grpcreflect"
 	"github.com/gofiber/fiber/v3"
-	"github.com/gofiber/fiber/v3/middleware/logger"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c" //nolint:staticcheck // SA1019: h2c is deprecated, but the cleartext-h2c → http.Server.Protocols migration is a separate, QA-gated change (touches the gRPC transport), not a lint-sweep edit.
 )
@@ -435,7 +435,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 			syncEngine.Start(rebuildCtx)
 			boot.complete.Store(true) // readiness gate opens
 			deps.Logger.Info("sync engine started",
-				"endpoints", cfg.Transport.Endpoints,
+				"endpoints", redactEach(cfg.Transport.Endpoints),
 				"syncGroup", cfg.Transport.SyncGroup,
 				"views", len(views),
 				"workers", cfg.Transport.SyncWorkers)
@@ -543,7 +543,10 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// (Postgres via pgx, MySQL via database/sql) — the config surface is neutral, so
 	// no dialect branch here. nil cfg.Audit destinations were populated by
 	// applyDefaults already.
-	eng.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
+	// The persister receives the EMBEDDED write-path half only: infra never
+	// sees the read surfaces' transport knobs (audit.endpoint lives on the
+	// bootstrap-owned wrapper).
+	eng.WithAudit(&cfg.Audit.Config, logger, cfg.Auth.AuditClaims)
 	eng.WithEventPublisher(events.NewSlogPublisher(logger))
 	// resolver maps every view to the physical collection it currently serves
 	// (its active slot). Constructed once here and shared by every read-model
@@ -646,6 +649,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Logger:              logger,
 		Tracing:             tracingProvider,
 		DB:                  eng,
+		AuditReader:         read.NewAuditReader(eng),
 		Mongo:               mg,
 		Translator:          tr,
 		Pipeline:            pipe,
@@ -740,8 +744,15 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	}
 	app := fiber.New(fiberCfg)
 
+	// The inbound access log — one structured record per request through the
+	// service logger, gated by http.accessLog (default on). Registered OUTSIDE
+	// Recover so a panicking request still produces its access record: the
+	// recover middleware turns the panic into a returned error, which this
+	// middleware then observes like any other.
+	if deps.Config.HTTP.AccessLog == nil || *deps.Config.HTTP.AccessLog {
+		app.Use(fwweb.AccessLog(deps.Logger))
+	}
 	app.Use(fwweb.Recover())
-	app.Use(logger.New())
 	// The inbound server span is gated by the tracing `http` instrument toggle;
 	// off (or tracing disabled) → the middleware builds only the AppContext.
 	traceHTTP := deps.Config.Observability.Tracing.Resolve(deps.Config.Service).Instruments(tracing.SubHTTP)
@@ -873,6 +884,35 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 				},
 			})
 		deps.Logger.Info("issuer jwks served", "path", jwksPath)
+	}
+
+	// The audit read surface — opt-in via audit.endpoint.rest (absent means the
+	// framework mounts nothing and keeps shipping only the audit.Reader port).
+	// Registered here, BEFORE the boot scans below, so the routes are in the
+	// registry when scanRouteRegistration and scanAuthorization run: a
+	// framework-owned route is held to the same contract a service route is.
+	//
+	// Never public: the audit trail is gated by audit.endpoint.rest.permission
+	// (default "audit:read"), the opposite posture of the JWKS document above.
+	if deps.Config.Audit.auditRESTEnabled() && deps.AuditReader != nil {
+		restCfg := deps.Config.Audit.Endpoint.REST
+		auditapi.Mount(app, deps.OpenAPIRegistry,
+			auditapi.Config{
+				Path:         restCfg.Path,
+				Permission:   restCfg.PermissionValue(),
+				MaxLimit:     deps.Config.Audit.Endpoint.MaxLimit,
+				RenderLabels: deps.Config.Audit.Endpoint.RenderLabelsEnabled(),
+			},
+			auditapi.Deps{
+				Pipeline:   deps.Pipeline,
+				Reader:     deps.AuditReader,
+				Translator: deps.Translator,
+			})
+		deps.Logger.Info("audit read endpoint served",
+			"path", restCfg.Path,
+			"permission", restCfg.PermissionValue(),
+			"maxLimit", deps.Config.Audit.Endpoint.MaxLimit,
+			"renderLabels", deps.Config.Audit.Endpoint.RenderLabelsEnabled())
 	}
 
 	// Build + populate the GraphQL/gRPC registries from the features that opt
@@ -1316,6 +1356,18 @@ func buildIssuer(deps *Deps, wiring Wiring) error {
 	return nil
 }
 
+// elapsedMs renders a duration as MILLISECONDS for a log attribute.
+//
+// slog serializes a bare time.Duration as an integer count of NANOSECONDS
+// ("elapsed":256000), which reads as seconds — or milliseconds — to anyone
+// scanning the log, and silently rescales by 10^6 in a dashboard. The unit
+// belongs in the attribute name; the value is a float so a sub-millisecond
+// drain stays visible (250µs is 0.25, not a truncated 0). Mirrors the
+// durationMs attribute the httpclient observation already emits.
+func elapsedMs(d time.Duration) float64 {
+	return float64(d.Nanoseconds()) / 1e6
+}
+
 func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	// Whatever ends serve() — a listener that failed to bind, a fatal boot
 	// rebuild, any early return, or the graceful drain below — the background
@@ -1499,10 +1551,10 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 			deps.Logger.Info("draining", "stage", label)
 			start := time.Now()
 			if err := fn(); err != nil {
-				deps.Logger.Warn("drain failed", "stage", label, "err", err, "elapsed", time.Since(start))
+				deps.Logger.Warn("drain failed", "stage", label, "err", err, "elapsedMs", elapsedMs(time.Since(start)))
 				return
 			}
-			deps.Logger.Info("drained", "stage", label, "elapsed", time.Since(start))
+			deps.Logger.Info("drained", "stage", label, "elapsedMs", elapsedMs(time.Since(start)))
 		}()
 	}
 
@@ -1566,9 +1618,9 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 	}
 	traceCtx, traceCancel := context.WithTimeout(shutdownCtx, time.Duration(tracingSeconds)*time.Second)
 	if err := deps.Tracing.Shutdown(traceCtx); err != nil {
-		deps.Logger.Warn("drain failed", "stage", "tracing", "err", err, "elapsed", time.Since(tracingStart))
+		deps.Logger.Warn("drain failed", "stage", "tracing", "err", err, "elapsedMs", elapsedMs(time.Since(tracingStart)))
 	} else {
-		deps.Logger.Info("drained", "stage", "tracing", "elapsed", time.Since(tracingStart))
+		deps.Logger.Info("drained", "stage", "tracing", "elapsedMs", elapsedMs(time.Since(tracingStart)))
 	}
 	traceCancel()
 
@@ -1583,13 +1635,13 @@ func serve(ctx context.Context, deps Deps, wiring Wiring) error {
 		select {
 		case err := <-hookDone:
 			if err != nil {
-				deps.Logger.Warn("drain failed", "stage", "onShutdown", "err", err, "elapsed", time.Since(hookStart))
+				deps.Logger.Warn("drain failed", "stage", "onShutdown", "err", err, "elapsedMs", elapsedMs(time.Since(hookStart)))
 			} else {
-				deps.Logger.Info("drained", "stage", "onShutdown", "elapsed", time.Since(hookStart))
+				deps.Logger.Info("drained", "stage", "onShutdown", "elapsedMs", elapsedMs(time.Since(hookStart)))
 			}
 		case <-shutdownCtx.Done():
 			deps.Logger.Warn("onShutdown did not return before the drain deadline",
-				"err", shutdownCtx.Err(), "elapsed", time.Since(hookStart))
+				"err", shutdownCtx.Err(), "elapsedMs", elapsedMs(time.Since(hookStart)))
 		}
 	}
 	deps.Logger.Info("shutdown complete")
@@ -1654,24 +1706,4 @@ func collectLanguageOptions(modules []translation.Module) []openapi.LanguageOpti
 		}
 	}
 	return out
-}
-
-// redact masks the password of a connection URL for logs.
-//
-//	postgres://user:PASS@host/db → postgres://user:***@host/db
-func redact(uri string) string {
-	at := strings.LastIndex(uri, "@")
-	if at < 0 {
-		return uri
-	}
-	scheme := strings.Index(uri, "://")
-	if scheme < 0 || scheme+3 >= at {
-		return uri
-	}
-	userInfo := uri[scheme+3 : at]
-	colon := strings.Index(userInfo, ":")
-	if colon < 0 {
-		return uri
-	}
-	return uri[:scheme+3] + userInfo[:colon] + ":***" + uri[at:]
 }

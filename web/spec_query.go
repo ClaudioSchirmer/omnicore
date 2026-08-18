@@ -13,9 +13,9 @@ import (
 // QueryWithParams. RequestType captures TReq (carries the
 // `query:"X" filter:"ops"` allowlist tags the spec assembler reads to
 // emit one OpenAPI parameter per declared filter + operator and per
-// reserved pagination key). ResponseType captures R — the wire shape of
+// reserved pagination key). ResponseType captures TResp — the wire shape of
 // one projected page item; the assembler envelopes it as
-// `Response{Data: []R, Pagination: PaginationInfo}` for the success
+// `Response{Data: []TResp, Pagination: PaginationInfo}` for the success
 // response (Paged:true on the RouteSpec).
 //
 // Strict is always false on the read side (no FullBody marker semantic
@@ -23,17 +23,17 @@ import (
 // is true: the runtime emits via fwweb.RespondPaged and the spec
 // mirrors the shape.
 func QueryWithParamsSpec[
-	TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams, R any,
+	TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult], TResult any, TResp any,
 ](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	projector func(map[string]any) R,
-	h pipeline.Handler[TQ, queries.Page],
+	responseProjection func(TResult) TResp,
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := QueryWithParams[TReq, TQ, R](pipe, sample, projector, h)
+	handler := QueryWithParams[TReq, TQ, TResult, TResp](pipe, sample, responseProjection, h)
 	return handler, openapi.RouteSpec{
 		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
-		ResponseType:  reflect.TypeOf((*R)(nil)).Elem(),
+		ResponseType:  reflect.TypeOf((*TResp)(nil)).Elem(),
 		SuccessStatus: fiber.StatusOK,
 		Paged:         true,
 	}
@@ -45,17 +45,17 @@ func QueryWithParamsSpec[
 // RequestType still captures TReq so the assembler emits the optional
 // ?includeArchived query parameter declared on the DTO.
 func QueryByIDSpec[
-	TReq HasToIDQuery[TQ], TQ queries.QueryByID, R any,
+	TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any, TResp any,
 ](
 	pipe *pipeline.Pipeline,
 	sample TReq,
-	projector func(map[string]any) R,
-	h pipeline.Handler[TQ, map[string]any],
+	responseProjection func(TResult) TResp,
+	h pipeline.Handler[TQ, TResult],
 ) (fiber.Handler, openapi.RouteSpec) {
-	handler := QueryByID[TReq, TQ, R](pipe, sample, projector, h)
+	handler := QueryByID[TReq, TQ, TResult, TResp](pipe, sample, responseProjection, h)
 	return handler, openapi.RouteSpec{
 		RequestType:   reflect.TypeOf((*TReq)(nil)).Elem(),
-		ResponseType:  reflect.TypeOf((*R)(nil)).Elem(),
+		ResponseType:  reflect.TypeOf((*TResp)(nil)).Elem(),
 		SuccessStatus: fiber.StatusOK,
 		HasPathID:     true,
 	}

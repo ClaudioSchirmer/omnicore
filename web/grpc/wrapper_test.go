@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -56,6 +57,8 @@ func (h *createGadgetHandler) Handle(ctx *configuration.AppContext, cmd *createG
 	return &gadgetResult{ID: "g-1", Name: cmd.Name}, nil
 }
 
+type listGadgetResult struct{ Name string }
+
 type listGadgetsQuery struct {
 	queries.QueryWithParamsBase
 	NameContains string
@@ -65,16 +68,20 @@ func (q listGadgetsQuery) ToCriteria(*configuration.AppContext) (queries.ReadCri
 	return queries.ReadCriteria{}, nil
 }
 
-type listGadgetsHandler struct{}
-
-func (listGadgetsHandler) Handle(_ *configuration.AppContext, q *listGadgetsQuery) (queries.Page, error) {
-	return queries.Page{Items: []map[string]any{{"Name": q.NameContains}}, TotalCount: 1}, nil
+func (q listGadgetsQuery) FromQueryResult(_ *configuration.AppContext, r listGadgetResult) (listGadgetResult, error) {
+	return r, nil
 }
 
-func fromGadgetsPage(page queries.Page) (*testpb.ListGadgetsResponse, error) {
+type listGadgetsHandler struct{}
+
+func (listGadgetsHandler) Handle(_ *configuration.AppContext, q *listGadgetsQuery) (queries.PageOf[listGadgetResult], error) {
+	return queries.PageOf[listGadgetResult]{Items: []listGadgetResult{{Name: q.NameContains}}, TotalCount: 1}, nil
+}
+
+func fromGadgetsPage(page queries.PageOf[listGadgetResult]) (*testpb.ListGadgetsResponse, error) {
 	names := make([]string, 0, len(page.Items))
 	for _, item := range page.Items {
-		names = append(names, item["Name"].(string))
+		names = append(names, item.Name)
 	}
 	return &testpb.ListGadgetsResponse{Total: page.TotalCount, Names: names}, nil
 }
@@ -237,8 +244,8 @@ func panicNow() { panic("boom") }
 func TestHandleQuerySuccessAndConversion(t *testing.T) {
 	pipe := pipeline.New(nil)
 	fn := handleQueryWithParams(pipe,
-		func(pb *testpb.ListGadgetsRequest) (*listGadgetsQuery, error) {
-			return &listGadgetsQuery{NameContains: pb.GetNameContains()}, nil
+		func(pb *testpb.ListGadgetsRequest) (*listGadgetsQuery, []string, error) {
+			return &listGadgetsQuery{NameContains: pb.GetNameContains()}, nil, nil
 		},
 		listGadgetsHandler{},
 		fromGadgetsPage)
@@ -250,9 +257,13 @@ func TestHandleQuerySuccessAndConversion(t *testing.T) {
 	}
 
 	failing := handleQueryWithParams(pipe,
-		func(*testpb.ListGadgetsRequest) (*listGadgetsQuery, error) { return nil, errors.New("bad") },
+		func(*testpb.ListGadgetsRequest) (*listGadgetsQuery, []string, error) {
+			return nil, nil, errors.New("bad")
+		},
 		listGadgetsHandler{},
-		func(queries.Page) (*testpb.ListGadgetsResponse, error) { return &testpb.ListGadgetsResponse{}, nil })
+		func(queries.PageOf[listGadgetResult]) (*testpb.ListGadgetsResponse, error) {
+			return &testpb.ListGadgetsResponse{}, nil
+		})
 	_, err = failing(context.Background(), connect.NewRequest(&testpb.ListGadgetsRequest{}))
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
@@ -366,33 +377,37 @@ func TestHandleCommandByIDNoMapper(t *testing.T) {
 
 type getGadgetQuery struct {
 	queries.QueryByIDBase
-	IncludeArchived bool
+	Criteria queries.ReadCriteria
 }
 
 func (q getGadgetQuery) ToCriteria(*configuration.AppContext) (queries.ReadCriteria, error) {
-	return queries.ReadCriteria{IncludeArchived: q.IncludeArchived}, nil
+	return q.Criteria, nil
 }
 
 func (getGadgetQuery) ContextName() string { return "Gadget" }
 
+func (q getGadgetQuery) FromQueryResult(_ *configuration.AppContext, r gadgetDetailResult) (gadgetDetailResult, error) {
+	return r, nil
+}
+
 type getGadgetHandler struct{}
 
-func (getGadgetHandler) Handle(ctx *configuration.AppContext, q *getGadgetQuery) (map[string]any, error) {
+func (getGadgetHandler) Handle(ctx *configuration.AppContext, q *getGadgetQuery) (gadgetDetailResult, error) {
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {
-		return nil, err
+		return gadgetDetailResult{}, err
 	}
 	if q.PathID().String() == "missing" {
 		nctx := domain.NewNotificationContext(q.ContextName())
 		nctx.AddNotificationMessage(domain.NotificationMessage{
 			Notification: domain.RecordNotFoundNotification{},
 		})
-		return nil, domain.NewDomainError([]*domain.NotificationContext{nctx})
+		return gadgetDetailResult{}, domain.NewDomainError([]*domain.NotificationContext{nctx})
 	}
-	return map[string]any{
-		"ID":              q.PathID().String(),
-		"Name":            "Found Gadget",
-		"IncludeArchived": crit.IncludeArchived,
+	return gadgetDetailResult{
+		ID:              q.PathID().String(),
+		Name:            "Found Gadget",
+		IncludeArchived: crit.IncludeArchived,
 	}, nil
 }
 
@@ -400,13 +415,13 @@ func TestHandleQueryByID(t *testing.T) {
 	fn := handleQueryByID(pipeline.New(nil),
 		(*testpb.GetGadgetRequest).GetId,
 		func(pb *testpb.GetGadgetRequest) (*getGadgetQuery, error) {
-			return &getGadgetQuery{IncludeArchived: pb.GetIncludeArchived()}, nil
+			return &getGadgetQuery{Criteria: queries.ReadCriteria{IncludeArchived: pb.GetIncludeArchived()}}, nil
 		},
 		getGadgetHandler{},
-		func(doc map[string]any) (*testpb.GetGadgetResponse, error) {
+		func(r gadgetDetailResult) (*testpb.GetGadgetResponse, error) {
 			return &testpb.GetGadgetResponse{
-				Id:   doc["ID"].(string),
-				Name: doc["Name"].(string),
+				Id:   r.ID,
+				Name: r.Name,
 			}, nil
 		},
 	)
@@ -430,7 +445,7 @@ func TestHandleQueryByID(t *testing.T) {
 		(*testpb.GetGadgetRequest).GetId,
 		func(*testpb.GetGadgetRequest) (*getGadgetQuery, error) { return nil, errors.New("bad") },
 		getGadgetHandler{},
-		func(map[string]any) (*testpb.GetGadgetResponse, error) { return &testpb.GetGadgetResponse{}, nil },
+		func(gadgetDetailResult) (*testpb.GetGadgetResponse, error) { return &testpb.GetGadgetResponse{}, nil },
 	)
 	_, err = failing(context.Background(), connect.NewRequest(&testpb.GetGadgetRequest{Id: proto.String("x")}))
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
@@ -464,5 +479,52 @@ func TestHandleCommandWithBodyIDConversionError(t *testing.T) {
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeInvalidArgument {
 		t.Fatalf("WithBodyID conversion error: %v", err)
+	}
+}
+
+// capturingGetGadgetHandler records the criteria the by-id Query produced —
+// the seat the constructor now fills from the bound DTO, mirroring the paged
+// sibling's ToQuery(criteria).
+type capturingGetGadgetHandler struct{ saw *queries.ReadCriteria }
+
+func (h capturingGetGadgetHandler) Handle(ctx *configuration.AppContext, q *getGadgetQuery) (gadgetDetailResult, error) {
+	crit, err := q.ToCriteria(ctx)
+	if err != nil {
+		return gadgetDetailResult{}, err
+	}
+	*h.saw = crit
+	return gadgetDetailResult{ID: q.PathID().String(), Name: "Found Gadget"}, nil
+}
+
+func TestQueryByID_IncludeArchivedReachesCriteria(t *testing.T) {
+	var saw queries.ReadCriteria
+	reg := New(pipeline.New(nil))
+	reg.Register(QueryByID[testpb.GetGadgetRequest, testpb.GetGadgetResponse](
+		"/omnicore.grpctest.v1.GadgetService/GetGadget",
+		(*testpb.GetGadgetRequest).GetId,
+		getGadgetDTO{},
+		getGadgetResponseDTO{}.FromResult,
+		capturingGetGadgetHandler{saw: &saw},
+	))
+	srv := httptest.NewServer(reg.Handler())
+	defer srv.Close()
+	client := connect.NewClient[testpb.GetGadgetRequest, testpb.GetGadgetResponse](
+		srv.Client(), srv.URL+"/omnicore.grpctest.v1.GadgetService/GetGadget")
+
+	if _, err := client.CallUnary(context.Background(), connect.NewRequest(
+		&testpb.GetGadgetRequest{Id: proto.String("g-1"), IncludeArchived: true})); err != nil {
+		t.Fatalf("call with include_archived=true: %v", err)
+	}
+	if !saw.IncludeArchived {
+		t.Error("expected include_archived=true to reach ReadCriteria.IncludeArchived")
+	}
+
+	saw = queries.ReadCriteria{}
+	if _, err := client.CallUnary(context.Background(), connect.NewRequest(
+		&testpb.GetGadgetRequest{Id: proto.String("g-1")})); err != nil {
+		t.Fatalf("call without include_archived: %v", err)
+	}
+	if saw.IncludeArchived {
+		t.Error("expected IncludeArchived=false when the field is absent")
 	}
 }

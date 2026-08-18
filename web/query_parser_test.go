@@ -7,18 +7,19 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/gofiber/fiber/v3"
 )
 
-// QueryParser closes the asymmetry between QueryWithParams and
-// ParseCriteria on manual query routes. The tests below cover the four
-// observable behaviors the canonical wrapper already enforces — boot panic
-// on sparse-render violation, slog.Warn for sort opt-in, wire→doc
-// translation at runtime, allowlist rejection of unknown tokens — plus the
-// pass-through degradation paths (RawDoc Response, no opt-in Request).
+// QueryParser is the single parsing surface for manual query routes. The
+// tests below cover the four observable behaviors the canonical wrapper also
+// enforces — boot panic on sparse-render violation, slog.Warn for sort
+// opt-in, wire→doc translation at runtime, allowlist rejection of unknown
+// tokens — plus the pass-through degradation paths (map Response, no opt-in
+// Request).
 
 // ─── Construction-time boot scan ───────────────────────────────────────────
 
@@ -53,6 +54,11 @@ func TestNewQueryParser_NoPanicWhenFieldsNotOptedIn(t *testing.T) {
 }
 
 func TestNewQueryParser_EmitsSortOptInWarn(t *testing.T) {
+	// The advisory is warn-once per (Request type, sortable path set), and
+	// earlier tests in this package construct the same pair — clear the dedup
+	// so this test observes the FIRST emission rather than a suppressed one.
+	resetOrderByOptInWarned(t)
+
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -82,6 +88,8 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 		Name   *string `query:"name"  filter:"eq"`
 		Fields *string `query:"fields"`
 	}
+	resetOrderByOptInWarned(t)
+
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -92,6 +100,41 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
 		t.Errorf("did not expect sort opt-in warn when only Fields is declared, log was: %s", buf.String())
 	}
+}
+
+// TestNewQueryParser_SortOptInWarnIsOncePerShape asserts the advisory does not
+// repeat for a Request/Response pair already warned about. The same DTO is
+// scanned once per endpoint serving it, which used to print the identical
+// multi-kilobyte line several times per boot.
+func TestNewQueryParser_SortOptInWarnIsOncePerShape(t *testing.T) {
+	resetOrderByOptInWarned(t)
+	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
+
+	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
+		t.Errorf("expected the second scan of the same shape to be silent, log was: %s", buf.String())
+	}
+	// A DIFFERENT sortable surface still gets its own line.
+	_ = NewQueryParser[testFindSortOnlyRequest, sparseUser]()
+	if !strings.Contains(buf.String(), "query.orderBy.opt-in") {
+		t.Errorf("expected a distinct request shape to warn, log was: %s", buf.String())
+	}
+}
+
+// resetOrderByOptInWarned clears the warn-once dedup and restores it when the
+// test ends, so tests observing the advisory stay independent of package test
+// ordering.
+func resetOrderByOptInWarned(t *testing.T) {
+	t.Helper()
+	prev := orderByOptInWarned
+	orderByOptInWarned = &sync.Map{}
+	t.Cleanup(func() { orderByOptInWarned = prev })
 }
 
 // ─── Runtime translation via Parse ─────────────────────────────────────────
@@ -147,9 +190,9 @@ func TestQueryParser_Parse_UnknownFieldsTokenSurfacesBracketedField(t *testing.T
 	app := fiber.New()
 	pipe := newTestPipeline()
 	app.Get("/x", func(c fiber.Ctx) error {
-		_, badField, ok := parser.Parse(c)
+		_, v, ok := parser.Parse(c)
 		if !ok {
-			return RespondSchemaViolation(c, pipe, badField)
+			return RespondSchemaViolation(c, pipe, v.Field)
 		}
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -176,9 +219,9 @@ func TestQueryParser_Parse_UnknownSortTokenSurfacesBracketedField(t *testing.T) 
 	app := fiber.New()
 	pipe := newTestPipeline()
 	app.Get("/x", func(c fiber.Ctx) error {
-		_, badField, ok := parser.Parse(c)
+		_, v, ok := parser.Parse(c)
 		if !ok {
-			return RespondSchemaViolation(c, pipe, badField)
+			return RespondSchemaViolation(c, pipe, v.Field)
 		}
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -203,9 +246,10 @@ func TestQueryParser_Parse_UnknownSortTokenSurfacesBracketedField(t *testing.T) 
 
 // ─── Pass-through degradation paths ────────────────────────────────────────
 
-func TestNewQueryParser_RawDocResponseFallsBackToPassThrough(t *testing.T) {
-	// Resp = map[string]any → projSchema stays nil → parser behavior is
-	// identical to ParseCriteria (tokens land verbatim, no allowlist).
+func TestNewQueryParser_MapResponseFallsBackToPassThrough(t *testing.T) {
+	// Resp = map[string]any → no projection schema is built → the parser
+	// degrades to pass-through: tokens land verbatim, no allowlist, no
+	// wire→doc translation and no `_id` auto-exclusion.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("did not expect panic for map[string]any Response, got: %v", r)

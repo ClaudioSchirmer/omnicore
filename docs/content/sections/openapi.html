@@ -267,7 +267,7 @@ fwopenapi.Mount(d.OpenAPIRegistry, users, fiber.MethodPost, "/",
     fwopenapi.Doc{Summary: "Create a user", Tags: []string{"Users"}})</code></pre>
 
     <h3>Manual handlers with a typed Request DTO</h3>
-    <p>A handler that hand-rolls its dispatch (<code>Bind().Body() → ParseCriteria → BindPath → ToCommand → Pipeline.Dispatch</code>) still owns the same kind of DTOs the canonical path owns. <code>openapi.Mount</code> covers them too — pair it with <code>fwopenapi.RouteSpecOf[TReq, TResp](status)</code> so the consumer just names the Request / Response DTOs:</p>
+    <p>A handler that hand-rolls its dispatch (<code>Bind().Body() → NewQueryParser.Parse → BindPath → ToCommand → Pipeline.Dispatch</code>) still owns the same kind of DTOs the canonical path owns. <code>openapi.Mount</code> covers them too — pair it with <code>fwopenapi.RouteSpecOf[TReq, TResp](status)</code> so the consumer just names the Request / Response DTOs:</p>
     <pre><code>fwopenapi.Mount(d.OpenAPIRegistry, group, fiber.MethodPost, "/",
     customInsertUser(d.Pipeline, repo, svc),
     fwopenapi.RouteSpecOf[requests.InsertUserCustomRequest, responses.UserCustomResponse](

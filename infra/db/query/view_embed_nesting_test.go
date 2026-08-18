@@ -201,35 +201,4 @@ func TestExternalLeg_SegmentContentsStayUntouched(t *testing.T) {
 	}
 }
 
-// ─── tabular export at depth ─────────────────────────────────────────────────
-
-// The export plan of a view leg is the SOURCE view's full tree re-rooted under
-// the embed's segments — children included, exactly like a composed view's
-// internal leg.
-func TestNestedViewLeg_ExportPlanCarriesSourceTree(t *testing.T) {
-	plan := salesEmbeddingProducts().ExportPlan()
-	var seg *exportBranch
-	for _, c := range plan.Root.Children {
-		if c.GoSegment == "Product" {
-			seg = &exportBranch{goSegment: c.GoSegment, wireSegment: c.WireSegment, children: len(c.Children)}
-			break
-		}
-	}
-	if seg == nil {
-		t.Fatalf("the materialized segment must appear in the export plan, got %+v", plan.Root.Children)
-	}
-	if seg.wireSegment != "product" {
-		t.Errorf("wire segment: got %q want %q", seg.wireSegment, "product")
-	}
-	if seg.children != 1 {
-		t.Errorf("the source view's own child collection must export under the segment, got %d branches", seg.children)
-	}
-}
-
-type exportBranch struct {
-	goSegment   string
-	wireSegment string
-	children    int
-}
-
 func (nestLine) CollectionName() string { return "NestLines" }

@@ -125,7 +125,7 @@ func TestSQLServerEngine_AuditAndEvents(t *testing.T) {
 	// FindByID run on a real SQL Server (CHAR(36) id bound as text, @pN
 	// placeholder, no-rows → sentinel).
 	reader := read.NewAuditReader(eng)
-	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value())
+	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value(), 20)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}

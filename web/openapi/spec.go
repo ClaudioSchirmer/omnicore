@@ -686,9 +686,9 @@ func successWrapper(status int, spec RouteSpec) func(json.RawMessage) any {
 // no further cursors).
 func paginationInfoExample() map[string]any {
 	return map[string]any{
-		"hasNextPage": false,
+		"hasNextPage":     false,
 		"hasPreviousPage": false,
-		"totalCount": 1,
+		"totalCount":      1,
 	}
 }
 
@@ -880,11 +880,11 @@ func ensurePaginationInfo(c *Components) {
 	c.Schemas["PaginationInfo"] = &Schema{
 		Type: "object",
 		Properties: map[string]*Schema{
-			"hasNextPage":    {Type: "boolean", Example: false},
-			"hasPreviousPage":    {Type: "boolean", Example: false},
-			"endCursor": {Type: "string"},
-			"startCursor": {Type: "string"},
-			"totalCount":       {Type: "integer", Format: "int64", Example: 1},
+			"hasNextPage":     {Type: "boolean", Example: false},
+			"hasPreviousPage": {Type: "boolean", Example: false},
+			"endCursor":       {Type: "string"},
+			"startCursor":     {Type: "string"},
+			"totalCount":      {Type: "integer", Format: "int64", Example: 1},
 		},
 		Required: []string{"hasNextPage", "hasPreviousPage", "totalCount"},
 	}

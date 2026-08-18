@@ -125,7 +125,7 @@ func TestOracleEngine_AuditAndEvents(t *testing.T) {
 	// FindByID run on a real Oracle (VARCHAR2(36) id bound as text, :N
 	// placeholder, no-rows → sentinel).
 	reader := read.NewAuditReader(eng)
-	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value())
+	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value(), 20)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}

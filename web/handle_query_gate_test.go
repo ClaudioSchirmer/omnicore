@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -26,7 +25,7 @@ func (r bareGateRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery
 func gateApp(h *onlyTotalHandler) *fiber.App {
 	app := fiber.New()
 	pipe := newTestPipeline()
-	app.Get("/users", QueryWithParams(pipe, bareGateRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, bareGateRequest{}, rawItem, h))
 	return app
 }
 
@@ -86,7 +85,7 @@ func TestReservedGate_DirectionPairREST(t *testing.T) {
 	h := &onlyTotalHandler{}
 	app := fiber.New()
 	pipe := newTestPipeline()
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?last=3", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -109,7 +108,7 @@ func TestReservedGate_DirectionPairREST(t *testing.T) {
 	} {
 		h := &onlyTotalHandler{}
 		app := fiber.New()
-		app.Get("/users", QueryWithParams(newTestPipeline(), testOnlyTotalRequest{}, responses.RawDoc, h))
+		app.Get("/users", QueryWithParams(newTestPipeline(), testOnlyTotalRequest{}, rawItem, h))
 		resp, _ := app.Test(httptest.NewRequest("GET", "/users?"+tc.query, nil))
 		if resp.StatusCode != fiber.StatusBadRequest {
 			t.Fatalf("%s must 400, got %d", tc.query, resp.StatusCode)
@@ -127,7 +126,7 @@ func TestReservedGate_DirectionPairREST(t *testing.T) {
 	// Non-positive sizes reject on the size key.
 	for _, q := range []string{"first=0", "last=-1"} {
 		app := fiber.New()
-		app.Get("/users", QueryWithParams(newTestPipeline(), testOnlyTotalRequest{}, responses.RawDoc, &onlyTotalHandler{}))
+		app.Get("/users", QueryWithParams(newTestPipeline(), testOnlyTotalRequest{}, rawItem, &onlyTotalHandler{}))
 		resp, _ := app.Test(httptest.NewRequest("GET", "/users?"+q, nil))
 		if resp.StatusCode != fiber.StatusBadRequest {
 			t.Fatalf("%s must 400, got %d", q, resp.StatusCode)
@@ -143,7 +142,7 @@ func TestReservedGate_DirectionPairREST(t *testing.T) {
 func TestReservedGate_OnlyTotalPresenceVsActivation(t *testing.T) {
 	h := &onlyTotalHandler{}
 	app := fiber.New()
-	app.Get("/users", QueryWithParams(newTestPipeline(), testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(newTestPipeline(), testOnlyTotalRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=false&first=5&orderBy=name", nil))
 	if resp.StatusCode != fiber.StatusOK {

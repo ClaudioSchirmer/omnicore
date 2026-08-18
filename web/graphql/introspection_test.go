@@ -5,14 +5,13 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
-	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 )
 
 func newIntrospectableRegistry(on bool) (*Registry, *configuration.AppContext) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg := New(pipeline.New(translation.Default())).
-		Register(QueryWithParams[execRequest, execResponse]("users", "User", h)).
+		Register(QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, h)).
 		EnableIntrospection(on)
 	return reg, configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
@@ -127,7 +126,7 @@ func TestIntrospection_DisabledFallsThroughToError(t *testing.T) {
 // renders the declared SDL default as its GraphQL literal (spec shape GraphiQL
 // and codegen read); UserOrder.direction carries `ASC`, the field itself none.
 func TestIntrospection_InputFieldDefaultValueSurfaces(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 	reg.EnableIntrospection(true)
 

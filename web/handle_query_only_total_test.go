@@ -8,7 +8,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/web/responses"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -35,20 +35,20 @@ func (r testOnlyTotalRequest) ToQuery(crit queries.ReadCriteria) *testFindParams
 	return &testFindParamsQuery{Criteria: crit}
 }
 
-// onlyTotalHandler returns a Page already shaped for the only-total mode so
-// the wrapper exercises the envelope branch end to end.
+// onlyTotalHandler returns a typed PageOf already shaped for the only-total
+// mode so the wrapper exercises the envelope branch end to end.
 type onlyTotalHandler struct {
 	got *testFindParamsQuery
 }
 
-func (h *onlyTotalHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.Page, error) {
+func (h *onlyTotalHandler) Handle(ctx *configuration.AppContext, q *testFindParamsQuery) (queries.PageOf[testUserResult], error) {
 	h.got = q
 	_, _ = q.ToCriteria(ctx)
 	if q.Criteria.OnlyTotal {
-		return queries.Page{OnlyTotal: true, TotalCount: 42}, nil
+		return queries.PageOf[testUserResult]{OnlyTotal: true, TotalCount: 42}, nil
 	}
-	return queries.Page{
-		Items: []map[string]any{{"id": "x"}},
+	return queries.PageOf[testUserResult]{
+		Items:      []testUserResult{{ID: strPtr("x")}},
 		TotalCount: 1,
 	}, nil
 }
@@ -60,7 +60,7 @@ func TestOnlyTotal_EnvelopeOmitsDataAndListingFields(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &onlyTotalHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	resp, err := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true", nil))
 	if err != nil {
@@ -103,7 +103,7 @@ func TestOnlyTotal_PropagatesIntoCriteria(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &onlyTotalHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true", nil))
 	if h.got == nil {
@@ -120,7 +120,7 @@ func TestOnlyTotal_FalseExplicitKeepsListingShape(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &onlyTotalHandler{}
 
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=false", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -158,7 +158,7 @@ func TestOnlyTotal_ConflictMatrixRejectsListingControls(t *testing.T) {
 			app := fiber.New()
 			pipe := newTestPipeline()
 			h := &onlyTotalHandler{}
-			app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+			app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 			url := "/users?onlyTotal=true&" + tc.extra
 			resp, _ := app.Test(httptest.NewRequest("GET", url, nil))
@@ -188,7 +188,7 @@ func TestOnlyTotal_PreservesFilterLeaves(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &onlyTotalHandler{}
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&name.startswith=Bo", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -210,7 +210,7 @@ func TestOnlyTotal_PreservesSearch(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &onlyTotalHandler{}
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&search=foo", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -225,7 +225,7 @@ func TestOnlyTotal_PreservesIncludeArchived(t *testing.T) {
 	app := fiber.New()
 	pipe := newTestPipeline()
 	h := &onlyTotalHandler{}
-	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testOnlyTotalRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true&includeArchived=true", nil))
 	if resp.StatusCode != fiber.StatusOK {
@@ -246,7 +246,7 @@ func TestOnlyTotal_RejectsWhenDTODoesNotDeclareIt(t *testing.T) {
 	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
 	// testFindParamsRequest (from handle_query_test.go) does NOT declare OnlyTotal.
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, responses.RawDoc, h))
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?onlyTotal=true", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -257,35 +257,42 @@ func TestOnlyTotal_RejectsWhenDTODoesNotDeclareIt(t *testing.T) {
 	}
 }
 
-// ─── ParseCriteria parity ────────────────────────────────────────────────
+// ─── manual-parser parity ────────────────────────────────────────────────
+//
+// web.ParseCriteria was REMOVED; manual query handlers build a typed
+// QueryParser at mount time instead. The parity assertions below are kept
+// verbatim on the replacement surface — a map Response keeps the parser in
+// pass-through mode, matching the removed helper's default.
 
-func TestOnlyTotal_ParseCriteriaPropagatesFlag(t *testing.T) {
-	// Manual handlers via ParseCriteria get the same treatment — onlyTotal flows
-	// into the criteria, conflicts are rejected with the same field shape.
+func TestOnlyTotal_QueryParserPropagatesFlag(t *testing.T) {
+	// Manual handlers get the same treatment — onlyTotal flows into the
+	// criteria, conflicts are rejected with the same field shape.
+	parser := NewQueryParser[testOnlyTotalRequest, map[string]any]()
 	app := fiber.New()
 	var got queries.ReadCriteria
-	var gotBad string
+	var gotViolation *queryschema.Violation
 	var gotOK bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		got, gotBad, gotOK = ParseCriteria(c, testOnlyTotalRequest{})
+		got, gotViolation, gotOK = parser.Parse(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/x?onlyTotal=true&name=Jane", nil))
-	if !gotOK || gotBad != "" {
-		t.Fatalf("expected ok=true, got ok=%v bad=%q", gotOK, gotBad)
+	if !gotOK || gotViolation != nil {
+		t.Fatalf("expected ok=true, got ok=%v violation=%+v", gotOK, gotViolation)
 	}
 	if !got.OnlyTotal {
-		t.Error("expected OnlyTotal=true from ParseCriteria")
+		t.Error("expected OnlyTotal=true from the manual parser")
 	}
 }
 
-func TestOnlyTotal_ParseCriteriaRejectsConflict(t *testing.T) {
+func TestOnlyTotal_QueryParserRejectsConflict(t *testing.T) {
+	parser := NewQueryParser[testOnlyTotalRequest, map[string]any]()
 	app := fiber.New()
-	var gotBad string
+	var gotViolation *queryschema.Violation
 	var gotOK bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		_, gotBad, gotOK = ParseCriteria(c, testOnlyTotalRequest{})
+		_, gotViolation, gotOK = parser.Parse(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -293,18 +300,18 @@ func TestOnlyTotal_ParseCriteriaRejectsConflict(t *testing.T) {
 	if gotOK {
 		t.Error("expected ok=false on onlyTotal + sort")
 	}
-	if gotBad != "onlyTotal[orderBy]" {
-		t.Errorf("expected bad=onlyTotal[orderBy], got %q", gotBad)
+	if gotViolation == nil || gotViolation.Field != "onlyTotal[orderBy]" {
+		t.Errorf("expected bad=onlyTotal[orderBy], got %+v", gotViolation)
 	}
 }
 
-// ─── RespondPaged direct (Page → envelope branch) ─────────────────────────
+// ─── RespondPaged direct (PageOf → envelope branch) ───────────────────────
 
 func TestRespondPaged_OnlyTotalEmitsDedicatedShape(t *testing.T) {
 	app := fiber.New()
 	app.Get("/x", func(c fiber.Ctx) error {
-		page := queries.Page{OnlyTotal: true, TotalCount: 7}
-		return RespondPaged(c, fiber.StatusOK, page, summaryFromDoc)
+		page := queries.PageOf[testUserResult]{OnlyTotal: true, TotalCount: 7}
+		return RespondPaged(c, fiber.StatusOK, page, testUserSummary{}.FromResult)
 	})
 
 	resp, _ := app.Test(httptest.NewRequest("GET", "/x", nil))

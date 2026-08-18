@@ -19,17 +19,18 @@ import (
 // REST wrapper consumes. Declared here (not imported from web) so web/graphql
 // stays independent of web. A zero Request maps the parsed criteria into the
 // Query; AppContext-derived overlays still layer on inside Query.ToCriteria.
-type HasToParamsQuery[TQ queries.QueryWithParams] interface {
+type HasToParamsQuery[TQ any] interface {
 	ToQuery(criteria queries.ReadCriteria) TQ
 }
 
 // HasToIDQuery is the contract for by-id read Request DTOs — identical to
 // web.HasToIDQuery, declared here so web/graphql stays independent of web.
-// The Request carries no criteria argument: the by-id read has no pagination
-// or filters; identity-derived overlays still layer on inside
+// The criteria it receives carries the one reserved control a by-id read
+// accepts (includeArchived) and nothing else — the by-id read has no
+// pagination or filters; identity-derived overlays still layer on inside
 // Query.ToCriteria(ctx).
-type HasToIDQuery[TQ queries.QueryByID] interface {
-	ToQuery() TQ
+type HasToIDQuery[TQ any] interface {
+	ToQuery(criteria queries.ReadCriteria) TQ
 }
 
 // resolver runs one root field: GraphQL args → a wire-shaped value tree (or
@@ -176,16 +177,19 @@ func (r *Registry) EnableAuthorization(on bool) *Registry {
 }
 
 // QueryWithParams registers a read handler as a root Query field returning a
-// Relay connection. TReq is the read Request DTO, R the Response DTO (the connection
-// node), TQ its Query. The argument set (where / first / after / last / before /
+// Relay connection. TReq is the read Request DTO, R the Response DTO (the
+// connection node) and responseProjection the TResult→R wire mapping —
+// typically the Response's FromResult method, the SAME seat the REST/gRPC/
+// export constructors take, so every surface renders the identical wire
+// values. The argument set (where / first / after / last / before /
 // orderBy / search / includeArchived) and the node/where/connection types are
-// reflected from TReq + R — both are reflection-only (they appear in no
-// parameter) and must be named; TQ is inferred from TReq's ToQuery + the
-// handler, so a call passes just `QueryWithParams[TReq, R](...)`. TQ trails the type-param
-// list precisely so it can be elided as the inferable suffix.
-func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParams](
+// reflected from TReq + R. TReq is reflection-only (it appears in no
+// parameter) and must be named; TResult/R come from responseProjection and
+// TQ from the handler, so a call passes just `QueryWithParams[TReq](...)`.
+func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.QueryWithParams[TResult]](
 	name, entity string,
-	h pipeline.Handler[TQ, queries.Page],
+	responseProjection func(TResult) R,
+	h pipeline.Handler[TQ, queries.PageOf[TResult]],
 	opts ...FieldOption,
 ) Field {
 	mustValidName("QueryWithParams", "name", name)
@@ -242,7 +246,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 				res := pipeline.Dispatch(pipe, ctx, req.ToQuery(crit), h)
 				switch {
 				case res.IsSuccess():
-					return pageToConnection(res.Value(), respType), nil
+					return pageToConnection(res.Value(), responseProjection), nil
 				case res.IsFailure():
 					return nil, fromNotifications(res.Notifications())
 				default:
@@ -263,9 +267,10 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 // pair QueryWithParams takes, and the same entity string SHOULD be passed to
 // both so the singular and plural fields share one node type (GraphQL requires
 // one type per name; the first registration walks the Response DTO and defines
-// the object, later registrations under the same entity map onto it — keep the
-// two Response DTOs wire-aligned). TReq is the by-id read Request DTO, R the
-// Response DTO (reflection-only, like QueryWithParams); TQ is inferred.
+// the object, later registrations under the same entity map onto it — the SDL
+// builder boot-fails when the two Response DTOs are not wire-aligned). TReq is
+// the by-id read Request DTO, R the Response DTO; responseProjection is the
+// TResult→R wire mapping (same seat as every other surface); TQ is inferred.
 //
 // The includeArchived argument obeys the DTO like every reserved control: it
 // is emitted (and honored) only when TReq declares `query:"includeArchived"`
@@ -275,9 +280,10 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], R any, TQ queries.QueryWithParam
 // in errors[].extensions (the 404 twin — the GitHub-style not-found shape).
 // Pagination/projection criteria do not apply (ReadByID ignores them by
 // design); the selection set still trims the resolved node.
-func QueryByID[TReq HasToIDQuery[TQ], R any, TQ queries.QueryByID](
+func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[TResult]](
 	name, entity string,
-	h pipeline.Handler[TQ, map[string]any],
+	responseProjection func(TResult) R,
+	h pipeline.Handler[TQ, TResult],
 	opts ...FieldOption,
 ) Field {
 	mustValidName("QueryByID", "name", name)
@@ -291,17 +297,22 @@ func QueryByID[TReq HasToIDQuery[TQ], R any, TQ queries.QueryByID](
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 				var req TReq
+				// The by-id criteria seat: one reserved control is the whole
+				// argument vocabulary here (the paged sibling builds the full
+				// set in criteriaPlan.buildCriteria).
+				crit := queries.ReadCriteria{Filter: map[string]any{}}
 				if includeArchived {
 					if v, ok := args[queryschema.KeyIncludeArchived].(bool); ok {
+						crit.IncludeArchived = v
 						applyIncludeArchived(reflect.ValueOf(&req).Elem(), v)
 					}
 				}
-				q := req.ToQuery()
+				q := req.ToQuery(crit)
 				q.SetPathID(asString(args["id"]))
 				res := pipeline.Dispatch(pipe, ctx, q, h)
 				switch {
 				case res.IsSuccess():
-					return translateToWire(res.Value(), respType), nil
+					return wireValueOf(responseProjection(res.Value())), nil
 				case res.IsFailure():
 					return nil, fromNotifications(res.Notifications())
 				default:

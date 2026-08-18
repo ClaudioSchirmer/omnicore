@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -101,19 +102,19 @@ func TestSDL_BuildErrorSurfacesAndIsCached(t *testing.T) {
 func TestMustValidName_ConstructorGates(t *testing.T) {
 	h := &fakeReadHandler{}
 	covMustPanic(t, "field name with space", func() {
-		QueryWithParams[execRequest, execResponse]("us ers", "User", h)
+		QueryWithParams[execRequest]("us ers", "User", execResponse{}.FromResult, h)
 	})
 	covMustPanic(t, "empty field name", func() {
-		QueryWithParams[execRequest, execResponse]("", "User", h)
+		QueryWithParams[execRequest]("", "User", execResponse{}.FromResult, h)
 	})
 	covMustPanic(t, "empty entity", func() {
-		QueryWithParams[execRequest, execResponse]("users", "", h)
+		QueryWithParams[execRequest]("users", "", execResponse{}.FromResult, h)
 	})
 	covMustPanic(t, "leading digit", func() {
-		QueryWithParams[execRequest, execResponse]("1users", "User", h)
+		QueryWithParams[execRequest]("1users", "User", execResponse{}.FromResult, h)
 	})
 	covMustPanic(t, "by-id bad entity", func() {
-		QueryByID[bareRequest, byIDResponse]("user", "Us-er", &fakeByIDHandler{})
+		QueryByID[bareRequest]("user", "Us-er", byIDResponse{}.FromResult, &fakeByIDHandler{})
 	})
 	covMustPanic(t, "mutation bad name", func() {
 		MutationByID[delCmd, *delCmd, results.None]("delete thing", &fakeDelHandler{})
@@ -126,25 +127,83 @@ func TestMustValidName_ConstructorGates(t *testing.T) {
 func TestBuild_EntityInfraCollisionPanics(t *testing.T) {
 	covMustPanic(t, "entity claims PageInfo", func() {
 		reg := New(pipeline.New(translation.Default())).Register(
-			QueryWithParams[execRequest, execResponse]("users", "PageInfo", &fakeReadHandler{}),
+			QueryWithParams[execRequest]("users", "PageInfo", execResponse{}.FromResult, &fakeReadHandler{}),
 		)
 		_, _ = reg.SDL()
 	})
 	covMustPanic(t, "entity claims a sibling's Connection", func() {
 		reg := New(pipeline.New(translation.Default())).Register(
-			QueryWithParams[execRequest, execResponse]("users", "User", &fakeReadHandler{}),
+			QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, &fakeReadHandler{}),
 		).Register(
-			QueryByID[bareRequest, byIDResponse]("gadget", "UserConnection", &fakeByIDHandler{}),
+			QueryByID[bareRequest]("gadget", "UserConnection", byIDResponse{}.FromResult, &fakeByIDHandler{}),
 		)
 		_, _ = reg.SDL()
 	})
 	// The legitimate shared-entity mapping (users/user both on "User") stays.
 	reg := New(pipeline.New(translation.Default())).Register(
-		QueryWithParams[execRequest, execResponse]("users", "User", &fakeReadHandler{}),
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, &fakeReadHandler{}),
 	).Register(
-		QueryByID[bareRequest, byIDResponse]("user", "User", &fakeByIDHandler{}),
+		QueryByID[bareRequest]("user", "User", byIDResponse{}.FromResult, &fakeByIDHandler{}),
 	)
 	if _, err := reg.SDL(); err != nil {
 		t.Fatalf("shared entity name must keep building: %v", err)
 	}
+}
+
+// ── shared-entity wire-alignment boot guard ──────────────────────────────────
+
+// misalignedResponse shares the "User" entity with execResponse but drops the
+// `age` wire field and adds `email` — the shape the boot guard must reject.
+type misalignedResponse struct {
+	ID    *string `json:"id,omitempty"`
+	Name  *string `json:"name,omitempty"`
+	Email *string `json:"email,omitempty"`
+}
+
+func (misalignedResponse) FromResult(r execResult) misalignedResponse {
+	return misalignedResponse{ID: r.ID, Name: r.Name}
+}
+
+// TestBuild_SharedEntityAlignedPairBuilds — two DISTINCT Response DTO Go types
+// with the SAME wire field set may share one entity name: the first defines the
+// node object, the second maps onto it, and the schema builds (the previous
+// honor-system behavior, now explicitly guarded).
+func TestBuild_SharedEntityAlignedPairBuilds(t *testing.T) {
+	reg := New(pipeline.New(translation.Default())).Register(
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, &fakeReadHandler{}),
+	).Register(
+		QueryByID[bareRequest]("user", "User", byIDResponse{}.FromResult, &fakeByIDHandler{}),
+	)
+	sdl, err := reg.SDL()
+	if err != nil {
+		t.Fatalf("wire-aligned Response DTOs sharing an entity must build: %v", err)
+	}
+	if strings.Count(sdl, "type User {") != 1 {
+		t.Errorf("expected exactly one User node type:\n%s", sdl)
+	}
+}
+
+// TestBuild_SharedEntityMisalignedPairPanics — the NEW boot guard: two Response
+// DTOs sharing an entity name with DIFFERENT wire field sets panic at schema
+// build, and the message names the differing fields (both directions) and the
+// offending DTO type.
+func TestBuild_SharedEntityMisalignedPairPanics(t *testing.T) {
+	reg := New(pipeline.New(translation.Default())).Register(
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, &fakeReadHandler{}),
+	).Register(
+		QueryByID[bareRequest]("user", "User", misalignedResponse{}.FromResult, &fakeByIDHandler{}),
+	)
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("wire-misaligned Response DTOs sharing an entity must panic at build")
+		}
+		msg := fmt.Sprint(r)
+		for _, want := range []string{`"User"`, `"email"`, `"age"`, "misalignedResponse"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("panic message must name %s; got:\n%s", want, msg)
+			}
+		}
+	}()
+	_, _ = reg.SDL()
 }

@@ -446,7 +446,7 @@ func (n *ViewNode) StripJoinKeyID(doc map[string]any) {
 
 // ToGoDoc rewrites a physical (column-keyed) document into the Go-field
 // vocabulary the application/web layers consume — recursively for embeds.
-// `_id` passes through (the reader + AutoFromDoc rely on it). Columns not in
+// `_id` passes through (the reader and the Result fill rely on it). Columns not in
 // the schema (and not a managed column) are dropped. With no schema the doc is
 // returned unchanged.
 func (n *ViewNode) ToGoDoc(doc map[string]any) map[string]any {

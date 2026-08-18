@@ -22,21 +22,21 @@ func mustCursor(t *testing.T, k []any, hash string) string {
 }
 
 // runBuildCriteria drives buildCriteria over a single GET request, returning
-// the (badField, ok) the wrapper would surface.
-func runBuildCriteria(t *testing.T, schemaType reflect.Type, url string) (string, bool) {
+// the (violation, ok) the wrapper would surface.
+func runBuildCriteria(t *testing.T, schemaType reflect.Type, url string) (*queryschema.Violation, bool) {
 	t.Helper()
 	s := queryschema.ExtractRequestSchema(schemaType)
 	app := fiber.New()
-	var badField string
+	var violation *queryschema.Violation
 	var ok bool
 	app.Get("/x", func(c fiber.Ctx) error {
-		_, badField, ok = buildCriteria(c, s, nil)
+		_, _, violation, ok = buildCriteria(c, s, nil)
 		return c.SendStatus(fiber.StatusOK)
 	})
 	if _, err := app.Test(httptest.NewRequest("GET", url, nil)); err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}
-	return badField, ok
+	return violation, ok
 }
 
 type afterBeforeRequest struct {
@@ -48,9 +48,9 @@ type afterBeforeRequest struct {
 func TestBuildCriteria_AfterCursorTupleLengthMismatch(t *testing.T) {
 	// K has 2 elements → len(K)-1 == 1, but no ?sort (len 0) → reject on after.
 	cur := mustCursor(t, []any{"a", "id"}, "")
-	bad, ok := runBuildCriteria(t, reflect.TypeOf(testFindParamsRequest{}), "/x?after="+cur)
-	if ok || bad != "after" {
-		t.Fatalf("expected after tuple-length rejection, got bad=%q ok=%v", bad, ok)
+	v, ok := runBuildCriteria(t, reflect.TypeOf(testFindParamsRequest{}), "/x?after="+cur)
+	if ok || v == nil || v.Field != "after" {
+		t.Fatalf("expected after tuple-length rejection, got v=%+v ok=%v", v, ok)
 	}
 }
 
@@ -60,26 +60,26 @@ func TestBuildCriteria_AfterCursorHashDeferredToReader(t *testing.T) {
 	// the criteria predates the Query's ToCriteria overlays, while cursors are
 	// stamped post-overlay; the reader performs the authoritative check.
 	cur := mustCursor(t, []any{"id"}, "deadbeefcafe")
-	bad, ok := runBuildCriteria(t, reflect.TypeOf(testFindParamsRequest{}), "/x?after="+cur)
-	if !ok || bad != "" {
-		t.Fatalf("expected the hash check deferred to the reader, got bad=%q ok=%v", bad, ok)
+	v, ok := runBuildCriteria(t, reflect.TypeOf(testFindParamsRequest{}), "/x?after="+cur)
+	if !ok || v != nil {
+		t.Fatalf("expected the hash check deferred to the reader, got v=%+v ok=%v", v, ok)
 	}
 }
 
 func TestBuildCriteria_BeforeCursorTupleLengthMismatch(t *testing.T) {
 	cur := mustCursor(t, []any{"a", "id"}, "")
-	bad, ok := runBuildCriteria(t, reflect.TypeOf(afterBeforeRequest{}), "/x?before="+cur)
-	if ok || bad != "before" {
-		t.Fatalf("expected before tuple-length rejection, got bad=%q ok=%v", bad, ok)
+	v, ok := runBuildCriteria(t, reflect.TypeOf(afterBeforeRequest{}), "/x?before="+cur)
+	if ok || v == nil || v.Field != "before" {
+		t.Fatalf("expected before tuple-length rejection, got v=%+v ok=%v", v, ok)
 	}
 }
 
 func TestBuildCriteria_AfterAndBeforeTogetherRejected(t *testing.T) {
 	a := mustCursor(t, []any{"id"}, "")
 	b := mustCursor(t, []any{"id"}, "")
-	bad, ok := runBuildCriteria(t, reflect.TypeOf(afterBeforeRequest{}), "/x?after="+a+"&before="+b)
-	if ok || bad != "before" {
-		t.Fatalf("expected after,before mutual exclusion, got bad=%q ok=%v", bad, ok)
+	v, ok := runBuildCriteria(t, reflect.TypeOf(afterBeforeRequest{}), "/x?after="+a+"&before="+b)
+	if ok || v == nil || v.Field != "before" {
+		t.Fatalf("expected after,before mutual exclusion, got v=%+v ok=%v", v, ok)
 	}
 }
 

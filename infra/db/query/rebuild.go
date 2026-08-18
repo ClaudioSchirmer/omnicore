@@ -322,7 +322,9 @@ func (s *SyncEngine) ExecuteRebuild(ctx context.Context, plan DriftPlan, cfg Reb
 		slog.String("view", collection),
 		slog.String("active", shadow.String()),
 		slog.String("retired", oldActive.String()),
-		slog.Duration("duration", time.Since(now)))
+		// Milliseconds, not slog.Duration: the JSON handler renders a bare
+		// time.Duration as a nanosecond count with no unit in the key.
+		slog.Float64("durationMs", float64(time.Since(now).Nanoseconds())/1e6))
 
 	return nil
 }

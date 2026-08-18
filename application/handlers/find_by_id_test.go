@@ -9,16 +9,16 @@ import (
 
 func TestFindByIDQueryHandler_DelegatesAndPropagatesCriteria(t *testing.T) {
 	reader := &spyReader{
-		docToReturn: map[string]any{"id": "abc", "name": "Jane"},
+		docToReturn: map[string]any{"ID": "abc", "Name": "Jane"},
 		docFound:    true,
 	}
-	h := &FindByIDQueryHandler[*testFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &testFindIDQuery{includeArchived: true}
 	q.SetPathID("abc")
 
 	ctx := testCtx()
-	doc, err := h.Handle(ctx, q)
+	r, err := h.Handle(ctx, q)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,17 +34,67 @@ func TestFindByIDQueryHandler_DelegatesAndPropagatesCriteria(t *testing.T) {
 	if q.gotCtx != ctx {
 		t.Error("expected ToCriteria to receive the request ctx")
 	}
-	if doc["name"] != "Jane" {
-		t.Errorf("expected doc roundtrip, got %v", doc)
+	if r.ID != "abc" || r.Name != "Jane" {
+		t.Errorf("expected the doc filled into the typed Result, got %+v", r)
+	}
+}
+
+// On a hit the handler must fill the TResult from the doc and pass it through
+// the Query's FromQueryResult hook exactly once — the hook's return value is what
+// the handler surfaces.
+func TestFindByIDQueryHandler_FromQueryInvokedOnHit(t *testing.T) {
+	reader := &spyReader{
+		docToReturn: map[string]any{"ID": "abc", "Name": "jane"},
+		docFound:    true,
+	}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
+
+	q := &testFindIDQuery{
+		mutate: func(r testFindResult) testFindResult {
+			r.Name = r.Name + "-derived"
+			return r
+		},
+	}
+	q.SetPathID("abc")
+
+	r, err := h.Handle(testCtx(), q)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if q.fromQueryCalls != 1 {
+		t.Errorf("expected FromQueryResult called exactly once on a hit, got %d", q.fromQueryCalls)
+	}
+	if len(q.fromQuerySeen) != 1 || q.fromQuerySeen[0].ID != "abc" || q.fromQuerySeen[0].Name != "jane" {
+		t.Errorf("expected FromQueryResult to receive the filled Result, got %+v", q.fromQuerySeen)
+	}
+	if r.Name != "jane-derived" {
+		t.Errorf("expected FromQueryResult's return value surfaced, got %+v", r)
+	}
+}
+
+func TestFindByIDQueryHandler_FromQueryErrorPropagates(t *testing.T) {
+	want := errors.New("from-query boom")
+	reader := &spyReader{
+		docToReturn: map[string]any{"ID": "abc"},
+		docFound:    true,
+	}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
+
+	q := &testFindIDQuery{fromQueryErr: want}
+	q.SetPathID("abc")
+
+	_, err := h.Handle(testCtx(), q)
+	if !errors.Is(err, want) {
+		t.Errorf("expected FromQueryResult error to propagate, got %v", err)
 	}
 }
 
 func TestFindByIDQueryHandler_PropagatesOverlayFilter(t *testing.T) {
 	reader := &spyReader{
-		docToReturn: map[string]any{"id": "abc"},
+		docToReturn: map[string]any{"ID": "abc"},
 		docFound:    true,
 	}
-	h := &FindByIDQueryHandler[*testFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &testFindIDQuery{overlay: map[string]any{"tenant_id": "acme"}}
 	q.SetPathID("abc")
@@ -59,7 +109,7 @@ func TestFindByIDQueryHandler_PropagatesOverlayFilter(t *testing.T) {
 
 func TestFindByIDQueryHandler_NotFoundProducesDomainError(t *testing.T) {
 	reader := &spyReader{docFound: false}
-	h := &FindByIDQueryHandler[*testFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &testFindIDQuery{}
 	q.SetPathID("missing")
@@ -67,6 +117,9 @@ func TestFindByIDQueryHandler_NotFoundProducesDomainError(t *testing.T) {
 	_, err := h.Handle(testCtx(), q)
 	if err == nil {
 		t.Fatal("expected DomainError for not found, got nil")
+	}
+	if q.fromQueryCalls != 0 {
+		t.Errorf("expected FromQueryResult NOT invoked on a miss, got %d calls", q.fromQueryCalls)
 	}
 	var de *domain.DomainError
 	if !errors.As(err, &de) {
@@ -89,7 +142,7 @@ func TestFindByIDQueryHandler_NotFoundProducesDomainError(t *testing.T) {
 
 func TestFindByIDQueryHandler_ContextNameDefaultsToViewWhenQueryEmpty(t *testing.T) {
 	reader := &spyReader{docFound: false}
-	h := &FindByIDQueryHandler[*testFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &testFindIDQuery{} // contextName left empty → fallback to view
 	q.SetPathID("missing")
@@ -106,7 +159,7 @@ func TestFindByIDQueryHandler_ContextNameDefaultsToViewWhenQueryEmpty(t *testing
 
 func TestFindByIDQueryHandler_ContextNameComesFromQuery(t *testing.T) {
 	reader := &spyReader{docFound: false}
-	h := &FindByIDQueryHandler[*testFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &testFindIDQuery{contextName: "User"}
 	q.SetPathID("missing")
@@ -124,7 +177,7 @@ func TestFindByIDQueryHandler_ContextNameComesFromQuery(t *testing.T) {
 func TestFindByIDQueryHandler_PropagatesReaderError(t *testing.T) {
 	want := errors.New("mongo timeout")
 	reader := &spyReader{docErr: want}
-	h := &FindByIDQueryHandler[*testFindIDQuery]{Reader: reader, View: "users"}
+	h := &FindByIDQueryHandler[*testFindIDQuery, testFindResult]{Reader: reader, View: "users"}
 
 	q := &testFindIDQuery{}
 	q.SetPathID("abc")

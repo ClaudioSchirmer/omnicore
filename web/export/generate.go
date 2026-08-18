@@ -1,16 +1,18 @@
 package export
 
-import "github.com/ClaudioSchirmer/omnicore/application/queries"
+import "reflect"
 
-// Generate walks the (already pruned) plan over the read's documents and emits
-// the Row stream into sink. It is pure — no HTTP, no format knowledge, no
-// per-request state beyond the label closure.
+// Generate walks the (already pruned) plan over the projected wire items and
+// emits the Row stream into sink. It is pure — no HTTP, no format knowledge,
+// no per-request state beyond the label closure.
 //
-// label resolves a column header: it receives the column's catalog key and Go
-// field name and returns the header text (the wrapper injects the Translator +
-// request language and the fallback-to-field-name rule). items are the Go-keyed
-// documents the view reader returned; child collections are descended via each
-// node's GoSegment.
+// label resolves a column header: it receives the column's catalog key
+// (`exportLabelKey` tag) and json wire name and returns the header text (the
+// wrapper injects the Translator + request language and the
+// fallback-to-wire-name rule). items is the []TResp slice of projected
+// Response values — the SAME typed items the JSON surface serializes — passed
+// as `any`; child segments are descended via each node's field, so the
+// column set is the Response's by construction.
 //
 // Layout — depth-first, header once per node group (each group is one
 // invocation under a parent item), data row per item, then each child group at
@@ -32,15 +34,21 @@ import "github.com/ClaudioSchirmer/omnicore/application/queries"
 // grandchild group, then the child group) and consecutive blanks from several
 // levels popping at once collapse into one — so a leaf cascade gets one blank,
 // not a stack. A blank line is a zero-cell Row{}; the encoder realizes it (CSV:
-// an empty record; XLSX: an empty worksheet row). Identical for locally-mapped
-// embeds and cross-service external (JoinUpstream) embeds — the walk is over the
-// plan tree + the Go-keyed document, agnostic to the embed's store.
-func Generate(plan *queries.ExportPlan, items []map[string]any, label func(labelKey, goField string) string, sink Sink) error {
+// an empty record; XLSX: an empty worksheet row).
+func Generate(plan *Plan, items any, label func(labelKey, wireLeaf string) string, sink Sink) error {
 	if plan == nil || plan.Root == nil {
 		return nil
 	}
+	rv := reflect.ValueOf(items)
+	if !rv.IsValid() || rv.Kind() != reflect.Slice {
+		return nil
+	}
+	rows := make([]reflect.Value, 0, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		rows = append(rows, rv.Index(i))
+	}
 	e := &emitter{sink: sink, label: label}
-	e.renderNode(plan.Root, items, 0)
+	e.renderNode(plan.Root, rows, 0)
 	return e.err
 }
 
@@ -72,7 +80,7 @@ func (e *emitter) separator() {
 	e.blank = true
 }
 
-func (e *emitter) renderNode(node *queries.ExportNode, items []map[string]any, depth int) {
+func (e *emitter) renderNode(node *Node, items []reflect.Value, depth int) {
 	hasCols := len(node.Columns) > 0
 	if hasCols {
 		e.write(headerRow(node, depth, e.label))
@@ -83,11 +91,11 @@ func (e *emitter) renderNode(node *queries.ExportNode, items []map[string]any, d
 		}
 		cascaded := false
 		for _, child := range node.Children {
-			childItems := extractChildItems(item[child.GoSegment])
-			if len(childItems) == 0 {
+			ci := childItems(item, child)
+			if len(ci) == 0 {
 				continue
 			}
-			e.renderNode(child, childItems, depth+1)
+			e.renderNode(child, ci, depth+1)
 			cascaded = true
 		}
 		// Blank line once this item's full cascade concludes, before the walk
@@ -98,40 +106,18 @@ func (e *emitter) renderNode(node *queries.ExportNode, items []map[string]any, d
 	}
 }
 
-func headerRow(node *queries.ExportNode, depth int, label func(string, string) string) Row {
+func headerRow(node *Node, depth int, label func(string, string) string) Row {
 	cells := make([]Cell, len(node.Columns))
 	for i, col := range node.Columns {
-		cells[i] = Cell{Value: label(col.LabelKey, col.GoField)}
+		cells[i] = Cell{Value: label(col.LabelKey, col.WireLeaf)}
 	}
 	return Row{Depth: depth, Header: true, Cells: cells}
 }
 
-func dataRow(node *queries.ExportNode, depth int, item map[string]any) Row {
+func dataRow(node *Node, depth int, item reflect.Value) Row {
 	cells := make([]Cell, len(node.Columns))
 	for i, col := range node.Columns {
-		cells[i] = Cell{Value: item[col.GoField]}
+		cells[i] = Cell{Value: cellValue(item, col)}
 	}
 	return Row{Depth: depth, Cells: cells}
-}
-
-// extractChildItems normalizes the value found under a node's GoSegment into a
-// slice of documents. EmbedMany lands a slice; a one-to-one Embed lands a single
-// map; anything else (absent / wrong shape) yields no rows.
-func extractChildItems(v any) []map[string]any {
-	switch t := v.(type) {
-	case []map[string]any:
-		return t
-	case map[string]any:
-		return []map[string]any{t}
-	case []any:
-		out := make([]map[string]any, 0, len(t))
-		for _, e := range t {
-			if m, ok := e.(map[string]any); ok {
-				out = append(out, m)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
 }

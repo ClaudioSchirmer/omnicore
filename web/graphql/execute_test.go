@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
@@ -10,7 +11,20 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// ── fixtures: a read endpoint quad (Request / Query / Response / handler) ────
+// ── shared pointer helpers ───────────────────────────────────────────────────
+
+func sp(s string) *string { return &s }
+func ip(i int64) *int64   { return &i }
+
+// ── fixtures: a read endpoint quad (Request / Query / Result / Response) ─────
+
+// execResult is the application-layer Result — pure data, no wire tags,
+// fields named like the view document's Go keys.
+type execResult struct {
+	ID   *string
+	Name *string
+	Age  *int64
+}
 
 type execQuery struct {
 	pipeline.QueryBase
@@ -21,9 +35,13 @@ func (q *execQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteri
 	return q.crit, nil
 }
 
+func (q *execQuery) FromQueryResult(_ *configuration.AppContext, r execResult) (execResult, error) {
+	return r, nil
+}
+
 type execRequest struct {
-	Name  *string `query:"name" filter:"eq,in,startswith"`
-	Age   *int64  `query:"age" filter:"eq,gte"`
+	Name            *string `query:"name" filter:"eq,in,startswith"`
+	Age             *int64  `query:"age" filter:"eq,gte"`
 	First           *int64  `query:"first"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
@@ -44,16 +62,20 @@ type execResponse struct {
 	Age  *int64  `json:"age,omitempty"`
 }
 
+func (execResponse) FromResult(r execResult) execResponse {
+	return execResponse{ID: r.ID, Name: r.Name, Age: r.Age}
+}
+
 type fakeReadHandler struct {
 	captured queries.ReadCriteria
-	page     queries.Page
+	page     queries.PageOf[execResult]
 	err      error // when non-nil, Handle returns it (exercises the failure path)
 }
 
-func (h *fakeReadHandler) Handle(_ *configuration.AppContext, q *execQuery) (queries.Page, error) {
+func (h *fakeReadHandler) Handle(_ *configuration.AppContext, q *execQuery) (queries.PageOf[execResult], error) {
 	h.captured = q.crit
 	if h.err != nil {
-		return queries.Page{}, h.err
+		return queries.PageOf[execResult]{}, h.err
 	}
 	return h.page, nil
 }
@@ -61,23 +83,23 @@ func (h *fakeReadHandler) Handle(_ *configuration.AppContext, q *execQuery) (que
 func newExecRegistry(h *fakeReadHandler) (*Registry, *configuration.AppContext) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryWithParams[execRequest, execResponse]("users", "User", h),
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, h),
 	)
 	return reg, configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
 
 func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{
-		Items: []map[string]any{
-			{"ID": "u1", "Name": "alice", "Age": int64(30)},
-			{"ID": "u2", "Name": "bob"},
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{
+		Items: []execResult{
+			{ID: sp("u1"), Name: sp("alice"), Age: ip(30)},
+			{ID: sp("u2"), Name: sp("bob")},
 		},
-		ItemCursors: []string{"cur1", "cur2"},
+		ItemCursors:     []string{"cur1", "cur2"},
 		HasNextPage:     true,
-		HasPreviousPage:     false,
-		EndCursor:  "cur2",
-		StartCursor:  "cur1",
-		TotalCount:       2,
+		HasPreviousPage: false,
+		EndCursor:       "cur2",
+		StartCursor:     "cur1",
+		TotalCount:      2,
 	}}
 	reg, ctx := newExecRegistry(h)
 
@@ -119,11 +141,14 @@ func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
 		t.Errorf("edges[0].cursor = %v, want cur1 (per-item cursor)", e0["cursor"])
 	}
 	node0 := e0["node"].(map[string]any)
-	if node0["id"] != "u1" || node0["name"] != "alice" || node0["age"] != int64(30) {
+	// Node values render from the PROJECTED Response (json round-trip):
+	// numbers surface as json.Number, strings stay strings.
+	if node0["id"] != "u1" || node0["name"] != "alice" || node0["age"] != json.Number("30") {
 		t.Errorf("edges[0].node = %v", node0)
 	}
-	// bob carries no Age in the doc → wire age is nil, but the key is present
-	// because the selection requested it.
+	// bob carries no Age in the Result → the omitempty Response drops it from
+	// the wire map, but the key is present (nil) because the selection
+	// requested it.
 	node1 := edges[1].(map[string]any)["node"].(map[string]any)
 	if node1["age"] != nil {
 		t.Errorf("edges[1].node.age = %v, want nil", node1["age"])
@@ -135,10 +160,10 @@ func TestExecute_ReadConnectionEndToEnd(t *testing.T) {
 }
 
 func TestExecute_SelectionTrimsUnrequestedFields(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{
-		Items:       []map[string]any{{"ID": "u1", "Name": "alice", "Age": int64(30)}},
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{
+		Items:       []execResult{{ID: sp("u1"), Name: sp("alice"), Age: ip(30)}},
 		ItemCursors: []string{"c1"},
-		TotalCount:       1,
+		TotalCount:  1,
 	}}
 	reg, ctx := newExecRegistry(h)
 
@@ -159,7 +184,7 @@ func TestExecute_SelectionTrimsUnrequestedFields(t *testing.T) {
 }
 
 func TestExecute_InListOperatorFoldsToMongoIn(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{TotalCount: 0}}
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{TotalCount: 0}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(where: { name: { in: ["a", "b"] } }) { totalCount } }`, nil, "")
@@ -177,7 +202,7 @@ func TestExecute_InListOperatorFoldsToMongoIn(t *testing.T) {
 }
 
 func TestExecute_ValidationErrorSurfaces(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
 	// `contains` is not declared on name (only eq,in,startswith) → validation error.
@@ -188,7 +213,7 @@ func TestExecute_ValidationErrorSurfaces(t *testing.T) {
 }
 
 func TestExecute_UnknownTopLevelFieldRejected(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ bogus { totalCount } }`, nil, "")
@@ -201,14 +226,14 @@ func TestExecute_UnknownTopLevelFieldRejected(t *testing.T) {
 
 type failReadHandler struct{}
 
-func (h *failReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (queries.Page, error) {
-	return queries.Page{}, domain.SingleNotificationError("User", "email", domain.RecordNotFoundNotification{})
+func (h *failReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (queries.PageOf[execResult], error) {
+	return queries.PageOf[execResult]{}, domain.SingleNotificationError("User", "email", domain.RecordNotFoundNotification{})
 }
 
 func TestExecute_DomainFailureMapsToErrorExtensions(t *testing.T) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryWithParams[execRequest, execResponse]("users", "User", &failReadHandler{}),
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, &failReadHandler{}),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
@@ -235,7 +260,7 @@ func TestExecute_DomainFailureMapsToErrorExtensions(t *testing.T) {
 // folds in order, and an absent direction defaults to ASC (whether or not the
 // executor materializes the SDL default).
 func TestExecute_OrderByMultiTermAndDefaultDirection(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(orderBy: [{field: NAME, direction: DESC}, {field: AGE}]) { edges { node { id } } } }`, nil, "")

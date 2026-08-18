@@ -181,8 +181,8 @@ func TestMongoViewReader_ReadPage_ItemCursorsCarrySortValue(t *testing.T) {
 
 	// Sort by Name → tuple is [name, _id]; context hash is non-empty.
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
-		Limit: 10,
-		OrderBy:  []queries.OrderByField{{Field: "Name"}},
+		Limit:   10,
+		OrderBy: []queries.OrderByField{{Field: "Name"}},
 	})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)

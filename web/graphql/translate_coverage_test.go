@@ -12,9 +12,41 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
 )
 
-// ── fixtures: a Response carrying a well-known scalar struct (time.Time) and a
-// nested slice of structs, so the wire translation exercises translateValue's
-// struct/slice branches, translateSlice, and scalarStruct ──────────────────
+// ── fixtures: a read quad whose Response carries a well-known scalar struct
+// (time.Time) and a nested slice of structs, so the wire rendering exercises
+// wireValueOf's scalar passthrough and its nested-object/array branches ─────
+
+type addrResult struct {
+	City *string
+}
+
+type richResult struct {
+	ID        *string
+	CreatedAt *time.Time
+	Addresses []addrResult
+}
+
+type richQuery struct {
+	pipeline.QueryBase
+	crit queries.ReadCriteria
+}
+
+func (q *richQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
+	return q.crit, nil
+}
+
+func (q *richQuery) FromQueryResult(_ *configuration.AppContext, r richResult) (richResult, error) {
+	return r, nil
+}
+
+type richRequest struct {
+	Name  *string `query:"name" filter:"eq"`
+	First *int64  `query:"first"`
+}
+
+func (r richRequest) ToQuery(crit queries.ReadCriteria) *richQuery {
+	return &richQuery{crit: crit}
+}
 
 type addrWire struct {
 	City *string `json:"city,omitempty"`
@@ -26,23 +58,44 @@ type richResponse struct {
 	Addresses []addrWire `json:"addresses,omitempty"`
 }
 
-// TestExecute_TranslatesNestedStructsAndScalars — a node selection of a
-// time.Time scalar struct (passthrough via scalarStruct) plus a nested slice of
-// structs (translateSlice → translateToWire recursion). The doc is Go-field
-// keyed, as the reader emits it.
-func TestExecute_TranslatesNestedStructsAndScalars(t *testing.T) {
+// FromResult is the wire seat every surface shares — GraphQL renders the
+// PROJECTED Response, so a hand-written mapping shows up here exactly as it
+// does on REST.
+func (richResponse) FromResult(r richResult) richResponse {
+	out := richResponse{ID: r.ID, CreatedAt: r.CreatedAt}
+	for _, a := range r.Addresses {
+		out.Addresses = append(out.Addresses, addrWire{City: a.City})
+	}
+	return out
+}
+
+type fakeRichHandler struct {
+	page queries.PageOf[richResult]
+}
+
+func (h *fakeRichHandler) Handle(_ *configuration.AppContext, _ *richQuery) (queries.PageOf[richResult], error) {
+	return h.page, nil
+}
+
+// TestExecute_RendersNestedStructsAndScalars — a node selection of a
+// time.Time scalar struct (rendered as its RFC3339 wire form, never walked as
+// an object) plus a nested slice of structs (rendered as an array of wire
+// objects). The items are typed Results, as the application handler emits.
+func TestExecute_RendersNestedStructsAndScalars(t *testing.T) {
 	created := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
-	h := &fakeReadHandler{page: queries.Page{
-		Items: []map[string]any{{
-			"ID":        "u1",
-			"CreatedAt": created,
-			"Addresses": []map[string]any{{"City": "Cupertino"}},
+	city := "Cupertino"
+	id := "u1"
+	h := &fakeRichHandler{page: queries.PageOf[richResult]{
+		Items: []richResult{{
+			ID:        &id,
+			CreatedAt: &created,
+			Addresses: []addrResult{{City: &city}},
 		}},
 		ItemCursors: []string{"c1"},
-		TotalCount:       1,
+		TotalCount:  1,
 	}}
 	pipe := pipeline.New(translation.Default())
-	reg := New(pipe).Register(QueryWithParams[execRequest, richResponse]("rich", "Rich", h))
+	reg := New(pipe).Register(QueryWithParams[richRequest]("rich", "Rich", richResponse{}.FromResult, h))
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
 	resp := reg.Execute(ctx, `{ rich { edges { node { id createdAt addresses { city } } } } }`, nil, "")
@@ -51,41 +104,51 @@ func TestExecute_TranslatesNestedStructsAndScalars(t *testing.T) {
 	}
 	node := resp.Data["rich"].(map[string]any)["edges"].([]any)[0].(map[string]any)["node"].(map[string]any)
 	if node["createdAt"] == nil {
-		t.Error("time.Time scalar struct must pass through to the wire (scalarStruct)")
+		t.Error("a time.Time must render as a scalar leaf, not be walked as an object")
 	}
 	addrs, ok := node["addresses"].([]any)
 	if !ok || len(addrs) != 1 {
-		t.Fatalf("nested struct slice did not translate; got %v", node["addresses"])
+		t.Fatalf("nested struct slice did not render; got %v", node["addresses"])
 	}
-	if city := addrs[0].(map[string]any)["city"]; city != "Cupertino" {
-		t.Errorf("nested addresses[0].city = %v, want Cupertino", city)
+	if got := addrs[0].(map[string]any)["city"]; got != "Cupertino" {
+		t.Errorf("nested addresses[0].city = %v, want Cupertino", got)
 	}
 }
 
-// TestExecute_TranslatesAnySlice — Mongo also decodes a nested array as []any
-// (of maps), not just []map[string]any; translateSlice must reshape that shape
-// too.
-func TestExecute_TranslatesAnySlice(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{
-		Items: []map[string]any{{
-			"ID":        "u2",
-			"Addresses": []any{map[string]any{"City": "London"}},
-		}},
+// TestExecute_OmitsAbsentSparseFields — a sparse Result leaves the pointer
+// nil, the Response elides it (omitempty), and the executor resolves the
+// selected-but-absent field to null rather than a zero value.
+func TestExecute_OmitsAbsentSparseFields(t *testing.T) {
+	city := "London"
+	h := &fakeRichHandler{page: queries.PageOf[richResult]{
+		Items:       []richResult{{Addresses: []addrResult{{City: &city}}}},
 		ItemCursors: []string{"c2"},
-		TotalCount:       1,
+		TotalCount:  1,
 	}}
 	pipe := pipeline.New(translation.Default())
-	reg := New(pipe).Register(QueryWithParams[execRequest, richResponse]("rich", "Rich", h))
+	reg := New(pipe).Register(QueryWithParams[richRequest]("rich", "Rich", richResponse{}.FromResult, h))
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
-	resp := reg.Execute(ctx, `{ rich { edges { node { addresses { city } } } } }`, nil, "")
+	resp := reg.Execute(ctx, `{ rich { edges { node { id addresses { city } } } } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("unexpected errors: %+v", resp.Errors)
 	}
 	node := resp.Data["rich"].(map[string]any)["edges"].([]any)[0].(map[string]any)["node"].(map[string]any)
-	addrs, ok := node["addresses"].([]any)
-	if !ok || len(addrs) != 1 || addrs[0].(map[string]any)["city"] != "London" {
-		t.Errorf("[]any nested slice did not translate; got %v", node["addresses"])
+	if v, present := node["id"]; !present || v != nil {
+		t.Errorf("an absent sparse field must resolve to null, got %#v (present=%v)", v, present)
+	}
+	addrs := node["addresses"].([]any)
+	if got := addrs[0].(map[string]any)["city"]; got != "London" {
+		t.Errorf("nested addresses[0].city = %v, want London", got)
+	}
+}
+
+// TestWireValueOf_UnmarshalableValueYieldsNil — a value json.Marshal cannot
+// encode degrades to a nil map rather than panicking; the executor then
+// resolves every selected field to null.
+func TestWireValueOf_UnmarshalableValueYieldsNil(t *testing.T) {
+	if got := wireValueOf(map[string]any{"bad": make(chan int)}); got != nil {
+		t.Errorf("wireValueOf on an unmarshalable value = %#v, want nil", got)
 	}
 }
 
@@ -95,7 +158,7 @@ func TestExecute_TranslatesAnySlice(t *testing.T) {
 // resolver runs. The resolver's own lookup miss stays as defense in depth,
 // exercised directly through buildCriteria.
 func TestExecute_UnsortableOrderByErrors(t *testing.T) {
-	h := &fakeReadHandler{page: queries.Page{}}
+	h := &fakeReadHandler{page: queries.PageOf[execResult]{}}
 	reg, ctx := newExecRegistry(h)
 
 	resp := reg.Execute(ctx, `{ users(orderBy: [{field: BOGUS}]) { edges { node { id } } } }`, nil, "")
@@ -122,7 +185,7 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 
 type panicReadHandler struct{}
 
-func (h *panicReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (queries.Page, error) {
+func (h *panicReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (queries.PageOf[execResult], error) {
 	panic("boom")
 }
 
@@ -131,7 +194,7 @@ func (h *panicReadHandler) Handle(_ *configuration.AppContext, _ *execQuery) (qu
 // REST 500 posture.
 func TestExecute_PanicMapsToInternalError(t *testing.T) {
 	pipe := pipeline.New(translation.Default())
-	reg := New(pipe).Register(QueryWithParams[execRequest, execResponse]("users", "User", &panicReadHandler{}))
+	reg := New(pipe).Register(QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, &panicReadHandler{}))
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
 	resp := reg.Execute(ctx, `{ users { edges { node { id } } } }`, nil, "")

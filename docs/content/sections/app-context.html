@@ -22,7 +22,7 @@
     <code>Identity()</code> is read in Fiber handlers, but the request <code>*AppContext</code> also travels
     one layer deeper — into the application layer — through <strong>exactly two symmetric seams</strong>.
     Both exist for the same purpose: translate a claim into a business-named value and inject it where it
-    is needed. The web boundary stays dumb (<code>Request.ToCommand()</code> / <code>ToQuery()</code> carry
+    is needed. The web boundary stays dumb (<code>Request.ToCommand()</code> / <code>ToQuery(criteria)</code> carry
     no ctx), the domain stays IO-free, and infra never sees the JWT — identity translation lives in exactly
     these two methods and nowhere else.
   </p>

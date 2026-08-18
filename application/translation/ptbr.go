@@ -11,9 +11,10 @@ func (corePTBR) Language() configuration.Language { return configuration.LangPTB
 func (corePTBR) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":   "Campo obrigatório.",
-		"SchemaViolationNotification": "Conteúdo do corpo da requisição não corresponde ao esquema esperado.",
-		"LimitExceededNotification":   "O limite solicitado excede o máximo permitido.",
+		"RequiredFieldNotification":            "Campo obrigatório.",
+		"SchemaViolationNotification":          "Conteúdo do corpo da requisição não corresponde ao esquema esperado.",
+		"LimitExceededNotification":            "O limite solicitado excede o máximo permitido.",
+		"ComputedFieldNotSortableNotification": "Campos computados não podem ser utilizados na ordenação.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossível efetuar a inclusão de um registro com a chave primária informada.",
@@ -88,6 +89,22 @@ func (corePTBR) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Rota não encontrada.",
 		"MethodNotAllowedNotification":    "Método HTTP não permitido para esta rota.",
 		"PayloadTooLargeNotification":     "Corpo da requisição excede o tamanho permitido.",
+
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Autorização",
+		"Pipeline":      "Pipeline",
+		"Request":       "Requisição",
+		"Route":         "Rota",
+		"Schema":        "Esquema",
+		"Server":        "Servidor",
 
 		// Language descriptions
 		"Language.UNKNOWN": "Desconhecido",

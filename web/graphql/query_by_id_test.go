@@ -11,15 +11,19 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
-// ── fixtures: a by-id read quad (Request / Query / Response / handler) ───────
+// ── fixtures: a by-id read quad (Request / Query / Result / Response) ────────
 
 type byIDQuery struct {
 	queries.QueryByIDBase
-	IncludeArchived bool
+	Criteria queries.ReadCriteria
 }
 
 func (q *byIDQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
-	return queries.ReadCriteria{IncludeArchived: q.IncludeArchived}, nil
+	return q.Criteria, nil
+}
+
+func (q *byIDQuery) FromQueryResult(_ *configuration.AppContext, r execResult) (execResult, error) {
+	return r, nil
 }
 
 func (q *byIDQuery) ContextName() string { return "User" }
@@ -28,12 +32,8 @@ type byIDRequest struct {
 	IncludeArchived *bool `query:"includeArchived"`
 }
 
-func (r byIDRequest) ToQuery() *byIDQuery {
-	arch := false
-	if r.IncludeArchived != nil {
-		arch = *r.IncludeArchived
-	}
-	return &byIDQuery{IncludeArchived: arch}
+func (r byIDRequest) ToQuery(criteria queries.ReadCriteria) *byIDQuery {
+	return &byIDQuery{Criteria: criteria}
 }
 
 // byIDResponse is a DISTINCT Go type from execResponse with the same wire
@@ -45,20 +45,24 @@ type byIDResponse struct {
 	Age  *int64  `json:"age,omitempty"`
 }
 
+func (byIDResponse) FromResult(r execResult) byIDResponse {
+	return byIDResponse{ID: r.ID, Name: r.Name, Age: r.Age}
+}
+
 type fakeByIDHandler struct {
 	capturedID   string
 	capturedArch bool
-	doc          map[string]any
+	result       execResult
 	notFound     bool
 }
 
-func (h *fakeByIDHandler) Handle(_ *configuration.AppContext, q *byIDQuery) (map[string]any, error) {
+func (h *fakeByIDHandler) Handle(_ *configuration.AppContext, q *byIDQuery) (execResult, error) {
 	h.capturedID = q.PathID().String()
-	h.capturedArch = q.IncludeArchived
+	h.capturedArch = q.Criteria.IncludeArchived
 	if h.notFound {
-		return nil, domain.NotFoundError("User", "id", q.PathID().String())
+		return execResult{}, domain.NotFoundError("User", "id", q.PathID().String())
 	}
-	return h.doc, nil
+	return h.result, nil
 }
 
 // newByIDRegistry registers the singular by-id field BESIDE the plural list
@@ -66,9 +70,9 @@ func (h *fakeByIDHandler) Handle(_ *configuration.AppContext, q *byIDQuery) (map
 func newByIDRegistry(list *fakeReadHandler, byID *fakeByIDHandler) (*Registry, *configuration.AppContext) {
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryWithParams[execRequest, execResponse]("users", "User", list),
+		QueryWithParams[execRequest]("users", "User", execResponse{}.FromResult, list),
 	).Register(
-		QueryByID[byIDRequest, byIDResponse]("user", "User", byID),
+		QueryByID[byIDRequest]("user", "User", byIDResponse{}.FromResult, byID),
 	)
 	return reg, configuration.NewAppContextWithRandomID(configuration.LangENG)
 }
@@ -101,7 +105,7 @@ func TestQueryByID_IncludeArchivedObeysDTO(t *testing.T) {
 	// argument…
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryByID[bareRequest, byIDResponse]("user", "User", &fakeByIDHandler{doc: map[string]any{"ID": "u1"}}),
+		QueryByID[bareRequest]("user", "User", byIDResponse{}.FromResult, &fakeByIDHandler{result: execResult{ID: sp("u1")}}),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 	sdl, err := reg.SDL()
@@ -121,10 +125,12 @@ func TestQueryByID_IncludeArchivedObeysDTO(t *testing.T) {
 // bareRequest is the opt-in-free by-id Request DTO for the test above.
 type bareRequest struct{}
 
-func (bareRequest) ToQuery() *byIDQuery { return &byIDQuery{} }
+func (bareRequest) ToQuery(criteria queries.ReadCriteria) *byIDQuery {
+	return &byIDQuery{Criteria: criteria}
+}
 
 func TestQueryByID_ExecuteEndToEnd(t *testing.T) {
-	h := &fakeByIDHandler{doc: map[string]any{"ID": "u1", "Name": "alice", "Age": int64(30)}}
+	h := &fakeByIDHandler{result: execResult{ID: sp("u1"), Name: sp("alice"), Age: ip(30)}}
 	reg, ctx := newByIDRegistry(&fakeReadHandler{}, h)
 
 	resp := reg.Execute(ctx, `{ user(id: "u1", includeArchived: true) { id name } }`, nil, "")
@@ -150,7 +156,7 @@ func TestQueryByID_ExecuteEndToEnd(t *testing.T) {
 }
 
 func TestQueryByID_IncludeArchivedDefaultsFalse(t *testing.T) {
-	h := &fakeByIDHandler{doc: map[string]any{"ID": "u1"}}
+	h := &fakeByIDHandler{result: execResult{ID: sp("u1")}}
 	reg, ctx := newByIDRegistry(&fakeReadHandler{}, h)
 
 	resp := reg.Execute(ctx, `{ user(id: "u1") { id } }`, nil, "")

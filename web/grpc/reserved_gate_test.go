@@ -13,7 +13,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/internal/testpb"
 	omnicorepb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
-	fwresponses "github.com/ClaudioSchirmer/omnicore/web/responses"
 )
 
 // bareGadgetsDTO declares ONLY filter leaves — no reserved control keys.
@@ -44,7 +43,7 @@ func TestReservedGate_UndeclaredControlsReject(t *testing.T) {
 	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
 		"/omnicore.grpctest.v1.GadgetService/SearchGadgetsBare",
 		bareGadgetsDTO{},
-		fwresponses.AutoFromDoc[gadgetItemDTO],
+		gadgetItemDTO{}.FromResult,
 		searchGadgetsHandler{sawCriteria: &saw},
 	))
 	srv := httptest.NewServer(reg.Handler())
@@ -104,7 +103,7 @@ func TestReservedGate_DirectionPair(t *testing.T) {
 	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
 		"/omnicore.grpctest.v1.GadgetService/SearchGadgetsDir",
 		searchGadgetsDTO{},
-		fwresponses.AutoFromDoc[gadgetItemDTO],
+		gadgetItemDTO{}.FromResult,
 		searchGadgetsHandler{sawCriteria: &saw},
 	))
 	srv := httptest.NewServer(reg.Handler())

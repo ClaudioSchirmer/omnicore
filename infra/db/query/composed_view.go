@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -259,42 +258,6 @@ func (c *ComposedViewDefinition) ExternalLegs() []*Leg {
 // PrimaryView returns the declared primary view (nil when not declared —
 // rejected at boot by ValidateComposedViews).
 func (c *ComposedViewDefinition) PrimaryView() *ViewDefinition { return c.primary }
-
-// ExportPlan builds the tabular-export plan for the composed view: the
-// primary's own plan with one child branch per leg, mirroring how Embed
-// segments nest. An internal leg contributes its view's full export tree
-// (children, embeds, roles included) re-rooted under the link's segment; an
-// external leg contributes its flat external columns. Satisfies the same
-// ExportView surface a ViewDefinition exposes, so QueryExport works on
-// a composed name unchanged.
-func (c *ComposedViewDefinition) ExportPlan() *queries.ExportPlan {
-	plan := c.primary.ExportPlan()
-	for _, ln := range c.links {
-		seg := c.resolveLinkSegment(ln)
-		var branch *queries.ExportNode
-		if ln.leg.view != nil {
-			branch = ln.leg.view.ExportPlan().Root
-		} else {
-			branch = buildExportNode(ln.leg.schema, nil, "", "")
-		}
-		branch.GoSegment = seg
-		branch.WireSegment = ln.docField
-		if ln.childSchema != nil {
-			// LinkInChild nests INSIDE the primary child's export node (the primary
-			// plan already produced it), mirroring EmbedInChild's tabular walk.
-			childSeg := childDocSegment(ln.childSchema)
-			for _, cn := range plan.Root.Children {
-				if cn.GoSegment == childSeg {
-					cn.Children = append(cn.Children, branch)
-					break
-				}
-			}
-			continue
-		}
-		plan.Root.Children = append(plan.Root.Children, branch)
-	}
-	return plan
-}
 
 // ResolveMaxExportRows delegates to the primary view — the export ceiling
 // describes the cost of walking the primary's dataset (legs enrich the same

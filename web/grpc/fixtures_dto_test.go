@@ -3,6 +3,7 @@ package grpc
 import (
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	fwresponses "github.com/ClaudioSchirmer/omnicore/web/responses"
 )
 
 // The DTO seats the PUBLIC Auto constructors consume — the same shapes a
@@ -65,6 +66,15 @@ func (searchGadgetsDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {
 	return &searchGadgetsQuery{Criteria: c}
 }
 
+// gadgetSearchResult is the application-layer Result of the search list —
+// pure data, NO wire tags, fields named exactly like the view document's Go
+// keys (the read-side Result seat of the fixture trio).
+type gadgetSearchResult struct {
+	ID   string
+	Name string
+	Kind *string
+}
+
 type searchGadgetsQuery struct {
 	queries.QueryWithParamsBase
 	Criteria queries.ReadCriteria
@@ -74,23 +84,30 @@ func (q searchGadgetsQuery) ToCriteria(*configuration.AppContext) (queries.ReadC
 	return q.Criteria, nil
 }
 
+func (q searchGadgetsQuery) FromQueryResult(_ *configuration.AppContext, r gadgetSearchResult) (gadgetSearchResult, error) {
+	return r, nil
+}
+
 type searchGadgetsHandler struct{ sawCriteria *queries.ReadCriteria }
 
-func (h searchGadgetsHandler) Handle(ctx *configuration.AppContext, q *searchGadgetsQuery) (queries.Page, error) {
+func (h searchGadgetsHandler) Handle(ctx *configuration.AppContext, q *searchGadgetsQuery) (queries.PageOf[gadgetSearchResult], error) {
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {
-		return queries.Page{}, err
+		return queries.PageOf[gadgetSearchResult]{}, err
 	}
 	if h.sawCriteria != nil {
 		*h.sawCriteria = crit
 	}
-	return queries.Page{
+	// A reader-level Page filled into the typed PageOf through the same
+	// doc→Result seam the framework handler uses (ResultFromDoc + FromQueryResult).
+	page := queries.Page{
 		Items:       []map[string]any{{"ID": "g-1", "Name": "Drill", "Kind": "tool"}},
 		TotalCount:  1,
 		EndCursor:   "next-c",
 		StartCursor: "prev-c",
 		HasNextPage: true,
-	}, nil
+	}
+	return queries.PageOfFrom(page, queries.FromQueryResultFiller[gadgetSearchResult](ctx, q))
 }
 
 // searchGadgetsWithSearchDTO is searchGadgetsDTO plus the `query:"search"`
@@ -119,22 +136,40 @@ func (searchGadgetsWithSearchDTO) ToQuery(c queries.ReadCriteria) *searchGadgets
 }
 
 // gadgetItemDTO is the list Response DTO — the read_mask/sort vocabulary
-// AND the doc→item projection target (fwresponses.AutoFromDoc seat).
+// AND the Result→item projection target (the responseProjection seat).
 type gadgetItemDTO struct {
+	fwresponses.Auto
 	ID   string  `json:"id"`
 	Name string  `json:"name"`
 	Kind *string `json:"kind,omitempty"`
+}
+
+func (gadgetItemDTO) FromResult(r gadgetSearchResult) gadgetItemDTO {
+	return fwresponses.AutoFromResult[gadgetItemDTO](r)
 }
 
 type getGadgetDTO struct {
 	IncludeArchived bool `query:"includeArchived"`
 }
 
-func (d getGadgetDTO) ToQuery() *getGadgetQuery {
-	return &getGadgetQuery{IncludeArchived: d.IncludeArchived}
+func (d getGadgetDTO) ToQuery(criteria queries.ReadCriteria) *getGadgetQuery {
+	return &getGadgetQuery{Criteria: criteria}
+}
+
+// gadgetDetailResult is the by-id Result — the typed value the QueryByID
+// handler returns (the read-side twin of a command's Result struct).
+type gadgetDetailResult struct {
+	ID              string
+	Name            string
+	IncludeArchived bool
 }
 
 type getGadgetResponseDTO struct {
+	fwresponses.Auto
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+func (getGadgetResponseDTO) FromResult(r gadgetDetailResult) getGadgetResponseDTO {
+	return fwresponses.AutoFromResult[getGadgetResponseDTO](r)
 }

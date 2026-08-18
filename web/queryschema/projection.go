@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // ProjectionSchema is the cached reflection result for a Response DTO:
@@ -28,6 +29,20 @@ type ProjectionSchema struct {
 	// to the physical Mongo column (top-level "ID" → the ID column, etc.) using
 	// the view's TableSchema.
 	Paths map[string]string
+
+	// Computed maps the wire path of a COMPUTED field to the Go field paths
+	// that feed it — declared by the Response field's `computed:"A,B"` tag,
+	// naming Result fields. A computed field has no column behind it: it is
+	// produced by the Query's FromQueryResult hook from other Result fields.
+	// So `?fields=<computed>` must push the SOURCES down to the store (never
+	// the computed path itself, which would not resolve to a column), and
+	// `?orderBy=<computed>` is refused — ordering happens in the store, and
+	// the keyset cursor is built from stored values.
+	//
+	// The sources are OPTIONAL on the Response (a source that is not declared
+	// there is read, feeds the computation, and never reaches the wire) but
+	// MANDATORY on the Result — ValidateComputedSources enforces that at boot.
+	Computed map[string][]string
 }
 
 var projectionSchemaCache sync.Map // reflect.Type → *ProjectionSchema
@@ -44,7 +59,7 @@ func ExtractProjectionSchema(t reflect.Type) *ProjectionSchema {
 	if v, ok := projectionSchemaCache.Load(t); ok {
 		return v.(*ProjectionSchema)
 	}
-	s := &ProjectionSchema{Paths: map[string]string{}}
+	s := &ProjectionSchema{Paths: map[string]string{}, Computed: map[string][]string{}}
 	if t.Kind() == reflect.Struct {
 		walkProjectionLevel(t, "", "", s)
 	}
@@ -89,6 +104,13 @@ func walkProjectionLevel(t reflect.Type, wirePrefix, docPrefix string, s *Projec
 		// the view's TableSchema; there is no `view:` tag or snake convention.
 		docPath := joinPath(docPrefix, f.Name)
 		s.Paths[wirePath] = docPath
+		// A `computed:"A,B"` tag declares that this field carries no column:
+		// the Query's FromQueryResult derives it from the named Result fields.
+		// The sources are recorded under the SAME level prefix, so a computed
+		// field nested in a segment names its siblings.
+		if sources := computedSources(f, docPrefix); len(sources) > 0 {
+			s.Computed[wirePath] = sources
+		}
 		// Recurse into struct / slice-of-struct element type so nested wire
 		// paths (addresses.city, addresses.lines.qty) are discoverable.
 		ft := f.Type
@@ -129,6 +151,34 @@ func projectionWireName(f reflect.StructField) (string, bool) {
 	return name, false
 }
 
+// ComputedTag is the Response struct tag declaring that a field is derived by
+// the Query's FromQueryResult hook rather than read from a column, listing the
+// Result fields that feed it:
+//
+//	Display *string `json:"display,omitempty" computed:"Name,UserName"`
+const ComputedTag = "computed"
+
+// computedSources parses f's `computed:` tag into the Go field paths to push
+// down for that field, prefixed by the level the field lives at. Returns nil
+// when the tag is absent or lists nothing.
+func computedSources(f reflect.StructField, docPrefix string) []string {
+	raw, ok := f.Tag.Lookup(ComputedTag)
+	if !ok {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, joinPath(docPrefix, p))
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // ParseProjection turns a comma-separated wire value into a projection map
 // keyed by Go field path (value=1 for inclusion); the reader translates each
 // Go path to the physical Mongo column via the view's TableSchema. When
@@ -136,7 +186,7 @@ func projectionWireName(f reflect.StructField) (string, bool) {
 // declared wire paths and translated to the corresponding Go field path
 // (nested paths walked segment-by-segment). An unknown token returns
 // (nil, nil, token, false). When projSchema is nil (manual handlers via
-// ParseCriteria), tokens become inclusion entries verbatim — legacy
+// a QueryParser over an untyped Response), tokens become inclusion entries verbatim — the
 // pass-through.
 //
 // wireSet returns which wire names appeared in the input; the caller uses
@@ -163,10 +213,47 @@ func ParseProjection(s string, projSchema *ProjectionSchema) (proj map[string]in
 		if !allowed {
 			return nil, nil, t, false
 		}
+		// A computed field has no column: push its SOURCES down instead, so the
+		// reader returns what FromQueryResult needs to derive it. Requesting
+		// the computed path itself would not resolve to a column.
+		if sources, isComputed := projSchema.Computed[t]; isComputed {
+			for _, src := range sources {
+				proj[src] = 1
+			}
+			wireSet[t] = true
+			continue
+		}
 		proj[docPath] = 1
 		wireSet[t] = true
 	}
 	return proj, wireSet, "", true
+}
+
+// Violation is a rejected read control, carrying BOTH the canonical wire
+// spelling of the offending field and the notification that explains it. It
+// exists so every surface — the auto wrappers, the tabular exports and the
+// manual QueryParser path — renders the SAME typed, translated envelope
+// instead of collapsing every rejection into a generic schema violation.
+//
+// A zero Notification means the canonical SchemaViolationNotification.
+type Violation struct {
+	// Field is the wire spelling the consumer sees, e.g. "orderBy[display]".
+	Field string
+	// Notification explains the refusal; nil → SchemaViolationNotification.
+	Notification domain.Notification
+}
+
+// SchemaViolation builds the generic rejection for an offending wire field.
+func SchemaViolation(field string) *Violation { return &Violation{Field: field} }
+
+// Message renders the violation as the notification message a surface adds to
+// its "Schema" context.
+func (v Violation) Message() domain.NotificationMessage {
+	n := v.Notification
+	if n == nil {
+		n = domain.SchemaViolationNotification{}
+	}
+	return domain.NotificationMessage{FieldName: v.Field, Notification: n}
 }
 
 // ParseOrderByWithSchema turns a comma-separated wire value into a list of
@@ -177,12 +264,12 @@ func ParseProjection(s string, projSchema *ProjectionSchema) (proj map[string]in
 // segment-by-segment); the reader maps Go → column via the view's TableSchema.
 // An unknown token returns the verbatim wire token (including any `-` prefix) so the
 // caller can surface it on the canonical 400 envelope as `orderBy[<token>]`.
-// When projSchema is nil — manual handlers via ParseCriteria, or wrappers
-// paired with a RawDoc-style projector that carries no typed Response —
+// When projSchema is nil — a QueryParser whose Response is not a struct, or
+// a wrapper whose Response carries no reflectable shape —
 // tokens become OrderByField entries verbatim (no allowlist, no translation).
-func ParseOrderByWithSchema(s string, projSchema *ProjectionSchema) (orderBy []queries.OrderByField, badToken string, ok bool) {
+func ParseOrderByWithSchema(s string, projSchema *ProjectionSchema) (orderBy []queries.OrderByField, violation *Violation, ok bool) {
 	if s == "" {
-		return nil, "", true
+		return nil, nil, true
 	}
 	tokens := strings.Split(s, ",")
 	orderBy = make([]queries.OrderByField, 0, len(tokens))
@@ -203,12 +290,106 @@ func ParseOrderByWithSchema(s string, projSchema *ProjectionSchema) (orderBy []q
 		}
 		docPath, allowed := projSchema.Paths[wireName]
 		if !allowed {
-			return nil, t, false
+			return nil, SchemaViolation(OrderByField(t)), false
+		}
+		// A computed field is derived AFTER the read, so the store cannot order
+		// by it — and the keyset cursor is built from stored ordering values, so
+		// sorting in memory would break pagination. Refuse here, at the gate,
+		// with the wire token the consumer sent and a notification that SAYS SO,
+		// instead of letting the unresolvable path reach the reader and surface
+		// as an opaque schema error naming an internal Go field.
+		if _, isComputed := projSchema.Computed[wireName]; isComputed {
+			return nil, &Violation{
+				Field:        OrderByField(t),
+				Notification: domain.ComputedFieldNotSortableNotification{},
+			}, false
 		}
 		orderBy = append(orderBy, queries.OrderByField{Field: docPath, Desc: desc})
 	}
-	return orderBy, "", true
+	return orderBy, nil, true
 }
+
+// SelectedComputedPaths returns the Go field paths of the COMPUTED fields the
+// consumer selected, given the wire set ParseProjection produced. They are
+// absent from the store projection by construction (their sources went down
+// instead), so any consumer that shapes output from the projection — the
+// tabular export's column pruning — must be told about them separately.
+// Returns nil when nothing computed was selected. Deterministic order.
+func SelectedComputedPaths(projSchema *ProjectionSchema, wireSet map[string]bool) []string {
+	if projSchema == nil || len(projSchema.Computed) == 0 || len(wireSet) == 0 {
+		return nil
+	}
+	var out []string
+	for wirePath := range wireSet {
+		if _, isComputed := projSchema.Computed[wirePath]; !isComputed {
+			continue
+		}
+		if goPath, ok := projSchema.Paths[wirePath]; ok {
+			out = append(out, goPath)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// UnrequestedComputedSources returns the Result Go paths that were read ONLY
+// to feed a selected computed field and that the consumer did not ask for.
+//
+// A computed field's sources must reach the store, but `?fields=` shapes the
+// WIRE: if a source happens to be declared on the Response too, reading it
+// would otherwise render it beside the computed value even though nobody
+// selected it. The wrapper blanks these paths on the Result before projecting,
+// so the sparse Response elides them exactly as it would any unselected field.
+// A source the Response does not declare needs no blanking — it has no wire
+// slot to leak into.
+//
+// Returns nil when `?fields=` was not used, nothing computed was selected, or
+// every source was requested outright. Deterministic order.
+func UnrequestedComputedSources(projSchema *ProjectionSchema, wireSet map[string]bool) []string {
+	if projSchema == nil || len(projSchema.Computed) == 0 || len(wireSet) == 0 {
+		return nil
+	}
+	// Go path → wire path, to tell "the consumer asked for this" from "we read
+	// it as a source".
+	wireByGo := make(map[string]string, len(projSchema.Paths))
+	for wirePath, goPath := range projSchema.Paths {
+		wireByGo[goPath] = wirePath
+	}
+	blank := map[string]bool{}
+	for wirePath := range wireSet {
+		sources, isComputed := projSchema.Computed[wirePath]
+		if !isComputed {
+			continue
+		}
+		for _, src := range sources {
+			srcWire, onTheWire := wireByGo[src]
+			if !onTheWire {
+				continue // read-only source: no wire slot, nothing to hide
+			}
+			if wireSet[srcWire] {
+				continue // the consumer asked for it too
+			}
+			blank[src] = true
+		}
+	}
+	if len(blank) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(blank))
+	for p := range blank {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// OrderByField renders the canonical wire spelling for a rejected `?orderBy=`
+// token — `orderBy[<token>]`, the prefix every surface reports.
+func OrderByField(token string) string { return KeyOrderBy + "[" + token + "]" }
+
+// FieldsField renders the canonical wire spelling for a rejected `?fields=`
+// token — `fields[<token>]`.
+func FieldsField(token string) string { return KeyFields + "[" + token + "]" }
 
 // ValidateFieldsResponse walks t recursively and reports every Response
 // field that violates the "pointer + omitempty" rule the `?fields=` path

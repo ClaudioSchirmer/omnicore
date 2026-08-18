@@ -11,6 +11,341 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-08-18
+
+### Added
+
+- **The framework serves the audit trail over HTTP, from yaml alone —
+  `audit.endpoint.rest`.** A block whose mere presence mounts
+  `GET {path}/{entityType}/{aggregateId}`, answering that aggregate's audit
+  timeline newest-first in the canonical envelope, with no service code. The
+  route registers through the same `openapi.Mount` seat a service route uses,
+  so it is documented in the OpenAPI spec, gated by the Layer-1 permission
+  gate, and covered by the boot's route-registration and authorization scans.
+
+  **It reads the database.** The block REQUIRES `database` among
+  `audit.destinations`; declaring it on a service that routes audit only to
+  `slog` ABORTS the boot rather than mounting a surface that could answer
+  nothing but an empty timeline for the rest of its life. A deployment that
+  keeps audit on slog/ELK and still wants a read surface builds that surface
+  itself over the log stream — `audit.RenderLabels` (typed) and
+  `audit.RenderLabelsInJSON` (parsed log line) are independent of the storage
+  and work there unchanged.
+
+  - `maxLimit` (default **20**) is the window, rendered into the SQL by the
+    dialect. It deliberately does NOT inherit `query.maxLimit`: an audit window
+    and a projection page size are unrelated decisions, and coupling them would
+    let an operator raising a page size silently widen the trail's exposure.
+    `?first=N` above the ceiling is REFUSED with `LimitExceededNotification`
+    (400, effective ceiling in `fieldValue`), never silently truncated — a
+    consumer cannot tell a truncated array from the end of a history.
+  - `permission` (default `audit:read`) is the Layer-1 gate. An explicit
+    `permission: ""` mounts the route ungated and is refused at boot while
+    `auth.authorization.enabled=true`.
+  - `renderLabels` (default true) resolves each change's catalog key into the
+    caller's locale; `false` keeps the raw, stable `fieldLabelKey` for machine
+    consumers.
+  - `path` (default `/audit`) is collision-checked against the reserved routes
+    (`/livez`, `/readyz`, `/openapi.json`, `/docs`), `graphql.path`,
+    `graphql.uiPath` and `openapi.uiPath`.
+  - Closed key set at every level of the block: a typo aborts the boot naming
+    the offending key.
+  - The `rest:` sub-block is nested on purpose — `renderLabels` and `maxLimit`
+    describe the READ and will govern any future connector, while each
+    connector owns its own transport knobs.
+
+- **`Deps.AuditReader`** — the backend-neutral audit reader, built once at boot
+  over whichever engine booted. A service reading the trail from its own
+  handler no longer constructs one per request. Non-nil whenever a relational
+  engine booted, independent of `audit.destinations`: the port is the reading
+  capability, and whether there are rows to read is the destinations' business.
+
+- **Computed read fields — a Response field with no column, derived after the
+  read.** A Response may now declare `computed:"Src1,Src2"` beside its `json`
+  tag: the field carries no stored column, the Query's `FromQueryResult`
+  derives it, and the named sources are the Result fields that feed it. The
+  sources are OPTIONAL on the Response — one that only exists on the Result is
+  read, feeds the derivation and never reaches the wire.
+
+  What the framework does with the declaration, on EVERY read surface:
+  - `?fields=<computed>` (REST, exports), a GraphQL selection and a gRPC
+    `read_mask` push the SOURCES to the store instead of the computed path,
+    which has no column to resolve. Sources read only to feed a selected
+    computed field are blanked before projection, so `?fields=` keeps shaping
+    the wire even when a source is itself a declared Response field.
+  - `?orderBy=<computed>` is refused — ordering happens in the store and the
+    keyset cursor is built from stored values. REST, the exports and gRPC
+    answer 400 / `INVALID_ARGUMENT` with the new
+    `ComputedFieldNotSortableNotification` (translated in all seven catalogs),
+    reported on the wire token; GraphQL omits the field from its
+    `<Entity>OrderField` enum, so the SDL rejects it at validation.
+  - The tabular exports keep the computed COLUMN when it is the only selection
+    (its projection echo names the sources, not the column), with the header
+    rendered from `exportLabelKey` like any other.
+  - Boot guards: a `computed:` source naming no Result field, a source that is
+    itself computed, and a Request `filter:` declared over a computed field all
+    fail at construction — a filter is evaluated in the store, so it could
+    never work.
+
+  Rejected read controls now travel as a typed `queryschema.Violation` carrying
+  both the wire spelling and the notification, so the manual `QueryParser` path
+  renders the same message the auto wrappers do (`web.RespondViolation`).
+
+### Fixed
+
+- **The relational DSN was logged with its password in clear text on three of
+  the five engines.** `bootstrap` masks the credentials of the connection
+  strings it logs at boot (`database connected`, `mongo connected`), but the
+  masker understood ONE grammar — the `scheme://user:pass@host` URI — and
+  returned anything else verbatim. Two supported, documented configurations are
+  not that grammar: the **MySQL** driver DSN
+  (`user:pass@tcp(host:3306)/db` — no scheme) and the **SQL Server** ADO form
+  (`server=…;user id=…;password=…` — no userinfo), with the **libpq keyword**
+  form (`host=… password=…`) a third for Postgres. Each printed its password to
+  stdout on every boot, where it persists in whatever collects the log stream.
+  The masker now covers all three shapes plus a secret riding a URI query
+  string (`?password=…`), and is exercised by a case per engine. NATS/Kafka
+  endpoints go through it too — `nats://user:pass@host:4222` was logged intact
+  at `sync engine started`.
+
+- **The framework emitted notification-context names it never translated.** The
+  contexts the framework itself builds — `Route` (404/405), `Request`
+  (413/408/timeout), `Server` (500), `Schema`, `Authorization`, `Pipeline` —
+  are rendered through the catalog by `notifications.ToContextDTOs`, but no
+  built-in catalog declared them. Every first 404/405/413/401/500 therefore
+  logged `translation.key.missing` and the wire envelope's `context` field
+  carried the raw English name in all seven languages. All seven catalogs now
+  carry the six labels (a service overriding any of them still wins — service
+  catalogs are imported after the core ones).
+
+- **The audit reader was dropping `trace_id`.** The persister writes the
+  column and `AuditEvent` declares the field, but `selectAuditEventCols` never
+  listed it — so EVERY read (`FindByID`, `FindByAggregate`, and anything built
+  on them) returned an empty `TraceID`. The pivot from an audit row to the
+  trace of the request that produced it now works as documented.
+
+### Changed
+
+- **The inbound access log is structured JSON like every other line —
+  `msg: "http.inbound"`.** The framework registered Fiber's plaintext logger
+  middleware, so the one record an operator greps most was the one record that
+  broke ingestion: a formatted text line in the middle of the slog JSON stream,
+  with no `threadId` (so it could not be joined to the `pipeline failure`
+  record for the same request), no trace stamping, and a timestamp refreshed by
+  a background ticker — an access line could read a full second behind the
+  structured record describing the SAME request. It is replaced by
+  `web.AccessLog`, the inbound sibling of the httpclient's `http.outbound`
+  record: one record per request through the service logger, carrying
+  `threadId`, `method`, `path`, `route` (the matched template), `status`,
+  `durationMs`, `ip`, and `err` when the chain failed, at `WARN` for 5xx and
+  `INFO` otherwise. It is registered outermost, so a panicking request — which
+  previously produced no access line at all — now gets one. New knob
+  **`http.accessLog`** (default on) silences it where the ingress already logs.
+
+- **Duration log attributes are milliseconds, and say so.** `slog` serializes a
+  bare `time.Duration` as a unit-less nanosecond count, so `"elapsed":256000`
+  read as seconds or milliseconds to anyone scanning the log and rescaled by
+  10^6 in a dashboard. The shutdown drain lines (`drained`, `drain failed`),
+  `view.rebuild.end`, the reconcile report and the grpcclient call record now
+  emit `elapsedMs`/`durationMs` as a float, matching the `durationMs` the
+  httpclient observation already used.
+
+- **The `query.orderBy.opt-in` advisory is warn-once per endpoint shape.** The
+  same Request DTO is boot-scanned once per endpoint serving it, so a service
+  printed the identical multi-kilobyte advisory — same request type, same
+  sortable path list — several times per boot. It is now deduped by (Request
+  type, sortable path set), so two endpoints exposing genuinely different
+  sortable surfaces still each get their line.
+
+- **BREAKING — `audit.Reader.FindByAggregate` takes a row cap:
+  `FindByAggregate(ctx, entityType, aggregateID string, limit int)`.** It
+  previously returned EVERY row of an aggregate's timeline, leaving an
+  unbounded read one long-lived aggregate away. The cap is rendered into the
+  statement by `Dialect.ApplyLimit` (a tail `LIMIT` on Postgres/MySQL/SQLite, a
+  SELECT-head `TOP` on SQL Server, `FETCH FIRST` on Oracle), so a long history
+  never crosses the wire only to be trimmed in Go. `limit` must be POSITIVE —
+  there is deliberately no spelling for "unbounded". Call sites pass the
+  ceiling they mean; the framework's own endpoint passes
+  `audit.endpoint.maxLimit`. `infra/audit.NewReader` gained the matching
+  dialect renderer as a fourth parameter.
+
+- **BREAKING — a by-id read receives its wire criteria the same way a paged
+  read does: `ToQuery(criteria queries.ReadCriteria)`.** The two read shapes
+  had two different web→application seats. `QueryWithParams` parsed the query
+  string into a `ReadCriteria` and handed it whole to
+  `Request.ToQuery(criteria)`, so `includeArchived` reached the Query without
+  anyone copying a field; `QueryByID` called `Request.ToQuery()` with no
+  argument, leaving the consumer to unwrap the DTO's `*bool` in `ToQuery` and
+  then re-declare and re-copy it in `ToCriteria`. The by-id seat now takes the
+  criteria too — on all three surfaces (REST, gRPC, GraphQL) — so a by-id Query
+  carries `Criteria queries.ReadCriteria` and its `ToCriteria` is the paged
+  body: `return q.Criteria, nil`, plus any identity-derived overlay.
+
+  What the by-id wire vocabulary is did NOT change: exactly one reserved
+  control, `includeArchived`, still honored only when the Request DTO declares
+  `query:"includeArchived"` and rejected as the canonical 400 otherwise; every
+  other query-string key still produces 400. The criteria the by-id wrappers
+  build carries that control and nothing else (`Filter` starts empty), and
+  `ReadByID` keeps ignoring Limit/OrderBy/After/Before/Search/Projection by
+  design. The DTO field stays — it IS the opt-in declaration — it just no
+  longer needs to be read by hand.
+
+  *Migration* (mechanical, per by-id endpoint):
+  - Request: `func (r FindXByIDRequest) ToQuery() *FindXByIDQuery` becomes
+    `func (r FindXByIDRequest) ToQuery(criteria fwqueries.ReadCriteria) *FindXByIDQuery`,
+    returning `&FindXByIDQuery{Criteria: criteria}` — the `*bool` unwrap goes away.
+  - Query: replace the hand-declared `IncludeArchived bool` field with
+    `Criteria fwqueries.ReadCriteria`, and `ToCriteria` returns `q.Criteria`.
+    A Query with an overlay starts from it: `crit := q.Criteria; crit.Filter = …`.
+  - `queryschema.ReadIncludeArchived(reflect.Value)` is the new exported helper
+    the REST and gRPC wrappers use to read the bound DTO's control; a consumer
+    driving the wrappers by hand can use the same seat.
+
+- **BREAKING — the read side now mirrors the write side's Result anatomy; the
+  Response DTO is the single wire authority on every surface.** Reads used to
+  hand each transport a raw view document (`map[string]any`) and let each
+  surface decide what to do with it, so the surfaces disagreed: REST and gRPC
+  ran a `func(map[string]any) R` projector, GraphQL re-derived the wire shape
+  from `R`'s tags without ever calling the projector, and the CSV/XLSX export
+  had no `R` at all — its columns came from the view's `TableSchema`, so a
+  business column absent from the Response still exported. One `?fields=`
+  parameter meant four different vocabularies (Response json tags on REST, the
+  export plan's lower-camel Go names on CSV/XLSX, the pb FieldMask on gRPC, the
+  SDL selection on GraphQL): `GET /users?fields=id` answered 200 while
+  `GET /users.csv?fields=id` answered 400.
+
+  The projection now happens ONCE, in the application layer, and every surface
+  consumes the same typed value:
+
+  - A read Query declares a **Result** type (application-pure, no wire tags —
+    the twin of a command's Result) and gains a MANDATORY
+    `FromQueryResult(ctx, r TResult) (TResult, error)` hook, the read-side twin of a
+    command's `FromEntity`. The framework fills the Result from the canonical
+    Go-keyed document (`queries.ResultFromDoc` — the semantic pass that was
+    `responses.AutoFromDoc`: `_id`→ID fallback, nil-slice normalization, enum
+    convergence to `Unknown`), then calls `FromQueryResult`, so derived fields and
+    ctx-aware shaping land BEFORE any transport sees the data.
+  - `queries.QueryWithParams` / `queries.QueryByID` are generic over the Result;
+    `handlers.FindByParamsQueryHandler` returns the new
+    `queries.PageOf[TResult]` and `FindByIDQueryHandler` returns `TResult`. A
+    raw document never leaves the application layer.
+  - Every transport constructor (REST `QueryWithParams`/`QueryByID`(+`Spec`),
+    the CSV/XLSX exports, `graphql.QueryWithParams`/`QueryByID`,
+    `grpc.QueryWithParams`/`QueryByID`) takes the SAME
+    `responseProjection func(TResult) TResp` seat the command wrappers already
+    took, typically the Response's `FromResult`. A Response that wants the
+    framework to write that method declares it — see the Auto mapping entry
+    below.
+  - The export derives its columns from the Response (`export.PlanFor`), so a
+    field outside the DTO exports nowhere and `?fields=`/`?orderBy=` speak the
+    json wire vocabulary shared with the JSON listing. Column headers come from
+    a new `exportLabelKey:"<catalog key>"` tag on the Response, translated per
+    request language (fallback: the json name — previously the Go field name).
+    Cell values are the projected Response values, so enum convergence now
+    applies to CSV/XLSX too.
+  - New boot guards: `queryschema.ValidateResultPurity` (a Result carries no
+    json wire tags — the three-name model), `ValidateFieldsResult` (the
+    `?fields=` sparse contract on the Result), and a GraphQL SDL guard that
+    boot-fails when two Response DTOs registered under one entity name expose
+    different wire field sets (previously an honor-system comment).
+
+  Removed: `responses.AutoFromDoc`, `responses.RawDoc`, `web.ParseCriteria`
+  (use `web.NewQueryParser` + `Parse`), `queries.ExportPlan` and the
+  `ViewDefinition.ExportPlan()` family (the `web.ExportView` interface is now
+  just `ResolveMaxExportRows` + `Name`).
+
+- **`fwresponses.Auto` / `fwrequests.Auto` — the generic mappers are OPT-IN,
+  and what they promise is enforced.** Every mapping seat in this framework is
+  hand-written by default: `ToCommand`, `ApplyTo`, `FromEntity`, `ToCriteria`,
+  `FromResult`. The framework offers to write two of them for you, and a DTO
+  accepts the offer by embedding a marker.
+
+  - A Response embeds `fwresponses.Auto` and calls
+    `fwresponses.AutoFromResult[Resp](result)`. A Request embeds
+    `fwrequests.Auto` and calls `fwrequests.AutoFromRequest[*Cmd](req)`, which
+    writes `ToCommand` the same way.
+  - **Without the marker the helper does not COMPILE.** The constraint is a
+    sealed interface granted only by the embed, so the opt-in can be neither
+    skipped nor forged — and a DTO that never asked can never silently ride a
+    mapping.
+  - **With the marker the pair is validated at Mount** by the five route
+    constructors (`QueryWithParams`, `QueryByID`, `CommandByID`,
+    `CommandWithBody`, `CommandWithBodyID`): names must align AND every mapped
+    field pair must be directly assignable. A violation is a boot panic naming
+    the field.
+  - **The mapping never serializes.** Values travel field by field through a
+    copier compiled once per type pair, so a shape that cannot be copied is
+    refused at boot rather than degraded into a marshal/unmarshal round trip.
+  - **The rule, by layer: a type in `web/` (Request, Response) must be fully
+    connected; a type in `application/` (Command, Result) may carry more.** A
+    Result may hold fields no Response exposes (a deliberate cut); a Command may
+    hold what the wire never sends (its path id, an identity overlay, a handler
+    default). A wire field with no counterpart is refused in both directions —
+    it would either render null forever or drop the client's value in silence.
+  - **A DTO without the marker is untouched**: no guard, no generic mapper, the
+    method written by hand — free to rename (`Result.Name` →
+    `Response.Nickname`), flatten a nested segment or fold two fields into one.
+    That escape hatch is why the marker is opt-in; the reference service
+    exercises it on the surfaces that rename a field or fold a flat wire address
+    into a nested Command value.
+  - Field shapes that travel: identical types, pointer wrapping/unwrapping,
+    same-family numeric conversion, `domain.ID` ↔ `string`, struct → struct,
+    slice → slice, and map → map under an identical key type (a different key
+    type is refused — the key is what a consumer indexes by).
+  - **Where the check cannot run, the diagnosis carries itself.** The Mount
+    check exists only where both types are known before a request does. A
+    hand-written handler, the GraphQL and gRPC surfaces and the tabular export
+    map on their own, so the same contract is enforced on first use there. Both
+    diagnostics name the failing field, explain the rule, list three concrete
+    ways out and tabulate what travels; the runtime one adds why it arrived on a
+    request instead of at startup, and points at `AutoFromResultReason` /
+    `AutoRequestReason` for turning that into a red build.
+
+  New surface: `responses.Auto`, `responses.AutoFromResult`,
+  `responses.AutoFromResultReason`, `responses.FormatAutoFromResultGuard`,
+  `requests.Auto`, `requests.AutoFromRequest`, `requests.AutoRequestReason`,
+  `requests.FormatAutoRequestGuard`, `queryschema.ValidateResultPurity`,
+  `queryschema.FormatResultPurityGuard`. `queryschema.ValidateResultAlignment`
+  is alignment-only and runs for opt-in pairs.
+
+- **Read-path performance round — same wire, same semantics, fewer passes and
+  round-trips.** Three internal changes to how a read is served; no surface,
+  envelope or ordering change on any of them.
+  - `queries.ResultFromDoc` fills the Result from the canonical document
+    through a cached reflection plan instead of a whole-document
+    `json.Marshal` + `Unmarshal` round-trip (a per-field JSON fallback
+    preserves custom decoders and coercion edge cases; a non-struct Result
+    keeps the whole-document trip). Together with the Auto mapping above —
+    which copies the Result into the Response field by field rather than
+    rendering and re-parsing it — this removes up to four `encoding/json`
+    passes per page item, and the bulk of the read path's allocations, on
+    REST and the tabular exports. GraphQL is the one surface that keeps a
+    JSON round-trip per node: its executor trims a wire-named value tree, now
+    rendered from the projected Response (so the Response DTO is the wire
+    authority there too) instead of walked off the raw document.
+  - The listing total runs concurrently with the page fetch on both readers
+    (Mongo `CountDocuments` ∥ `Find`; relational `CountEntities` ∥
+    `FindAllEntities`) — `totalCount` still arrives on every page; one store
+    round-trip leaves the latency path. Exception: the relational
+    bare-backward window (`last=N`, no cursor) anchors its offset on the total
+    and stays sequential. The cost of the latency win: each paged read holds
+    TWO store operations for the duration of the fetch — on the relational
+    twin, a second pooled connection — so a service running near its
+    `relational.pool` ceiling sizes the pool for it.
+  - A composed view's `LinkMany` leg resolves in ONE aggregation —
+    `$match({fk: {$in: page ids}})` + `$group`/`$topN` (n = the resolved
+    per-parent ceiling, sortBy = declared order + `_id` tiebreak; MongoDB
+    5.2+, already the framework's floor) — instead of one capped find per page
+    parent. Same segments, same deterministic truncation, constant query count
+    per leg. The trade is server-side: `$group` is a blocking stage, so it
+    examines every child of the page's parents that matches the leg filter
+    before `$topN` truncates its OUTPUT — the retired walk read at most n per
+    parent, but paid one query each. The wire bound (≤ page × n documents) is
+    unchanged, and the `fk` index keeps the scan to the page's parents, never
+    the whole collection; a leg whose parents carry very large child sets
+    pays that scan. The read cost model in `views.html` spells out both
+    sides.
+
 ## [0.52.0] - 2026-08-16
 
 ### Added

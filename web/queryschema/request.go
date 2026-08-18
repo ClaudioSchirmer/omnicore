@@ -188,6 +188,56 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 	return s
 }
 
+// ReadIncludeArchived reports the value bound to the Request DTO field tagged
+// `query:"includeArchived"` — the one reserved control a by-id read accepts.
+// Both `bool` and `*bool` are honored (a nil pointer reads as false) and
+// promoted anonymous structs are walked, so the reader sees exactly what the
+// surface's binder wrote. Returns false when the DTO declares no such field.
+//
+// The by-id wrappers call it to build the wire ReadCriteria they hand to
+// ToQuery(criteria) — the same seat the paged wrappers feed from
+// buildCriteria, whose control vocabulary is the full set.
+func ReadIncludeArchived(v reflect.Value) bool {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous {
+			if ReadIncludeArchived(v.Field(i)) {
+				return true
+			}
+			continue
+		}
+		if !f.IsExported() {
+			continue
+		}
+		tag, _, _ := strings.Cut(f.Tag.Get("query"), ",")
+		if tag != KeyIncludeArchived {
+			continue
+		}
+		fv := v.Field(i)
+		if fv.Kind() == reflect.Pointer {
+			if fv.IsNil() {
+				return false
+			}
+			fv = fv.Elem()
+		}
+		if fv.Kind() == reflect.Bool {
+			return fv.Bool()
+		}
+		return false
+	}
+	return false
+}
+
 // joinPath concatenates two non-empty segments with a single dot, returning
 // either one verbatim when the other is empty.
 func joinPath(prefix, segment string) string {

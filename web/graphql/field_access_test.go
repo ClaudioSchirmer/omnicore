@@ -34,21 +34,25 @@ func (q *restrictQuery) ToCriteria(ctx *configuration.AppContext) (queries.ReadC
 	return crit, nil
 }
 
+func (q *restrictQuery) FromQueryResult(_ *configuration.AppContext, r execResult) (execResult, error) {
+	return r, nil
+}
+
 // restrictHandler mirrors the real FindByParamsQueryHandler: it runs
 // ToCriteria(ctx) (surfacing the Restrict 403) before "reading".
-type restrictHandler struct{ page queries.Page }
+type restrictHandler struct{ page queries.PageOf[execResult] }
 
-func (h *restrictHandler) Handle(ctx *configuration.AppContext, q *restrictQuery) (queries.Page, error) {
+func (h *restrictHandler) Handle(ctx *configuration.AppContext, q *restrictQuery) (queries.PageOf[execResult], error) {
 	if _, err := q.ToCriteria(ctx); err != nil {
-		return queries.Page{}, err
+		return queries.PageOf[execResult]{}, err
 	}
 	return h.page, nil
 }
 
 func restrictRegistry() *Registry {
-	h := &restrictHandler{page: queries.Page{}}
+	h := &restrictHandler{}
 	return New(pipeline.New(translation.Default())).
-		Register(QueryWithParams[restrictRequest, execResponse]("items", "Item", h))
+		Register(QueryWithParams[restrictRequest]("items", "Item", execResponse{}.FromResult, h))
 }
 
 // TestFieldAccess_ExplicitSelectionOfRestrictedFieldIsForbidden — selecting a

@@ -8,8 +8,9 @@ import (
 )
 
 // The reader promises Go vocabulary — names AND values. A BSON datetime must
-// reach every consumer (typed projection, tabular export, RawDoc handlers) as
-// time.Time, recursively through the nested child collections.
+// reach every consumer (the Result fill, the tabular export, the manual
+// handlers reading the document) as time.Time, recursively through the nested
+// child collections.
 func TestNormalizeBSONValues_DatetimeToTimeRecursively(t *testing.T) {
 	ts := time.Date(2015, 3, 10, 0, 0, 0, 0, time.UTC)
 	doc := map[string]any{

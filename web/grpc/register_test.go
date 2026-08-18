@@ -16,7 +16,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/internal/testpb"
 	omnicorepb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
-	fwresponses "github.com/ClaudioSchirmer/omnicore/web/responses"
 )
 
 // registerServer registers the create RPC through the PUBLIC attachment API
@@ -140,21 +139,21 @@ func TestRegisterFullFamily(t *testing.T) {
 	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
 		"/omnicore.grpctest.v1.GadgetService/SearchGadgets",
 		searchGadgetsDTO{},
-		fwresponses.AutoFromDoc[gadgetItemDTO],
+		gadgetItemDTO{}.FromResult,
 		searchGadgetsHandler{sawCriteria: &sawCriteria},
 	))
 	reg.Register(QueryByID[testpb.GetGadgetRequest, testpb.GetGadgetResponse](
 		"/omnicore.grpctest.v1.GadgetService/GetGadget",
 		(*testpb.GetGadgetRequest).GetId,
 		getGadgetDTO{},
-		fwresponses.AutoFromDoc[getGadgetResponseDTO],
+		getGadgetResponseDTO{}.FromResult,
 		getGadgetHandler{},
 	))
 	var sawSearchCriteria queries.ReadCriteria
 	reg.Register(QueryWithParams[testpb.SearchGadgetsRequest, testpb.SearchGadgetsResponse](
 		"/omnicore.grpctest.v1.GadgetService/SearchGadgetsOptIn",
 		searchGadgetsWithSearchDTO{},
-		fwresponses.AutoFromDoc[gadgetItemDTO],
+		gadgetItemDTO{}.FromResult,
 		searchGadgetsHandler{sawCriteria: &sawSearchCriteria},
 	))
 

@@ -320,7 +320,7 @@ func TestReader_FieldsProjectionStripsOrderByFieldFromWire(t *testing.T) {
 	// the returned doc so the wire shape is exactly {email}.
 	page, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
 		Limit:      2,
-		OrderBy:       []queries.OrderByField{{Field: "name"}},
+		OrderBy:    []queries.OrderByField{{Field: "name"}},
 		Projection: map[string]int{"email": 1, "_id": 0},
 	})
 	if err != nil {
