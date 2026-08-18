@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,10 +66,13 @@ func (r *fakeRows) Scan(dest ...any) error {
 }
 
 // testReader builds a reader over the fake with a Postgres-style placeholder
-// renderer — the placeholder shape is irrelevant to the fake (it records the
-// SQL verbatim), so any deterministic renderer works.
+// renderer and row cap — both shapes are irrelevant to the fake (it records
+// the SQL verbatim), so any deterministic renderer works.
 func testReader(q Queryer) appaudit.Reader {
-	return NewReader(q, func(n int) string { return fmt.Sprintf("$%d", n) }, func(v any) any { return v })
+	return NewReader(q,
+		func(n int) string { return fmt.Sprintf("$%d", n) },
+		func(v any) any { return v },
+		func(sql string, n int) string { return sql + fmt.Sprintf(" LIMIT %d", n) })
 }
 
 // scanReflect lands each scripted column value into the matching scan target
@@ -102,9 +106,15 @@ func scanReflect(dest []any, row []any) error {
 }
 
 // happyRow returns one column tuple in selectAuditEventCols order, with the
-// nullable actor/issuer/tenant columns carrying *string pointers (the scan
-// targets these into **string).
+// nullable actor/issuer/tenant/trace columns carrying *string pointers (the
+// scan targets these into **string).
 func happyRow(actor, issuer, tenant *string, payload []byte) []any {
+	return happyRowWithTrace(actor, issuer, tenant, nil, payload)
+}
+
+// happyRowWithTrace is happyRow with the trace_id column spelled out, for the
+// tests that assert the pivot column actually reaches the AuditEvent.
+func happyRowWithTrace(actor, issuer, tenant, trace *string, payload []byte) []any {
 	return []any{
 		uuid.New(),       // id
 		"User",           // entity_type
@@ -116,6 +126,7 @@ func happyRow(actor, issuer, tenant *string, payload []byte) []any {
 		issuer,           // actor_issuer (*string)
 		tenant,           // tenant_id (*string)
 		uuid.New(),       // thread_id
+		trace,            // trace_id (*string)
 		time.Now().UTC(), // occurred_at
 		payload,          // payload
 	}
@@ -192,7 +203,7 @@ func TestFindByAggregate_ReturnsRowsNewestFirst(t *testing.T) {
 		happyRow(nil, nil, nil, []byte(`{}`)),
 		happyRow(nil, nil, nil, []byte(`{}`)),
 	}}}
-	out, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString())
+	out, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}
@@ -204,9 +215,57 @@ func TestFindByAggregate_ReturnsRowsNewestFirst(t *testing.T) {
 	}
 }
 
+// trace_id is the pivot from an audit row to the trace of the request that
+// produced it. The persister writes it; a read that dropped the column would
+// hand every consumer an empty TraceID and quietly break that jump.
+func TestFindByAggregate_CarriesTraceID(t *testing.T) {
+	trace := "4bf92f3577b34da6a3ce929d0e0e4736"
+	q := &fakeQueryer{rows: &fakeRows{data: [][]any{
+		happyRowWithTrace(nil, nil, nil, &trace, []byte(`{}`)),
+	}}}
+	out, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
+	if err != nil {
+		t.Fatalf("FindByAggregate: %v", err)
+	}
+	if len(out) != 1 || out[0].TraceID != trace {
+		t.Errorf("TraceID lost on the read path: %+v", out)
+	}
+}
+
+// The cap must reach the STATEMENT, not the materialized slice: a long
+// timeline must never cross the wire only to be trimmed in Go.
+func TestFindByAggregate_RendersTheCapIntoTheStatement(t *testing.T) {
+	q := &fakeQueryer{rows: &fakeRows{}}
+	if _, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 7); err != nil {
+		t.Fatalf("FindByAggregate: %v", err)
+	}
+	if !strings.Contains(q.lastSQL, "LIMIT 7") {
+		t.Errorf("the dialect's cap is missing from the statement: %q", q.lastSQL)
+	}
+	// Ordering has to precede the cap, or the engine caps an unordered set and
+	// "newest first" stops being newest.
+	if strings.Index(q.lastSQL, "ORDER BY") > strings.Index(q.lastSQL, "LIMIT 7") {
+		t.Errorf("the cap must come after ORDER BY, got %q", q.lastSQL)
+	}
+}
+
+// The dialect renderer is the only thing that knows WHERE the cap goes, so a
+// reader built without one still answers rather than emitting invalid SQL —
+// the hand-wired NewReader path.
+func TestFindByAggregate_NilApplyLimitLeavesStatementUncapped(t *testing.T) {
+	q := &fakeQueryer{rows: &fakeRows{}}
+	r := NewReader(q, func(n int) string { return fmt.Sprintf("$%d", n) }, func(v any) any { return v }, nil)
+	if _, err := r.FindByAggregate(context.Background(), "User", uuid.NewString(), 7); err != nil {
+		t.Fatalf("FindByAggregate: %v", err)
+	}
+	if strings.Contains(q.lastSQL, "LIMIT") {
+		t.Errorf("no renderer supplied, so no cap can be rendered; got %q", q.lastSQL)
+	}
+}
+
 func TestFindByAggregate_EmptyResultIsNonNilSlice(t *testing.T) {
 	q := &fakeQueryer{rows: &fakeRows{}}
-	out, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString())
+	out, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}
@@ -217,7 +276,7 @@ func TestFindByAggregate_EmptyResultIsNonNilSlice(t *testing.T) {
 
 func TestFindByAggregate_QueryErrorWrapped(t *testing.T) {
 	q := &fakeQueryer{queryErr: errors.New("query boom")}
-	_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString())
+	_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
 	if err == nil {
 		t.Fatal("expected query error to surface")
 	}
@@ -228,7 +287,7 @@ func TestFindByAggregate_ScanErrorWrapped(t *testing.T) {
 		data:    [][]any{happyRow(nil, nil, nil, []byte(`{}`))},
 		scanErr: errors.New("bad scan"),
 	}}
-	_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString())
+	_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
 	if err == nil {
 		t.Fatal("expected scan error to surface")
 	}
@@ -239,7 +298,7 @@ func TestFindByAggregate_RowsErrWrapped(t *testing.T) {
 		data:     [][]any{happyRow(nil, nil, nil, []byte(`{}`))},
 		errAfter: errors.New("late rows err"),
 	}}
-	_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString())
+	_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
 	if err == nil {
 		t.Fatal("expected rows.Err() to surface")
 	}

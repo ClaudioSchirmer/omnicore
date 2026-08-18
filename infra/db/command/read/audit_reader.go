@@ -30,6 +30,12 @@ func (a auditQuerier) Query(ctx context.Context, sql string, args ...any) (audit
 // This is the audit-side parallel of db.NewAggregateLoader: a free constructor
 // taking the neutral engine, so a service exposes audit reads with one line and
 // the same code path serves whichever backend booted.
+//
+// Dialect().ApplyLimit renders the timeline cap in each engine's native
+// position (a tail LIMIT on Postgres/MySQL/SQLite, a SELECT-head TOP on SQL
+// Server, FETCH FIRST on Oracle), so the capped read is one statement shape
+// written once against the seam.
 func NewAuditReader(eng RelationalEngine) appaudit.Reader {
-	return audit.NewReader(auditQuerier{q: eng.Querier()}, eng.Dialect().Placeholder, eng.Dialect().EncodeArg)
+	d := eng.Dialect()
+	return audit.NewReader(auditQuerier{q: eng.Querier()}, d.Placeholder, d.EncodeArg, d.ApplyLimit)
 }

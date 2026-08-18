@@ -324,11 +324,20 @@ if errors.Is(err, audit.ErrAuditNotFound) {
 }
 
 // Timeline by aggregate — index-served by audit_events_entity_timeline_idx
-// (entity_type, aggregate_id, occurred_at DESC). Newest first.
-events, err := reader.FindByAggregate(ctx, "User", userID.String())
+// (entity_type, aggregate_id, occurred_at DESC). Newest first, capped at the
+// limit you pass: the cap is rendered INTO the statement by the dialect, so a
+// long history never crosses the wire to be trimmed in Go. The limit must be
+// positive — there is no "unbounded" spelling.
+events, err := reader.FindByAggregate(ctx, "User", userID.String(), 20)
 for _, ev := range events {
     // walk the row's lifetime
 }</code></pre>
+    <p>
+        The same reader is on <code>Deps.AuditReader</code>, built once at boot over the engine that
+        booted, so a handler reading the trail does not construct one per request. It is non-nil
+        whenever a relational engine booted, independent of <code>destinations</code>: the port is the
+        reading capability, and whether there are rows to read is the destinations' business.
+    </p>
     <p>
         The returned <code>*AuditEvent</code> mirrors what the persister wrote: top-level columns map
         directly; the <code>payload jsonb</code> blob unmarshals back into <code>Snapshot</code> /
@@ -357,11 +366,79 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
     <p>
         Caveats: <code>FindByID</code> is a single primary-key lookup — <code>audit_events</code> is a
         plain table on every backend, and the v7 id is time-ordered, so recent rows (the common case
-        from a slog id) sit in the hot pages. <code>FindByAggregate</code> returns every
-        matching row; long timelines should slice downstream or run a bespoke query with explicit
-        <code>LIMIT</code>/<code>OFFSET</code>. The JSON round-trip yields
+        from a slog id) sit in the hot pages. <code>FindByAggregate</code> answers a
+        <em>window</em>, not the whole history: it returns the newest <code>limit</code> rows and
+        offers no cursor, so a consumer needing to walk further back queries the table directly. The
+        JSON round-trip yields
         <code>float64</code>/<code>string</code>/<code>bool</code>/<code>map</code>/<code>slice</code>
         — assert on stringified values, not Go-typed scalars.
+    </p>
+
+    <h3 id="audit-endpoint">The framework's own read endpoint — <code>audit.endpoint</code></h3>
+    <p>
+        <strong>This endpoint reads the database.</strong> It answers from the
+        <code>audit_events</code> table, which is written only when <code>audit.destinations</code>
+        includes <code>database</code>. Declaring the endpoint on a service that routes audit
+        <em>only</em> to <code>slog</code> <strong>aborts the boot</strong> — the framework refuses to
+        mount a surface that could answer nothing but an empty timeline for the rest of its life. A
+        deployment that keeps audit on slog/ELK and still wants a read surface <strong>builds that
+        surface itself</strong>, over the log stream: the translation primitives above
+        (<code>RenderLabels</code> for a typed event, <code>RenderLabelsInJSON</code> for a parsed log
+        line) are independent of the storage and work there unchanged.
+    </p>
+    <p>
+        With that precondition met, the block mounts a read surface with no service code at all — the
+        second self-mounted surface in the framework, alongside the issuer's JWKS document:
+    </p>
+<pre><code>audit:
+  destinations: [slog, database]   # `database` is REQUIRED by the block below
+
+  endpoint:              # absent (default) = nothing is mounted
+    renderLabels: true   # default: resolve field labels into the caller's locale
+    maxLimit: 20         # default: rows per timeline read
+    rest:                # absent = no HTTP connector; `rest: {}` takes every default
+      path: /audit
+      permission: audit:read</code></pre>
+    <p>
+        One route is mounted:
+    </p>
+<pre><code>GET {path}/{entityType}/{aggregateId}     # the aggregate's timeline, newest first
+    ?first=N                              # optional window; absent = one full maxLimit window</code></pre>
+    <p>
+        <code>entityType</code> is the Go type name the write path stamped into
+        <code>audit_events.entity_type</code> (<code>User</code>, <code>Employee</code>, …);
+        <code>aggregateId</code> is the aggregate root's id, rejected with the canonical 400 envelope
+        when it is not a UUID. The response is the canonical success envelope with <code>data</code>
+        carrying the event array; an aggregate with no rows answers <strong>200 with an empty
+        array</strong>, never a 404 — an absent timeline is a legitimate state (the record predates
+        audit, or its writes were routed elsewhere), not a missing aggregate.
+    </p>
+    <p>
+        <code>?first=N</code> above <code>maxLimit</code> is <strong>refused</strong> with
+        <code>LimitExceededNotification</code> (400), carrying the effective ceiling in
+        <code>fieldValue</code> — never silently truncated, because a consumer cannot tell a truncated
+        array from the end of a history. There is no cursor: this endpoint answers "what happened
+        recently", and a full audit walk belongs in a query against the table.
+    </p>
+    <p>
+        <code>permission</code> is enforced exactly like a <code>RequirePermission</code> declared on a
+        service route — inert while <code>auth.authorization.enabled</code> is false, a 403 once it is
+        on. An explicit <code>permission: ""</code> mounts the route ungated, which the boot refuses
+        while authorization is enabled: the audit trail is the last surface that should be readable by
+        anyone who merely authenticated.
+    </p>
+    <p>
+        <code>renderLabels: false</code> leaves the raw <code>fieldLabelKey</code> on every change
+        instead of the rendered <code>fieldLabel</code> — the shape a machine consumer wants, since the
+        catalog key is stable across locales and catalog evolution while a rendered string is not.
+    </p>
+    <p>
+        The route is registered through the same <code>openapi.Mount</code> seat every service route
+        uses, so it appears in the OpenAPI document, satisfies the boot's route-registration and
+        authorization scans, and picks up the permission gate from one place. The <code>rest:</code>
+        block is nested under <code>endpoint:</code> deliberately: <code>renderLabels</code> and
+        <code>maxLimit</code> describe the read itself and will govern any future connector, while
+        each connector owns its own transport knobs.
     </p>
 
     <h3 id="audit-elk">ELK / SQL consumption — reconstructing a timeline</h3>

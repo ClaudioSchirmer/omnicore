@@ -43,14 +43,22 @@ type reader struct {
 	q           Queryer
 	placeholder func(int) string
 	encode      func(any) any
+	applyLimit  func(sql string, n int) string
 }
 
 // NewReader builds the neutral audit reader over a query surface + the dialect's
-// placeholder renderer. db.NewAuditReader is the canonical constructor that wires
-// it from a RelationalEngine; this lower-level entry point exists so a test (or a
-// service pinning a bespoke connection) can supply its own Queryer.
-func NewReader(q Queryer, placeholder func(int) string, encode func(any) any) appaudit.Reader {
-	return &reader{q: q, placeholder: placeholder, encode: encode}
+// placeholder renderer, value codec and row cap. db.NewAuditReader is the canonical
+// constructor that wires it from a RelationalEngine; this lower-level entry point
+// exists so a test (or a service pinning a bespoke connection) can supply its own
+// Queryer.
+//
+// applyLimit is the dialect's Dialect.ApplyLimit — the cap is NOT a shared
+// ` LIMIT n` suffix, because an engine whose cap sits in the SELECT head (SQL
+// Server's TOP) rewrites the statement instead. A nil applyLimit leaves the
+// timeline read uncapped, which only a caller wiring the reader by hand can
+// produce; every framework path supplies the dialect's renderer.
+func NewReader(q Queryer, placeholder func(int) string, encode func(any) any, applyLimit func(string, int) string) appaudit.Reader {
+	return &reader{q: q, placeholder: placeholder, encode: encode, applyLimit: applyLimit}
 }
 
 // selectAuditEventCols is the canonical column list every read helper
@@ -58,9 +66,11 @@ func NewReader(q Queryer, placeholder func(int) string, encode func(any) any) ap
 // INSERT column list from persister.go in spirit, plus `id` (DB-generated)
 // and `created_at` (server-side timestamp, equal to occurred_at on the
 // happy path but technically distinct).
-const selectAuditEventCols = `
-SELECT id, entity_type, aggregate_id, verb, action_name, kind,
-       actor, actor_issuer, tenant_id, thread_id, occurred_at, payload
+// It MUST start at "SELECT " with no leading whitespace: Dialect.ApplyLimit
+// takes a complete SELECT and some engines cap by rewriting the statement HEAD
+// (SQL Server's TOP), which they can only find at position zero.
+const selectAuditEventCols = `SELECT id, entity_type, aggregate_id, verb, action_name, kind,
+       actor, actor_issuer, tenant_id, thread_id, trace_id, occurred_at, payload
 FROM audit_events`
 
 // FindByID returns the audit_events row whose id matches the supplied UUID.
@@ -99,28 +109,39 @@ func (r *reader) FindByID(ctx context.Context, id uuid.UUID) (*appaudit.AuditEve
 	return ev, nil
 }
 
-// FindByAggregate returns every audit_events row for one aggregate, newest
-// first. Index-served by audit_events_entity_timeline_idx
+// FindByAggregate returns the newest `limit` audit_events rows of one
+// aggregate, newest first. Index-served by audit_events_entity_timeline_idx
 // (entity_type, aggregate_id, occurred_at DESC) — the canonical "give me
-// this user's audit timeline" query the table was designed for.
+// this user's audit timeline" query the table was designed for, and the
+// index that also makes the capped read a partial index walk rather than a
+// full timeline sort.
+//
+// The cap is rendered INTO the statement by the dialect (Dialect.ApplyLimit),
+// never applied to the materialized slice: an aggregate with a long history
+// must not cross the wire from the database only to be trimmed in Go. limit
+// must be positive — the caller resolves its ceiling (the framework endpoint
+// reads audit.endpoint.maxLimit) before calling.
 //
 // Returns an empty slice + nil error when the aggregate has no audit
 // rows (e.g. it was created before audit was enabled, or the destinations
-// list excluded `database`). Pagination is the caller's job today — the
-// helper returns every matching row; large aggregates should slice the
-// result downstream, or run a bespoke query with explicit LIMIT/OFFSET
-// against the engine's Querier when the cardinality is known to be high.
-func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID string) ([]*appaudit.AuditEvent, error) {
+// list excluded `database`).
+func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID string, limit int) ([]*appaudit.AuditEvent, error) {
 	if r.q == nil {
 		return nil, errors.New("audit: nil querier")
 	}
 	if entityType == "" || aggregateID == "" {
 		return nil, errors.New("audit: find by aggregate requires non-empty entityType and aggregateID")
 	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("audit: find by aggregate requires a positive limit (got %d)", limit)
+	}
 	sql := selectAuditEventCols +
 		` WHERE entity_type = ` + r.placeholder(1) +
 		` AND aggregate_id = ` + r.placeholder(2) +
 		` ORDER BY occurred_at DESC`
+	if r.applyLimit != nil {
+		sql = r.applyLimit(sql, limit)
+	}
 	rows, err := r.q.Query(ctx, sql, entityType, aggregateID)
 	if err != nil {
 		return nil, fmt.Errorf("audit: find by aggregate: %w", err)
@@ -172,6 +193,7 @@ func scanAuditRow(scan func(dest ...any) error) (*appaudit.AuditEvent, error) {
 		actor        *string
 		actorIssuer  *string
 		tenantID     *string
+		traceID      *string
 		payloadBytes []byte
 		ev           appaudit.AuditEvent
 	)
@@ -186,6 +208,7 @@ func scanAuditRow(scan func(dest ...any) error) (*appaudit.AuditEvent, error) {
 		&actorIssuer,
 		&tenantID,
 		&threadID,
+		&traceID,
 		&ev.DateTime,
 		&payloadBytes,
 	)
@@ -197,6 +220,11 @@ func scanAuditRow(scan func(dest ...any) error) (*appaudit.AuditEvent, error) {
 	ev.Actor = stringOrEmpty(actor)
 	ev.ActorIssuer = stringOrEmpty(actorIssuer)
 	ev.TenantID = stringOrEmpty(tenantID)
+	// trace_id is the pivot to the producing request's trace. The persister
+	// writes it (NULL when no span was active), so a read that skipped the
+	// column would hand every consumer an empty TraceID and silently break
+	// the audit-row → trace jump the column exists for.
+	ev.TraceID = stringOrEmpty(traceID)
 
 	if len(payloadBytes) > 0 {
 		var pl auditPayload

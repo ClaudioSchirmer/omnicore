@@ -32,7 +32,16 @@ type Reader interface {
 	// (nil, ErrAuditNotFound) on miss; (nil, err) on transport failure;
 	// (*AuditEvent, nil) on hit.
 	FindByID(ctx context.Context, id uuid.UUID) (*AuditEvent, error)
-	// FindByAggregate returns every audit_events row for one aggregate, newest
-	// first. An aggregate with no rows yields an empty (non-nil) slice + nil.
-	FindByAggregate(ctx context.Context, entityType, aggregateID string) ([]*AuditEvent, error)
+	// FindByAggregate returns the audit_events rows of one aggregate, newest
+	// first, capped at limit. An aggregate with no rows yields an empty
+	// (non-nil) slice + nil.
+	//
+	// limit must be positive: the cap is rendered into the SQL by the dialect,
+	// so every timeline read leaves the database bounded — the read side's rule
+	// that no unbounded page ever reaches an engine, applied here too. A
+	// non-positive limit is a programming error at the caller and is refused.
+	// Callers resolving the cap from configuration (the framework's own audit
+	// endpoint reads audit.endpoint.maxLimit) pass the resolved value; a
+	// caller holding no configuration picks its own explicit ceiling.
+	FindByAggregate(ctx context.Context, entityType, aggregateID string, limit int) ([]*AuditEvent, error)
 }

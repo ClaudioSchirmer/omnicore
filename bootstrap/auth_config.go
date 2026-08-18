@@ -168,7 +168,7 @@ func (t *TenantConfig) UnmarshalYAML(node *yaml.Node) error {
 // rejectUnknownYAMLFields walks the mapping-node's content (key/value pairs)
 // and returns an error naming any key outside `allowed`. Used by sub-blocks
 // where typo-catching is more valuable than YAML's default permissive
-// behavior — currently only authorization + tenant.
+// behavior.
 func rejectUnknownYAMLFields(node *yaml.Node, blockPath string, allowed ...string) error {
 	if node.Kind != yaml.MappingNode {
 		return nil

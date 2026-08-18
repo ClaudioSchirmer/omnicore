@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"log/slog"
 
+	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
@@ -64,6 +65,18 @@ type Deps struct {
 	Translator *translation.Translator
 	Pipeline   *pipeline.Pipeline
 	ViewReader queries.ViewReader
+
+	// AuditReader reads the audit trail through the backend-neutral
+	// application port, built once over the booted engine (the framework's own
+	// audit.endpoint surfaces dispatch through this very instance). Exposed so
+	// a service reading the trail from its own handler — a bespoke forensic
+	// screen, an export, a domain rule consulting history — uses the same
+	// reader rather than constructing one per request.
+	//
+	// Non-nil whenever a relational engine booted, INDEPENDENT of
+	// audit.destinations: the port is the reading capability, and whether
+	// there are rows to read is the destinations' business.
+	AuditReader appaudit.Reader
 
 	// Resolver maps a logical view name to the physical Mongo collection it
 	// currently resolves to (its active slot). One instance is shared by every

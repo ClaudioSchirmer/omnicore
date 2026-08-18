@@ -129,7 +129,7 @@ func TestMySQLEngine_AuditAndEvents(t *testing.T) {
 	// run on a real MySQL (CHAR(36) id bound as text, "?" placeholder, no-rows
 	// → sentinel). The dialect twin of the Postgres read-back coverage.
 	reader := read.NewAuditReader(eng)
-	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value())
+	byAgg, err := reader.FindByAggregate(ctx, entityType, res.ID.Value(), 20)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}

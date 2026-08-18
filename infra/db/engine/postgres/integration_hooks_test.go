@@ -109,7 +109,7 @@ func TestPostgres_AuditReader_ReadBack(t *testing.T) {
 
 	reader := read.NewAuditReader(pg)
 
-	byAgg, err := reader.FindByAggregate(context.Background(), entityType, res.ID.Value())
+	byAgg, err := reader.FindByAggregate(context.Background(), entityType, res.ID.Value(), 20)
 	if err != nil {
 		t.Fatalf("FindByAggregate: %v", err)
 	}

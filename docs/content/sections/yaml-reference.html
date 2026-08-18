@@ -51,7 +51,7 @@ pwd: "${vault:secret/data/db#password}"                # delegated to a register
         <tr><td><code>migrations</code></td><td>no</td><td>SQL migration dir + autoRun mode</td><td>below · <a href="#migrations">Migrations</a></td></tr>
         <tr><td><code>query</code></td><td>no</td><td>read-side <code>?first=</code> ceiling + tabular-export row ceiling</td><td>below · <a href="#auto-query-handlers">Auto query handlers</a></td></tr>
         <tr><td><code>auth</code></td><td>no*</td><td>JWT auth + external validator + authz + self-issuance (<code>issuer:</code>)</td><td>below · <a href="#auth-middleware">Authentication</a> · <a href="#authz-seams">Authorization</a> · <a href="#token-issuance">Token issuance</a></td></tr>
-        <tr><td><code>audit</code></td><td>no</td><td>audit event destinations</td><td>below · <a href="#audit">Audit</a></td></tr>
+        <tr><td><code>audit</code></td><td>no</td><td>audit event destinations + the optional read endpoint</td><td>below · <a href="#audit">Audit</a></td></tr>
         <tr><td><code>observability</code></td><td>no</td><td>distributed tracing (OpenTelemetry); default off</td><td>below · <a href="#tracing">Distributed tracing</a></td></tr>
         <tr><td><code>cache</code></td><td>no</td><td>private + shared key-value cache</td><td>below · <a href="#cache-subsystem">Cache subsystem</a></td></tr>
         <tr><td><code>openapi</code></td><td>no</td><td>how the Swagger UI is served</td><td>below · <a href="#openapi">OpenAPI</a></td></tr>
@@ -214,13 +214,29 @@ query:
 
     <h3>audit</h3>
     <p>
-        Routes the <code>AuditEvent</code> produced by every successful write. Absent block (or absent
-        <code>destinations:</code> key) defaults to <strong>both</strong>. See <a href="#audit">Audit</a>.
+        Routes the <code>AuditEvent</code> produced by every successful write, and — optionally —
+        mounts the framework's own read surface over the trail. Absent block (or absent
+        <code>destinations:</code> key) defaults to <strong>both</strong> destinations and
+        <strong>no</strong> read surface. Closed key set at every level: a typo aborts the boot naming
+        the offending key. See <a href="#audit">Audit</a>.
     </p>
 <pre><code>audit:
   destinations:                          # absent → [slog, database]; [] → audit OFF; unknown/duplicate token aborts boot
     - slog                               # post-commit echo (ELK / Loki / stdout collector)
-    - database                           # in-TX row in audit_events (atomic with the write — source of truth)</code></pre>
+    - database                           # in-TX row in audit_events (atomic with the write — source of truth)
+
+  endpoint:                              # absent → nothing mounted; the framework still ships the audit.Reader port
+                                         # READS THE DATABASE: requires `database` above, else the boot ABORTS.
+                                         # Routing audit only to slog? Build the read surface yourself over the log
+                                         # stream — audit.RenderLabels / RenderLabelsInJSON work there unchanged.
+    renderLabels: true                   # default; false keeps the raw fieldLabelKey (stable key for machine consumers)
+    maxLimit: 20                         # default; rows per timeline read. Does NOT inherit query.maxLimit — an audit
+                                         # window and a projection page size are unrelated decisions. Negative aborts.
+    rest:                                # absent → no HTTP connector; `rest: {}` takes every default
+      path: /audit                       # GET {path}/{entityType}/{aggregateId}[?first=N]
+                                         # collision-checked against /livez /readyz /openapi.json /docs, graphql.path,
+                                         # graphql.uiPath and openapi.uiPath
+      permission: audit:read             # default; "" mounts ungated — REFUSED while auth.authorization.enabled=true</code></pre>
 
     <h3>observability</h3>
     <p>

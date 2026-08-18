@@ -31,7 +31,9 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/integration"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/read"
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
+	"github.com/ClaudioSchirmer/omnicore/web/auditapi"
 	"github.com/ClaudioSchirmer/omnicore/web/authcore"
 	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
@@ -543,7 +545,10 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// (Postgres via pgx, MySQL via database/sql) — the config surface is neutral, so
 	// no dialect branch here. nil cfg.Audit destinations were populated by
 	// applyDefaults already.
-	eng.WithAudit(&cfg.Audit, logger, cfg.Auth.AuditClaims)
+	// The persister receives the EMBEDDED write-path half only: infra never
+	// sees the read surfaces' transport knobs (audit.endpoint lives on the
+	// bootstrap-owned wrapper).
+	eng.WithAudit(&cfg.Audit.Config, logger, cfg.Auth.AuditClaims)
 	eng.WithEventPublisher(events.NewSlogPublisher(logger))
 	// resolver maps every view to the physical collection it currently serves
 	// (its active slot). Constructed once here and shared by every read-model
@@ -646,6 +651,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		Logger:              logger,
 		Tracing:             tracingProvider,
 		DB:                  eng,
+		AuditReader:         read.NewAuditReader(eng),
 		Mongo:               mg,
 		Translator:          tr,
 		Pipeline:            pipe,
@@ -873,6 +879,35 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 				},
 			})
 		deps.Logger.Info("issuer jwks served", "path", jwksPath)
+	}
+
+	// The audit read surface — opt-in via audit.endpoint.rest (absent means the
+	// framework mounts nothing and keeps shipping only the audit.Reader port).
+	// Registered here, BEFORE the boot scans below, so the routes are in the
+	// registry when scanRouteRegistration and scanAuthorization run: a
+	// framework-owned route is held to the same contract a service route is.
+	//
+	// Never public: the audit trail is gated by audit.endpoint.rest.permission
+	// (default "audit:read"), the opposite posture of the JWKS document above.
+	if deps.Config.Audit.auditRESTEnabled() && deps.AuditReader != nil {
+		restCfg := deps.Config.Audit.Endpoint.REST
+		auditapi.Mount(app, deps.OpenAPIRegistry,
+			auditapi.Config{
+				Path:         restCfg.Path,
+				Permission:   restCfg.PermissionValue(),
+				MaxLimit:     deps.Config.Audit.Endpoint.MaxLimit,
+				RenderLabels: deps.Config.Audit.Endpoint.RenderLabelsEnabled(),
+			},
+			auditapi.Deps{
+				Pipeline:   deps.Pipeline,
+				Reader:     deps.AuditReader,
+				Translator: deps.Translator,
+			})
+		deps.Logger.Info("audit read endpoint served",
+			"path", restCfg.Path,
+			"permission", restCfg.PermissionValue(),
+			"maxLimit", deps.Config.Audit.Endpoint.MaxLimit,
+			"renderLabels", deps.Config.Audit.Endpoint.RenderLabelsEnabled())
 	}
 
 	// Build + populate the GraphQL/gRPC registries from the features that opt

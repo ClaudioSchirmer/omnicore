@@ -15,14 +15,27 @@ import (
 // SQL contract tests pin the wire shape so a refactor cannot silently
 // drop the audit_events reference or drop a column the row needs.
 
+// The statement must begin AT "SELECT " with no leading whitespace: some
+// dialects cap a read by rewriting the statement HEAD (SQL Server turns
+// `SELECT …` into `SELECT TOP n …`) and can only find it at position zero.
+// A leading newline here compiles, passes every fake-backed test, and then
+// panics against a real SQL Server — so the contract is pinned in the unit
+// suite, where it costs nothing to catch.
+func TestSelectAuditEventCols_StartsAtSelectForHeadRewritingDialects(t *testing.T) {
+	if !strings.HasPrefix(selectAuditEventCols, "SELECT ") {
+		t.Errorf("selectAuditEventCols must start at %q (Dialect.ApplyLimit head rewrite), got %q",
+			"SELECT ", selectAuditEventCols[:min(20, len(selectAuditEventCols))])
+	}
+}
+
 func TestSelectAuditEventCols_ReferencesAuditEventsAndColumns(t *testing.T) {
 	if !strings.Contains(selectAuditEventCols, "audit_events") {
 		t.Error("selectAuditEventCols missing reference to audit_events table")
 	}
 	for _, col := range []string{
 		"id", "entity_type", "aggregate_id", "verb", "action_name", "kind",
-		"actor", "actor_issuer", "tenant_id", "thread_id", "occurred_at",
-		"payload",
+		"actor", "actor_issuer", "tenant_id", "thread_id", "trace_id",
+		"occurred_at", "payload",
 	} {
 		if !strings.Contains(selectAuditEventCols, col) {
 			t.Errorf("selectAuditEventCols missing column %q", col)
@@ -39,6 +52,7 @@ func TestScanAuditRow_PopulatesEveryFieldOnHappyPath(t *testing.T) {
 	actor := "user-42"
 	issuer := "https://idp.example"
 	tenant := "acme"
+	trace := "4bf92f3577b34da6a3ce929d0e0e4736"
 	occurred := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	payload := []byte(`{"snapshot":{"name":"alice"},"changes":[{"field":"name","from":"a","to":"b"}]}`)
 
@@ -53,8 +67,9 @@ func TestScanAuditRow_PopulatesEveryFieldOnHappyPath(t *testing.T) {
 		assign(t, dest[7], &issuer)
 		assign(t, dest[8], &tenant)
 		assign(t, dest[9], threadID)
-		assign(t, dest[10], occurred)
-		assign(t, dest[11], payload)
+		assign(t, dest[10], &trace)
+		assign(t, dest[11], occurred)
+		assign(t, dest[12], payload)
 		return nil
 	})
 	if err != nil {
@@ -71,6 +86,11 @@ func TestScanAuditRow_PopulatesEveryFieldOnHappyPath(t *testing.T) {
 	}
 	if got.Actor != "user-42" || got.ActorIssuer != "https://idp.example" || got.TenantID != "acme" {
 		t.Errorf("actor/issuer/tenant wrong: %+v", got)
+	}
+	// The pivot to the producing request's trace: written by the persister and
+	// read back here, so an audit row can be jumped to its trace.
+	if got.TraceID != trace {
+		t.Errorf("TraceID = %q, want %q", got.TraceID, trace)
 	}
 	if got.Snapshot == nil || got.Snapshot["name"] != "alice" {
 		t.Errorf("Snapshot lost on payload unmarshal: %v", got.Snapshot)
@@ -93,22 +113,24 @@ func TestScanAuditRow_NullableActorIssuerTenantBecomeEmptyStrings(t *testing.T) 
 		assign(t, dest[3], "insert")
 		assign(t, dest[4], "GetInsertable")
 		assign(t, dest[5], "snapshot")
-		// NULL columns: actor / actor_issuer / tenant_id (pgx scans into **string=nil).
+		// NULL columns: actor / actor_issuer / tenant_id / trace_id (pgx scans
+		// into **string=nil). trace_id is NULL whenever tracing is off.
 		var nilStr *string
 		assign(t, dest[6], nilStr)
 		assign(t, dest[7], nilStr)
 		assign(t, dest[8], nilStr)
 		assign(t, dest[9], threadID)
-		assign(t, dest[10], occurred)
-		assign(t, dest[11], []byte(`{}`))
+		assign(t, dest[10], nilStr)
+		assign(t, dest[11], occurred)
+		assign(t, dest[12], []byte(`{}`))
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("scanAuditRow: %v", err)
 	}
-	if got.Actor != "" || got.ActorIssuer != "" || got.TenantID != "" {
-		t.Errorf("NULL columns must become empty strings, got: actor=%q issuer=%q tenant=%q",
-			got.Actor, got.ActorIssuer, got.TenantID)
+	if got.Actor != "" || got.ActorIssuer != "" || got.TenantID != "" || got.TraceID != "" {
+		t.Errorf("NULL columns must become empty strings, got: actor=%q issuer=%q tenant=%q trace=%q",
+			got.Actor, got.ActorIssuer, got.TenantID, got.TraceID)
 	}
 }
 
@@ -129,9 +151,10 @@ func TestScanAuditRow_EmptyPayloadKeepsBlocksNil(t *testing.T) {
 		assign(t, dest[7], nilStr)
 		assign(t, dest[8], nilStr)
 		assign(t, dest[9], threadID)
-		assign(t, dest[10], time.Now())
+		assign(t, dest[10], nilStr)
+		assign(t, dest[11], time.Now())
 		// kind=transition payload is `{}` — buildAuditPayload elides every block.
-		assign(t, dest[11], []byte(`{}`))
+		assign(t, dest[12], []byte(`{}`))
 		return nil
 	})
 	if err != nil {
@@ -162,8 +185,9 @@ func TestScanAuditRow_PropagatesPayloadUnmarshalError(t *testing.T) {
 		assign(t, dest[7], nilStr)
 		assign(t, dest[8], nilStr)
 		assign(t, dest[9], uuid.New())
-		assign(t, dest[10], time.Now())
-		assign(t, dest[11], []byte(`{not-json`))
+		assign(t, dest[10], nilStr)
+		assign(t, dest[11], time.Now())
+		assign(t, dest[12], []byte(`{not-json`))
 		return nil
 	})
 	if err == nil {
@@ -196,7 +220,7 @@ func TestFindByID_RejectsNilQuerier(t *testing.T) {
 }
 
 func TestFindByAggregate_RejectsNilQuerier(t *testing.T) {
-	_, err := testReader(nil).FindByAggregate(context.Background(), "User", uuid.NewString())
+	_, err := testReader(nil).FindByAggregate(context.Background(), "User", uuid.NewString(), 20)
 	if err == nil || !strings.Contains(err.Error(), "nil querier") {
 		t.Errorf("expected nil-querier error, got: %v", err)
 	}
@@ -213,9 +237,24 @@ func TestFindByAggregate_RejectsEmptyArguments(t *testing.T) {
 	for _, c := range cases {
 		// A non-nil querier so the empty-arg guard (not the nil guard) is what
 		// rejects; the SQL must never reach Query.
-		_, err := testReader(&fakeQueryer{}).FindByAggregate(context.Background(), c.et, c.aid)
+		_, err := testReader(&fakeQueryer{}).FindByAggregate(context.Background(), c.et, c.aid, 20)
 		if err == nil || !strings.Contains(err.Error(), "non-empty") {
 			t.Errorf("[%s] expected validation error, got: %v", c.name, err)
+		}
+	}
+}
+
+// The cap is the read's contract with the database, so a caller that supplies
+// none is refused rather than served an unbounded timeline.
+func TestFindByAggregate_RejectsNonPositiveLimit(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		q := &fakeQueryer{}
+		_, err := testReader(q).FindByAggregate(context.Background(), "User", uuid.NewString(), limit)
+		if err == nil || !strings.Contains(err.Error(), "positive limit") {
+			t.Errorf("limit=%d: expected a positive-limit rejection, got: %v", limit, err)
+		}
+		if q.lastSQL != "" {
+			t.Errorf("limit=%d: the statement must never reach the querier, got %q", limit, q.lastSQL)
 		}
 	}
 }

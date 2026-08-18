@@ -13,6 +13,51 @@ with `1.0.0`.
 
 ### Added
 
+- **The framework serves the audit trail over HTTP, from yaml alone —
+  `audit.endpoint.rest`.** A block whose mere presence mounts
+  `GET {path}/{entityType}/{aggregateId}`, answering that aggregate's audit
+  timeline newest-first in the canonical envelope, with no service code. The
+  route registers through the same `openapi.Mount` seat a service route uses,
+  so it is documented in the OpenAPI spec, gated by the Layer-1 permission
+  gate, and covered by the boot's route-registration and authorization scans.
+
+  **It reads the database.** The block REQUIRES `database` among
+  `audit.destinations`; declaring it on a service that routes audit only to
+  `slog` ABORTS the boot rather than mounting a surface that could answer
+  nothing but an empty timeline for the rest of its life. A deployment that
+  keeps audit on slog/ELK and still wants a read surface builds that surface
+  itself over the log stream — `audit.RenderLabels` (typed) and
+  `audit.RenderLabelsInJSON` (parsed log line) are independent of the storage
+  and work there unchanged.
+
+  - `maxLimit` (default **20**) is the window, rendered into the SQL by the
+    dialect. It deliberately does NOT inherit `query.maxLimit`: an audit window
+    and a projection page size are unrelated decisions, and coupling them would
+    let an operator raising a page size silently widen the trail's exposure.
+    `?first=N` above the ceiling is REFUSED with `LimitExceededNotification`
+    (400, effective ceiling in `fieldValue`), never silently truncated — a
+    consumer cannot tell a truncated array from the end of a history.
+  - `permission` (default `audit:read`) is the Layer-1 gate. An explicit
+    `permission: ""` mounts the route ungated and is refused at boot while
+    `auth.authorization.enabled=true`.
+  - `renderLabels` (default true) resolves each change's catalog key into the
+    caller's locale; `false` keeps the raw, stable `fieldLabelKey` for machine
+    consumers.
+  - `path` (default `/audit`) is collision-checked against the reserved routes
+    (`/livez`, `/readyz`, `/openapi.json`, `/docs`), `graphql.path`,
+    `graphql.uiPath` and `openapi.uiPath`.
+  - Closed key set at every level of the block: a typo aborts the boot naming
+    the offending key.
+  - The `rest:` sub-block is nested on purpose — `renderLabels` and `maxLimit`
+    describe the READ and will govern any future connector, while each
+    connector owns its own transport knobs.
+
+- **`Deps.AuditReader`** — the backend-neutral audit reader, built once at boot
+  over whichever engine booted. A service reading the trail from its own
+  handler no longer constructs one per request. Non-nil whenever a relational
+  engine booted, independent of `audit.destinations`: the port is the reading
+  capability, and whether there are rows to read is the destinations' business.
+
 - **Computed read fields — a Response field with no column, derived after the
   read.** A Response may now declare `computed:"Src1,Src2"` beside its `json`
   tag: the field carries no stored column, the Query's `FromQueryResult`
@@ -44,7 +89,27 @@ with `1.0.0`.
   both the wire spelling and the notification, so the manual `QueryParser` path
   renders the same message the auto wrappers do (`web.RespondViolation`).
 
+### Fixed
+
+- **The audit reader was dropping `trace_id`.** The persister writes the
+  column and `AuditEvent` declares the field, but `selectAuditEventCols` never
+  listed it — so EVERY read (`FindByID`, `FindByAggregate`, and anything built
+  on them) returned an empty `TraceID`. The pivot from an audit row to the
+  trace of the request that produced it now works as documented.
+
 ### Changed
+
+- **BREAKING — `audit.Reader.FindByAggregate` takes a row cap:
+  `FindByAggregate(ctx, entityType, aggregateID string, limit int)`.** It
+  previously returned EVERY row of an aggregate's timeline, leaving an
+  unbounded read one long-lived aggregate away. The cap is rendered into the
+  statement by `Dialect.ApplyLimit` (a tail `LIMIT` on Postgres/MySQL/SQLite, a
+  SELECT-head `TOP` on SQL Server, `FETCH FIRST` on Oracle), so a long history
+  never crosses the wire only to be trimmed in Go. `limit` must be POSITIVE —
+  there is deliberately no spelling for "unbounded". Call sites pass the
+  ceiling they mean; the framework's own endpoint passes
+  `audit.endpoint.maxLimit`. `infra/audit.NewReader` gained the matching
+  dialect renderer as a fourth parameter.
 
 - **BREAKING — a by-id read receives its wire criteria the same way a paged
   read does: `ToQuery(criteria queries.ReadCriteria)`.** The two read shapes

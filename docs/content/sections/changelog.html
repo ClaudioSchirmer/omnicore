@@ -9,6 +9,51 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span></div>
         <ul>
+            <li><strong>Added</strong> — <strong><a href="#audit~audit-endpoint">the framework serves the audit
+                trail over HTTP from yaml</a> — <code>audit.endpoint.rest</code>.</strong> A block whose mere
+                presence mounts <code>GET {path}/{entityType}/{aggregateId}</code>, answering the aggregate's
+                timeline newest-first in the canonical envelope. No service code: the route registers through
+                the same <code>openapi.Mount</code> seat a service route uses, so it is documented, gated and
+                covered by the boot scans.
+                <ul>
+                    <li><strong>It reads the database.</strong> The block REQUIRES <code>database</code> among
+                        <code>audit.destinations</code>; declaring it on a service that routes audit only to
+                        <code>slog</code> ABORTS the boot instead of mounting a surface that could only ever
+                        answer an empty timeline. A deployment keeping audit on slog/ELK builds its read
+                        surface itself over the log stream — <code>audit.RenderLabels</code> /
+                        <code>audit.RenderLabelsInJSON</code> are storage-independent and work there unchanged.</li>
+                    <li><code>maxLimit</code> (default <strong>20</strong>) is the window, rendered into the SQL
+                        by the dialect. It deliberately does NOT inherit <code>query.maxLimit</code>: an audit
+                        window and a projection page size are unrelated decisions, and coupling them would let
+                        raising a page size silently widen the trail's exposure. <code>?first=N</code> above it
+                        is REFUSED with <code>LimitExceededNotification</code>, never truncated.</li>
+                    <li><code>permission</code> (default <code>audit:read</code>) rides the Layer-1 gate;
+                        <code>permission: ""</code> mounts ungated and is refused at boot while
+                        <code>auth.authorization.enabled=true</code>. <code>renderLabels: false</code> keeps the
+                        raw <code>fieldLabelKey</code> for machine consumers. The path is collision-checked
+                        against the reserved routes, <code>graphql.path</code>/<code>uiPath</code> and
+                        <code>openapi.uiPath</code>.</li>
+                    <li><code>Deps.AuditReader</code> exposes the same reader, built once at boot, so a service
+                        reading the trail from its own handler stops constructing one per request.</li>
+                    <li>The <code>rest:</code> sub-block is nested on purpose: <code>renderLabels</code> and
+                        <code>maxLimit</code> describe the READ and will govern any future connector, while each
+                        connector owns its transport knobs.</li>
+                </ul></li>
+            <li><strong>Fixed</strong> — <strong>the audit reader was dropping <code>trace_id</code>.</strong>
+                The persister writes the column and <code>AuditEvent</code> declares the field, but the SELECT
+                never listed it, so EVERY read — <code>FindByID</code>, <code>FindByAggregate</code> and
+                anything built on them — returned an empty <code>TraceID</code>. The pivot from an audit row to
+                the trace of the request that produced it now works as documented.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>audit.Reader.FindByAggregate</code>
+                takes a row cap: <code>FindByAggregate(ctx, entityType, aggregateID string, limit int)</code>.</strong>
+                It previously returned EVERY row of a timeline, leaving an unbounded read one long-lived
+                aggregate away. The cap is rendered into the statement by <code>Dialect.ApplyLimit</code> (a tail
+                <code>LIMIT</code> on Postgres/MySQL/SQLite, a SELECT-head <code>TOP</code> on SQL Server,
+                <code>FETCH FIRST</code> on Oracle), so a long history never crosses the wire to be trimmed in
+                Go. <code>limit</code> must be POSITIVE — there is no spelling for "unbounded", which is the
+                point. Call sites add the ceiling they mean; the framework's own endpoint passes
+                <code>audit.endpoint.maxLimit</code>. <code>infra/audit.NewReader</code> gained the matching
+                dialect renderer as a fourth parameter.</li>
             <li><strong>Added</strong> — <strong><a href="#auto-query-handlers~qry-computed">computed read
                 fields</a> — a Response field with no column, derived after the read.</strong> Declare
                 <code>computed:"Src1,Src2"</code> beside the <code>json</code> tag and produce the value in the

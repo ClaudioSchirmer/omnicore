@@ -108,7 +108,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 | Auto command handlers + route constructors (`CommandWith*`/`CommandByID`), strict body (`pipeline.FullBody`), `path:` binding | `auto-handlers.html` | Cmd owns input (`ToEntity`/`ApplyTo`) + output (`FromEntity`); PUT≠PATCH by type. |
 | Manual command handler (cross-service, side effects, custom envelope) | `custom-command-handler.html` | Implement `pipeline.Handler`; same wrappers; `WithBeforeCommit`/`WithAfterBegin`. |
 | Concrete write lifecycle (BEGIN→hooks→write→outbox→audit→COMMIT→async) | `lifecycle-map.html` | One `pgx.Tx`: data + outbox + audit atomic; outbox → CDC relay → transport → SyncEngine. |
-| Audit event shape, `kind` (snapshot/delta/transition), routing (`audit.destinations`) | `audit.html` | One event per write; `database` in-TX (authoritative) + `slog` post-commit. |
+| Audit event shape, `kind` (snapshot/delta/transition), routing (`audit.destinations`), the backend-neutral reader + the framework's own read endpoint (`audit.endpoint.rest`) | `audit.html` | One event per write; `database` in-TX (authoritative) + `slog` post-commit. The endpoint READS the relational trail — it requires the `database` destination (boot aborts otherwise) and a slog-only deployment builds its read surface itself over the log stream; `maxLimit` (default 20) is its own window, never inherited from `query.maxLimit`. |
 
 ### Read side (CQRS)
 | Topic | Section | Essence |
