@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -53,6 +54,11 @@ func TestNewQueryParser_NoPanicWhenFieldsNotOptedIn(t *testing.T) {
 }
 
 func TestNewQueryParser_EmitsSortOptInWarn(t *testing.T) {
+	// The advisory is warn-once per (Request type, sortable path set), and
+	// earlier tests in this package construct the same pair — clear the dedup
+	// so this test observes the FIRST emission rather than a suppressed one.
+	resetOrderByOptInWarned(t)
+
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -82,6 +88,8 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 		Name   *string `query:"name"  filter:"eq"`
 		Fields *string `query:"fields"`
 	}
+	resetOrderByOptInWarned(t)
+
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -92,6 +100,41 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
 		t.Errorf("did not expect sort opt-in warn when only Fields is declared, log was: %s", buf.String())
 	}
+}
+
+// TestNewQueryParser_SortOptInWarnIsOncePerShape asserts the advisory does not
+// repeat for a Request/Response pair already warned about. The same DTO is
+// scanned once per endpoint serving it, which used to print the identical
+// multi-kilobyte line several times per boot.
+func TestNewQueryParser_SortOptInWarnIsOncePerShape(t *testing.T) {
+	resetOrderByOptInWarned(t)
+	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
+
+	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
+		t.Errorf("expected the second scan of the same shape to be silent, log was: %s", buf.String())
+	}
+	// A DIFFERENT sortable surface still gets its own line.
+	_ = NewQueryParser[testFindSortOnlyRequest, sparseUser]()
+	if !strings.Contains(buf.String(), "query.orderBy.opt-in") {
+		t.Errorf("expected a distinct request shape to warn, log was: %s", buf.String())
+	}
+}
+
+// resetOrderByOptInWarned clears the warn-once dedup and restores it when the
+// test ends, so tests observing the advisory stay independent of package test
+// ordering.
+func resetOrderByOptInWarned(t *testing.T) {
+	t.Helper()
+	prev := orderByOptInWarned
+	orderByOptInWarned = &sync.Map{}
+	t.Cleanup(func() { orderByOptInWarned = prev })
 }
 
 // ─── Runtime translation via Parse ─────────────────────────────────────────

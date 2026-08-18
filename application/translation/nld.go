@@ -90,6 +90,22 @@ func (coreNL) Translations() map[string]string {
 		"MethodNotAllowedNotification":    "HTTP-methode niet toegestaan voor deze route.",
 		"PayloadTooLargeNotification":     "Verzoekbody overschrijdt de toegestane omvang.",
 
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Autorisatie",
+		"Pipeline":      "Pipeline",
+		"Request":       "Verzoek",
+		"Route":         "Route",
+		"Schema":        "Schema",
+		"Server":        "Server",
+
 		// Language descriptions
 		"Language.UNKNOWN": "Onbekend",
 		"Language.PT_BR":   "Portugees",

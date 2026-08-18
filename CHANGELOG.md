@@ -91,6 +91,31 @@ with `1.0.0`.
 
 ### Fixed
 
+- **The relational DSN was logged with its password in clear text on three of
+  the five engines.** `bootstrap` masks the credentials of the connection
+  strings it logs at boot (`database connected`, `mongo connected`), but the
+  masker understood ONE grammar — the `scheme://user:pass@host` URI — and
+  returned anything else verbatim. Two supported, documented configurations are
+  not that grammar: the **MySQL** driver DSN
+  (`user:pass@tcp(host:3306)/db` — no scheme) and the **SQL Server** ADO form
+  (`server=…;user id=…;password=…` — no userinfo), with the **libpq keyword**
+  form (`host=… password=…`) a third for Postgres. Each printed its password to
+  stdout on every boot, where it persists in whatever collects the log stream.
+  The masker now covers all three shapes plus a secret riding a URI query
+  string (`?password=…`), and is exercised by a case per engine. NATS/Kafka
+  endpoints go through it too — `nats://user:pass@host:4222` was logged intact
+  at `sync engine started`.
+
+- **The framework emitted notification-context names it never translated.** The
+  contexts the framework itself builds — `Route` (404/405), `Request`
+  (413/408/timeout), `Server` (500), `Schema`, `Authorization`, `Pipeline` —
+  are rendered through the catalog by `notifications.ToContextDTOs`, but no
+  built-in catalog declared them. Every first 404/405/413/401/500 therefore
+  logged `translation.key.missing` and the wire envelope's `context` field
+  carried the raw English name in all seven languages. All seven catalogs now
+  carry the six labels (a service overriding any of them still wins — service
+  catalogs are imported after the core ones).
+
 - **The audit reader was dropping `trace_id`.** The persister writes the
   column and `AuditEvent` declares the field, but `selectAuditEventCols` never
   listed it — so EVERY read (`FindByID`, `FindByAggregate`, and anything built
@@ -98,6 +123,37 @@ with `1.0.0`.
   trace of the request that produced it now works as documented.
 
 ### Changed
+
+- **The inbound access log is structured JSON like every other line —
+  `msg: "http.inbound"`.** The framework registered Fiber's plaintext logger
+  middleware, so the one record an operator greps most was the one record that
+  broke ingestion: a formatted text line in the middle of the slog JSON stream,
+  with no `threadId` (so it could not be joined to the `pipeline failure`
+  record for the same request), no trace stamping, and a timestamp refreshed by
+  a background ticker — an access line could read a full second behind the
+  structured record describing the SAME request. It is replaced by
+  `web.AccessLog`, the inbound sibling of the httpclient's `http.outbound`
+  record: one record per request through the service logger, carrying
+  `threadId`, `method`, `path`, `route` (the matched template), `status`,
+  `durationMs`, `ip`, and `err` when the chain failed, at `WARN` for 5xx and
+  `INFO` otherwise. It is registered outermost, so a panicking request — which
+  previously produced no access line at all — now gets one. New knob
+  **`http.accessLog`** (default on) silences it where the ingress already logs.
+
+- **Duration log attributes are milliseconds, and say so.** `slog` serializes a
+  bare `time.Duration` as a unit-less nanosecond count, so `"elapsed":256000`
+  read as seconds or milliseconds to anyone scanning the log and rescaled by
+  10^6 in a dashboard. The shutdown drain lines (`drained`, `drain failed`),
+  `view.rebuild.end`, the reconcile report and the grpcclient call record now
+  emit `elapsedMs`/`durationMs` as a float, matching the `durationMs` the
+  httpclient observation already used.
+
+- **The `query.orderBy.opt-in` advisory is warn-once per endpoint shape.** The
+  same Request DTO is boot-scanned once per endpoint serving it, so a service
+  printed the identical multi-kilobyte advisory — same request type, same
+  sortable path list — several times per boot. It is now deduped by (Request
+  type, sortable path set), so two endpoints exposing genuinely different
+  sortable surfaces still each get their line.
 
 - **BREAKING — `audit.Reader.FindByAggregate` takes a row cap:
   `FindByAggregate(ctx, entityType, aggregateID string, limit int)`.** It

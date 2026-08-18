@@ -52,6 +52,36 @@ func TestCatalogs_KeySetsConsistent(t *testing.T) {
 	}
 }
 
+// TestCatalogs_ContextLabelsPresent asserts every built-in catalog carries a
+// label for each NotificationContext name the FRAMEWORK itself constructs.
+// These are keys the framework emits, so the framework — not the consuming
+// service — owes the translation: a missing one surfaces as a
+// translation.key.missing warn on the first 404/405/413/401/500 and as the
+// raw English name in the wire envelope's `context` field.
+func TestCatalogs_ContextLabelsPresent(t *testing.T) {
+	contextKeys := []string{
+		"Authorization",
+		"Pipeline",
+		"Request",
+		"Route",
+		"Schema",
+		"Server",
+	}
+	for lang, mod := range allBuiltinCatalogs() {
+		entries := mod.Translations()
+		for _, key := range contextKeys {
+			v, ok := entries[key]
+			if !ok {
+				t.Errorf("catalog %s missing context label %q", lang, key)
+				continue
+			}
+			if v == "" {
+				t.Errorf("catalog %s has empty context label for %q", lang, key)
+			}
+		}
+	}
+}
+
 func allBuiltinCatalogs() map[string]Module {
 	return map[string]Module{
 		"PTBR": CorePTBR(),

@@ -132,7 +132,9 @@ func (s *service) loggingInterceptor() connect.UnaryInterceptorFunc {
 				slog.String("service", s.cfg.name),
 				slog.String("procedure", req.Spec().Procedure),
 				slog.String("code", code),
-				slog.Duration("elapsed", time.Since(start)),
+				// Milliseconds, matching the httpclient observation's durationMs;
+				// slog renders a bare Duration as unit-less nanoseconds.
+				slog.Float64("durationMs", float64(time.Since(start).Nanoseconds())/1e6),
 			)
 			return res, err
 		}

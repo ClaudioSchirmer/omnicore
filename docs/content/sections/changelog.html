@@ -39,6 +39,48 @@
                         <code>maxLimit</code> describe the READ and will govern any future connector, while each
                         connector owns its transport knobs.</li>
                 </ul></li>
+            <li><strong>Fixed</strong> — <strong>the relational DSN was logged with its password in clear
+                text on three of the five engines.</strong> The boot masks the credentials of the connection
+                strings it logs (<code>database connected</code>, <code>mongo connected</code>), but the masker
+                understood ONE grammar — the <code>scheme://user:pass@host</code> URI — and returned anything
+                else verbatim. Two supported, documented configurations are not that grammar: the MySQL driver
+                DSN (<code>user:pass@tcp(host:3306)/db</code>, no scheme) and the SQL Server ADO form
+                (<code>server=…;user id=…;password=…</code>, no userinfo), with the libpq keyword form a third
+                for Postgres. Each printed its password to stdout on every boot, where it persists in whatever
+                collects the stream. All three shapes are covered now, plus a secret riding a query string
+                (<code>?password=…</code>) and the transport endpoints
+                (<code>nats://user:pass@host:4222</code> was logged intact at <code>sync engine started</code>).</li>
+            <li><strong>Fixed</strong> — <strong>the framework emitted notification-context names it never
+                translated.</strong> The contexts the framework builds itself — <code>Route</code> (404/405),
+                <code>Request</code> (413/408), <code>Server</code> (500), <code>Schema</code>,
+                <code>Authorization</code>, <code>Pipeline</code> — are rendered through the catalog, but no
+                built-in catalog declared them: every first 404/405/413/401/500 logged
+                <code>translation.key.missing</code> and shipped the raw English name in the envelope's
+                <code>context</code> field in all seven languages. All seven catalogs carry the six labels now;
+                a service catalog overriding any of them still wins.</li>
+            <li><strong>Changed</strong> — <strong><a href="#logs~logs-shape">the inbound access log is
+                structured JSON like every other line</a> — <code>msg: "http.inbound"</code>.</strong> The
+                framework registered Fiber's plaintext logger, so the one record an operator greps most was the
+                one that broke ingestion: formatted text in the middle of the JSON stream, no
+                <code>threadId</code> (so it could not be joined to the <code>pipeline failure</code> record of
+                the same request), no trace stamping, and a ticker-cached timestamp that could read a second
+                behind the structured record for the SAME request. <code>web.AccessLog</code> replaces it — the
+                inbound sibling of <code>http.outbound</code>, carrying <code>threadId</code>,
+                <code>method</code>, <code>path</code>, <code>route</code>, <code>status</code>,
+                <code>durationMs</code>, <code>ip</code> and <code>err</code>, at <code>WARN</code> for 5xx and
+                <code>INFO</code> otherwise. Registered outermost, so a panicking request — previously logged
+                nowhere on this channel — gets its line. New <code>http.accessLog</code> knob (default on).</li>
+            <li><strong>Changed</strong> — <strong>duration log attributes are milliseconds, and say so.</strong>
+                <code>slog</code> serializes a bare <code>time.Duration</code> as a unit-less NANOSECOND count,
+                so <code>"elapsed":256000</code> read as seconds — or milliseconds — to anyone scanning the log.
+                The shutdown drain lines, <code>view.rebuild.end</code>, the reconcile report and the grpcclient
+                call record now emit <code>elapsedMs</code>/<code>durationMs</code>, matching the
+                <code>durationMs</code> the httpclient observation already used.</li>
+            <li><strong>Changed</strong> — <strong>the <code>query.orderBy.opt-in</code> advisory is warn-once
+                per endpoint shape.</strong> The same Request DTO is boot-scanned once per endpoint serving it,
+                so the identical multi-kilobyte advisory — same request type, same sortable path list — printed
+                several times per boot. Deduped by (Request type, sortable path set); two endpoints exposing
+                genuinely different sortable surfaces still each get their line.</li>
             <li><strong>Fixed</strong> — <strong>the audit reader was dropping <code>trace_id</code>.</strong>
                 The persister writes the column and <code>AuditEvent</code> declares the field, but the SELECT
                 never listed it, so EVERY read — <code>FindByID</code>, <code>FindByAggregate</code> and

@@ -90,6 +90,22 @@ func (coreES) Translations() map[string]string {
 		"MethodNotAllowedNotification":    "Método HTTP no permitido para esta ruta.",
 		"PayloadTooLargeNotification":     "El cuerpo de la solicitud supera el tamaño permitido.",
 
+		// Notification context labels — the framework builds its own
+		// NotificationContext values with these names (web.respondRouteNotFound,
+		// respondMethodNotAllowed, respondPayloadTooLarge, the ErrorHandler's
+		// "Server", the schema guards' "Schema", the auth middleware's
+		// "Authorization", pipeline.contextNotInitialized's "Pipeline"), and
+		// notifications.ToContextDTOs renders the context NAME through the
+		// catalog. Without these entries every such response logged
+		// translation.key.missing on the first hit and shipped the raw English
+		// name on the wire in all seven languages.
+		"Authorization": "Autorización",
+		"Pipeline":      "Pipeline",
+		"Request":       "Solicitud",
+		"Route":         "Ruta",
+		"Schema":        "Esquema",
+		"Server":        "Servidor",
+
 		// Language descriptions
 		"Language.UNKNOWN": "Desconocido",
 		"Language.PT_BR":   "Portugués",

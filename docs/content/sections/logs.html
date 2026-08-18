@@ -52,6 +52,29 @@
   "cacheStatus":  "miss",
   "breakerState": "closed"
 }</code></pre>
+<p><strong>An inbound request</strong> (the access log, <code>msg: "http.inbound"</code> — the mirror image of the outbound record above):</p>
+<pre><code>{
+  "level":      "INFO",
+  "msg":        "http.inbound",
+  "threadId":   "5f25e8b0-…",            // joins this line to every other record of the request
+  "method":     "GET",
+  "path":       "/users/42",
+  "route":      "/users/:id",            // the matched template — the low-cardinality grouping key
+  "status":     200,
+  "durationMs": 1.87,
+  "ip":         "10.0.0.7"
+}</code></pre>
+<p class="note">
+    One record per served request, emitted through the service logger, so it carries
+    <code>traceId</code>/<code>spanId</code> when <a href="#tracing">tracing</a> is on and rides the same
+    JSON contract as everything else. The level follows the STATUS, not the error: <code>WARN</code> for
+    5xx, <code>INFO</code> otherwise — a 404 is a client mistake, not a server warning — and the chain
+    error's text rides an <code>err</code> attribute when there was one. The status recorded is the FINAL
+    one sent to the client (the middleware runs the error handler itself before logging), and because the
+    middleware sits outermost, even a panicking request produces its line. Set
+    <a href="#yaml-reference"><code>http.accessLog: false</code></a> to silence it where the ingress or
+    service mesh already logs the same thing.
+</p>
 <p><strong>An internal event</strong> (each subsystem names its own <code>msg</code>):</p>
 <pre><code>{ "level": "INFO", "msg": "integration.event.emitted", "threadId": "5f25e8b0-…", "eventType": "user.created", "eventId": "…" }</code></pre>
 <p>

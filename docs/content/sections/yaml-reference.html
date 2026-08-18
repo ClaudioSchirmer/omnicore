@@ -81,6 +81,7 @@ http:
   bodyLimitBytes: 4194304               # max request body; larger → 413; unset → Fiber's 4 MiB default
   readTimeoutSeconds: 15                # transport-level: max time to read the full request off the socket (slowloris defense); unset/0 → none. Breach → 408 Request Timeout (client too slow), written best-effort before the connection closes
   idleTimeoutSeconds: 60               # transport-level: max keep-alive idle before the connection is closed; unset/0 → none. Silent close, no response (normal keep-alive reaping)
+  accessLog: true                       # inbound request log (msg: "http.inbound", one JSON record per request, with threadId); unset → on. false silences it where the ingress/mesh already logs
 
 relational:                              # the relational backend — system of record + framework control plane
   dialect: postgres                      # MANDATORY — postgres | mysql | sqlserver | oracle | sqlite. NO default: the

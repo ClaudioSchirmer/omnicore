@@ -123,6 +123,14 @@ type Config struct {
 		// 0 → no read timeout (the default).
 		ReadTimeoutSeconds *int `yaml:"readTimeoutSeconds"`
 
+		// AccessLog toggles the inbound request log — one structured record
+		// per served request (web.AccessLog), emitted through the service
+		// logger so it carries threadId and, with tracing on, traceId/spanId.
+		// nil (unset) → enabled, the framework default; false silences it for
+		// a service whose access logging is done at the ingress/mesh and
+		// would otherwise be paid for twice.
+		AccessLog *bool `yaml:"accessLog"`
+
 		// IdleTimeoutSeconds bounds how long an idle keep-alive connection is held
 		// open awaiting the next request. Also transport-level, but unlike the read
 		// timeout it produces NO response: fasthttp silently closes the idle

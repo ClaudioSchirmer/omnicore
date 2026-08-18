@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -87,16 +89,40 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 	// operator can compare it against the view's .Indexes(...) declaration
 	// during the same boot.
 	if orderByOptIn && projSchema != nil {
-		paths := make([]string, 0, len(projSchema.Paths))
-		for wirePath := range projSchema.Paths {
-			paths = append(paths, wirePath)
-		}
-		sort.Strings(paths)
-		slog.Warn("query.orderBy.opt-in: endpoint accepts ?orderBy=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
-			"request", reqType.String(),
-			"sortable_wire_paths", paths)
+		warnOrderByOptInOnce(reqType, projSchema)
 	}
 	return schema, projSchema
+}
+
+// orderByOptInWarned dedups the sortable-paths advisory. The same Request DTO
+// is scanned once per endpoint that serves it (the paged wrapper AND the
+// standalone QueryParser, across the REST/GraphQL/gRPC surfaces), so an
+// undeduped warn repeated one multi-kilobyte line per registration — the same
+// advice, the same paths, nothing new to act on after the first. Keyed by
+// (Request type + the sortable path set) so two endpoints that genuinely
+// expose DIFFERENT sortable surfaces still each get their line. Mirrors the
+// warn-once posture translation.Render already uses for a missing catalog key.
+var orderByOptInWarned = &sync.Map{} // map[string]struct{} keyed by "<reqType>\x1f<paths>"
+
+// warnOrderByOptInOnce emits the boot-time advisory the first time a given
+// (Request type, sortable path set) pair is observed. The framework has no way
+// to verify, from the wrapper, that the Mongo view declares indexes covering
+// those paths — the ViewDefinition lives in a separate construction site
+// (ReadableFeature.Views()) — so the operator gets the full path list to
+// compare against the view's .Indexes(...) declaration during the same boot.
+func warnOrderByOptInOnce(reqType reflect.Type, projSchema *queryschema.ProjectionSchema) {
+	paths := make([]string, 0, len(projSchema.Paths))
+	for wirePath := range projSchema.Paths {
+		paths = append(paths, wirePath)
+	}
+	sort.Strings(paths)
+	request := reqType.String()
+	if _, loaded := orderByOptInWarned.LoadOrStore(request+"\x1f"+strings.Join(paths, ","), struct{}{}); loaded {
+		return
+	}
+	slog.Warn("query.orderBy.opt-in: endpoint accepts ?orderBy=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
+		"request", request,
+		"sortable_wire_paths", paths)
 }
 
 // QueryWithParams creates a fiber.Handler for paged list endpoints. It
@@ -322,14 +348,7 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 		}
 	}
 	if orderByOptIn && projSchema != nil {
-		paths := make([]string, 0, len(projSchema.Paths))
-		for wirePath := range projSchema.Paths {
-			paths = append(paths, wirePath)
-		}
-		sort.Strings(paths)
-		slog.Warn("query.orderBy.opt-in: endpoint accepts ?orderBy=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
-			"request", reqType.String(),
-			"sortable_wire_paths", paths)
+		warnOrderByOptInOnce(reqType, projSchema)
 	}
 	return &QueryParser[Req, Resp]{schema: schema, projSchema: projSchema}
 }
