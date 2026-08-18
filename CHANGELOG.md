@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-08-18
+
 ### Added
 
 - **The framework serves the audit trail over HTTP, from yaml alone —
