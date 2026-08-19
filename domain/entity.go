@@ -56,6 +56,14 @@ type Updatable struct {
 	id        ID
 	partial   bool
 	aggregate *aggregateMeta
+	// entityMode is what this write IS, finally: ModeUpdate, or ModeArchive
+	// when a domain rule finished it as an archive (CompleteAsArchive). It is
+	// never Unknown — the reader never has to combine it with anything else to
+	// learn the operation. Sealed for the same reason partial is: it is a
+	// decision about the OPERATION, not data about the entity, so infra reads it
+	// from this value and never from the live entity, and nothing can change it
+	// once Get* has returned.
+	entityMode EntityMode
 }
 
 type Archivable struct {
@@ -79,16 +87,11 @@ type Unarchivable struct {
 	aggregate *aggregateMeta
 }
 
-type Batch struct {
-	operations []ValidEntity
-}
-
 func (i Insertable) entity()    {}
 func (u Updatable) entity()     {}
 func (a Archivable) entity()    {}
 func (d Deletable) entity()     {}
 func (un Unarchivable) entity() {}
-func (b Batch) entity()         {}
 
 // Source returns the validated Entity. Infra inspects it via reflection to
 // derive table name, columns, and field values. Domain remains DDD-pure.
@@ -104,6 +107,12 @@ func (u Updatable) ID() ID         { return u.id }
 // audit event records the PUT vs PATCH distinction through actionName, not the
 // verb: both emit verb=update (the root UPDATE is identical between the two).
 func (u Updatable) IsPartial() bool { return u.partial }
+
+// EntityMode answers what this write is: ModeUpdate, or ModeArchive when a
+// domain rule finished it as an archive (CompleteAsArchive). The write path
+// reads it from here — the sealed value — so the operation cannot be changed
+// after the domain had its say.
+func (u Updatable) EntityMode() EntityMode { return u.entityMode }
 
 func (a Archivable) Source() Entity { return a.source }
 func (a Archivable) ID() ID         { return a.id }
@@ -143,17 +152,11 @@ func aggregateInfo(m *aggregateMeta) (*AggregateRoot, bool) {
 	return m.root, true
 }
 
-func (b Batch) Operations() []ValidEntity { return b.operations }
-
 func (m metadata) Signature() uuid.UUID  { return m.signature }
 func (m metadata) EntityName() string    { return m.entityName }
 func (m metadata) ActionName() string    { return m.actionName }
 func (m metadata) DateTime() time.Time   { return m.dateTime }
 func (m metadata) Events() []DomainEvent { return m.events }
-
-func NewBatch(ops []ValidEntity) Batch {
-	return Batch{operations: ops}
-}
 
 type validEntityBuilder struct {
 	entityName string
@@ -193,8 +196,15 @@ func (b validEntityBuilder) insertable(source Entity, id *ID) Insertable {
 	return Insertable{metadata: b.buildMetadata(), source: source, id: id, aggregate: b.aggregate}
 }
 
-func (b validEntityBuilder) updatable(source Entity, id ID, partial bool) Updatable {
-	return Updatable{metadata: b.buildMetadata(), source: source, id: id, partial: partial, aggregate: b.aggregate}
+func (b validEntityBuilder) updatable(source Entity, id ID, partial bool, entityMode EntityMode) Updatable {
+	return Updatable{
+		metadata:   b.buildMetadata(),
+		source:     source,
+		id:         id,
+		partial:    partial,
+		aggregate:  b.aggregate,
+		entityMode: entityMode,
+	}
 }
 
 func (b validEntityBuilder) archivable(source Entity, id ID) Archivable {

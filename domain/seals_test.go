@@ -8,11 +8,11 @@ import "testing"
 // pin that every write shape satisfies ValidEntity while a foreign type never
 // can (there is no way to write entity() outside the package).
 func TestValidEntitySeals(t *testing.T) {
-	shapes := []ValidEntity{Insertable{}, Updatable{}, Archivable{}, Unarchivable{}, Deletable{}, Batch{}}
+	shapes := []ValidEntity{Insertable{}, Updatable{}, Archivable{}, Unarchivable{}, Deletable{}}
 	for _, s := range shapes {
 		s.entity() // the seal itself — a no-op, but it IS the contract
 	}
-	if len(shapes) != 6 {
+	if len(shapes) != 5 {
 		t.Fatalf("the closed write-shape set drifted: %d", len(shapes))
 	}
 }

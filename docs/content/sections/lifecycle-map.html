@@ -338,7 +338,7 @@
         Two consequences worth planning for. <strong>Archiving now stamps <code>updated_at</code></strong> — it is
         a mutation, and it shows up in "changed recently" listings. And <strong>archiving a row that is not there
         answers 404</strong> instead of committing an event about nothing; the same row-count check the update
-        verbs always had now covers the soft verbs, including inside a <code>Batch</code>. Siblings are written
+        verbs always had now covers the soft verbs too. Siblings are written
         as a PARTIAL update, so an archive never deletes a 1:1 facet because its columns happen to be all-nil.
     </p>
 

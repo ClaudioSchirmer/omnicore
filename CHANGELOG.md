@@ -108,6 +108,33 @@ with `1.0.0`.
 
 ### Added
 
+- **A domain rule can finish an update as an archive — `CompleteAsArchive()`.**
+  Called from an `IfUpdate` closure, it asks the framework to end THIS write
+  archived: the row takes the entity's full field set plus the DeletedAt stamp,
+  the child cascade runs, the shared identity converges, the outbox event is
+  `ARCHIVED` (so `DeleteOnArchive` views, upstream mirrors and the base-revision
+  repair route correctly), and the audit entry is an `archive` with `actionName`
+  still naming the door it came through.
+
+  Only the domain, and only once: it is legal in exactly one place — an
+  `IfUpdate` closure in the entity's own `BuildRules`. A Command's `ApplyTo`
+  runs before the framework marks the mode, a handler runs after the rules
+  window closes, and another verb's closure is the wrong mode; all of them panic
+  with a message naming the misuse. `Modes()` still gates: an entity that does
+  not declare `ModeArchive` panics too. Once `GetUpdatable` returns, the request
+  is folded into what the write IS — the sealed `Updatable.EntityMode()`,
+  `ModeUpdate` or `ModeArchive`, always definitive and never something to combine
+  with the Go type — and cleared from the entity, so nothing between the seal and
+  the database can change the operation. Same guarantee `IsPartial()` has always
+  had.
+
+  `IfArchive` does NOT re-fire: the rules run once, in `ModeUpdate`. The rule
+  that calls it IS the decision, so its guard belongs in the same closure. There
+  is no inverse — the automatic edit path never loads an archived row, so
+  "finish as unarchived" would have nothing to act on; changing fields while
+  restoring is the unarchive verb's job, and it persists the field set like
+  every other verb.
+
 - **`ConcurrentModificationNotification`** (`SemanticStateConflict` → 409 /
   `FAILED_PRECONDITION`), with all seven translation catalogs.
 

@@ -97,7 +97,7 @@ func TestUpdatable_Accessors(t *testing.T) {
 	source := &plainEntity{}
 	b := newBuilder("Plain", "GetUpdatable", newMetadata().signature, nil)
 
-	u := b.updatable(source, id, false)
+	u := b.updatable(source, id, false, ModeUpdate)
 	u.entity()
 	if u.Source() != source {
 		t.Error("Source() mismatch")
@@ -115,7 +115,7 @@ func TestUpdatable_Accessors(t *testing.T) {
 		t.Error("AggregateInfo() should be false without meta")
 	}
 
-	partial := b.updatable(source, id, true)
+	partial := b.updatable(source, id, true, ModeUpdate)
 	if !partial.IsPartial() {
 		t.Error("IsPartial() should be true for partial Updatable")
 	}
@@ -163,21 +163,6 @@ func TestUnarchivable_Accessors(t *testing.T) {
 	}
 }
 
-func TestBatch_OperationsAndEntityMarker(t *testing.T) {
-	id := NewID("66666666-6666-6666-6666-666666666666")
-	ins := newBuilder("Plain", "GetInsertable", newMetadata().signature, nil).
-		insertable(&plainEntity{}, &id)
-	upd := newBuilder("Plain", "GetUpdatable", newMetadata().signature, nil).
-		updatable(&plainEntity{}, id, false)
-
-	b := NewBatch([]ValidEntity{ins, upd})
-	b.entity()
-	ops := b.Operations()
-	if len(ops) != 2 {
-		t.Fatalf("Operations() len = %d, want 2", len(ops))
-	}
-}
-
 func TestAggregateInfo_NilMetaReturnsFalse(t *testing.T) {
 	root, ok := aggregateInfo(nil)
 	if ok || root != nil {
@@ -194,7 +179,7 @@ func TestUpdatableArchivableDeletableUnarchivable_AggregateInfoWhenAttached(t *t
 	id := NewRandomID()
 	b := newBuilder("providerEntity", "X", newMetadata().signature, nil).withAggregate(meta)
 
-	u := b.updatable(root, id, false)
+	u := b.updatable(root, id, false, ModeUpdate)
 	a := b.archivable(root, id)
 	d := b.deletable(root, id)
 	un := b.unarchivable(root, id)

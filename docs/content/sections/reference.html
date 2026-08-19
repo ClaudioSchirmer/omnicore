@@ -3,7 +3,7 @@
     <h3>Key types</h3>
     <table>
         <tbody><tr><th>Type</th><th>Package</th><th>Purpose</th></tr>
-        <tr><td><code>ValidEntity</code></td><td><code>domain</code></td><td>Sealed marker: Insertable/Updatable/Archivable/Deletable/Unarchivable/Batch</td></tr>
+        <tr><td><code>ValidEntity</code></td><td><code>domain</code></td><td>Sealed marker: Insertable/Updatable/Archivable/Deletable/Unarchivable</td></tr>
         <tr><td><code>BaseEntity</code></td><td><code>domain</code></td><td>Embeddable struct for user entities</td></tr>
         <tr><td><code>AggregateRoot</code></td><td><code>domain</code></td><td>Embeddable with aggregate item management</td></tr>
         <tr><td><code>Entity</code> (interface)</td><td><code>domain</code></td><td>Contract the user implements (<code>Modes/RequiresService/BuildRules</code>) — no <code>TableName</code>/<code>ToFields</code>; infra maps Go fields → columns via an explicit <code>TableSchema</code> (no convention/inference)</td></tr>

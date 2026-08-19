@@ -36,6 +36,32 @@
                         comments now match the code.</li>
                 </ul>
             </li>
+            <li><strong>Added</strong> — <strong><a href="#rules-dsl">a domain rule can finish an update as an
+                archive</a> — <code>CompleteAsArchive()</code>.</strong> Called from an <code>IfUpdate</code>
+                closure, it asks the framework to end THIS write archived: the row takes the entity's full field
+                set plus the DeletedAt stamp, the child cascade runs, the shared identity converges, the outbox
+                event is <code>ARCHIVED</code> (so <code>DeleteOnArchive</code> views, upstream mirrors and the
+                base-revision repair route correctly), and the audit entry is an <code>archive</code> with
+                <code>actionName</code> still naming the door it came through.
+                <ul>
+                    <li><strong>Only the domain, and only once.</strong> Legal in exactly one place — an
+                        <code>IfUpdate</code> closure in the entity's own <code>BuildRules</code>. A Command's
+                        <code>ApplyTo</code> runs before the mode is marked, a handler runs after the rules
+                        window closes, another verb's closure is the wrong mode: all panic with a message naming
+                        the misuse. <code>Modes()</code> still gates — an entity that does not declare
+                        <code>ModeArchive</code> panics too.</li>
+                    <li><strong>Sealed like <code>IsPartial</code>.</strong> Once <code>GetUpdatable</code>
+                        returns, the request is folded into what the write IS —
+                        <code>Updatable.EntityMode()</code>, always definitive, never combined with the Go type —
+                        and cleared from the entity; the write path reads that one value, so nothing between the
+                        seal and the database can change the operation.</li>
+                    <li><code>IfArchive</code> does NOT re-fire — the rules run once, in <code>ModeUpdate</code>.
+                        The rule that calls it IS the decision, so its guard belongs in the same closure.</li>
+                    <li>No inverse: the automatic edit path never loads an archived row, so "finish as
+                        unarchived" would have nothing to act on. Changing fields while restoring is the
+                        unarchive verb's job, which persists the field set like every other verb.</li>
+                </ul>
+            </li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><a href="#lifecycle-map">archive
                 and unarchive execute the update path</a> — the framework's last write-path exception is
                 gone.</strong> They wrote a single column while the outbox payload announced every one of them,

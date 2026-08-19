@@ -297,3 +297,138 @@ func TestArchiveRole_DoesNotRewriteTheSharedIdentity(t *testing.T) {
 		t.Errorf("the role row must take the full field set plus the transition, got %q", sql)
 	}
 }
+
+// An update the DOMAIN asked to finish as an archive executes as the archive
+// verb, carrying the update's field changes along. The request is read from the
+// sealed Updatable, never from the entity.
+
+type seatEntity struct {
+	domain.BaseEntity
+	Name  string
+	Seats int
+}
+
+func (e *seatEntity) Modes() []domain.EntityMode {
+	return []domain.EntityMode{
+		domain.ModeInsert, domain.ModeUpdate, domain.ModeDelete,
+		domain.ModeArchive, domain.ModeUnarchive,
+	}
+}
+
+func (e *seatEntity) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
+	r.IfUpdate(func() {
+		if e.Seats == 0 {
+			e.CompleteAsArchive()
+		}
+	})
+}
+
+var seatSchema = NewTableSchema[*seatEntity]("seats").
+	ID("id").
+	Revision("revision").
+	Field("Name", "name").
+	Field("Seats", "seats").
+	DeletedAt("deleted_at").
+	CreatedAt("created_at").
+	UpdatedAt("updated_at")
+
+func seatUpdatable(t *testing.T, seats int) domain.Updatable {
+	t.Helper()
+	e := &seatEntity{Name: "acme", Seats: 5}
+	e.SetID(domain.NewID(uuid.NewString()))
+	if !domain.SetManagedColumns(e, 7, nil, nil, nil) {
+		t.Fatal("SetManagedColumns did not reach the entity")
+	}
+	domain.CaptureOld(e)
+
+	upd, err := domain.GetUpdatable(e, func(x *seatEntity) error {
+		x.Seats = seats // the request's own change
+		return nil
+	}, nil, "GetUpdatable")
+	if err != nil {
+		t.Fatalf("GetUpdatable: %v", err)
+	}
+	return upd
+}
+
+func TestUpdate_CompletedAsArchive_ExecutesTheArchive(t *testing.T) {
+	upd := seatUpdatable(t, 0) // the rule fires
+	if upd.EntityMode() != domain.ModeArchive {
+		t.Fatalf("premise: the seal must carry the request, got %v", upd.EntityMode())
+	}
+
+	tx := &recTx{count: 1}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Update(newBuilderCtx(), upd, seatSchema, firingHook); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	sql, args := stmtWithPrefix(t, tx, "UPDATE seats SET")
+	if !strings.Contains(sql, "deleted_at = $") {
+		t.Errorf("the write must carry the archive transition, got %q", sql)
+	}
+	if !strings.Contains(sql, "seats = $") {
+		t.Errorf("the update's own field change must ride along, got %q", sql)
+	}
+	var sawZeroSeats bool
+	for _, a := range args {
+		if a == 0 {
+			sawZeroSeats = true
+		}
+	}
+	if !sawZeroSeats {
+		t.Errorf("the new seat count must be bound, got %v", args)
+	}
+
+	// The event the read side routes on is the ARCHIVE one, not UPDATED.
+	p := outboxPayloadFor(t, tx, "seats", "ARCHIVED")
+	if v, present := p["deleted_at"]; !present || v == nil {
+		t.Errorf("the payload must carry the DeletedAt stamp, got %v", p)
+	}
+}
+
+func TestUpdate_WithoutTheRequest_StaysAPlainUpdate(t *testing.T) {
+	upd := seatUpdatable(t, 2) // the rule's condition is false
+	if upd.EntityMode() != domain.ModeUpdate {
+		t.Fatalf("premise: no request expected, got %v", upd.EntityMode())
+	}
+
+	tx := &recTx{count: 1}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if _, err := be.Update(newBuilderCtx(), upd, seatSchema, firingHook); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	for i, sql := range tx.execs {
+		if strings.HasPrefix(sql, "INSERT INTO outbox") && tx.execArgs[i][2] == "ARCHIVED" {
+			t.Error("a plain update must not emit an archive event")
+		}
+	}
+	p := outboxPayloadFor(t, tx, "seats", "UPDATED")
+	if v, present := p["deleted_at"]; present && v != nil {
+		t.Errorf("a plain update must not stamp DeletedAt, got %v", p)
+	}
+}
+
+// The audit trail calls it what it is.
+func TestUpdate_CompletedAsArchive_AuditsAsArchive(t *testing.T) {
+	upd := seatUpdatable(t, 0)
+
+	ev := BuildArchiveEvent(newBuilderCtx(), upd, seatSchema, nil)
+
+	if ev.Verb != "archive" || ev.Kind != "transition" {
+		t.Errorf("verb/kind = %q/%q, want archive/transition", ev.Verb, ev.Kind)
+	}
+	if ev.ActionName != "GetUpdatable" {
+		t.Errorf("actionName must keep the door it came through, got %q", ev.ActionName)
+	}
+	var seats bool
+	for _, c := range ev.Changes {
+		if c.Field == "Seats" && c.To == 0 {
+			seats = true
+		}
+	}
+	if !seats {
+		t.Errorf("the field change must reach the trail, got %+v", ev.Changes)
+	}
+}

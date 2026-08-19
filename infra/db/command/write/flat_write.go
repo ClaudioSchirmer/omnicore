@@ -2,7 +2,6 @@ package write
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
@@ -77,6 +76,19 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 }
 
 func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
+	// What this write IS comes from the SEALED value — one field, always
+	// definitive, never combined with anything else. A domain rule may have
+	// finished the update as an archive (domain.CompleteAsArchive); nothing
+	// between Get* and here could have introduced or removed that. Honored
+	// literally: past the domain's guards this IS the archive verb, carrying the
+	// update's field changes along.
+	if entity.EntityMode() == domain.ModeArchive {
+		root, _ := entity.AggregateInfo()
+		return domain.WriteResult{ID: entity.ID()}, b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
+			HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
+			func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
+			entity.Events())
+	}
 	if base, fkCol, ok := schema.SharedBaseRef(); ok {
 		return b.updateWithBase(ctx, entity, schema, hook, base, fkCol)
 	}
@@ -317,118 +329,6 @@ func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Ag
 	return nil
 }
 
-// Batch executes a set of operations in a single TX, each under its own
-// TableSchema (mandatory — no convention fallback), aligned positionally with
-// entity.Operations(). Audit emission for Batch members is intentionally skipped
-// (the outbox row per op is kept). Available on every engine.
-func (b *BaseEngine) Batch(ctx context.Context, entity domain.Batch, schemas []*TableSchema) ([]domain.WriteResult, error) {
-	ops := entity.Operations()
-	if len(schemas) != len(ops) {
-		return nil, fmt.Errorf("db: Batch requires one TableSchema per operation (got %d schemas for %d ops)", len(schemas), len(ops))
-	}
-	tx, err := b.beginner.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	d := tx.Dialect()
-
-	results := make([]domain.WriteResult, 0, len(ops))
-	for i, op := range ops {
-		wr, err := execOneWithTx(ctx, tx, d, op, schemas[i])
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, wr)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return results, nil
-}
-
-// execOneWithTx runs one Batch member (no hooks, no audit) through the shared
-// builders. A missing-row Update maps to RecordNotFoundNotification, identical
-// to the standalone Update verb.
-func execOneWithTx(ctx context.Context, tx WriteTx, d Dialect, entity domain.ValidEntity, schema *TableSchema) (domain.WriteResult, error) {
-	now := writeNow()
-	switch e := entity.(type) {
-	case domain.Insertable:
-		fields := schema.WriteFields(e.Source())
-		id, err := newWriteID()
-		if err != nil {
-			return domain.WriteResult{}, err
-		}
-		sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, fields, schema.InsertNowColumns(), now, schema.RevisionColumn())
-		if err := tx.Exec(ctx, sql, args...); err != nil {
-			return domain.WriteResult{}, err
-		}
-		// A row born in THIS TX starts at 1 by definition — no own-revision
-		// read; only the base half (when a shared base is declared) consults.
-		meta := outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)}
-		if err := fillBaseMeta(ctx, tx, d, schema, e.Source(), &meta); err != nil {
-			return domain.WriteResult{}, err
-		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-			buildWritePayload(schema, e.Source(), nil, "INSERTED", now, fields, meta)); err != nil {
-			return domain.WriteResult{}, err
-		}
-		return domain.WriteResult{ID: domain.NewID(id), Fields: fields}, nil
-
-	case domain.Updatable:
-		fields := schema.WriteFields(e.Source())
-		rev := loadedRevision(e.Source())
-		sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), e.ID().Value(), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
-		if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), e.EntityName(), schema.IDColumn(), e.ID().Value(), rev); err != nil {
-			return domain.WriteResult{}, err
-		}
-		meta, err := outboxMetaFor(ctx, tx, d, schema, e.Source(), e.ID().Value())
-		if err != nil {
-			return domain.WriteResult{}, err
-		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", e.ID().Value(),
-			buildWritePayload(schema, e.Source(), nil, "UPDATED", now, fields, meta)); err != nil {
-			return domain.WriteResult{}, err
-		}
-		return domain.WriteResult{ID: e.ID(), Fields: fields}, nil
-
-	case domain.Archivable:
-		return batchSoftWrite(ctx, tx, d, e.Source(), e.ID(), e.EntityName(), schema, "ARCHIVED", now)
-
-	case domain.Unarchivable:
-		return batchSoftWrite(ctx, tx, d, e.Source(), e.ID(), e.EntityName(), schema, "UNARCHIVED", now)
-
-	case domain.Deletable:
-		// The row's last revision + created_at instant are captured BEFORE the
-		// DELETE removes them (the row answers zero afterwards): the DELETED
-		// payload's _ids.revision + _ids.created_at feed the read-side document
-		// tombstone (revision guard + incarnation discriminator). The base half
-		// still resolves after the delete — the base row is a separate row that
-		// survives the verb.
-		meta := outboxMeta{ID: e.ID().Value()}
-		if rc := schema.RevisionColumn(); rc != "" {
-			rev, createdAt, err := readRevisionCreatedAt(ctx, tx, d, schema.Table(), rc, schema.CreatedAtColumn(), schema.IDColumn(), e.ID().Value())
-			if err != nil {
-				return domain.WriteResult{}, err
-			}
-			meta.Revision = rev
-			meta.CreatedAt = createdAt
-		}
-		if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.IDColumn()), d.EncodeArg(domain.NewID(e.ID().Value()))); err != nil {
-			return domain.WriteResult{}, err
-		}
-		if err := fillBaseMeta(ctx, tx, d, schema, e.Source(), &meta); err != nil {
-			return domain.WriteResult{}, err
-		}
-		if err := WriteOutbox(ctx, tx, schema.Table(), "DELETED", e.ID().Value(),
-			buildDeletePayload(schema, e.Source(), e.ID().Value(), meta)); err != nil {
-			return domain.WriteResult{}, err
-		}
-		return domain.WriteResult{ID: e.ID()}, nil
-	}
-	return domain.WriteResult{}, fmt.Errorf("db: unknown entity type %T", entity)
-}
-
 // loadedRevision answers the optimistic-concurrency token the entity carries
 // from its load. A persisted row is always >= 1 (an INSERT initializes it), so 0
 // means the entity never came from the loader — a hand-built value, or a
@@ -440,42 +340,6 @@ func loadedRevision(src domain.Entity) int64 {
 		return rc.GetRevision()
 	}
 	return 0
-}
-
-// batchSoftWrite is the Batch member's archive/unarchive: the same update-shaped
-// statement the standalone verb emits (full field set + the DeletedAt transition
-// + the revision guard), so a Batch cannot persist a different truth than the
-// verb it stands for. It carries no hooks and no audit row — the Batch contract
-// — and no child cascade, because a Batch member is a single row operation.
-//
-// It also inherits the row-count check: a Batch archive of an id that is not
-// there answers RecordNotFound like the Update member does, instead of the
-// silent no-op that still emitted an event.
-func batchSoftWrite(ctx context.Context, tx WriteTx, d Dialect, src domain.Entity, id domain.ID, entityName string, schema *TableSchema, eventType string, now time.Time) (domain.WriteResult, error) {
-	sdCol, err := requireDeletedAt(schema, entityName)
-	if err != nil {
-		return domain.WriteResult{}, err
-	}
-	fields := schema.WriteFields(src)
-	if eventType == "ARCHIVED" {
-		fields[sdCol] = now
-	} else {
-		fields[sdCol] = nil
-	}
-	rev := loadedRevision(src)
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), id.Value(), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
-	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entityName, schema.IDColumn(), id.Value(), rev); err != nil {
-		return domain.WriteResult{}, err
-	}
-	meta, err := outboxMetaFor(ctx, tx, d, schema, src, id.Value())
-	if err != nil {
-		return domain.WriteResult{}, err
-	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id.Value(),
-		buildWritePayload(schema, src, nil, eventType, now, fields, meta)); err != nil {
-		return domain.WriteResult{}, err
-	}
-	return domain.WriteResult{ID: id}, nil
 }
 
 // execExpectingRow runs an UPDATE that must match exactly one row — uniform

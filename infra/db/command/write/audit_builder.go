@@ -3,6 +3,7 @@ package write
 import (
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
@@ -79,7 +80,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 // changed nothing keeps the bare transition shape it always had. Kind stays
 // "transition" either way: the verb IS a transition, the delta is what it
 // carried along.
-func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
+func BuildArchiveEvent(ctx persistence.RequestContext, a transitionSource, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: a.EntityName(),
 		EntityID:   a.ID().Value(),
@@ -92,6 +93,18 @@ func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, sche
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
+}
+
+// transitionSource is the slice of a sealed write shape the transition audit
+// builders actually read. domain.Archivable and domain.Unarchivable satisfy it,
+// and so does domain.Updatable — an update the domain asked to finish as an
+// archive audits as one, from the same builder.
+type transitionSource interface {
+	EntityName() string
+	ID() domain.ID
+	ActionName() string
+	DateTime() time.Time
+	Source() domain.Entity
 }
 
 // transitionChanges is the archive/unarchive delta: what the domain changed

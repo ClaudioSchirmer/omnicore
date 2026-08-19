@@ -16,7 +16,6 @@ func TestValidEntity_MarkerMethods(t *testing.T) {
 		Archivable{},
 		Deletable{},
 		Unarchivable{},
-		Batch{},
 	}
 	for _, ve := range markers {
 		ve.entity()
