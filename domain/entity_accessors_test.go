@@ -11,10 +11,12 @@ import (
 // construct them through the public Get* entry points or via the internal
 // builder when richer setup is needed (file is in package domain).
 
-func TestNewMetadata_SignatureAndDateTime(t *testing.T) {
+func TestNewMetadata_DateTime(t *testing.T) {
 	m := newMetadata()
-	if m.signature.String() == "" {
-		t.Error("expected non-zero signature")
+	// The signature is NOT minted here: it is the state hash, computed by the
+	// seal from the entity itself.
+	if m.signature != 0 {
+		t.Errorf("newMetadata must leave the signature unset, got %d", m.signature)
 	}
 	if m.dateTime.IsZero() {
 		t.Error("expected dateTime to be set")
@@ -25,17 +27,12 @@ func TestNewMetadata_SignatureAndDateTime(t *testing.T) {
 }
 
 func TestMetadata_PublicAccessors(t *testing.T) {
-	sig := newMetadata().signature
 	when := time.Now().UTC()
 	m := metadata{
-		signature:  sig,
 		entityName: "User",
 		actionName: "GetInsertable",
 		dateTime:   when,
 		events:     []DomainEvent{},
-	}
-	if got := m.Signature(); got != sig {
-		t.Errorf("Signature() = %v, want %v", got, sig)
 	}
 	if got := m.EntityName(); got != "User" {
 		t.Errorf("EntityName() = %q, want User", got)

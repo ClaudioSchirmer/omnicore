@@ -25,7 +25,7 @@ func TestPGEngine_BuildUpsertExecutes(t *testing.T) {
 	q := eng.Querier()
 	d := eng.Dialect()
 
-	if err := q.Exec(ctx, `CREATE TABLE upsert_probe (
+	if err := core.Exec(q, ctx, `CREATE TABLE upsert_probe (
 		k       VARCHAR(50) NOT NULL,
 		payload VARCHAR(100),
 		attempt INT NOT NULL DEFAULT 0,
@@ -42,10 +42,10 @@ func TestPGEngine_BuildUpsertExecutes(t *testing.T) {
 			{Col: "payload", Mode: core.UpsertSetNew},
 			{Col: "attempt", Mode: core.UpsertSetBump},
 		})
-	if err := q.Exec(ctx, upd, "key1", "first"); err != nil {
+	if err := core.Exec(q, ctx, upd, "key1", "first"); err != nil {
 		t.Fatalf("upsert insert: %v\nSQL: %s", err, upd)
 	}
-	if err := q.Exec(ctx, upd, "key1", "second"); err != nil {
+	if err := core.Exec(q, ctx, upd, "key1", "second"); err != nil {
 		t.Fatalf("upsert conflict: %v\nSQL: %s", err, upd)
 	}
 	rows, err := q.QueryMaps(ctx, `SELECT payload, attempt FROM upsert_probe WHERE k='key1'`)
@@ -60,10 +60,10 @@ func TestPGEngine_BuildUpsertExecutes(t *testing.T) {
 	// key must be a no-op, not an error, and must NOT overwrite the payload.
 	noop := d.BuildUpsert("upsert_probe",
 		[]string{"k", "payload"}, []string{"k"}, nil)
-	if err := q.Exec(ctx, noop, "key2", "keep"); err != nil {
+	if err := core.Exec(q, ctx, noop, "key2", "keep"); err != nil {
 		t.Fatalf("do-nothing insert: %v\nSQL: %s", err, noop)
 	}
-	if err := q.Exec(ctx, noop, "key2", "SHOULD-NOT-WIN"); err != nil {
+	if err := core.Exec(q, ctx, noop, "key2", "SHOULD-NOT-WIN"); err != nil {
 		t.Fatalf("do-nothing conflict must not error: %v\nSQL: %s", err, noop)
 	}
 	rows, err = q.QueryMaps(ctx, `SELECT payload FROM upsert_probe WHERE k='key2'`)

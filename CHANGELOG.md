@@ -13,6 +13,17 @@ with `1.0.0`.
 
 ### Changed
 
+- **BREAKING — `core.Querier` is read-only.** Statement execution moved to the
+  new `core.ExecQuerier`, reached through the `core.Exec` helper.
+  `RelationalEngine.Querier()` now hands out what the manual always promised —
+  "for custom reads" — instead of a type that also offered a way around the
+  write path entirely: no sealed entity, no state signature, no revision guard,
+  no outbox row, no audit trail. Every engine's querier still implements
+  `ExecQuerier`; the split is about what the port hands out, and the framework's
+  own control plane (outbox, audit, dedup and failure registries, view-slot
+  pointers) reaches it deliberately. `metadata.Signature()` is removed with it —
+  the field now holds the state signature and never leaves the package.
+
 - **BREAKING — archive and unarchive execute the update path.** The framework
   has one rule about what reaches the database — the entity's field set at write
   time is what gets persisted — and these two verbs were its only exception:
@@ -107,6 +118,35 @@ with `1.0.0`.
   repository must implement one.
 
 ### Added
+
+- **The sealed write shapes carry a state signature.** A `ValidEntity` holds a
+  POINTER to the entity and the write path reads the business fields at write
+  time, so the seal proved provenance but not values: anything holding the
+  entity between the `Get*` and the write could change a field and have it
+  persisted as though the rules had approved it. Each seal now records a hash of
+  the entity's exported fields and its aggregate children (including each
+  child's status); the write path recomputes and compares before writing, and
+  refuses a mismatch.
+
+  The rule it enforces is "after a `Get*` returns, leave the entity alone".
+  Building a candidate, changing your mind and sealing again is fine — the fresh
+  seal is valid and the stale one stops being accepted; what is refused is
+  writing through a seal whose state has moved.
+
+  Identity, revision and the managed timestamps are OUTSIDE the hash (they live
+  in unexported carriers), which is what lets the persister stamp minted ids
+  back onto the entity and onto each new aggregate child without the check
+  reading the framework's own bookkeeping as tampering. It does cover fields the
+  TableSchema never persists — the rule is about the entity, not the columns.
+
+  A mismatch is a programming error, not a bad request: it surfaces as a 500
+  naming the entity. A zero-value write shape — which any package can construct
+  even though none can populate one — is refused for the same reason.
+
+  The check replaced the per-write `uuid.New()` that filled
+  `metadata.signature` and that nothing ever read, so the write path did not get
+  more expensive: ~0.25 µs with no children, ~0.5 µs with a handful, ~32 µs for
+  an aggregate carrying five hundred.
 
 - **A domain rule can finish an update as an archive — `CompleteAsArchive()`.**
   Called from an `IfUpdate` closure, it asks the framework to end THIS write

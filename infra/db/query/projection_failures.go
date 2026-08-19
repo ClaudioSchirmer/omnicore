@@ -155,7 +155,7 @@ func RecordProjectionFailure(ctx context.Context, q core.Querier, d core.Dialect
 		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: d.NowExpr()},
 		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})
-	if err := q.Exec(ctx, sql,
+	if err := core.Exec(q, ctx, sql,
 		d.EncodeArg(rowID),
 		string(rec.Kind),
 		rec.ConsumerGroup,
@@ -206,7 +206,7 @@ func ResolveProjectionFailure(ctx context.Context, q core.Querier, d core.Dialec
 		" AND aggregate_type = " + d.Placeholder(4) +
 		" AND aggregate_id = " + d.Placeholder(5) +
 		" AND resolved_at IS NULL"
-	if err := q.Exec(ctx, sql, consumerGroup, string(kind), topic, aggregateType, aggregateID); err != nil {
+	if err := core.Exec(q, ctx, sql, consumerGroup, string(kind), topic, aggregateType, aggregateID); err != nil {
 		return fmt.Errorf("resolve projection failure: %w", err)
 	}
 	return nil

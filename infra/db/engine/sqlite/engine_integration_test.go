@@ -39,7 +39,7 @@ func TestAffinityRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	d := eng.Dialect()
 
-	if err := q.Exec(ctx, `CREATE TABLE t (
+	if err := core.Exec(q, ctx, `CREATE TABLE t (
 		id TEXT PRIMARY KEY, flag INTEGER, created_at TEXT, deleted_at TEXT,
 		amount TEXT, n INTEGER, f REAL)`); err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestAffinityRoundTrip(t *testing.T) {
 	id := domain.NewID("a1b2c3d4-0000-7000-8000-000000000000")
 	when := time.Date(2026, 7, 31, 21, 10, 0, 123000000, time.UTC)
 	// Bind through EncodeArg exactly as the write path does.
-	err := q.Exec(ctx,
+	err := core.Exec(q, ctx,
 		`INSERT INTO t (id, flag, created_at, deleted_at, amount, n, f) VALUES (?,?,?,?,?,?,?)`,
 		d.EncodeArg(id), d.EncodeArg(true), d.EncodeArg(when), d.EncodeArg((*time.Time)(nil)),
 		d.EncodeArg("10.10"), d.EncodeArg(42), d.EncodeArg(3.14))
@@ -106,27 +106,27 @@ func TestViolationClassifiers_Real(t *testing.T) {
 	ctx := context.Background()
 	d := eng.Dialect()
 
-	if err := q.Exec(ctx, `CREATE TABLE parent (id TEXT PRIMARY KEY)`); err != nil {
+	if err := core.Exec(q, ctx, `CREATE TABLE parent (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.Exec(ctx, `CREATE TABLE t (id TEXT PRIMARY KEY, email TEXT UNIQUE, pid TEXT REFERENCES parent(id))`); err != nil {
+	if err := core.Exec(q, ctx, `CREATE TABLE t (id TEXT PRIMARY KEY, email TEXT UNIQUE, pid TEXT REFERENCES parent(id))`); err != nil {
 		t.Fatal(err)
 	}
-	_ = q.Exec(ctx, `INSERT INTO parent VALUES ('p1')`)
-	_ = q.Exec(ctx, `INSERT INTO t VALUES ('a','e@x.com','p1')`)
+	_ = core.Exec(q, ctx, `INSERT INTO parent VALUES ('p1')`)
+	_ = core.Exec(q, ctx, `INSERT INTO t VALUES ('a','e@x.com','p1')`)
 
 	// Unique violation on email → column list "t.email".
-	err := q.Exec(ctx, `INSERT INTO t VALUES ('b','e@x.com','p1')`)
+	err := core.Exec(q, ctx, `INSERT INTO t VALUES ('b','e@x.com','p1')`)
 	if col, ok := d.IsUniqueViolation(err); !ok || col != "t.email" {
 		t.Errorf("IsUniqueViolation = (%q,%v), want (t.email,true)", col, ok)
 	}
 	// Primary-key violation → also unique, column list "t.id".
-	err = q.Exec(ctx, `INSERT INTO t VALUES ('a','other@x.com','p1')`)
+	err = core.Exec(q, ctx, `INSERT INTO t VALUES ('a','other@x.com','p1')`)
 	if col, ok := d.IsUniqueViolation(err); !ok || col != "t.id" {
 		t.Errorf("IsUniqueViolation(PK) = (%q,%v), want (t.id,true)", col, ok)
 	}
 	// Foreign-key violation → ("", true) (SQLite reports no constraint name).
-	err = q.Exec(ctx, `INSERT INTO t VALUES ('c','c@x.com','nope')`)
+	err = core.Exec(q, ctx, `INSERT INTO t VALUES ('c','c@x.com','nope')`)
 	if name, ok := d.IsForeignKeyViolation(err); !ok || name != "" {
 		t.Errorf("IsForeignKeyViolation = (%q,%v), want (\"\",true)", name, ok)
 	}
@@ -140,7 +140,7 @@ func TestUpsertExecutes(t *testing.T) {
 	ctx := context.Background()
 	d := eng.Dialect()
 
-	if err := q.Exec(ctx, `CREATE TABLE u (id TEXT PRIMARY KEY, email TEXT, revision INTEGER NOT NULL DEFAULT 0)`); err != nil {
+	if err := core.Exec(q, ctx, `CREATE TABLE u (id TEXT PRIMARY KEY, email TEXT, revision INTEGER NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatal(err)
 	}
 	sets := []core.UpsertSet{
@@ -148,10 +148,10 @@ func TestUpsertExecutes(t *testing.T) {
 		{Col: "revision", Mode: core.UpsertSetBump},
 	}
 	stmt := d.BuildUpsert("u", []string{"id", "email", "revision"}, []string{"id"}, sets)
-	if err := q.Exec(ctx, stmt, "x", "first@x.com", 0); err != nil {
+	if err := core.Exec(q, ctx, stmt, "x", "first@x.com", 0); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
-	if err := q.Exec(ctx, stmt, "x", "second@x.com", 0); err != nil {
+	if err := core.Exec(q, ctx, stmt, "x", "second@x.com", 0); err != nil {
 		t.Fatalf("conflicting upsert: %v", err)
 	}
 	var email string
@@ -173,7 +173,7 @@ func TestSavepointTrip(t *testing.T) {
 	eng := newTestEngine(t)
 	ctx := context.Background()
 	d := eng.Dialect()
-	if err := eng.Querier().Exec(ctx, `CREATE TABLE s (id TEXT PRIMARY KEY)`); err != nil {
+	if err := core.Exec(eng.Querier(), ctx, `CREATE TABLE s (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,11 +220,11 @@ func TestOperatorBehavior_LikeVsILike(t *testing.T) {
 	ctx := context.Background()
 	d := eng.Dialect()
 
-	if err := q.Exec(ctx, `CREATE TABLE people (name TEXT)`); err != nil {
+	if err := core.Exec(q, ctx, `CREATE TABLE people (name TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"Alice", "alice", "Bob"} {
-		if err := q.Exec(ctx, `INSERT INTO people (name) VALUES (?)`, n); err != nil {
+		if err := core.Exec(q, ctx, `INSERT INTO people (name) VALUES (?)`, n); err != nil {
 			t.Fatal(err)
 		}
 	}

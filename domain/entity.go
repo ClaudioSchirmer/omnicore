@@ -2,8 +2,6 @@ package domain
 
 import (
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type ValidEntity interface {
@@ -13,7 +11,7 @@ type ValidEntity interface {
 type Fields map[string]any
 
 type metadata struct {
-	signature  uuid.UUID
+	signature  uint64
 	entityName string
 	actionName string
 	dateTime   time.Time
@@ -21,10 +19,7 @@ type metadata struct {
 }
 
 func newMetadata() metadata {
-	return metadata{
-		signature: uuid.New(),
-		dateTime:  time.Now().UTC(),
-	}
+	return metadata{dateTime: time.Now().UTC()}
 }
 
 // aggregateMeta is attached to a ValidEntity when the source entity implements
@@ -114,6 +109,16 @@ func (u Updatable) IsPartial() bool { return u.partial }
 // after the domain had its say.
 func (u Updatable) EntityMode() EntityMode { return u.entityMode }
 
+// Verify reports whether the entity still holds the state the domain validated.
+// The write path calls it before writing: a ValidEntity points at the live
+// entity, so anything that touched it after the seal would otherwise be
+// persisted as though the rules had approved it.
+func (i Insertable) Verify() error   { return verifyState(i.source, i.signature) }
+func (u Updatable) Verify() error    { return verifyState(u.source, u.signature) }
+func (a Archivable) Verify() error   { return verifyState(a.source, a.signature) }
+func (u Unarchivable) Verify() error { return verifyState(u.source, u.signature) }
+func (d Deletable) Verify() error    { return verifyState(d.source, d.signature) }
+
 func (a Archivable) Source() Entity { return a.source }
 func (a Archivable) ID() ID         { return a.id }
 
@@ -152,7 +157,6 @@ func aggregateInfo(m *aggregateMeta) (*AggregateRoot, bool) {
 	return m.root, true
 }
 
-func (m metadata) Signature() uuid.UUID  { return m.signature }
 func (m metadata) EntityName() string    { return m.entityName }
 func (m metadata) ActionName() string    { return m.actionName }
 func (m metadata) DateTime() time.Time   { return m.dateTime }
@@ -161,13 +165,13 @@ func (m metadata) Events() []DomainEvent { return m.events }
 type validEntityBuilder struct {
 	entityName string
 	actionName string
-	signature  uuid.UUID
+	signature  uint64
 	dateTime   time.Time
 	events     []DomainEvent
 	aggregate  *aggregateMeta
 }
 
-func newBuilder(entityName, actionName string, signature uuid.UUID, events []DomainEvent) validEntityBuilder {
+func newBuilder(entityName, actionName string, signature uint64, events []DomainEvent) validEntityBuilder {
 	return validEntityBuilder{
 		entityName: entityName,
 		actionName: actionName,

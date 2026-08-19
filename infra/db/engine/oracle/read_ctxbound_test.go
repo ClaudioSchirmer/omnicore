@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"testing"
 	"time"
 )
@@ -75,7 +76,7 @@ func TestQuerier_ContextBoundedWaits(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
 		start := time.Now()
-		err := q.Exec(ctx, "DELETE FROM t")
+		err := core.Exec(q, ctx, "DELETE FROM t")
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Exec err = %v, want context.DeadlineExceeded", err)
 		}
@@ -110,7 +111,7 @@ func TestQuerier_CompletedCallsPassThrough(t *testing.T) {
 	if _, err := q.Query(ctx, "SELECT 1"); err == nil || err.Error() != "thawed" {
 		t.Fatalf("Query err = %v, want the driver error verbatim", err)
 	}
-	if err := q.Exec(ctx, "DELETE FROM t"); err == nil || err.Error() != "thawed" {
+	if err := core.Exec(q, ctx, "DELETE FROM t"); err == nil || err.Error() != "thawed" {
 		t.Fatalf("Exec err = %v, want the driver error verbatim", err)
 	}
 	if _, err := q.QueryMaps(ctx, "SELECT 1"); err == nil || err.Error() != "thawed" {

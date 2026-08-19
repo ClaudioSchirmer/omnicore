@@ -3,8 +3,6 @@ package domain
 import (
 	"fmt"
 	"reflect"
-
-	"github.com/google/uuid"
 )
 
 type Entity interface {
@@ -30,7 +28,6 @@ type Entity interface {
 	getMode() EntityMode
 	setService(Service)
 	getService() Service
-	getSignature() uuid.UUID
 	setOldEntity(Entity)
 	takeRequestedMode() EntityMode
 	openRulesWindow()
@@ -52,7 +49,6 @@ type avoEntry struct {
 
 type BaseEntity struct {
 	Managed   // id + revision + managed timestamps; GetID() ID / SetID / ClearID promoted
-	signature uuid.UUID
 	mode      EntityMode
 	service   Service
 	notifCtx  *NotificationContext
@@ -106,7 +102,6 @@ func (b *BaseEntity) ensureContext() *NotificationContext {
 	if b.notifCtx == nil {
 		b.notifCtx = NewNotificationContext("")
 		b.mode = ModeDisplay
-		b.signature = uuid.New()
 	}
 	// Never reassigned: AddFieldNameAlias may legitimately run before the first
 	// emission, and its map must survive the context's birth.
@@ -254,7 +249,6 @@ func (b *BaseEntity) resetEntity() {
 	b.events = nil
 	b.avos = nil
 	b.contexts = nil
-	b.signature = uuid.New()
 	b.mode = ModeDisplay
 	b.service = nil
 }
@@ -263,7 +257,6 @@ func (b *BaseEntity) setMode(m EntityMode)                        { b.mode = m }
 func (b *BaseEntity) getMode() EntityMode                         { return b.mode }
 func (b *BaseEntity) setService(s Service)                        { b.service = s }
 func (b *BaseEntity) getService() Service                         { return b.service }
-func (b *BaseEntity) getSignature() uuid.UUID                     { return b.signature }
 func (b *BaseEntity) setOldEntity(p Entity)                       { b.old = p }
 func (b *BaseEntity) aggregateValueObjectsToValidate() []avoEntry { return b.avos }
 func (b *BaseEntity) contextCollection() []*NotificationContext   { return b.contexts }
@@ -415,7 +408,7 @@ func getInsertable(e Entity, service Service, actionName string) (Insertable, er
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, e.getSignature(), e.Events()).
+	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.insertable(e, e.GetID()), nil
 }
@@ -457,7 +450,7 @@ func getUpdatable[T Entity](e T, apply func(T) error, service Service, actionNam
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, e.getSignature(), e.Events()).
+	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.updatable(e, *e.GetID(), partial, entityMode), nil
 }
@@ -477,7 +470,7 @@ func getDeletable(e Entity, service Service, actionName string) (Deletable, erro
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, e.getSignature(), e.Events()).
+	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.deletable(e, *e.GetID()), nil
 }
@@ -506,7 +499,7 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, e.getSignature(), e.Events()).
+	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.archivable(e, *e.GetID()), nil
 }
@@ -526,7 +519,7 @@ func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, e.getSignature(), e.Events()).
+	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.unarchivable(e, *e.GetID()), nil
 }

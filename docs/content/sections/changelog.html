@@ -36,6 +36,42 @@
                         comments now match the code.</li>
                 </ul>
             </li>
+            <li><strong>Added</strong> — <strong><a href="#command-handler">the sealed write shapes now carry a
+                state signature</a>, so the write path can prove the entity still holds what the domain
+                validated.</strong> A <code>ValidEntity</code> holds a POINTER to the entity and the write path
+                reads the business fields at write time, so the seal proved provenance but not values: anything
+                holding the entity between the <code>Get*</code> and the write could change a field and have it
+                persisted as though the rules had approved it. Each seal now records a hash of the entity's
+                exported fields and its aggregate children; the write path recomputes and compares before writing
+                and refuses a mismatch.
+                <ul>
+                    <li><strong>The rule it enforces:</strong> after a <code>Get*</code> returns, leave the entity
+                        alone. Building a candidate, changing your mind and sealing again is fine — the fresh seal
+                        is valid and the stale one stops being accepted; what is refused is writing through a seal
+                        whose state has moved.</li>
+                    <li>Identity, revision and the managed timestamps are OUTSIDE the hash — they live in
+                        unexported carriers — which is what lets the persister stamp minted ids back onto the
+                        entity and onto each new aggregate child without the check reading the framework's own
+                        bookkeeping as tampering.</li>
+                    <li>A mismatch is a programming error, not a bad request: it surfaces as a 500 naming the
+                        entity, never as a validation error the caller could act on. A zero-value write shape,
+                        which any package can construct even though none can populate one, is refused for the same
+                        reason.</li>
+                    <li>The check replaced the per-write <code>uuid.New()</code> that filled
+                        <code>metadata.signature</code> and that nothing ever read, so the write path did not get
+                        more expensive: about 0.25&nbsp;µs for an entity with no children, 0.5&nbsp;µs with a
+                        handful, 32&nbsp;µs for an aggregate carrying five hundred.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>core.Querier</code> is
+                read-only.</strong> Statement execution moved to the new <code>core.ExecQuerier</code>, reached
+                through the <code>core.Exec</code> helper. <code>RelationalEngine.Querier()</code> now hands out
+                what the manual always promised — "for custom reads" — instead of a type that also offered a way
+                around the write path entirely: no sealed entity, no state signature, no revision guard, no outbox
+                row, no audit trail. Every engine's querier still implements <code>ExecQuerier</code>; the split is
+                about what the port hands out, and the framework's control plane (outbox, audit, dedup and failure
+                registries, view-slot pointers) reaches it deliberately. <code>metadata.Signature()</code> is gone
+                with it — the field now holds the state signature and never leaves the package.</li>
             <li><strong>Added</strong> — <strong><a href="#rules-dsl">a domain rule can finish an update as an
                 archive</a> — <code>CompleteAsArchive()</code>.</strong> Called from an <code>IfUpdate</code>
                 closure, it asks the framework to end THIS write archived: the row takes the entity's full field
