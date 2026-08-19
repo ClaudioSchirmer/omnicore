@@ -54,7 +54,16 @@ var stateSeed = maphash.MakeSeed()
 // column plan.
 var fieldPlanCache sync.Map // reflect.Type -> []int
 
-var timeType = reflect.TypeOf(time.Time{})
+var (
+	timeType = reflect.TypeOf(time.Time{})
+	// idType needs its own case for the same reason time.Time does, and for a
+	// reason that bites harder: an ID keeps its value in an UNEXPORTED field, so
+	// the exported-field walk would see an empty struct and report every
+	// reference as unchanged. A field of this type is how one aggregate points at
+	// another, and repointing it is exactly the kind of change the signature has
+	// to catch.
+	idType = reflect.TypeOf(ID{})
+)
 
 func fieldPlan(t reflect.Type) []int {
 	if p, ok := fieldPlanCache.Load(t); ok {
@@ -185,6 +194,10 @@ func hashValue(h *maphash.Hash, v reflect.Value, scratch []byte) {
 		}
 
 	case reflect.Struct:
+		if v.Type() == idType {
+			_, _ = h.WriteString(v.Interface().(ID).Value())
+			return
+		}
 		if v.Type() == timeType {
 			// Box ONLY a real time value: the type check keeps this off every
 			// other struct, which is where a naive walk spends its allocations.
