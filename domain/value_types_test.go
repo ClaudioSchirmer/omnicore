@@ -511,7 +511,7 @@ func TestDomainResult_WithEntity_Chainable(t *testing.T) {
 	r := NewDomainResult()
 	source := &plainEntity{}
 	id := NewRandomID()
-	ins := newBuilder("plain", "GetInsertable", newMetadata().signature, nil).insertable(source, &id)
+	ins := newBuilder("plain", "GetInsertable", nil).insertable(source, &id)
 
 	got := r.WithEntity(ins)
 	if got != r {

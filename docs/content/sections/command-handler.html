@@ -125,19 +125,3 @@ HTTP 201 Created
         </tr>
     </tbody></table>
 
-    <h3>What the seal guarantees</h3>
-    <p>
-        A <code>ValidEntity</code> can only be produced inside <code>domain</code>, and only after validation.
-        Each one also records a <strong>state signature</strong> — a hash of the entity taken at that moment,
-        which the write path recomputes and compares before writing.
-    </p>
-    <div class="box">
-        <strong>After a <code>Get*</code> returns, leave the entity alone.</strong> To change it again, validate
-        again: the fresh seal is valid and the earlier one stops being accepted. Writing through a seal whose
-        state has moved is refused.
-    </div>
-    <p>
-        The hash covers the entity's exported fields and its aggregate children. Identity, revision and the
-        managed timestamps stay out — they live in unexported carriers — which is what lets the persister stamp
-        minted ids back onto the entity and onto new children.
-    </p>

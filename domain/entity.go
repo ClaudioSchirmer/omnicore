@@ -11,7 +11,6 @@ type ValidEntity interface {
 type Fields map[string]any
 
 type metadata struct {
-	signature  uint64
 	entityName string
 	actionName string
 	dateTime   time.Time
@@ -109,16 +108,6 @@ func (u Updatable) IsPartial() bool { return u.partial }
 // after the domain had its say.
 func (u Updatable) EntityMode() EntityMode { return u.entityMode }
 
-// Verify reports whether the entity still holds the state the domain validated.
-// The write path calls it before writing: a ValidEntity points at the live
-// entity, so anything that touched it after the seal would otherwise be
-// persisted as though the rules had approved it.
-func (i Insertable) Verify() error   { return verifyState(i.source, i.signature) }
-func (u Updatable) Verify() error    { return verifyState(u.source, u.signature) }
-func (a Archivable) Verify() error   { return verifyState(a.source, a.signature) }
-func (u Unarchivable) Verify() error { return verifyState(u.source, u.signature) }
-func (d Deletable) Verify() error    { return verifyState(d.source, d.signature) }
-
 func (a Archivable) Source() Entity { return a.source }
 func (a Archivable) ID() ID         { return a.id }
 
@@ -132,8 +121,8 @@ func (un Unarchivable) ID() ID         { return un.id }
 // was produced from an entity implementing AggregateRootProvider.
 // ok=false means the simple single-table path applies.
 //
-// Phase 19: signature lost the mapping return — children types are discovered
-// via reflection from root.AllAggregateItems(); table/ParentID inferred by infra.
+// Children types are discovered via reflection from root.AllAggregateItems();
+// table/ParentID inferred by infra.
 func (i Insertable) AggregateInfo() (root *AggregateRoot, ok bool) {
 	return aggregateInfo(i.aggregate)
 }
@@ -165,17 +154,15 @@ func (m metadata) Events() []DomainEvent { return m.events }
 type validEntityBuilder struct {
 	entityName string
 	actionName string
-	signature  uint64
 	dateTime   time.Time
 	events     []DomainEvent
 	aggregate  *aggregateMeta
 }
 
-func newBuilder(entityName, actionName string, signature uint64, events []DomainEvent) validEntityBuilder {
+func newBuilder(entityName, actionName string, events []DomainEvent) validEntityBuilder {
 	return validEntityBuilder{
 		entityName: entityName,
 		actionName: actionName,
-		signature:  signature,
 		dateTime:   time.Now().UTC(),
 		events:     events,
 	}
@@ -188,7 +175,6 @@ func (b validEntityBuilder) withAggregate(meta *aggregateMeta) validEntityBuilde
 
 func (b validEntityBuilder) buildMetadata() metadata {
 	return metadata{
-		signature:  b.signature,
 		entityName: b.entityName,
 		actionName: b.actionName,
 		dateTime:   b.dateTime,

@@ -408,7 +408,7 @@ func getInsertable(e Entity, service Service, actionName string) (Insertable, er
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
+	builder := newBuilder(name, actionName, e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.insertable(e, e.GetID()), nil
 }
@@ -450,7 +450,7 @@ func getUpdatable[T Entity](e T, apply func(T) error, service Service, actionNam
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
+	builder := newBuilder(name, actionName, e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.updatable(e, *e.GetID(), partial, entityMode), nil
 }
@@ -470,7 +470,7 @@ func getDeletable(e Entity, service Service, actionName string) (Deletable, erro
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
+	builder := newBuilder(name, actionName, e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.deletable(e, *e.GetID()), nil
 }
@@ -499,7 +499,7 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
+	builder := newBuilder(name, actionName, e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.archivable(e, *e.GetID()), nil
 }
@@ -519,7 +519,7 @@ func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable
 	}
 
 	name := classNameOf(e)
-	builder := newBuilder(name, actionName, stateSignature(e), e.Events()).
+	builder := newBuilder(name, actionName, e.Events()).
 		withAggregate(extractAggregateMeta(e))
 	return builder.unarchivable(e, *e.GetID()), nil
 }

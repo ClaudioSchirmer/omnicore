@@ -20,12 +20,6 @@ import (
 // AggregateInfo() routes aggregate roots to the aggregate path (aggregate_write.go).
 
 func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insertable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
-	// The entity must still hold the state the domain validated. Checked BEFORE
-	// anything is written: the persister stamps minted child ids onto the
-	// aggregate mid-write, so a check placed after would read the framework's own
-	// bookkeeping as tampering. A mismatch is a programming error — the request
-	// did nothing wrong — so it surfaces as a panic the pipeline converts to 500.
-	mustHoldValidatedState(entity)
 	// A role with a SharedBase routes here whether it is flat OR an aggregate:
 	// insertWithBase establishes the shared identity + role existence and then
 	// layers the aggregate's children/siblings on top.
@@ -82,12 +76,6 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 }
 
 func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updatable, schema *TableSchema, hook WriteHook) (domain.WriteResult, error) {
-	// The entity must still hold the state the domain validated. Checked BEFORE
-	// anything is written: the persister stamps minted child ids onto the
-	// aggregate mid-write, so a check placed after would read the framework's own
-	// bookkeeping as tampering. A mismatch is a programming error — the request
-	// did nothing wrong — so it surfaces as a panic the pipeline converts to 500.
-	mustHoldValidatedState(entity)
 	// What this write IS comes from the SEALED value — one field, always
 	// definitive, never combined with anything else. A domain rule may have
 	// finished the update as an archive (domain.CompleteAsArchive); nothing
@@ -155,12 +143,6 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 }
 
 func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook WriteHook) error {
-	// The entity must still hold the state the domain validated. Checked BEFORE
-	// anything is written: the persister stamps minted child ids onto the
-	// aggregate mid-write, so a check placed after would read the framework's own
-	// bookkeeping as tampering. A mismatch is a programming error — the request
-	// did nothing wrong — so it surfaces as a panic the pipeline converts to 500.
-	mustHoldValidatedState(entity)
 	root, _ := entity.AggregateInfo()
 	return b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
@@ -169,12 +151,6 @@ func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archi
 }
 
 func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook WriteHook) error {
-	// The entity must still hold the state the domain validated. Checked BEFORE
-	// anything is written: the persister stamps minted child ids onto the
-	// aggregate mid-write, so a check placed after would read the framework's own
-	// bookkeeping as tampering. A mismatch is a programming error — the request
-	// did nothing wrong — so it surfaces as a panic the pipeline converts to 500.
-	mustHoldValidatedState(entity)
 	root, _ := entity.AggregateInfo()
 	return b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED", writeNow(),
@@ -183,12 +159,6 @@ func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Una
 }
 
 func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deletable, schema *TableSchema, hook WriteHook) error {
-	// The entity must still hold the state the domain validated. Checked BEFORE
-	// anything is written: the persister stamps minted child ids onto the
-	// aggregate mid-write, so a check placed after would read the framework's own
-	// bookkeeping as tampering. A mismatch is a programming error — the request
-	// did nothing wrong — so it surfaces as a panic the pipeline converts to 500.
-	mustHoldValidatedState(entity)
 	if _, isAggregate := entity.AggregateInfo(); isAggregate {
 		return b.deleteAggregate(ctx, entity, schema, hook)
 	}
@@ -357,15 +327,6 @@ func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Ag
 		}
 	}
 	return nil
-}
-
-// mustHoldValidatedState refuses a write whose entity changed after the domain
-// sealed it. Every sealed write shape answers Verify(); the panic carries the
-// domain's message, which names the entity and says what the rule is.
-func mustHoldValidatedState(v interface{ Verify() error }) {
-	if err := v.Verify(); err != nil {
-		panic(err.Error())
-	}
 }
 
 // loadedRevision answers the optimistic-concurrency token the entity carries

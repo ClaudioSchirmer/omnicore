@@ -160,7 +160,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 
 These constrain design decisions across the whole module. Each is detailed in the mapped section above.
 
-1. **Sealed `ValidEntity`** — `Insertable`/`Updatable`/`Archivable`/`Unarchivable`/`Deletable` are produced ONLY by `domain` (private `entity()` seal), via the `Get*` family (each takes `actionName`). No low-level constructors. Each seal records a **state signature**; the write path `Verify()`s before writing, so an entity mutated after validation is refused (identity + managed columns are outside the hash).
+1. **Sealed `ValidEntity`** — `Insertable`/`Updatable`/`Archivable`/`Unarchivable`/`Deletable` are produced ONLY by `domain` (private `entity()` seal), via the `Get*` family (each takes `actionName`). No low-level constructors.
 2. **One TX for data + outbox + audit.** Each write opens one relational transaction containing the data write(s), exactly one outbox row per aggregate operation (granularity B), and the in-TX `audit_events` row when `database` routing is on. Custom repos must preserve this.
 3. **Lifecycle hooks fire inside that TX, once per operation** — `afterBegin` before any framework write, `beforeCommit` after all writes and before COMMIT; same positions on flat and aggregate paths. Hook error rolls back (preserving type identity); hook panic rolls back and propagates to the single recover point in the pipeline.
 4. **Domain has zero IO** — pure types, validation, rules; cross-layer errors only via `domain.NotificationCarrier`.
