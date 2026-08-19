@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-08-19
+
 ### Changed
 
 - **BREAKING — `core.Querier` is read-only.** Statement execution moved to the
