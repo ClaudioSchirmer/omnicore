@@ -44,7 +44,8 @@ func (coreDE) Translations() map[string]string {
 		"InvalidEventTypeNotification": "Ungültiger Ereignistyp.",
 
 		// Generic
-		"RecordNotFoundNotification": "Datensatz nicht gefunden.",
+		"RecordNotFoundNotification":         "Datensatz nicht gefunden.",
+		"ConcurrentModificationNotification": "Der Datensatz wurde von jemand anderem geändert. Laden Sie ihn neu und versuchen Sie es erneut.",
 
 		// EntityMode descriptions
 		"EntityMode.UNKNOWN":   "Unbekannt",

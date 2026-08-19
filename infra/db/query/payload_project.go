@@ -296,7 +296,10 @@ func childArrayExpr(seg, pk, id string, op childOp, revision int64, guarded bool
 			}}
 		}
 		return Document{"$concatArrays": []any{others, []any{lit(elem)}}}
-	case "archive":
+	case "archive", "unarchive":
+		// Both stamp the element's DeletedAt with what the cascade wrote — an
+		// instant for archive, an explicit null for unarchive — leaving every
+		// other field of the element untouched.
 		sd := deletedAtOf(child)
 		mutate := Document{sd: lit(op.Fields[sd])}
 		if guarded {

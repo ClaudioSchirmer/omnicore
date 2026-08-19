@@ -7,6 +7,150 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">in development</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong><a href="#old-state">the old-state snapshot is now captured when
+                the entity is BORN, uniformly across all five state-changing verbs</a>.</strong> Archive, Unarchive
+                and Delete snapshotted at the <code>Get*</code> call — which the Auto handlers reach only AFTER
+                running <code>cmd.ApplyTo</code> on the loaded entity. Any mutation applied between the load and
+                the verb therefore leaked INTO <code>domain.Old</code>, so a rule comparing intent against reality
+                compared the request to itself, and Delete's <code>kind=snapshot</code> audit event recorded the
+                row in a state it never held in the database. The capture moved to the load: the relational
+                loader's single-entity path (every <code>FindByID</code>/<code>FindArchivedByID</code> and every
+                custom repository finder funnels through it) and the write-side load helpers stamp it, and no later
+                call can replace it. Update and PartialUpdate keep their <code>apply</code>-closure signatures
+                unchanged — they now get the same guarantee from the same place, so the rule is one rule.
+                <ul>
+                    <li><strong>Manual handlers are covered by construction</strong>, not by convention: a
+                        hand-written <code>pipeline.Handler</code> that loads through the framework inherits the
+                        snapshot with no extra call. Only an entity hydrated some other way needs the new
+                        <code>domain.CaptureOld</code> below.</li>
+                    <li><code>FindAll</code> deliberately does NOT snapshot — it is the read-side list path, where
+                        no verb mutates and a per-row clone would be pure cost.</li>
+                    <li>Insert is unchanged and still outside the contract: a freshly constructed entity has no
+                        prior state, so <code>domain.Old</code> stays nil there.</li>
+                    <li>The <code>ArchiveCommandHandler</code> / <code>UnarchiveCommandHandler</code> doc comments
+                        claimed <code>BuildRules</code> ran in <code>ModeUpdate</code> and that
+                        <code>IfUpdate</code> fired on those verbs. It has always been <code>ModeArchive</code> /
+                        <code>ModeUnarchive</code> with <code>IfArchive</code> / <code>IfUnarchive</code> — the
+                        comments now match the code.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong><a href="#rules-dsl">a domain rule can finish an update as an
+                archive</a> — <code>CompleteAsArchive()</code>.</strong> Called from an <code>IfUpdate</code>
+                closure, it asks the framework to end THIS write archived: the row takes the entity's full field
+                set plus the DeletedAt stamp, the child cascade runs, the shared identity converges, the outbox
+                event is <code>ARCHIVED</code> (so <code>DeleteOnArchive</code> views, upstream mirrors and the
+                base-revision repair route correctly), and the audit entry is an <code>archive</code> with
+                <code>actionName</code> still naming the door it came through.
+                <ul>
+                    <li><strong>Only the domain, and only once.</strong> Legal in exactly one place — an
+                        <code>IfUpdate</code> closure in the entity's own <code>BuildRules</code>. A Command's
+                        <code>ApplyTo</code> runs before the mode is marked, a handler runs after the rules
+                        window closes, another verb's closure is the wrong mode: all panic with a message naming
+                        the misuse. <code>Modes()</code> still gates — an entity that does not declare
+                        <code>ModeArchive</code> panics too.</li>
+                    <li><strong>Sealed like <code>IsPartial</code>.</strong> Once <code>GetUpdatable</code>
+                        returns, the request is folded into what the write IS —
+                        <code>Updatable.EntityMode()</code>, always definitive, never combined with the Go type —
+                        and cleared from the entity; the write path reads that one value, so nothing between the
+                        seal and the database can change the operation.</li>
+                    <li><code>IfArchive</code> does NOT re-fire — the rules run once, in <code>ModeUpdate</code>.
+                        The rule that calls it IS the decision, so its guard belongs in the same closure.</li>
+                    <li>No inverse: the automatic edit path never loads an archived row, so "finish as
+                        unarchived" would have nothing to act on. Changing fields while restoring is the
+                        unarchive verb's job, which persists the field set like every other verb.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><a href="#lifecycle-map">archive
+                and unarchive execute the update path</a> — the framework's last write-path exception is
+                gone.</strong> They wrote a single column while the outbox payload announced every one of them,
+                so a rule like <code>r.IfArchive(func() { t.Status = Suspended })</code> — exactly what the DSL
+                invites — changed the entity, reached the read model, and never reached the database. Both verbs
+                now emit the same UPDATE every other verb emits (full field set, managed timestamps,
+                <code>revision</code> bump, revision guard) with the transition riding along as one more written
+                column: the DeletedAt column bound to the operation's instant, or to SQL NULL.
+                <ul>
+                    <li><strong>Archiving now stamps <code>updated_at</code></strong> — it is a mutation, and it
+                        surfaces in "changed recently" listings.</li>
+                    <li><strong>Archiving a row that is not there answers 404</strong> instead of committing an
+                        event about nothing. The row-count check the update verbs always had now covers the soft
+                        verbs, inside <code>Batch</code> too.</li>
+                    <li><strong>Archive can answer 409</strong>, like any other guarded root update.</li>
+                    <li>The audit event stays <code>kind: "transition"</code> and gains an ADDITIVE
+                        <code>changes</code> block when the verb actually persisted a domain change; a plain
+                        archive keeps the bare shape it always had.</li>
+                    <li>Siblings are written as a PARTIAL update, so an archive never deletes a 1:1 facet
+                        because its columns happen to be all-nil.</li>
+                    <li>What the verbs keep of their own: the required DeletedAt column, the one-active-role
+                        probe that must fire before the row flips active, the SET-BASED child cascade (one
+                        statement per child table, not one per item), the shared identity converging by
+                        LIFECYCLE only (its business fields are never restated), and the
+                        <code>ARCHIVED</code>/<code>UNARCHIVED</code> event type the read side routes on.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <strong>the audit vocabulary is documented as lifecycle-grounded, not
+                SQL-grounded.</strong> The manual explained the five audit verbs with "identical SQL ⇒ identical
+                audit token". That phrasing stopped holding the moment archive and unarchive became the update
+                path: all four of archive, unarchive, PUT and PATCH now emit the SAME statement, differing in one
+                bound value — whether the DeletedAt column was written, and to what. The tokens themselves did NOT
+                change; the rule that explains them is now stated against the row's LIFECYCLE effect (created,
+                changed in place, retired, returned, gone), which still separates all five. Corrected in
+                <a href="#lifecycle-map">Write lifecycle map</a>, <a href="#audit">Audit</a>,
+                <a href="#old-state">Old-state snapshot</a> and <a href="#read-lifecycle-map">Read lifecycle
+                map</a>, along with the SQL column of the verb table, which still showed the pre-collapse
+                statements.</li>
+            <li><strong>Fixed</strong> — <strong><a href="#lifecycle-map">the aggregate child cascade is visible
+                to the read side</a>.</strong> An aggregate archive flips the DeletedAt of every child row under
+                the ParentID, but the payload listed those children as <code>_op: "noop"</code>, which the
+                projector skips: the relational rows were archived while the projected array still claimed they
+                were active, so a live document disagreed with one rebuilt from the source. Each item now
+                reports the cascade it took — <code>_op: "archive"</code> with the same stamp the child UPDATE
+                bound, or the new <code>_op: "unarchive"</code> with an explicit null. A child table declaring no
+                DeletedAt takes no cascade and stays <code>noop</code>. During a rolling upgrade a previous-binary
+                consumer skips the unfamiliar op, which is what it already did with <code>noop</code>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><a href="#lifecycle-map">every
+                ROOT update is now guarded on the revision it was loaded with</a>.</strong> A write carries the
+                FULL field set, so a write built on a stale read silently reverted every column another writer
+                had changed in the meantime — and put those reverted values on the outbox payload as though the
+                row had held them. The statement now pins the loaded revision in its own <code>WHERE</code>, so
+                a stale write matches zero rows and is REFUSED. This is behavior-breaking: PUT, PATCH and every
+                other root update can now answer <strong>409</strong>
+                (<code>ConcurrentModificationNotification</code>, the wrong-state flavor —
+                <code>FAILED_PRECONDITION</code> on gRPC) where they previously succeeded by overwriting. The
+                caller's recovery is to reload and reapply.
+                <ul>
+                    <li><strong>Free on the happy path.</strong> The guard rides the <code>WHERE</code> the
+                        statement already had and is answered by the rows-affected count the framework already
+                        reads. Only the failure path pays one <code>SELECT 1</code>, to split "the row is gone"
+                        (404) from "the row moved" (409).</li>
+                    <li><strong>Universal on roots, deliberately absent elsewhere.</strong> <code>Revision</code>
+                        is mandatory on every root schema, so no entity is silently unprotected. Aggregate
+                        children (versioned by the owner's token), the shared base (last-write-wins by design,
+                        several roles converge on it) and hard delete (writes no business column) stay
+                        unguarded.</li>
+                    <li><strong>Graceful degrade.</strong> A persisted row is always at revision &ge; 1, so
+                        revision 0 means the entity never came from a load — it writes unguarded rather than
+                        failing forever.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>unarchiving through a repository
+                that cannot load an archived aggregate is now an error.</strong>
+                <code>UnarchiveCommandHandler</code> used to fall back to an empty <code>Repo.New() + SetID</code>
+                sample when the repository implemented neither
+                <code>persistence.ScopedArchivedReaderProvider[T]</code> nor <code>domain.ArchivedFinder[T]</code>.
+                That sample carries the entity's ZERO value in every business field and no revision, so it can
+                neither be written back nor guarded — it only ever worked because the verb touched nothing but
+                <code>deleted_at</code>. <code>infra.BaseAggregateRepository</code> provides both capabilities;
+                a hand-rolled repository must implement one.</li>
+            <li><strong>Added</strong> — <strong><code>domain.CaptureOld(e)</code></strong>, the birth-time snapshot
+                hook the framework's own load paths call. Public so a repository that bypasses
+                <code>read.AggregateLoader</code>, or a handler that assembles an entity in memory, can stamp the
+                snapshot itself — call it immediately after hydration, before the first mutation. Idempotent: a
+                second call is a no-op, so the earliest snapshot always wins.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.53.0</span><span class="release-date">August 18, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#audit~audit-endpoint">the framework serves the audit

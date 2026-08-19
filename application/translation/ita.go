@@ -44,7 +44,8 @@ func (coreIT) Translations() map[string]string {
 		"InvalidEventTypeNotification": "Tipo di evento non valido.",
 
 		// Generic
-		"RecordNotFoundNotification": "Record non trovato.",
+		"RecordNotFoundNotification":         "Record non trovato.",
+		"ConcurrentModificationNotification": "Il record è stato modificato da qualcun altro. Ricaricalo e riprova.",
 
 		// EntityMode descriptions
 		"EntityMode.UNKNOWN":   "Sconosciuto",

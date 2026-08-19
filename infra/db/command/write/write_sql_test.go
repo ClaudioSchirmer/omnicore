@@ -52,7 +52,7 @@ func TestBuildInsert_Shared(t *testing.T) {
 func TestBuildUpdate_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
+	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
 
 	want := "UPDATE users SET email = $1, name = $2, updated_at = $3 WHERE id = $4"
 	if sql != want {
@@ -77,9 +77,6 @@ func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 	d := testPGDialect{}
 	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
 		t.Errorf("archiveSQL = %q", got)
-	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = NULL WHERE id = $1" {
-		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM users WHERE id = $1" {
 		t.Errorf("deleteSQL = %q", got)
@@ -147,12 +144,12 @@ func TestExecExpectingRow_Mapping(t *testing.T) {
 	ctx := context.Background()
 
 	// Matched row → nil.
-	if err := execExpectingRow(ctx, &fakeWriteTx{n: 1}, "UPDATE x", nil, "User", "id", "v"); err != nil {
+	if err := execExpectingRow(ctx, &fakeWriteTx{n: 1}, testPGDialect{}, "UPDATE x", nil, "users", "User", "id", "v", 0); err != nil {
 		t.Fatalf("matched row should be nil, got %v", err)
 	}
 
 	// Zero rows → RecordNotFoundNotification (a NotificationCarrier, 404).
-	err := execExpectingRow(ctx, &fakeWriteTx{n: 0}, "UPDATE x", nil, "User", "id", "v")
+	err := execExpectingRow(ctx, &fakeWriteTx{n: 0}, testPGDialect{}, "UPDATE x", nil, "users", "User", "id", "v", 0)
 	var carrier domain.NotificationCarrier
 	if !errors.As(err, &carrier) {
 		t.Fatalf("zero rows should map to a NotificationCarrier, got %T (%v)", err, err)
@@ -160,7 +157,7 @@ func TestExecExpectingRow_Mapping(t *testing.T) {
 
 	// Driver error passes through unchanged.
 	boom := errors.New("conn reset")
-	if err := execExpectingRow(ctx, &fakeWriteTx{execErr: boom}, "UPDATE x", nil, "User", "id", "v"); !errors.Is(err, boom) {
+	if err := execExpectingRow(ctx, &fakeWriteTx{execErr: boom}, testPGDialect{}, "UPDATE x", nil, "users", "User", "id", "v", 0); !errors.Is(err, boom) {
 		t.Fatalf("driver error should pass through, got %v", err)
 	}
 }

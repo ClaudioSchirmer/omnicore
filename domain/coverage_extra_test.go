@@ -381,12 +381,6 @@ func TestValidEntity_EntitySeals(t *testing.T) {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
 	unarc.entity()
-
-	batch := NewBatch([]ValidEntity{ins, upd, del})
-	batch.entity()
-	if len(batch.Operations()) != 3 {
-		t.Fatalf("expected 3 batch operations, got %d", len(batch.Operations()))
-	}
 }
 
 // contextHasNotification scans a NotificationContext's messages for a typeName.

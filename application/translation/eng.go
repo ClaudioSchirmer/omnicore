@@ -44,7 +44,8 @@ func (coreENG) Translations() map[string]string {
 		"InvalidEventTypeNotification": "Invalid event type.",
 
 		// Generic
-		"RecordNotFoundNotification": "Record not found.",
+		"RecordNotFoundNotification":         "Record not found.",
+		"ConcurrentModificationNotification": "The record was changed by someone else. Reload it and try again.",
 
 		// EntityMode descriptions
 		"EntityMode.UNKNOWN":   "Unknown",

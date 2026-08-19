@@ -44,7 +44,8 @@ func (corePTBR) Translations() map[string]string {
 		"InvalidEventTypeNotification": "Tipo de evento é inválido.",
 
 		// Generic
-		"RecordNotFoundNotification": "Registro não encontrado.",
+		"RecordNotFoundNotification":         "Registro não encontrado.",
+		"ConcurrentModificationNotification": "O registro foi alterado por outra pessoa. Recarregue e tente novamente.",
 
 		// EntityMode descriptions
 		"EntityMode.UNKNOWN":   "Desconhecido",

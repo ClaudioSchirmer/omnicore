@@ -100,7 +100,7 @@ func TestBuildInsert_MySQL(t *testing.T) {
 func TestBuildUpdate_MySQL(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
+	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
 
 	want := "UPDATE `users` SET `email` = ?, `name` = ?, `updated_at` = ? WHERE `id` = ?"
 	if sql != want {
@@ -121,9 +121,6 @@ func TestArchiveUnarchiveDelete_MySQL(t *testing.T) {
 	d := testMySQLDialect{}
 	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = ? WHERE `id` = ?" {
 		t.Errorf("archiveSQL = %q", got)
-	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = NULL WHERE `id` = ?" {
-		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM `users` WHERE `id` = ?" {
 		t.Errorf("deleteSQL = %q", got)

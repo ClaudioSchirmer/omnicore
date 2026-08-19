@@ -35,16 +35,9 @@ func cloneEntity(e Entity) Entity {
 }
 
 // captureOld snapshots the entity's current state and stores it on the
-// entity itself, accessible later via Old() / domain.Old. Called by the
-// Get* domain functions at the right moment in the lifecycle:
-//
-//   - GetUpdatable / GetPartialUpdatable: BEFORE the apply closure mutates the
-//     entity, so Old() reflects the pre-mutation state.
-//   - GetDeletable / GetArchivable / GetUnarchivable: at function entry — no
-//     mutation happens in these flows, so the snapshot equals the current
-//     loaded state (which is exactly what audit/forensics want).
-//   - GetInsertable: NOT called — a freshly inserted entity has no prior
-//     state by definition; Old() returns the zero value of T.
+// entity itself, accessible later via Old() / domain.Old. It OVERWRITES any
+// existing snapshot — the framework's own paths call captureOldIfAbsent
+// instead, so the earliest (birth-time) snapshot always wins.
 //
 // For aggregate roots (entities implementing AggregateRootProvider), the
 // clone also receives a deep copy of the aggregate's current children so
@@ -67,6 +60,29 @@ func captureOld(self Entity) {
 		}
 	}
 	self.setOldEntity(clone)
+}
+
+// captureOldIfAbsent is the framework's ONE capture rule, identical for all
+// five state-changing verbs (Update, PartialUpdate, Archive, Unarchive,
+// Delete): snapshot the entity as it was BORN — hydrated from the system of
+// record — and never let a later call replace it.
+//
+// The snapshot is taken at hydration (CaptureOld, called by the relational
+// loader's single-entity path and by the write-side load helpers), so by the
+// time any Get* runs, Old() already holds the persisted state and every
+// mutation that happened in between — a Command's ApplyTo, a BuildRules
+// closure, a manual handler's own domain calls — is correctly EXCLUDED from
+// it. This no-ops in that case.
+//
+// It still captures when no snapshot exists, which is the floor for an entity
+// built by hand and never loaded (Old() would otherwise stay nil). Insert is
+// the one verb that never captures at all: a freshly constructed entity has no
+// prior state by definition, so Old() returns the zero value of T.
+func captureOldIfAbsent(self Entity) {
+	if self == nil || self.Old() != nil {
+		return
+	}
+	captureOld(self)
 }
 
 // copyAggregateMap shallow-copies the aggregate items map so the clone owns its

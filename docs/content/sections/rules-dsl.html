@@ -58,3 +58,48 @@ r.IfDisplay(func() { ... })         // see "key facts" below — inert today</co
         // string branch — the clause IS the verb.
     })
 }</code></pre>
+
+    <h3>Finishing an update as an archive</h3>
+    <p>
+        A rule can decide that the write it is validating should not leave the record active. Inside an
+        <code>IfUpdate</code> closure, <code>CompleteAsArchive()</code> asks the framework to finish THIS update
+        as an archive:
+    </p>
+    <pre><code>func (t *Tenant) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfUpdate(func() {
+        if t.Seats == 0 {
+            t.CompleteAsArchive()
+        }
+    })
+}</code></pre>
+    <p>
+        Past that point it IS the archive verb, carrying the update's field changes along: the row takes the
+        entity's full field set plus the DeletedAt stamp, the child cascade runs, the shared identity converges,
+        the outbox event is <code>ARCHIVED</code> (so <code>DeleteOnArchive</code> views, upstream mirrors and the
+        base-revision repair all route correctly), and the audit entry is an <code>archive</code> — with
+        <code>actionName</code> still naming the door it came through.
+    </p>
+    <div class="box warn">
+        <strong><code>IfArchive</code> does NOT fire on this path.</strong> The rules run once, in
+        <code>ModeUpdate</code>. The rule that calls <code>CompleteAsArchive()</code> IS the decision, so its guard
+        belongs in the same closure. What still applies is <code>Modes()</code>: an entity that does not declare
+        <code>ModeArchive</code> cannot be archived through this door either.
+    </div>
+    <p>
+        <strong>Only the domain decides, and only once.</strong> The call is legal in exactly one place — an
+        <code>IfUpdate</code> closure in the entity's own <code>BuildRules</code>. A Command's
+        <code>ApplyTo</code> runs before the framework marks the mode; a handler runs after the rules window has
+        closed; another verb's closure is the wrong mode. All of them panic with a message naming the misuse.
+        And once <code>GetUpdatable</code> returns, the request is folded into what the write IS — the sealed
+        <code>Updatable.EntityMode()</code>, <code>ModeUpdate</code> or <code>ModeArchive</code>, never anything
+        to combine with the Go type — and cleared from the entity. The write path reads that one value, so
+        nothing between the seal and the database can change the operation. Same guarantee
+        <code>IsPartial()</code> has always had.
+    </p>
+    <p>
+        <strong>There is no inverse.</strong> The automatic edit path never loads an archived row —
+        <code>FindByID</code> is active-scoped — so "finish as unarchived" would have nothing to act on. Changing
+        fields WHILE restoring is the unarchive verb's job: it writes the entity's field set like every other
+        verb, so a manual handler that loads the archived aggregate, applies its changes and calls
+        <code>GetUnarchivable</code> persists both in one transaction.
+    </p>

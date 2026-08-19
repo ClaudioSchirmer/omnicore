@@ -162,9 +162,15 @@ func buildWritePayload(
 }
 
 // appendChildrenBlocks fills "_children" / "_base_children" from the aggregate
-// map: every non-absent item, column-keyed, with its "_op" verb. On the soft
-// verbs every item is "noop" — the cascade is implied by the ROOT verb, not by
-// per-child operations.
+// map: every non-absent item, column-keyed, with its "_op" verb.
+//
+// On the soft verbs the item's op is the CASCADE the root statement performed —
+// "archive" carrying the stamp the child UPDATE bound, "unarchive" carrying an
+// explicit null. It used to be "noop", which the read side skips: the relational
+// child rows flipped their DeletedAt and the projected array never heard about
+// it, so a live document and one rebuilt from the source disagreed about which
+// children were archived. A child table without a DeletedAt column takes no
+// cascade and stays "noop".
 func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.AggregateRoot, eventType string, now time.Time) {
 	if root == nil {
 		return
@@ -178,10 +184,11 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 			continue // an undeclared child already failed the write itself
 		}
 		list := make([]map[string]any, 0, len(items))
+		_, childHasDeletedAt := child.DeletedAtColumn()
 		for _, it := range items {
-			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, fromBase, child)
+			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, eventType, fromBase, child, childHasDeletedAt)
 			item := map[string]any{payloadKeyOp: op}
-			if op != "archive" && op != "delete" {
+			if op != "archive" && op != "unarchive" && op != "delete" {
 				for k, v := range child.WriteFields(it.Item) {
 					item[k] = v
 				}
@@ -199,10 +206,14 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 				}
 			}
 			// An archive op carries the exact stamp the child UPDATE bound, so
-			// the surgical read-side edit lands the same value.
-			if op == "archive" {
-				if sd, ok := child.DeletedAtColumn(); ok {
+			// the surgical read-side edit lands the same value; unarchive carries
+			// the explicit null the cascade wrote.
+			if sd, ok := child.DeletedAtColumn(); ok {
+				switch op {
+				case "archive":
 					item[sd] = now
+				case "unarchive":
+					item[sd] = nil
 				}
 			}
 			if id := it.Item.GetID().Value(); id != "" {
@@ -230,9 +241,20 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 // childOpName maps the persister's OperationOf categorization to the payload's
 // "_op" verb. A Removed child mirrors removeChild's actual effect: hard-delete
 // for a base-child without DeletedAt, archive otherwise.
-func childOpName(op domain.AggregateItemOp, softVerb, fromBase bool, child *TableSchema) string {
+//
+// On a soft verb the item's own status is irrelevant: the root's cascade hit
+// EVERY child row under the ParentID with one statement, so every item reports
+// that same transition — unless its table has no DeletedAt column, which the
+// cascade skips.
+func childOpName(op domain.AggregateItemOp, softVerb bool, eventType string, fromBase bool, child *TableSchema, childHasDeletedAt bool) string {
 	if softVerb {
-		return "noop"
+		if !childHasDeletedAt {
+			return "noop"
+		}
+		if eventType == "ARCHIVED" {
+			return "archive"
+		}
+		return "unarchive"
 	}
 	switch op {
 	case domain.OpInsert:

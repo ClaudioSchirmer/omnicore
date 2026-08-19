@@ -96,26 +96,6 @@ func TestUnarchiveRole_BaseAlreadyActive_StillBumpsBaseRevision(t *testing.T) {
 	}
 }
 
-// The Batch role verbs go through fillBaseMeta → the base revision advances there too
-// (a batch UPDATE of a role never touches the base otherwise).
-func TestBatchRoleUpdate_BumpsBaseRevision(t *testing.T) {
-	tx := &recTx{count: 1, queryFn: rowsFKMatch()}
-	be := newFlatBE(&recBeginner{tx: tx})
-	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M2"}
-	e.SetID(domain.NewID(uuid.NewString()))
-	upd, err := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
-	if err != nil {
-		t.Fatalf("GetUpdatable: %v", err)
-	}
-	batch := domain.NewBatch([]domain.ValidEntity{upd})
-	if _, err := be.Batch(newBuilderCtx(), batch, []*TableSchema{roleTestSchema()}); err != nil {
-		t.Fatalf("Batch: %v", err)
-	}
-	if !hasRevisionBump(tx.execs) {
-		t.Errorf("a batch role update must advance the base revision, got %v", tx.execs)
-	}
-}
-
 // The DELETED payload carries the row's LAST revision (read before the DELETE):
 // the read side turns it into the document tombstone. The flat batch path pins
 // the same contract.
@@ -160,54 +140,6 @@ func TestHardDelete_PayloadCarriesLastRevision(t *testing.T) {
 	}
 	if !strings.Contains(payload, `"revision":7`) {
 		t.Errorf("the DELETED payload must carry the last revision, got %s", payload)
-	}
-}
-
-// The BATCH Deletable member captures the row's last revision BEFORE the
-// DELETE (the row answers 0 afterwards) and stamps it on the DELETED payload —
-// the same tombstone contract as the standalone hard delete — while the base
-// half still advances the identity's revision after the row is gone.
-func TestBatchRoleDelete_PayloadCarriesLastRevisionAndBumpsBase(t *testing.T) {
-	tx := &recTx{count: 1, queryFn: func(sql string, _ []any) (Rows, error) {
-		if strings.Contains(sql, "SELECT revision FROM aluno") {
-			return &fakeRows{remaining: 1, scan: func(dest []any) error {
-				if p, ok := dest[0].(*int64); ok {
-					*p = 9
-				}
-				return nil
-			}}, nil
-		}
-		return &fakeRows{remaining: 1, scan: func([]any) error { return nil }}, nil
-	}}
-	be := newFlatBE(&recBeginner{tx: tx})
-	e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
-	e.SetID(domain.NewID(uuid.NewString()))
-	del, err := domain.GetDeletable(e, nil, "GetDeletable")
-	if err != nil {
-		t.Fatalf("GetDeletable: %v", err)
-	}
-	batch := domain.NewBatch([]domain.ValidEntity{del})
-	if _, err := be.Batch(newBuilderCtx(), batch, []*TableSchema{roleTestSchema()}); err != nil {
-		t.Fatalf("Batch: %v", err)
-	}
-	if !hasRevisionBump(tx.execs) {
-		t.Errorf("a batch role delete must advance the identity's base revision, got %v", tx.execs)
-	}
-	var payload string
-	for i, s := range tx.execs {
-		if strings.HasPrefix(s, "INSERT INTO outbox") {
-			for _, a := range tx.execArgs[i] {
-				if b, ok := a.([]byte); ok && strings.Contains(string(b), `"_ids"`) {
-					payload = string(b)
-				}
-				if str, ok := a.(string); ok && strings.Contains(str, `"_ids"`) {
-					payload = str
-				}
-			}
-		}
-	}
-	if !strings.Contains(payload, `"revision":9`) {
-		t.Errorf("the batch DELETED payload must carry the last revision, got %s", payload)
 	}
 }
 

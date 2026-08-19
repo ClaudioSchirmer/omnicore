@@ -163,47 +163,6 @@ func TestWriteAuditRow_GateBranches(t *testing.T) {
 
 // ─── Batch member dispatch edges ─────────────────────────────────────────────
 
-func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
-	mk := func() *builderTestEntity {
-		e := &builderTestEntity{Name: "a", Email: "a@x"}
-		e.SetID(domain.NewID(uuid.NewString()))
-		return e
-	}
-
-	t.Run("archiveExecError", func(t *testing.T) {
-		arc, _ := domain.GetArchivable(mk(), nil, "GetArchivable")
-		tx := &recTx{execErrSub: "SET deleted_at = $1"}
-		be := newFlatBE(&recBeginner{tx: tx})
-		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{arc}), []*TableSchema{builderTestSchema}); !errors.Is(err, errRecExec) {
-			t.Fatalf("expected the archive exec error, got %v", err)
-		}
-	})
-	t.Run("unarchiveExecError", func(t *testing.T) {
-		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
-		tx := &recTx{execErrSub: "SET deleted_at = NULL"}
-		be := newFlatBE(&recBeginner{tx: tx})
-		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{builderTestSchema}); !errors.Is(err, errRecExec) {
-			t.Fatalf("expected the unarchive exec error, got %v", err)
-		}
-	})
-	t.Run("unarchiveWithoutDeletedAt", func(t *testing.T) {
-		noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
-		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
-		be := newFlatBE(&recBeginner{tx: &recTx{}})
-		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{noSD}); err == nil {
-			t.Fatal("expected the missing-DeletedAt guard")
-		}
-	})
-	t.Run("unsupportedMember", func(t *testing.T) {
-		// A nested Batch is a ValidEntity that matches no Batch member kind.
-		be := newFlatBE(&recBeginner{tx: &recTx{}})
-		_, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{domain.NewBatch(nil)}), []*TableSchema{builderTestSchema})
-		if err == nil {
-			t.Fatal("expected the unsupported-member error")
-		}
-	})
-}
-
 // The flat Unarchive on a schema without DeletedAt errors before any statement.
 func TestFlatUnarchive_MissingDeletedAtIsError(t *testing.T) {
 	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")

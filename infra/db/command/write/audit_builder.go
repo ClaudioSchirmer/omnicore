@@ -3,6 +3,7 @@ package write
 import (
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
@@ -69,9 +70,17 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 }
 
 // BuildArchiveEvent assembles a kind=transition audit.AuditEvent describing the
-// successful archive of archivable. The verb itself encodes the recovery
-// path (the symmetric unarchive); no Snapshot or Changes block is emitted.
-func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
+// successful archive of archivable. The verb itself encodes the recovery path
+// (the symmetric unarchive), so no Snapshot is emitted.
+//
+// The Changes block is ADDITIVE and appears only when the domain actually
+// changed business state during the verb — an IfArchive closure flipping a
+// status, a Command's ApplyTo touching a persisted field. Archive persists that
+// state like any other write, so the trail must record it; a plain archive that
+// changed nothing keeps the bare transition shape it always had. Kind stays
+// "transition" either way: the verb IS a transition, the delta is what it
+// carried along.
+func BuildArchiveEvent(ctx persistence.RequestContext, a transitionSource, schema *TableSchema, auditClaims []string) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: a.EntityName(),
 		EntityID:   a.ID().Value(),
@@ -79,10 +88,39 @@ func BuildArchiveEvent(ctx persistence.RequestContext, a domain.Archivable, sche
 		ActionName: a.ActionName(),
 		Kind:       "transition",
 		DateTime:   a.DateTime(),
+		Changes:    transitionChanges(schema, a.Source()),
 		Children:   childrenOf(schema, a.Source(), "archive"),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
+}
+
+// transitionSource is the slice of a sealed write shape the transition audit
+// builders actually read. domain.Archivable and domain.Unarchivable satisfy it,
+// and so does domain.Updatable — an update the domain asked to finish as an
+// archive audits as one, from the same builder.
+type transitionSource interface {
+	EntityName() string
+	ID() domain.ID
+	ActionName() string
+	DateTime() time.Time
+	Source() domain.Entity
+}
+
+// transitionChanges is the archive/unarchive delta: what the domain changed
+// between the load and the write, measured against the birth-time snapshot
+// (domain.Old). Nil — not an empty slice — when nothing changed, so the pure
+// transition's event shape is byte-identical to what it has always been.
+func transitionChanges(schema *TableSchema, src domain.Entity) []audit.FieldChange {
+	prev := oldFieldsOf(schema, src)
+	if prev == nil {
+		return nil
+	}
+	changes := computeChanges(prev, composedFieldValues(schema, src), composedLabelKeys(schema))
+	if len(changes) == 0 {
+		return nil
+	}
+	return changes
 }
 
 // BuildUnarchiveEvent is the symmetric inverse of BuildArchiveEvent.
@@ -94,6 +132,7 @@ func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, 
 		ActionName: u.ActionName(),
 		Kind:       "transition",
 		DateTime:   u.DateTime(),
+		Changes:    transitionChanges(schema, u.Source()),
 		Children:   childrenOf(schema, u.Source(), "unarchive"),
 	}
 	populateContext(&ev, ctx, auditClaims)

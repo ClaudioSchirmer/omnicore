@@ -70,6 +70,12 @@ type mockRepo struct {
 	unarchiveCalled int
 	findByIDCalled  int
 
+	// findArchivedByIDCalled counts the archived-scope load. mockRepo provides
+	// the capability because every real repository does (BaseAggregateRepository
+	// implements it): the unarchive handler REQUIRES an archived finder and
+	// fails loudly without one — there is no empty-sample fallback.
+	findArchivedByIDCalled int
+
 	insertErr    error
 	updateErr    error
 	deleteErr    error
@@ -139,6 +145,14 @@ func (w *mockWriter) Unarchive(_ domain.Unarchivable) error {
 
 func (r *mockRepo) FindByID(domain.ID) (*testEntity, error) {
 	r.findByIDCalled++
+	if r.findErr != nil {
+		return nil, r.findErr
+	}
+	return r.foundData, nil
+}
+
+func (r *mockRepo) FindArchivedByID(domain.ID) (*testEntity, error) {
+	r.findArchivedByIDCalled++
 	if r.findErr != nil {
 		return nil, r.findErr
 	}

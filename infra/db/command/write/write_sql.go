@@ -86,7 +86,20 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 // columns (bound to the operation stamp `now`), keyed on the ID. Existence is
 // checked by the caller via the rows-affected count (no RETURNING) — uniform
 // across dialects.
-func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
+//
+// expectedRevision is the
+// OPTIMISTIC-CONCURRENCY guard: when it is > 0 (the entity came from a load,
+// see domain.Managed.GetRevision) and the schema declares a revision column,
+// the WHERE also pins that revision, so the statement matches only while the
+// row still holds the value the caller read. A stale write then matches zero
+// rows instead of reverting whatever landed in between — execExpectingRow turns
+// that into ConcurrentModificationNotification (409).
+//
+// Pass 0 to write unguarded: an aggregate CHILD (guarded by its owner's token,
+// it declares no revision of its own), a shared BASE (converged last-write-wins
+// on purpose, since several roles write it), or an entity that never came from
+// the loader.
+func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string, expectedRevision int64) (string, []any) {
 	keys := SortedKeys(fields)
 	sets := make([]string, 0, len(keys)+len(nowCols)+1)
 	args := make([]any, 0, len(keys)+len(nowCols)+1)
@@ -106,15 +119,35 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 		sets = append(sets, rc+" = "+rc+" + 1")
 	}
 	n++
-	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s",
-		d.QuoteIdent(table), strings.Join(sets, ", "), d.QuoteIdent(pk), d.Placeholder(n))
+	where := d.QuoteIdent(pk) + " = " + d.Placeholder(n)
 	args = append(args, d.EncodeArg(domain.NewID(id)))
+	if revCol != "" && expectedRevision > 0 {
+		n++
+		where += " AND " + d.QuoteIdent(revCol) + " = " + d.Placeholder(n)
+		args = append(args, d.EncodeArg(expectedRevision))
+	}
+	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		d.QuoteIdent(table), strings.Join(sets, ", "), where)
 	return sql, args
 }
 
-// archiveSQL archives one row: the archive stamp binds as the FIRST arg
-// (the operation's writeNow() value), the ID as the second — the same
-// app-clock stamp every other statement of the operation carries.
+// rowExistsSQL renders the probe that splits a zero-row guarded UPDATE into its
+// two causes: the row is gone (404) or it moved past the caller's revision
+// (409). It runs only on that failure path, so the happy path pays nothing.
+func rowExistsSQL(d Dialect, table, pk string) string {
+	return d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(table)+
+		" WHERE "+d.QuoteIdent(pk)+" = "+d.Placeholder(1), 1)
+}
+
+// archiveSQL archives ONE row by id: the archive stamp binds as the first arg
+// (the operation's writeNow() value), the ID as the second — the same app-clock
+// stamp every other statement of the operation carries.
+//
+// Its one caller is archiveChild: a child the aggregate marked Removed during an
+// UPDATE. The ROOT verbs do not come through here — Archive/Unarchive write the
+// entity's full field set with the DeletedAt transition as one more column (see
+// softWrite), so the row's business state and the event that announces it can
+// never disagree.
 func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
 	bump := ""
 	if revCol != "" {
@@ -123,16 +156,6 @@ func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
 	}
 	return fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s",
 		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.Placeholder(1), bump, d.QuoteIdent(pk), d.Placeholder(2))
-}
-
-func unarchiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
-	bump := ""
-	if revCol != "" {
-		rc := d.QuoteIdent(revCol)
-		bump = ", " + rc + " = " + rc + " + 1"
-	}
-	return fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s",
-		d.QuoteIdent(table), d.QuoteIdent(sdCol), bump, d.QuoteIdent(pk), d.Placeholder(1))
 }
 
 // nullSetExpr is the unarchive assignment of the symmetric cascade (SQL NULL —

@@ -243,7 +243,7 @@ func TestBaseEngine_Update_FoundAndNotFound(t *testing.T) {
 
 func TestBaseEngine_ArchiveUnarchiveDelete(t *testing.T) {
 	for _, verb := range []string{"archive", "unarchive", "delete"} {
-		tx := &recTx{}
+		tx := &recTx{count: 1}
 		be := newFlatBE(&recBeginner{tx: tx})
 		var err error
 		switch verb {

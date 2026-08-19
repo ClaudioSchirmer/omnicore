@@ -50,7 +50,16 @@ func (m *Managed) ClearID() { m.id = nil }
 // (same package only).
 func (m *Managed) idPtr() *ID { return m.id }
 
-// GetRevision returns the shared-base revision watermark (0 when absent).
+// GetRevision returns the row's own revision — the commit-order token the
+// relational load stamps from the schema's revision column, incremented by the
+// framework in the same statement as every UPDATE.
+//
+// It is also the OPTIMISTIC-CONCURRENCY token: the write path guards its UPDATE
+// on the value the entity was loaded with, so a write built on a stale read is
+// refused instead of reverting whatever landed in between. A persisted row is
+// always >= 1 (an INSERT initializes it to 1), so 0 means exactly one thing —
+// this entity never came from the loader — and the guard degrades to an
+// unguarded write for it.
 func (m Managed) GetRevision() int64 { return m.revision }
 
 // GetCreatedAt / GetUpdatedAt / GetDeletedAt return the managed timestamps, each

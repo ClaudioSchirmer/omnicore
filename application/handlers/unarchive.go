@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"fmt"
+
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
@@ -13,16 +15,25 @@ import (
 // persistence.LoadArchivedForWrite — the request-ctx-bound ScopedArchivedReader
 // when the repo provides it (so the load honors http.requestTimeoutSeconds),
 // else the ctx-less domain.ArchivedFinder. The archived hydration is needed so
-// the cascade SQL sees children typeNames via root.AllAggregateItems(). When
-// the Repository provides neither, the handler falls back to Repo.New() + SetID
-// for flat aggregates without children.
+// the cascade SQL sees children typeNames via root.AllAggregateItems().
+//
+// A Repository providing NEITHER capability is a wiring error and fails loudly.
+// The handler used to fall back to an empty Repo.New() + SetID sample, which
+// works only while the verb touches nothing but deleted_at: that sample carries
+// the entity's ZERO value in every business field and no revision, so it can
+// neither be written back nor guarded. infra.BaseAggregateRepository implements
+// both capabilities — a hand-rolled repository must implement one.
 //
 // cmd.ApplyTo runs AFTER the entity is hydrated and BEFORE GetUnarchivable
 // so the Command can translate the request *AppContext into business-named
-// transient fields. GetUnarchivable then runs BuildRules in ModeUpdate with
-// actionName = "GetUnarchivable" — IfUpdate fires and the service can
+// transient fields. GetUnarchivable then runs BuildRules in ModeUnarchive with
+// actionName = "GetUnarchivable" — IfUnarchive fires and the service can
 // validate. The Unarchive state-transition checks (Modes() / ID validity)
 // still run after the BuildRules pass.
+//
+// The hydration snapshots the entity (domain.CaptureOld), so domain.Old[T]
+// inside IfUnarchive answers the PERSISTED archived state — never the state
+// ApplyTo produced.
 //
 // cmd.FromEntity runs after the unarchive completes — same ctx + cmd
 // available for the projection.
@@ -45,15 +56,16 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 	RequirePathID(cmd.PathID(), "UnarchiveCommandHandler")
 	id := domain.NewID(cmd.PathID())
 
-	var sample T
-	if loaded, found, err := persistence.LoadArchivedForWrite(h.Repo, ctx, id); found {
-		if err != nil {
-			return zero, err
-		}
-		sample = loaded
-	} else {
-		sample = h.Repo.New()
-		sample.SetID(id)
+	sample, found, err := persistence.LoadArchivedForWrite(h.Repo, ctx, id)
+	if !found {
+		return zero, fmt.Errorf(
+			"UnarchiveCommandHandler: %T cannot load an archived aggregate — implement "+
+				"persistence.ScopedArchivedReaderProvider[T] or domain.ArchivedFinder[T] "+
+				"(infra.BaseAggregateRepository provides both). Unarchiving from an empty "+
+				"sample would carry the entity's zero value into the write path", h.Repo)
+	}
+	if err != nil {
+		return zero, err
 	}
 
 	if err := cmd.ApplyTo(ctx, sample); err != nil {

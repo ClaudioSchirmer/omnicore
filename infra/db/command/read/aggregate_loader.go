@@ -113,6 +113,16 @@ func (l *AggregateLoader[T]) WithChildScanner(typeName string, fn ChildScanner) 
 // the criteria matches more than one row (the contract is "expected one"; >1 is
 // a developer mistake surfaced loudly rather than silently picking the first).
 // A LIMIT 2 probe bounds the >1 check; any Limit set on the Query is overridden.
+//
+// This is the framework's BIRTH point for a write-side entity: once the whole
+// aggregate is hydrated (root + siblings + shared base + children), the load
+// stamps the old-state snapshot via domain.CaptureOld, so domain.Old[T] answers
+// the PERSISTED state for every state-changing verb. Because every single-entity
+// load funnels here — the canonical repository's FindByID / FindArchivedByID and
+// any custom repository finder built on this loader — a hand-written handler gets
+// the same guarantee as an Auto one without doing anything. FindAll deliberately
+// does NOT snapshot: it is the read-side list path, where no verb mutates and the
+// per-row clone would be pure cost.
 func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T, error) {
 	entities, ids, err := l.findRoots(ctx, q, 2)
 	if err != nil {
@@ -139,6 +149,7 @@ func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T,
 	if err := l.hydrateBaseChildren(ctx, entities, ids, q.Scope()); err != nil {
 		return *new(T), err
 	}
+	domain.CaptureOld(entities[0])
 	return entities[0], nil
 }
 
