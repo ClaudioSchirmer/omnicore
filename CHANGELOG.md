@@ -11,6 +11,45 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`domain.CaptureOld(e Entity)`** — the birth-time old-state snapshot hook the
+  framework's own load paths call. Exported so a repository that bypasses
+  `read.AggregateLoader`, or a handler that assembles an entity in memory, can
+  stamp the snapshot itself: call it immediately after hydration, before the
+  first mutation. Idempotent — a second call is a no-op, so the earliest
+  snapshot always wins.
+
+### Fixed
+
+- **The old-state snapshot (`domain.Old`) is now captured when the entity is
+  BORN, uniformly across all five state-changing verbs** (Update,
+  PartialUpdate, Archive, Unarchive, Delete). `GetArchivable`,
+  `GetUnarchivable` and `GetDeletable` snapshotted at function entry — which
+  the Auto handlers reach only AFTER running `cmd.ApplyTo` on the loaded
+  entity. A mutation applied between the load and the verb therefore leaked
+  into `domain.Old`, so a transition-aware rule compared the request against
+  itself instead of against the database, and Delete's `kind=snapshot` audit
+  event recorded the row in a state it never held.
+
+  The capture moved to the load: `read.AggregateLoader.FindOne` (the funnel for
+  every `FindByID` / `FindArchivedByID` and every custom repository finder) and
+  `persistence.LoadForWrite` / `LoadArchivedForWrite` stamp it, and the `Get*`
+  family only fills in when no snapshot exists — it never overwrites one.
+  `GetUpdatable` / `GetPartialUpdatable` keep their `apply`-closure signatures
+  unchanged; they now derive the guarantee from the same place as the other
+  three, so there is one rule instead of two.
+
+  Manual handlers are covered by construction: a hand-written
+  `pipeline.Handler` that loads through the framework inherits the snapshot
+  with no extra call. `FindAll` deliberately does not snapshot (read-side list
+  path). Insert is unchanged and still outside the contract.
+
+- The `ArchiveCommandHandler` / `UnarchiveCommandHandler` doc comments claimed
+  `BuildRules` ran in `ModeUpdate` and that `IfUpdate` fired on those verbs. It
+  has always been `ModeArchive` / `ModeUnarchive` with `IfArchive` /
+  `IfUnarchive`; the comments now match the code.
+
 ## [0.53.0] - 2026-08-18
 
 ### Added

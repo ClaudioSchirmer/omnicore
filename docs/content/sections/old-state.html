@@ -1,7 +1,8 @@
 <h2>Old-state snapshot</h2>
     <p>
-        Domain owns the “what did the entity look like before this write?” snapshot. The framework's
-        <code>Get*</code> functions capture it automatically; <code>BuildRules</code> consumes it via the typed
+        Domain owns the “what did the entity look like before this write?” snapshot. The framework
+        captures it automatically when the entity is <strong>born</strong> — the moment it finishes hydrating
+        from the system of record; <code>BuildRules</code> consumes it via the typed
         helper <code>domain.Old[T](e) T</code>; the audit builder consumes it to compute <code>changes</code> (kind=delta)
         or to emit <code>snapshot</code> (kind=snapshot on Delete). Powers both
         <strong>transition-aware invariants</strong> in the domain and <strong>timeline reconstruction</strong> in audit.
@@ -24,20 +25,62 @@
     </p>
 
     <h3>How the snapshot is captured</h3>
+    <p>
+        <strong>One rule, identical for all five state-changing verbs</strong> — Update, PartialUpdate, Archive,
+        Unarchive and Delete: the snapshot is taken when the entity is <em>born</em>, and nothing that happens
+        afterwards can replace it. “Born” means the load that hydrated it out of the system of record: the
+        relational loader's single-entity path (<code>FindOne</code>, which every <code>FindByID</code> /
+        <code>FindArchivedByID</code> and every custom repository finder funnels through) stamps it, and the
+        write-side load helpers <code>persistence.LoadForWrite</code> / <code>LoadArchivedForWrite</code> stamp it
+        for a hand-rolled repository that bypasses the loader.
+    </p>
+    <p>
+        Everything a write does between the load and the verb is therefore <strong>excluded</strong> from
+        <code>Old()</code> by construction — a Command's <code>ApplyTo</code>, a <code>BuildRules</code> closure
+        such as <code>r.IfArchive</code> that flips a status field, a domain method a manual handler calls. That is
+        the point: <code>Old()</code> is what the database holds, so a rule can compare intent against reality and
+        the auditor can record where the entity came from.
+    </p>
     <ul>
-        <li><strong>Update / Patch (closure form):</strong> <code>domain.GetUpdatable[T](loaded, apply, svc, "GetUpdatable")</code>
-            and <code>domain.GetPartialUpdatable[T](loaded, apply, svc, "GetPartialUpdatable")</code> snapshot the entity <strong>before</strong>
-            running the <code>apply</code> closure. The mutation happens <em>inside</em> the domain function — the
-            caller passes <code>cmd.ApplyTo</code> or <code>cmd.ApplyPartiallyTo</code> directly (signature
-            <code>func(T) error</code>, so a mapper can raise a notification before validation). Auto handlers do this automatically; manual handlers follow the same pattern.</li>
-        <li><strong>Delete / Archive / Unarchive:</strong> <code>domain.GetDeletable / GetArchivable / GetUnarchivable</code>
-            snapshot at function entry (no mutation step in these flows). <code>Old()</code> returns the entity
-            in its pre-transition state — used both in BuildRules (e.g.,
-            <code>r.IfDelete</code> rule using the loaded balance) and for audit forensics.</li>
+        <li><strong>Order does not matter to the caller.</strong> The update verbs accept an <code>apply</code>
+            closure (<code>domain.GetUpdatable[T](loaded, apply, svc, "GetUpdatable")</code>) and the bodyless verbs
+            do not — but the snapshot no longer depends on that. A mutation applied before the
+            <code>Get*</code> call and one applied inside the closure are equally outside <code>Old()</code>.</li>
+        <li><strong>The <code>Get*</code> family is the floor, not the mechanism.</strong> If an entity carries no
+            snapshot when a <code>Get*</code> runs — it was assembled in memory and never loaded — the verb captures
+            one there, so <code>Old()</code> is never nil for a state-changing verb. A snapshot that already exists
+            is never overwritten.</li>
         <li><strong>Insert:</strong> NO snapshot. A freshly created entity has no prior state by definition. Inside
             BuildRules, <code>domain.Old(u)</code> returns the typed zero value; defensive code with
             <code>if old != nil</code> guards Update-only rules.</li>
+        <li><strong>List reads never snapshot.</strong> <code>FindAll</code> is the read-side path where no verb
+            mutates, so it does not pay a per-row clone.</li>
     </ul>
+
+    <h3>Manual handlers</h3>
+    <p>
+        A hand-written <code>pipeline.Handler</code> gets the same guarantee as an Auto one with no extra step,
+        as long as it loads through the framework — <code>persistence.LoadForWrite</code>, the repository's
+        <code>FindByID</code> / <code>FindArchivedByID</code>, or a custom repository finder built on
+        <code>read.AggregateLoader</code>. All of them stamp the snapshot before the handler sees the entity.
+    </p>
+    <pre><code>// Manual archive handler — nothing to remember: the load already snapshotted.
+current, err := persistence.LoadForWrite[*Tenant](h.Repo, ctx, domain.NewID(cmd.PathID()))
+if err != nil {
+    return zero, err
+}
+if err := cmd.ApplyTo(ctx, current); err != nil { // mutates the live entity, NOT Old()
+    return zero, err
+}
+archivable, err := domain.GetArchivable(current, h.Service, "GetArchivable")
+// inside BuildRules: domain.Old(t).Status is the PERSISTED status</code></pre>
+    <p>
+        The one case that needs an explicit call is an entity hydrated some other way — a repository that does not
+        use <code>read.AggregateLoader</code>, or an entity assembled in memory — that the handler intends to mutate
+        before a <code>Get*</code>. Call <code>domain.CaptureOld(e)</code> immediately after hydration, before the
+        first mutation. It is idempotent: a second call is a no-op, so the earliest snapshot always wins, and
+        calling it late records the wrong state rather than erroring.
+    </p>
 
     <h3>What the clone looks like</h3>
     <p>
@@ -134,7 +177,7 @@
 
     <h3>Custom infra escape hatch</h3>
     <p>
-        Implementations that bypass the framework's <code>Get*</code> path (raw SQL building an
+        Implementations that bypass both the framework's load path and its <code>Get*</code> path (raw SQL building an
         <code>Updatable</code> by hand — not exposed by the public API today, but conceptually) will not have
         <code>Old()</code> populated. On Update the audit builder's <code>changes</code> degrade to every column with
         <code>from: null</code>; on Delete it falls back to the live source's snapshot. Graceful degrade, not error.

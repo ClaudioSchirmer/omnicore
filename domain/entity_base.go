@@ -16,10 +16,11 @@ type Entity interface {
 	GetID() *ID
 	SetID(ID)
 
-	// Old returns the pre-mutation snapshot stored by the framework's
-	// Get* domain functions, or nil for Insert (no prior state by definition)
-	// or for entities hydrated outside the framework loader. Inside BuildRules
-	// prefer the typed helper domain.Old[T].
+	// Old returns the state the entity was BORN with — the snapshot taken when
+	// the framework hydrated it from the system of record (see CaptureOld).
+	// Nil for Insert (no prior state by definition) and for an entity built by
+	// hand that no framework path ever snapshotted. Inside BuildRules prefer
+	// the typed helper domain.Old[T].
 	Old() Entity
 
 	initWithName(string, reflect.Type)
@@ -137,9 +138,10 @@ func (b *BaseEntity) RegisterEvent(event DomainEvent) {
 	b.events = append(b.events, event)
 }
 
-// Old returns the pre-mutation snapshot captured by the framework's Get*
-// domain functions. Inside BuildRules, prefer the typed helper domain.Old[T]
-// over a manual type assertion on this return value.
+// Old returns the birth-time snapshot captured by the framework (CaptureOld
+// at hydration; the Get* family as the fallback floor). Inside BuildRules,
+// prefer the typed helper domain.Old[T] over a manual type assertion on this
+// return value.
 func (b *BaseEntity) Old() Entity { return b.old }
 
 func (b *BaseEntity) AddFieldNameAlias(orig, new string) {
@@ -190,6 +192,34 @@ func (b *BaseEntity) setOldEntity(p Entity)                       { b.old = p }
 func (b *BaseEntity) aggregateValueObjectsToValidate() []avoEntry { return b.avos }
 func (b *BaseEntity) contextCollection() []*NotificationContext   { return b.contexts }
 func (b *BaseEntity) fieldAliases() map[string]string             { return b.aliases }
+
+// CaptureOld snapshots e as its old state, unless it already carries one. It
+// is the framework's birth-time hook: the relational loader's single-entity
+// path calls it the moment an aggregate finishes hydrating, and the write-side
+// load helpers (persistence.LoadForWrite / LoadArchivedForWrite) call it for
+// repositories that bypass that loader. From then on domain.Old[T] answers the
+// PERSISTED state for all five state-changing verbs — Update, PartialUpdate,
+// Archive, Unarchive and Delete alike — no matter where the mutation happens
+// (a Command's ApplyTo, a BuildRules closure, a domain method).
+//
+// A MANUAL handler gets this for free as long as it loads through the
+// framework's loader. It must call CaptureOld itself only when it hydrates an
+// entity some other way (a hand-rolled repository that does not use
+// read.AggregateLoader, an entity assembled in memory) AND intends to mutate
+// it before a Get* call — call it immediately after hydration, before the
+// first mutation. Calling it late is not an error but records the wrong
+// state, so the framework never calls it late: a second call is a NO-OP, which
+// makes the earliest snapshot the winning one.
+//
+// Insert is deliberately outside this contract — a freshly constructed entity
+// has no prior state, so Old() stays nil there.
+func CaptureOld(e Entity) {
+	if e == nil {
+		return
+	}
+	ensureInit(e)
+	captureOldIfAbsent(e)
+}
 
 // GetInsertable runs the framework's Insert validation pipeline on e and
 // returns a ValidEntity ready for orchestration. actionName identifies the
@@ -316,11 +346,13 @@ func getInsertable(e Entity, service Service, actionName string) (Insertable, er
 
 func getUpdatable[T Entity](e T, apply func(T) error, service Service, actionName string, partial bool) (Updatable, error) {
 	ensureInit(e)
-	// Snapshot BEFORE the apply mutates the entity. The clone is a "ghost":
-	// exported fields only, no events / notifCtx / aggregate state machinery.
-	// For aggregates the clone also receives a deep copy of the current items
-	// so domain.Old(e) exposes the prior children too.
-	captureOld(e)
+	// The birth-time snapshot (CaptureOld at hydration) is preserved; this only
+	// fires for an entity no framework path ever snapshotted, keeping the apply
+	// below outside Old() either way. The clone is a "ghost": exported fields
+	// only, no events / notifCtx / aggregate state machinery. For aggregates it
+	// also receives a deep copy of the current items so domain.Old(e) exposes
+	// the prior children too.
+	captureOldIfAbsent(e)
 	if apply != nil {
 		if err := apply(e); err != nil {
 			return Updatable{}, err
@@ -341,10 +373,11 @@ func getUpdatable[T Entity](e T, apply func(T) error, service Service, actionNam
 
 func getDeletable(e Entity, service Service, actionName string) (Deletable, error) {
 	ensureInit(e)
-	// Delete has no mutation step — snapshot equals the loaded state, captured
-	// via captureOld so domain.Old(u) returns the entity as it was right
-	// before being removed (forensics + audit snapshot in one place).
-	captureOld(e)
+	// Same capture rule as every other state-changing verb: the birth-time
+	// snapshot wins, so domain.Old(e) — and the audit event built from it —
+	// returns the entity as the system of record held it, never a state a
+	// Command's ApplyTo or an IfDelete closure produced on the way here.
+	captureOldIfAbsent(e)
 	e.resetEntity()
 	e.setService(service)
 
@@ -368,10 +401,12 @@ func getDeletable(e Entity, service Service, actionName string) (Deletable, erro
 
 func getArchivable(e Entity, service Service, actionName string) (Archivable, error) {
 	ensureInit(e)
-	// Archive is a state transition (deleted_at flip + cascade). The snapshot
-	// represents the entity in its pre-archive (active) state — useful in
-	// timelines to see "entity was archived from state X".
-	captureOld(e)
+	// Archive is a state transition (deleted_at flip + cascade). The birth-time
+	// snapshot represents the entity in its pre-archive (active) state as the
+	// system of record held it — useful in timelines to see "entity was
+	// archived from state X", and the baseline an IfArchive mutation is
+	// measured against.
+	captureOldIfAbsent(e)
 	e.resetEntity()
 	e.setService(service)
 
@@ -387,11 +422,11 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 
 func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable, error) {
 	ensureInit(e)
-	// Unarchive symmetric to Archive — snapshot is the archived state right
-	// before the transition. When the Repository implements ArchivedFinder
-	// the entity arrives hydrated (root + children); the empty-sample fallback
-	// produces a degenerate snapshot (ID only).
-	captureOld(e)
+	// Unarchive symmetric to Archive — the snapshot is the archived state right
+	// before the transition. When the Repository implements ArchivedFinder the
+	// entity arrives hydrated (root + children) and already snapshotted; the
+	// empty-sample fallback produces a degenerate snapshot (ID only).
+	captureOldIfAbsent(e)
 	e.resetEntity()
 	e.setService(service)
 

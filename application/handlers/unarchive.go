@@ -19,10 +19,15 @@ import (
 //
 // cmd.ApplyTo runs AFTER the entity is hydrated and BEFORE GetUnarchivable
 // so the Command can translate the request *AppContext into business-named
-// transient fields. GetUnarchivable then runs BuildRules in ModeUpdate with
-// actionName = "GetUnarchivable" — IfUpdate fires and the service can
+// transient fields. GetUnarchivable then runs BuildRules in ModeUnarchive with
+// actionName = "GetUnarchivable" — IfUnarchive fires and the service can
 // validate. The Unarchive state-transition checks (Modes() / ID validity)
 // still run after the BuildRules pass.
+//
+// The hydration snapshots the entity (domain.CaptureOld), so domain.Old[T]
+// inside IfUnarchive answers the PERSISTED archived state — never the state
+// ApplyTo produced. The empty-sample fallback below snapshots too, yielding
+// the degenerate ID-only ghost that path has always produced.
 //
 // cmd.FromEntity runs after the unarchive completes — same ctx + cmd
 // available for the projection.
@@ -54,6 +59,7 @@ func (h *UnarchiveCommandHandler[T, Cmd, TResult]) Handle(ctx *configuration.App
 	} else {
 		sample = h.Repo.New()
 		sample.SetID(id)
+		domain.CaptureOld(sample)
 	}
 
 	if err := cmd.ApplyTo(ctx, sample); err != nil {

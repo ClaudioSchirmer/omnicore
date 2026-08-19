@@ -7,6 +7,43 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">in development</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong><a href="#old-state">the old-state snapshot is now captured when
+                the entity is BORN, uniformly across all five state-changing verbs</a>.</strong> Archive, Unarchive
+                and Delete snapshotted at the <code>Get*</code> call — which the Auto handlers reach only AFTER
+                running <code>cmd.ApplyTo</code> on the loaded entity. Any mutation applied between the load and
+                the verb therefore leaked INTO <code>domain.Old</code>, so a rule comparing intent against reality
+                compared the request to itself, and Delete's <code>kind=snapshot</code> audit event recorded the
+                row in a state it never held in the database. The capture moved to the load: the relational
+                loader's single-entity path (every <code>FindByID</code>/<code>FindArchivedByID</code> and every
+                custom repository finder funnels through it) and the write-side load helpers stamp it, and no later
+                call can replace it. Update and PartialUpdate keep their <code>apply</code>-closure signatures
+                unchanged — they now get the same guarantee from the same place, so the rule is one rule.
+                <ul>
+                    <li><strong>Manual handlers are covered by construction</strong>, not by convention: a
+                        hand-written <code>pipeline.Handler</code> that loads through the framework inherits the
+                        snapshot with no extra call. Only an entity hydrated some other way needs the new
+                        <code>domain.CaptureOld</code> below.</li>
+                    <li><code>FindAll</code> deliberately does NOT snapshot — it is the read-side list path, where
+                        no verb mutates and a per-row clone would be pure cost.</li>
+                    <li>Insert is unchanged and still outside the contract: a freshly constructed entity has no
+                        prior state, so <code>domain.Old</code> stays nil there.</li>
+                    <li>The <code>ArchiveCommandHandler</code> / <code>UnarchiveCommandHandler</code> doc comments
+                        claimed <code>BuildRules</code> ran in <code>ModeUpdate</code> and that
+                        <code>IfUpdate</code> fired on those verbs. It has always been <code>ModeArchive</code> /
+                        <code>ModeUnarchive</code> with <code>IfArchive</code> / <code>IfUnarchive</code> — the
+                        comments now match the code.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong><code>domain.CaptureOld(e)</code></strong>, the birth-time snapshot
+                hook the framework's own load paths call. Public so a repository that bypasses
+                <code>read.AggregateLoader</code>, or a handler that assembles an entity in memory, can stamp the
+                snapshot itself — call it immediately after hydration, before the first mutation. Idempotent: a
+                second call is a no-op, so the earliest snapshot always wins.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.53.0</span><span class="release-date">August 18, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#audit~audit-endpoint">the framework serves the audit

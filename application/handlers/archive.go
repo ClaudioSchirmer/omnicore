@@ -17,10 +17,15 @@ import (
 // cmd.ApplyTo lands AFTER the load and BEFORE GetArchivable so the Command
 // can translate the request *AppContext into business-named transient fields
 // on the loaded entity (e.g., u.SetRequestingOwnerID(ctx.Identity().Subject)).
-// GetArchivable then runs BuildRules in ModeUpdate with actionName =
-// "GetArchivable" — IfUpdate fires and the service can validate the transient
+// GetArchivable then runs BuildRules in ModeArchive with actionName =
+// "GetArchivable" — IfArchive fires and the service can validate the transient
 // against the persistent owner field. Archive's own state-transition checks
 // (Modes() / ID validity) still run after the BuildRules pass.
+//
+// The load snapshots the entity (domain.CaptureOld), so domain.Old[T] inside
+// IfArchive answers the PERSISTED state — never the state ApplyTo or an
+// earlier rule produced. Same guarantee, same mechanism, on all five
+// state-changing verbs.
 //
 // cmd.FromEntity runs after the archive completes, with the same ctx — typical
 // bodyless verb shape is TResult = results.None and FromEntity returns

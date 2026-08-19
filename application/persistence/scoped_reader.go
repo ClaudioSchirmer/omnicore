@@ -40,11 +40,30 @@ type ScopedArchivedReaderProvider[T any] interface {
 // http.requestTimeoutSeconds reach the SELECT); otherwise it degrades to the
 // ctx-less domain.Reader[T].FindByID. Used by the Update/Archive/Delete Auto
 // handlers.
+//
+// The load stamps the old-state snapshot (domain.CaptureOld) so domain.Old[T]
+// answers the PERSISTED state no matter what mutates the entity afterwards.
+// The framework's relational loader already snapshots at hydration; this is the
+// net for a hand-rolled repository that bypasses it, and it is a no-op when the
+// snapshot is already there.
 func LoadForWrite[T any](repo ScopedRepository[T], ctx *configuration.AppContext, id domain.ID) (T, error) {
 	if sr, ok := any(repo).(ScopedReaderProvider[T]); ok {
-		return sr.ScopedReader(ctx).FindByID(id)
+		return captureLoaded(sr.ScopedReader(ctx).FindByID(id))
 	}
-	return repo.FindByID(id)
+	return captureLoaded(repo.FindByID(id))
+}
+
+// captureLoaded stamps the birth-time snapshot on a freshly loaded entity,
+// passing the load's own (value, error) pair straight through. A failed load
+// and a T that is not a domain.Entity are both left untouched.
+func captureLoaded[T any](loaded T, err error) (T, error) {
+	if err != nil {
+		return loaded, err
+	}
+	if ent, ok := any(loaded).(domain.Entity); ok {
+		domain.CaptureOld(ent)
+	}
+	return loaded, nil
 }
 
 // LoadArchivedForWrite hydrates an archived aggregate for the unarchive path,
@@ -55,11 +74,11 @@ func LoadForWrite[T any](repo ScopedRepository[T], ctx *configuration.AppContext
 // behavior.
 func LoadArchivedForWrite[T any](repo ScopedRepository[T], ctx *configuration.AppContext, id domain.ID) (T, bool, error) {
 	if sr, ok := any(repo).(ScopedArchivedReaderProvider[T]); ok {
-		loaded, err := sr.ScopedArchivedReader(ctx).FindArchivedByID(id)
+		loaded, err := captureLoaded(sr.ScopedArchivedReader(ctx).FindArchivedByID(id))
 		return loaded, true, err
 	}
 	if finder, ok := any(repo).(domain.ArchivedFinder[T]); ok {
-		loaded, err := finder.FindArchivedByID(id)
+		loaded, err := captureLoaded(finder.FindArchivedByID(id))
 		return loaded, true, err
 	}
 	var zero T
