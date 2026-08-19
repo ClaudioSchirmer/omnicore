@@ -131,6 +131,6 @@
         The wrapper rejects a cursor whose context hash no longer matches the current request with 400
         <code>SchemaViolationNotification</code> — converting a silent "frontend changed one knob,
         results look wrong" bug into a loud failure with a clear remediation: request page 1 of the new
-        context. This is the read-side analogue of the write side's SQL-fingerprint discipline: the
+        context. This is the read-side analogue of the write side's lifecycle-grounded discipline: the
         contract is anchored in what physically shapes the query, not in the endpoint's intent.
     </p>

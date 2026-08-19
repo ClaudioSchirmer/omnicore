@@ -44,7 +44,8 @@ func (coreNL) Translations() map[string]string {
 		"InvalidEventTypeNotification": "Ongeldig gebeurtenistype.",
 
 		// Generic
-		"RecordNotFoundNotification": "Record niet gevonden.",
+		"RecordNotFoundNotification":         "Record niet gevonden.",
+		"ConcurrentModificationNotification": "Het record is door iemand anders gewijzigd. Laad het opnieuw en probeer het nog eens.",
 
 		// EntityMode descriptions
 		"EntityMode.UNKNOWN":   "Onbekend",

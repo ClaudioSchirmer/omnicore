@@ -150,7 +150,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 
-		tx := &recTx{}
+		tx := &recTx{count: 1}
 		be := newFlatBE(&recBeginner{tx: tx})
 		var err error
 		if verb == "archive" {

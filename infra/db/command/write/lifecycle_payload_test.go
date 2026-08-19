@@ -60,7 +60,7 @@ func flatArchivableWithID(t *testing.T) (domain.Archivable, string) {
 
 func TestArchive_OutboxPayloadCarriesFieldsAndDeletedAt(t *testing.T) {
 	a, _ := flatArchivableWithID(t)
-	tx := &recTx{}
+	tx := &recTx{count: 1}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), a, builderTestSchema, firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
@@ -81,7 +81,7 @@ func TestUnarchive_OutboxPayloadCarriesFieldsAndNullDeletedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	tx := &recTx{}
+	tx := &recTx{count: 1}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Unarchive(newBuilderCtx(), u, builderTestSchema, firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
@@ -194,7 +194,7 @@ func TestArchiveRoleWithBase_OutboxPayloadCarriesBaseFK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	tx := &recTx{queryFn: rowsNone()}
+	tx := &recTx{count: 1, queryFn: rowsNone()}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), a, roleArchTestSchema(), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
@@ -219,7 +219,7 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	tx := &recTx{}
+	tx := &recTx{count: 1}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), a, aggWriteSchema(), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
@@ -240,8 +240,18 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 		t.Fatalf("aggregate ARCHIVED _children must list the loaded child, got %v", ch)
 	}
 	item, _ := items[0].(map[string]any)
-	if item["_op"] != "noop" {
-		t.Errorf("a soft verb lists children as _op noop (the cascade is verb-implied), got %v", item)
+	// The cascade is not verb-implied on the read side: the root statement
+	// flipped every child row's DeletedAt, so the payload must SAY so, carrying
+	// the same stamp the child UPDATE bound. Listing them as noop left the
+	// projected array claiming those children were still active.
+	if item["_op"] != "archive" {
+		t.Errorf("an aggregate archive must report the child cascade, got %v", item)
+	}
+	// One operation, one instant: the child's stamp is the same value the root
+	// carries, which is what the cascade statement bound.
+	if item["deleted_at"] != p["deleted_at"] {
+		t.Errorf("child stamp %v must equal the root's %v — one operation, one instant",
+			item["deleted_at"], p["deleted_at"])
 	}
 }
 

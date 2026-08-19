@@ -125,7 +125,7 @@ audit:
         <tr><td><code>traceId</code></td><td>string (omitempty)</td><td>active span's trace id (32-char hex) when <code>observability.tracing</code> is on, else absent — the single source both destinations mirror (the <code>audit_events.trace_id</code> column and the slog <code>traceId</code> attribute), so a forensic row or echo line pivots to its trace in the collector</td></tr>
         <tr><td><code>entityType</code></td><td>string</td><td>Go type name of the root entity</td></tr>
         <tr><td><code>entityId</code></td><td>string</td><td>aggregate root id</td></tr>
-        <tr><td><code>verb</code></td><td>string</td><td><code>insert</code> | <code>update</code> | <code>archive</code> | <code>unarchive</code> | <code>delete</code> — <strong>SQL-grounded</strong>: same SQL fingerprint → same verb. PUT and PATCH both emit <code>update</code> (the SQL is identical); the distinction lives in <code>actionName</code></td></tr>
+        <tr><td><code>verb</code></td><td>string</td><td><code>insert</code> | <code>update</code> | <code>archive</code> | <code>unarchive</code> | <code>delete</code> — <strong>lifecycle-grounded</strong>: same effect on the row → same verb. The five effects are "created", "changed in place", "retired" (DeletedAt null → stamp), "returned" (stamp → null) and "gone". PUT and PATCH both emit <code>update</code> because neither moves the row's archived state; the distinction lives in <code>actionName</code>. Note that the statement TEXT no longer separates the verbs — archive, unarchive, PUT and PATCH all emit the same UPDATE, differing in one bound value</td></tr>
         <tr><td><code>actionName</code></td><td>string</td><td>the <code>actionName</code> passed to the <code>Get*</code> call (<code>GetInsertable</code> / <code>GetUpdatable</code> / <code>GetPartialUpdatable</code> / … or a custom string)</td></tr>
         <tr><td><code>kind</code></td><td>string</td><td><code>snapshot</code> | <code>delta</code> | <code>transition</code> — discriminates the body block</td></tr>
         <tr><td><code>actor</code></td><td>string</td><td>JWT <code>sub</code> or the sentinel <code>"anonymous"</code></td></tr>
@@ -175,8 +175,8 @@ audit:
         <tr>
             <td><code>transition</code></td>
             <td><code>archive</code>, <code>unarchive</code></td>
-            <td>(neither block)</td>
-            <td>the verb itself is the recovery hint — a symmetric inverse</td>
+            <td>no <code>snapshot</code>; <code>changes: […]</code> only when the verb persisted one</td>
+            <td>the verb itself is the recovery hint — a symmetric inverse — so no snapshot is emitted. Archive and unarchive write the entity's field set like any other verb, so when the domain changed business state on the way there (an <code>r.IfArchive</code> closure flipping a status, a Command's <code>ApplyTo</code>), that delta rides along in the SAME <code>changes</code> shape <code>delta</code> uses. It is ADDITIVE: a plain archive that changed nothing carries neither block, exactly as before, and <code>kind</code> stays <code>transition</code> either way — the verb IS a transition, the delta is what it carried</td>
         </tr>
     </table>
     <p>
@@ -194,8 +194,8 @@ audit:
         <code>AggregateRootProvider</code> and at least one child is observable for the verb. Keyed
         by Go type name (<code>Address</code>, <code>OrderLine</code>); each entry carries
         <code>{id, op, snapshot}</code> or <code>{id, op, changes}</code> following the same
-        <code>kind</code> discipline. <strong>Child ops are SQL-grounded</strong> — every op echoes the SQL
-        fingerprint of the row-level change. For an <code>update</code> root, the op is decided by
+        <code>kind</code> discipline. <strong>Child ops are lifecycle-grounded</strong> — every op echoes what
+        the write did to that row's existence and archived state. For an <code>update</code> root, the op is decided by
         <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> (where the child <em>started</em> vs where it is
         now), not by its current status alone — so a DB-loaded child re-added is <code>updated</code> (not
         <code>inserted</code>), and a brand-new child added then removed before commit produces <strong>no entry</strong>

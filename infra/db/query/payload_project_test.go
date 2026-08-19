@@ -65,6 +65,41 @@ func TestChildArrayExpr_DeleteAndArchive(t *testing.T) {
 	}
 }
 
+// The root's archive/unarchive cascades onto every child row, and the payload
+// now reports that cascade per item instead of listing them as noop. Unarchive
+// is the same surgical edit as archive with the opposite value: stamp the
+// element's DeletedAt with what the cascade wrote — an explicit null — leaving
+// every other field alone.
+func TestChildArrayExpr_UnarchiveRestoresTheElement(t *testing.T) {
+	child := core.NewTableSchema[*pdChild]("pd_children").ID("id").ParentID("root_id").
+		Field("Label", "label").DeletedAt("deleted_at")
+	sd, ok := child.DeletedAtColumn()
+	if !ok {
+		t.Fatal("fixture child must declare DeletedAt")
+	}
+
+	una := childArrayExpr("kids", "id", "c1",
+		childOp{Op: "unarchive", Fields: Document{"id": "c1", sd: nil}}, 5, false, child)
+
+	m, ok := una["$map"].(Document)
+	if !ok {
+		t.Fatalf("unarchive must map-mutate the element, got %v", una)
+	}
+	cond, _ := m["in"].(Document)["$cond"].([]any)
+	merge, _ := cond[1].(Document)["$mergeObjects"].([]any)
+	mutate, _ := merge[1].(Document)
+	if v, present := mutate[sd]; !present {
+		t.Errorf("the element's DeletedAt must be stamped, got %v", mutate)
+	} else if lv, isLit := v.(Document); isLit {
+		if lv["$literal"] != nil {
+			t.Errorf("unarchive must write an explicit null, got %v", lv)
+		}
+	}
+	if len(mutate) != 1 {
+		t.Errorf("unarchive must touch only DeletedAt, got %v", mutate)
+	}
+}
+
 // A sibling group that arrives ALL-NULL is the removed-row marker: the
 // projector must DROP the document keys ($$REMOVE) — shape parity with the
 // composer, which omits a missing sibling row — while a partially-null group

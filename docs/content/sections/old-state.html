@@ -135,8 +135,8 @@ archivable, err := domain.GetArchivable(current, h.Service, "GetArchivable")
   }
 }</code></pre>
     <p>
-        PUT and PATCH share <code>verb: "update"</code> — SQL fingerprint is identical
-        (<code>UPDATE col=val, updated_at=$now</code>), so the audit verb is identical. The PUT vs PATCH distinction
+        PUT and PATCH share <code>verb: "update"</code> — neither moves the row's archived state, so the
+        lifecycle effect, and therefore the audit verb, is identical. The PUT vs PATCH distinction
         lives in <code>actionName</code> (<code>GetUpdatable</code> vs <code>GetPartialUpdatable</code>) — same way
         the domain unifies them via <code>IfUpdate</code>. Unchanged columns never appear in <code>changes</code>
         — no redundancy with the snapshot.
@@ -152,9 +152,9 @@ archivable, err := domain.GetArchivable(current, h.Service, "GetArchivable")
         unit” semantic of the outbox.
     </p>
     <p>
-        Child <code>op</code> is <strong>SQL-grounded</strong> — every value echoes the SQL fingerprint of what
-        the persister emitted on the row. Same vocabulary as the root verb, no exceptions. See the
-        <a href="#lifecycle-map">Canonical write lifecycle</a> section for the full SQL ↔ op mapping; the table below summarizes the child cascade per root verb.
+        Child <code>op</code> is <strong>lifecycle-grounded</strong> — every value echoes what the persister did
+        to that row's existence and archived state. Same vocabulary as the root verb, no exceptions. See the
+        <a href="#lifecycle-map">Canonical write lifecycle</a> section for the full effect ↔ op mapping; the table below summarizes the child cascade per root verb.
     </p>
     <table>
         <thead><tr><th>Verb</th><th>Children included</th><th>Per-child <code>op</code></th><th>Body block</th></tr></thead>

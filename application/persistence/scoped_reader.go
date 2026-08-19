@@ -69,9 +69,10 @@ func captureLoaded[T any](loaded T, err error) (T, error) {
 // LoadArchivedForWrite hydrates an archived aggregate for the unarchive path,
 // preferring the ctx-bound ScopedArchivedReader, then the ctx-less
 // domain.ArchivedFinder[T]. The bool reports whether an archived-finder path
-// was taken; when false the caller falls back to Repo.New() + SetID (flat
-// aggregate without children), preserving the existing UnarchiveCommandHandler
-// behavior.
+// was taken; false means the repository provides NEITHER capability, which is a
+// wiring error the caller must surface — there is no empty-sample fallback, an
+// entity that never came from the system of record carries the zero value in
+// every business field and no revision to guard a write with.
 func LoadArchivedForWrite[T any](repo ScopedRepository[T], ctx *configuration.AppContext, id domain.ID) (T, bool, error) {
 	if sr, ok := any(repo).(ScopedArchivedReaderProvider[T]); ok {
 		loaded, err := captureLoaded(sr.ScopedArchivedReader(ctx).FindArchivedByID(id))

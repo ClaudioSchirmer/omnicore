@@ -100,7 +100,7 @@ func TestBuildInsert_Oracle(t *testing.T) {
 func TestBuildUpdate_Oracle(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
+	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
 
 	want := `UPDATE "USERS" SET "EMAIL" = :1, "NAME" = :2, "UPDATED_AT" = :3 WHERE "ID" = :4`
 	if sql != want {
@@ -121,9 +121,6 @@ func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	d := testOracleDialect{}
 	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
 		t.Errorf("archiveSQL = %q", got)
-	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = NULL WHERE "ID" = :1` {
-		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != `DELETE FROM "USERS" WHERE "ID" = :1` {
 		t.Errorf("deleteSQL = %q", got)

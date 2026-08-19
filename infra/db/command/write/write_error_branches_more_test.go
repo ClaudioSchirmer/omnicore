@@ -172,7 +172,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 
 	t.Run("archiveExecError", func(t *testing.T) {
 		arc, _ := domain.GetArchivable(mk(), nil, "GetArchivable")
-		tx := &recTx{execErrSub: "SET deleted_at = $1"}
+		tx := &recTx{execErrSub: "UPDATE builder_test_entities SET deleted_at"}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{arc}), []*TableSchema{builderTestSchema}); !errors.Is(err, errRecExec) {
 			t.Fatalf("expected the archive exec error, got %v", err)
@@ -180,7 +180,7 @@ func TestBatch_SoftMembersAndUnsupported(t *testing.T) {
 	})
 	t.Run("unarchiveExecError", func(t *testing.T) {
 		una, _ := domain.GetUnarchivable(mk(), nil, "GetUnarchivable")
-		tx := &recTx{execErrSub: "SET deleted_at = NULL"}
+		tx := &recTx{execErrSub: "UPDATE builder_test_entities SET deleted_at"}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Batch(newBuilderCtx(), domain.NewBatch([]domain.ValidEntity{una}), []*TableSchema{builderTestSchema}); !errors.Is(err, errRecExec) {
 			t.Fatalf("expected the unarchive exec error, got %v", err)

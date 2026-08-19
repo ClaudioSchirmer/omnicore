@@ -11,7 +11,105 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — archive and unarchive execute the update path.** The framework
+  has one rule about what reaches the database — the entity's field set at write
+  time is what gets persisted — and these two verbs were its only exception:
+  they wrote a single column while the outbox payload announced every one of
+  them. A rule like `r.IfArchive(func() { t.Status = Suspended })`, exactly what
+  the DSL invites, changed the entity, reached the read model, and never reached
+  the database.
+
+  Both verbs now emit the same UPDATE every other verb emits — full field set,
+  managed timestamps, `revision` bump, revision guard — with the transition
+  riding along as one more written column: the DeletedAt column bound to the
+  operation's instant (archive) or to SQL NULL (unarchive). The payload then
+  describes what the statement wrote, which is what makes it true.
+
+  Behavior changes to plan for: archiving stamps `updated_at` (it is a
+  mutation); archiving a row that is not there answers **404** instead of
+  committing an event about nothing, inside `Batch` too; archive can answer
+  **409** like any other guarded root update; the audit event stays
+  `kind: "transition"` and gains an ADDITIVE `changes` block when the verb
+  persisted a domain change; siblings are written as a partial update, so an
+  archive never deletes a 1:1 facet whose columns are all-nil.
+
+  What the verbs keep of their own: the required DeletedAt column, the
+  one-active-role probe that must fire before the row flips active, the
+  SET-BASED child cascade (one statement per child table, not one per item), the
+  shared identity converging by LIFECYCLE only — its business fields are never
+  restated, because several roles share that row and it is deliberately
+  unguarded — and the `ARCHIVED` / `UNARCHIVED` outbox event type the read side
+  routes on.
+
+### Fixed
+
+- **The audit vocabulary is documented as lifecycle-grounded, not SQL-grounded.**
+  The manual explained the five audit verbs with "identical SQL ⇒ identical audit
+  token". That phrasing stopped holding the moment archive and unarchive became
+  the update path: all four of archive, unarchive, PUT and PATCH now emit the
+  same statement, differing in one bound value — whether the DeletedAt column was
+  written, and to what. The tokens themselves did not change; the rule that
+  explains them is now stated against the row's LIFECYCLE effect (created,
+  changed in place, retired, returned, gone), which still separates all five.
+  Corrected in the write lifecycle map, audit, old-state and read lifecycle map
+  sections, along with the SQL column of the verb table, which still showed the
+  pre-collapse statements.
+
+- **The aggregate child cascade is visible to the read side.** An aggregate
+  archive flips the DeletedAt of every child row under the ParentID, but the
+  payload listed those children as `_op: "noop"`, which the projector skips: the
+  relational rows were archived while the projected array still claimed they
+  were active, so a live document disagreed with one rebuilt from the source.
+  Each item now reports the cascade it took — `_op: "archive"` carrying the same
+  stamp the child UPDATE bound, or the new `_op: "unarchive"` carrying an
+  explicit null. A child table declaring no DeletedAt takes no cascade and stays
+  `noop`. During a rolling upgrade a previous-binary consumer skips the
+  unfamiliar op, which is what it already did with `noop`.
+
+- **BREAKING — every ROOT update is now guarded on the revision it was loaded
+  with.** A write carries the FULL field set, so a write built on a stale read
+  silently reverted every column another writer had changed in the meantime, and
+  put those reverted values on the outbox payload as though the row had held
+  them. The statement now pins the loaded revision in its own `WHERE`
+  (`WHERE id = $n AND revision = $n+1`), so a stale write matches zero rows and
+  is REFUSED.
+
+  Behavior-breaking: PUT, PATCH and every other root update can now answer
+  **409** (`ConcurrentModificationNotification` — the wrong-state flavor, so
+  gRPC reports `FAILED_PRECONDITION` rather than `ALREADY_EXISTS`) where they
+  previously succeeded by overwriting. The caller's recovery is to reload and
+  reapply.
+
+  Free on the happy path: the guard rides the `WHERE` the statement already had
+  and is answered by the rows-affected count the framework already reads
+  (`WriteTx.ExecCount`, uniform across every engine). Only the failure path pays
+  one `SELECT 1`, to split "the row is gone" (404) from "the row moved" (409).
+
+  Universal on roots — `Revision` is mandatory on every root schema attached to
+  a repository, so no entity is silently unprotected. Deliberately absent
+  elsewhere: aggregate children (versioned by the owner's token, and the schema
+  builder rejects a child `Revision`), the shared base (last-write-wins by
+  design, several roles converge on it) and hard delete (writes no business
+  column). An entity that never came from a load carries revision 0 — a
+  persisted row is always >= 1 — and writes unguarded rather than failing
+  forever.
+
+- **BREAKING — unarchiving through a repository that cannot load an archived
+  aggregate is now an error.** `UnarchiveCommandHandler` used to fall back to an
+  empty `Repo.New() + SetID` sample when the repository implemented neither
+  `persistence.ScopedArchivedReaderProvider[T]` nor `domain.ArchivedFinder[T]`.
+  That sample carries the entity's zero value in every business field and no
+  revision, so it can neither be written back nor guarded — it only ever worked
+  because the verb touched nothing but `deleted_at`.
+  `infra.BaseAggregateRepository` provides both capabilities; a hand-rolled
+  repository must implement one.
+
 ### Added
+
+- **`ConcurrentModificationNotification`** (`SemanticStateConflict` → 409 /
+  `FAILED_PRECONDITION`), with all seven translation catalogs.
 
 - **`domain.CaptureOld(e Entity)`** — the birth-time old-state snapshot hook the
   framework's own load paths call. Exported so a repository that bypasses

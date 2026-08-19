@@ -113,10 +113,26 @@ type InvalidEventTypeNotification struct{ DomainNotificationBase }
 
 type RecordNotFoundNotification struct{ DomainNotificationBase }
 
+// ConcurrentModificationNotification is emitted by the write path when an
+// UPDATE guarded on the loaded revision matches no row while the row itself
+// still exists: someone committed a write to it between the load and this
+// write. The framework refuses rather than proceeding, because every write
+// carries the FULL field set — letting a stale snapshot land would silently
+// revert the columns the concurrent writer changed, and would put a value on
+// the outbox payload that the row never held.
+//
+// The caller's recovery is to reload and reapply. FieldName carries the id
+// column, FieldValue the id. SemanticStateConflict → 409 on HTTP and
+// FailedPrecondition on gRPC: this is a precondition failure, not a duplicate.
+type ConcurrentModificationNotification struct{ DomainNotificationBase }
+
 // Kernel notification Semantic overrides — encapsulate the natural HTTP/transport
 // semantics in the notification itself, so no global registry is needed.
-func (RecordNotFoundNotification) Semantic() NotificationSemantic      { return SemanticNotFound }
-func (EntityIsNotActiveNotification) Semantic() NotificationSemantic   { return SemanticStateConflict }
+func (RecordNotFoundNotification) Semantic() NotificationSemantic    { return SemanticNotFound }
+func (EntityIsNotActiveNotification) Semantic() NotificationSemantic { return SemanticStateConflict }
+func (ConcurrentModificationNotification) Semantic() NotificationSemantic {
+	return SemanticStateConflict
+}
 func (EntityAlreadyAddedNotification) Semantic() NotificationSemantic  { return SemanticConflict }
 func (InsertNotAllowedNotification) Semantic() NotificationSemantic    { return SemanticForbidden }
 func (UpdateNotAllowedNotification) Semantic() NotificationSemantic    { return SemanticForbidden }

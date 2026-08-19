@@ -107,23 +107,33 @@ func TestChildOpName_Mapping(t *testing.T) {
 	noSD := NewTableSchema[*builderTestEntity]("c2").ID("id").ParentID("r_id").
 		Field("Name", "name")
 
-	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, false, withSD); got != "insert" {
+	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, "UPDATED", false, withSD, true); got != "insert" {
 		t.Errorf("new item → insert, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), false, false, withSD); got != "update" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), false, "UPDATED", false, withSD, true); got != "update" {
 		t.Errorf("DB item changed → update, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), false, false, withSD); got != "noop" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), false, "UPDATED", false, withSD, true); got != "noop" {
 		t.Errorf("untouched DB item → noop, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, false, withSD); got != "archive" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", false, withSD, true); got != "archive" {
 		t.Errorf("removed (archivable) → archive, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, true, noSD); got != "delete" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", true, noSD, false); got != "delete" {
 		t.Errorf("removed base-child without DeletedAt → delete, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, false, withSD); got != "noop" {
-		t.Errorf("soft verbs list every child as noop, got %q", got)
+
+	// Soft verbs report the CASCADE the root statement performed, not the item's
+	// own status: every child row under the ParentID took the same transition.
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, "ARCHIVED", false, withSD, true); got != "archive" {
+		t.Errorf("archive cascades onto every child, got %q", got)
+	}
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", false, withSD, true); got != "unarchive" {
+		t.Errorf("unarchive restores every child, got %q", got)
+	}
+	// A child table with no DeletedAt takes no cascade at all.
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", false, noSD, false); got != "noop" {
+		t.Errorf("a child without DeletedAt is skipped by the cascade, got %q", got)
 	}
 }
 
@@ -152,7 +162,7 @@ func TestSharedBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
 		Field("Name", "name").Field("Document", "document").NaturalID("document")
 	baseID := deterministicBaseID("D1")
 	sql, args := buildUpdate(testPGDialect{}, base.Table(), base.IDColumn(), baseID,
-		domain.Fields{"name": "Ana"}, base.UpdateNowColumns(), testNow, base.RevisionColumn())
+		domain.Fields{"name": "Ana"}, base.UpdateNowColumns(), testNow, base.RevisionColumn(), 0)
 	want := "UPDATE pessoa SET name = $1, revision = revision + 1 WHERE id = $2"
 	if sql != want {
 		t.Fatalf("sql = %q, want %q", sql, want)

@@ -302,8 +302,9 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err := guardNaturalKeyImmutable(ctx, tx, d, schema, base, entity.EntityName(), entity.ID().Value(), fkCol, baseID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.IDColumn(), entity.ID().Value()); err != nil {
+	rev := loadedRevision(src)
+	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// Aggregate role: role + shared-base children, persisted by OperationOf
@@ -847,7 +848,10 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // every read-model write of base data.
 func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) (int64, error) {
 	if baseExists {
-		sql, args := buildUpdate(d, base.Table(), base.IDColumn(), baseID, baseFields, base.UpdateNowColumns(), now, base.RevisionColumn())
+		// Unguarded on purpose: several roles converge on the shared identity and
+		// the base is last-write-wins by design — guarding it would turn an
+		// unrelated role's write into a conflict on this one.
+		sql, args := buildUpdate(d, base.Table(), base.IDColumn(), baseID, baseFields, base.UpdateNowColumns(), now, base.RevisionColumn(), 0)
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return 0, err
 		}

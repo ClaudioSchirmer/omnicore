@@ -98,7 +98,7 @@ func TestBuildInsert_SQLServer(t *testing.T) {
 func TestBuildUpdate_SQLServer(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "")
+	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
 
 	want := "UPDATE [users] SET [email] = @p1, [name] = @p2, [updated_at] = @p3 WHERE [id] = @p4"
 	if sql != want {
@@ -119,9 +119,6 @@ func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
 	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
 		t.Errorf("archiveSQL = %q", got)
-	}
-	if got := unarchiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE [users] SET [deleted_at] = NULL WHERE [id] = @p1" {
-		t.Errorf("unarchiveSQL = %q", got)
 	}
 	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM [users] WHERE [id] = @p1" {
 		t.Errorf("deleteSQL = %q", got)

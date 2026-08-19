@@ -193,7 +193,7 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 		a, _ := domain.GetArchivable(root, nil, "GetArchivable")
-		tx := &recTx{}
+		tx := &recTx{count: 1}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if err := be.Archive(newBuilderCtx(), a, schema, firingHook); err != nil {
 			t.Fatalf("Archive: %v", err)
@@ -212,7 +212,7 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 		u, _ := domain.GetUnarchivable(root, nil, "GetUnarchivable")
-		tx := &recTx{}
+		tx := &recTx{count: 1}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if err := be.Unarchive(newBuilderCtx(), u, schema, firingHook); err != nil {
 			t.Fatalf("Unarchive: %v", err)
@@ -791,7 +791,7 @@ func TestInsertWithBase_StepFailures(t *testing.T) {
 		// single-row contract: the role INSERT emits exactly ONE outbox row
 		// (the self-sufficient payload) — the historical empty base-table
 		// fan-out row must NOT exist.
-		tx := &recTx{queryFn: scriptedQuery(nil, nil)}
+		tx := &recTx{count: 1, queryFn: scriptedQuery(nil, nil)}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Insert(newBuilderCtx(), roleInsertable(t, "GetUpsertable"), roleTestSchema(), firingHook); err != nil {
 			t.Fatalf("Insert: %v", err)
@@ -919,7 +919,7 @@ func TestArchiveRole_CascadesBaseAndNativeChildren(t *testing.T) {
 	a, _ := domain.GetArchivable(e, nil, "GetArchivable")
 
 	// No role stays active → the base + its native child archive with the role.
-	tx := &recTx{queryFn: scriptedQuery(nil, nil)}
+	tx := &recTx{count: 1, queryFn: scriptedQuery(nil, nil)}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), a, cascadeRoleSchema(), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
@@ -954,7 +954,7 @@ func TestArchiveRole_CascadeStepFailures(t *testing.T) {
 	}
 
 	t.Run("lifecycleProbeError", func(t *testing.T) {
-		tx := &recTx{queryFn: scriptedQuery([]string{"FROM aluno"}, nil)} // anyActiveRole probe fails
+		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"FROM aluno"}, nil)} // anyActiveRole probe fails
 		be := newFlatBE(&recBeginner{tx: tx})
 		if err := be.Archive(newBuilderCtx(), newArchivable(t), cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the probe error, got %v", err)
@@ -962,7 +962,7 @@ func TestArchiveRole_CascadeStepFailures(t *testing.T) {
 	})
 	for _, sub := range []string{"UPDATE pessoa SET", "UPDATE pessoa_filhos SET"} {
 		t.Run("exec:"+sub, func(t *testing.T) {
-			tx := &recTx{execErrSub: sub, queryFn: scriptedQuery(nil, nil)}
+			tx := &recTx{count: 1, execErrSub: sub, queryFn: scriptedQuery(nil, nil)}
 			be := newFlatBE(&recBeginner{tx: tx})
 			if err := be.Archive(newBuilderCtx(), newArchivable(t), cascadeRoleSchema(), firingHook); !errors.Is(err, errRecExec) {
 				t.Fatalf("expected the cascade exec error, got %v", err)

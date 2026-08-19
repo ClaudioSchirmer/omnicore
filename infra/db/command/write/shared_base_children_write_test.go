@@ -191,7 +191,7 @@ func TestConvergeBase_ArchiveLastActiveRoleArchivesBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	tx := &recTx{queryFn: rowsNone()} // no role left active
+	tx := &recTx{count: 1, queryFn: rowsNone()} // no role left active
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), arch, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
@@ -208,7 +208,7 @@ func TestConvergeBase_ArchiveWithAnotherActiveRoleKeepsBase(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	arch, _ := domain.GetArchivable(e, nil, "GetArchivable")
-	tx := &recTx{queryFn: func(string, []any) (Rows, error) { return &fakeRows{remaining: 1}, nil }} // another active role
+	tx := &recTx{count: 1, queryFn: func(string, []any) (Rows, error) { return &fakeRows{remaining: 1}, nil }} // another active role
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), arch, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
@@ -231,7 +231,7 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	// other active row, the revive proceeds) then the base state (FROM pessoa —
 	// currently archived, so it reactivates).
 	baseArchived := rowsBaseArchived()
-	tx := &recTx{queryFn: func(sql string, args []any) (Rows, error) {
+	tx := &recTx{count: 1, queryFn: func(sql string, args []any) (Rows, error) {
 		if strings.Contains(sql, "FROM aluno") {
 			return &fakeRows{remaining: 0}, nil
 		}

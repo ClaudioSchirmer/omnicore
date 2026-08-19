@@ -91,8 +91,9 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn())
-	if err := execExpectingRow(ctx, tx, sql, args, entity.EntityName(), schema.IDColumn(), entity.ID().Value()); err != nil {
+	rev := loadedRevision(src)
+	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), "", now); err != nil {
@@ -123,22 +124,6 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	}
 	b.AfterCommit(ctx, ab)
 	return domain.WriteResult{ID: entity.ID(), Fields: rootFields}, nil
-}
-
-func (b *BaseEngine) archiveAggregate(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook WriteHook) error {
-	root, _ := entity.AggregateInfo()
-	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
-		func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
-		entity.Events())
-}
-
-func (b *BaseEngine) unarchiveAggregate(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook WriteHook) error {
-	root, _ := entity.AggregateInfo()
-	return b.softWriteAggregate(ctx, root, entity.Source(), entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED", writeNow(),
-		func() audit.AuditEvent { return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims) },
-		entity.Events())
 }
 
 // deleteAggregate hard-deletes an aggregate root via the shared hardDelete path
@@ -265,114 +250,6 @@ func (b *BaseEngine) hardDelete(
 	return nil
 }
 
-// softWriteAggregate is the shared root-soft-write + child-cascade path for
-// archive/unarchive: soft-write the root, then cascade onto each declared child
-// with a DeletedAt column (archive binds the operation stamp `now`; unarchive
-// sets SQL NULL), then outbox (the aggregate snapshot with the root's
-// DeletedAt column reflecting the verb) + audit + hooks + post-commit. One
-// stamp per operation: root, children and the base convergence all carry the
-// same writeNow() instant.
-func (b *BaseEngine) softWriteAggregate(
-	ctx persistence.RequestContext,
-	root *domain.AggregateRoot,
-	src domain.Entity,
-	id string,
-	schema *TableSchema,
-	hook WriteHook,
-	hctx HookContext,
-	eventType string,
-	now time.Time,
-	buildEvent func() audit.AuditEvent,
-	evs []domain.DomainEvent,
-) error {
-	sdCol, err := requireDeletedAt(schema, hctx.EntityType)
-	if err != nil {
-		return err
-	}
-
-	tx, err := b.beginner.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	d := tx.Dialect()
-
-	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
-		return err
-	}
-	// SharedBase role: the one-active-role invariant must be probed BEFORE the
-	// row flips to active — an active-only unique index would veto the UPDATE
-	// itself with a raw constraint error otherwise.
-	if eventType == "UNARCHIVED" {
-		if err := b.vetoUnarchiveWithActiveSibling(ctx, tx, d, schema, src, id, hctx.EntityType); err != nil {
-			return err
-		}
-	}
-	archive := eventType == "ARCHIVED"
-	if archive {
-		err = tx.Exec(ctx, archiveSQL(d, schema.Table(), sdCol, schema.IDColumn(), schema.RevisionColumn()),
-			d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
-	} else {
-		err = tx.Exec(ctx, unarchiveSQL(d, schema.Table(), sdCol, schema.IDColumn(), schema.RevisionColumn()),
-			d.EncodeArg(domain.NewID(id)))
-	}
-	if err != nil {
-		return err
-	}
-	// Cascade onto each declared child with a DeletedAt column.
-	if root != nil {
-		for typeName := range root.AllAggregateItems() {
-			child := schema.ChildSchema(typeName)
-			if child == nil {
-				continue
-			}
-			childSd, ok := child.DeletedAtColumn()
-			if !ok {
-				continue
-			}
-			if archive {
-				cq := archiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn())
-				err = tx.Exec(ctx, cq, d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
-			} else {
-				cq := childCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn(), nullSetExpr(d), " IS NOT NULL")
-				err = tx.Exec(ctx, cq, d.EncodeArg(domain.NewID(id)))
-			}
-			if err != nil {
-				return err
-			}
-		}
-	}
-	// SharedBase role (aggregate): drive the shared identity's lifecycle from this
-	// verb — archive it once no role stays active, reactivate on unarchive. The
-	// base's NATIVE children cascade with the base, not with this role. No-op when
-	// the role declares no shared base.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now); err != nil {
-		return err
-	}
-	// Base meta AFTER the convergence, so the payload's revision reflects any
-	// lifecycle transition this verb caused on the base row.
-	meta, err := outboxMetaFor(ctx, tx, d, schema, src, id)
-	if err != nil {
-		return err
-	}
-	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
-		buildWritePayload(schema, src, root, eventType, now, schema.WriteFields(src), meta)); err != nil {
-		return err
-	}
-	ab := b.BuildAudit(buildEvent, evs)
-	if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
-		return err
-	}
-	if err := b.FireBeforeCommit(ctx, tx, src, domain.NewID(id), hook, hctx); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	b.AfterCommit(ctx, ab)
-	return nil
-}
-
 // writeChildren persists every aggregate child by the operation its
 // (originalStatus, currentStatus) pair resolves to via domain.OperationOf — the
 // SINGLE categorization shared with the domain query helpers and the auditor
@@ -465,8 +342,10 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 		return fmt.Errorf("db: cannot update child %q without id", child.Table())
 	}
 	fields := child.WriteFields(item)
-	sql, args := buildUpdate(d, child.Table(), child.IDColumn(), id, fields, child.UpdateNowColumns(), now, "")
-	if err := execExpectingRow(ctx, tx, sql, args, child.Table(), child.IDColumn(), id); err != nil {
+	// Unguarded on purpose: a child declares no revision — the OWNER's guarded
+	// UPDATE already proved nobody moved the aggregate under this write.
+	sql, args := buildUpdate(d, child.Table(), child.IDColumn(), id, fields, child.UpdateNowColumns(), now, "", 0)
+	if err := execExpectingRow(ctx, tx, d, sql, args, child.Table(), child.Table(), child.IDColumn(), id, 0); err != nil {
 		return err
 	}
 	// A Changed child carries its full new state → treat its siblings as a full

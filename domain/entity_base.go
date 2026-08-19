@@ -423,9 +423,9 @@ func getArchivable(e Entity, service Service, actionName string) (Archivable, er
 func getUnarchivable(e Entity, service Service, actionName string) (Unarchivable, error) {
 	ensureInit(e)
 	// Unarchive symmetric to Archive — the snapshot is the archived state right
-	// before the transition. When the Repository implements ArchivedFinder the
-	// entity arrives hydrated (root + children) and already snapshotted; the
-	// empty-sample fallback produces a degenerate snapshot (ID only).
+	// before the transition. The entity arrives hydrated (root + children) and
+	// already snapshotted from the archived-scope load; a caller that assembles
+	// one by hand gets the fallback capture below, with whatever state it holds.
 	captureOldIfAbsent(e)
 	e.resetEntity()
 	e.setService(service)
