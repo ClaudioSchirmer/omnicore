@@ -13,6 +13,16 @@ with `1.0.0`.
 
 ### Changed
 
+- **BREAKING — `core.Querier` is read-only.** Statement execution moved to the
+  new `core.ExecQuerier`, reached through the `core.Exec` helper.
+  `RelationalEngine.Querier()` now hands out what the manual always promised —
+  "for custom reads" — instead of a type that also offered a way around the
+  write path entirely: no sealed entity, no revision guard, no outbox row, no
+  audit trail. Every engine's querier still implements
+  `ExecQuerier`; the split is about what the port hands out, and the framework's
+  own control plane (outbox, audit, dedup and failure registries, view-slot
+  pointers) reaches it deliberately.
+
 - **BREAKING — archive and unarchive execute the update path.** The framework
   has one rule about what reaches the database — the entity's field set at write
   time is what gets persisted — and these two verbs were its only exception:
@@ -42,6 +52,14 @@ with `1.0.0`.
   restated, because several roles share that row and it is deliberately
   unguarded — and the `ARCHIVED` / `UNARCHIVED` outbox event type the read side
   routes on.
+
+### Removed
+
+- **BREAKING — `metadata.Signature()`, and the per-write `uuid.New()` behind
+  it.** Every sealed write shape carried a UUID minted on each pass through the
+  `Get*` family that no framework subsystem, no test and no consumer ever read —
+  correlation across the outbox, the audit trail and the logs has always run on
+  the AppContext id. Dead surface with a random draw attached to every write.
 
 ### Fixed
 

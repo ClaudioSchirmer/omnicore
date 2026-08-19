@@ -4,6 +4,7 @@ package mongo
 
 import (
 	"context"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ func TestReader_FollowsActiveSlotPointer(t *testing.T) {
 	if err := provisionSlot(ctx, m, v, slot); err != nil {
 		t.Fatalf("provisionSlot: %v", err)
 	}
-	if err := pg.Querier().Exec(ctx,
+	if err := core.Exec(pg.Querier(), ctx,
 		`UPDATE omnicore_mongo_views SET active_collection = $1 WHERE view_name = $2`,
 		slot.String(), "slotview"); err != nil {
 		t.Fatalf("point active_collection: %v", err)

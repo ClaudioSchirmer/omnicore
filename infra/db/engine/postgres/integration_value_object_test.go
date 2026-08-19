@@ -117,7 +117,7 @@ func TestPostgres_ValueObject_RoundTrip(t *testing.T) {
 
 	// 3) ENUM CONVERGE — tamper the column to an out-of-set value; the load
 	// reconstructs Unknown, never a phantom member.
-	if err := pg.Querier().Exec(context.Background(),
+	if err := core.Exec(pg.Querier(), context.Background(),
 		`UPDATE vo_roots SET tier = 99 WHERE id = $1`, id); err != nil {
 		t.Fatalf("tamper update: %v", err)
 	}

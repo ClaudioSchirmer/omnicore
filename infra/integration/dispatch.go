@@ -274,7 +274,10 @@ func writeIntegrationEvent(
 			return fmt.Errorf("standalone Dispatch requires a relational engine; integration.Configure received nil")
 		}
 		d = c.eng.Dialect()
-		exec = c.eng.Querier().Exec
+		q := c.eng.Querier()
+		exec = func(ctx context.Context, sql string, args ...any) error {
+			return core.Exec(q, ctx, sql, args...)
+		}
 	}
 
 	args := []any{

@@ -111,7 +111,7 @@ func RecordIntegrationFailure(ctx context.Context, q core.Querier, d core.Dialec
 		{Col: "last_attempt_at", Mode: core.UpsertSetExpr, Expr: d.NowExpr()},
 		{Col: "resolved_at", Mode: core.UpsertSetExpr, Expr: "NULL"},
 	})
-	if err := q.Exec(ctx, sql,
+	if err := core.Exec(q, ctx, sql,
 		d.EncodeArg(rowID),
 		rec.ConsumerGroup,
 		rec.SourceKey,
@@ -145,7 +145,7 @@ func ResolveIntegrationFailures(ctx context.Context, q core.Querier, d core.Dial
 		" AND event_key = " + d.Placeholder(3) +
 		" AND event_id = " + d.Placeholder(4) +
 		" AND resolved_at IS NULL"
-	if err := q.Exec(ctx, sql, consumerGroup, sourceKey, eventKey, eventID); err != nil {
+	if err := core.Exec(q, ctx, sql, consumerGroup, sourceKey, eventKey, eventID); err != nil {
 		return fmt.Errorf("resolve integration failures: %w", err)
 	}
 	return nil
@@ -253,7 +253,7 @@ func MarkProcessed(ctx context.Context, q core.Querier, d core.Dialect, rec Inte
 		return fmt.Errorf("mark processed: %w", err)
 	}
 	sql := d.BuildUpsert(integrationProcessedTable, integrationProcessedInsertCols, integrationProcessedConflictCols, nil)
-	if err := q.Exec(ctx, sql,
+	if err := core.Exec(q, ctx, sql,
 		d.EncodeArg(rowID),
 		rec.EventID,
 		rec.ConsumerGroup,

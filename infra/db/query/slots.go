@@ -36,7 +36,7 @@ WHERE view_name = ` + d.Placeholder(1)
 // registry row. From this point Refresh reports shadow != "" for the view; the
 // flip promotes it. Idempotent — re-recording the same shadow is a no-op write.
 func beginSlotRebuild(ctx context.Context, q core.Querier, d core.Dialect, viewName, shadowName string) error {
-	if err := q.Exec(ctx, sqlBeginSlotRebuild(d), shadowName, viewName); err != nil {
+	if err := core.Exec(q, ctx, sqlBeginSlotRebuild(d), shadowName, viewName); err != nil {
 		return fmt.Errorf("begin slot rebuild %q: %w", viewName, err)
 	}
 	return nil
@@ -47,7 +47,7 @@ func beginSlotRebuild(ctx context.Context, q core.Querier, d core.Dialect, viewN
 // rebuild is in flight, so a stray flip cannot blank the pointer. Callers Refresh
 // the shared resolver afterwards so readers observe the new active slot.
 func flipSlot(ctx context.Context, q core.Querier, d core.Dialect, viewName string) error {
-	if err := q.Exec(ctx, sqlFlipSlot(d), viewName); err != nil {
+	if err := core.Exec(q, ctx, sqlFlipSlot(d), viewName); err != nil {
 		return fmt.Errorf("flip slot %q: %w", viewName, err)
 	}
 	return nil
@@ -59,7 +59,7 @@ func flipSlot(ctx context.Context, q core.Querier, d core.Dialect, viewName stri
 // half-built shadow is abandoned rather than flipped, and the live path is
 // untouched.
 func abortSlotRebuild(ctx context.Context, q core.Querier, d core.Dialect, viewName string) error {
-	if err := q.Exec(ctx, sqlAbortSlotRebuild(d), viewName); err != nil {
+	if err := core.Exec(q, ctx, sqlAbortSlotRebuild(d), viewName); err != nil {
 		return fmt.Errorf("abort slot rebuild %q: %w", viewName, err)
 	}
 	return nil

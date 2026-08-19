@@ -222,7 +222,7 @@ func insertOutboxRow(ctx context.Context, q core.Querier, dialect core.Dialect, 
 	// Text bind — the payload column is text-shaped JSON on every dialect;
 	// SQL Server refuses the implicit varbinary→NVARCHAR conversion a raw
 	// []byte would require.
-	return q.Exec(ctx, sqlStr, dialect.EncodeArg(domain.NewID(rowID.String())), aggregate, "INSERTED", id, string(payload))
+	return core.Exec(q, ctx, sqlStr, dialect.EncodeArg(domain.NewID(rowID.String())), aggregate, "INSERTED", id, string(payload))
 }
 
 // stringField extracts a string-typed column from a row map. Handles the

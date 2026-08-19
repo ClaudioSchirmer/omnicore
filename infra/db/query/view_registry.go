@@ -214,7 +214,7 @@ func InitViewRegistry(ctx context.Context, q core.Querier, d core.Dialect, in In
 	if err != nil {
 		return fmt.Errorf("init view registry %q: %w", in.ViewName, err)
 	}
-	err = q.Exec(ctx, sqlInitViewRegistry(d),
+	err = core.Exec(q, ctx, sqlInitViewRegistry(d),
 		d.EncodeArg(rowID),
 		in.ViewName,
 		in.Version,
@@ -250,7 +250,7 @@ func BeginRebuild(ctx context.Context, q core.Querier, d core.Dialect, viewName 
 	// Arg order matches the placeholder appearance order in sqlBeginRebuild
 	// (started_at, pid, host, then the WHERE view_name) — required for MySQL's
 	// positional `?` binding.
-	if err := q.Exec(ctx, sqlBeginRebuild(d), now, pid, host, viewName); err != nil {
+	if err := core.Exec(q, ctx, sqlBeginRebuild(d), now, pid, host, viewName); err != nil {
 		return fmt.Errorf("begin rebuild on view %q: %w", viewName, err)
 	}
 	return nil
@@ -281,7 +281,7 @@ func EndRebuild(ctx context.Context, q core.Querier, d core.Dialect, in EndRebui
 	// Arg order matches the placeholder appearance order in sqlEndRebuild
 	// (the SET columns first, the WHERE view_name last) — required for MySQL's
 	// positional `?` binding.
-	err := q.Exec(ctx, sqlEndRebuild(d),
+	err := core.Exec(q, ctx, sqlEndRebuild(d),
 		in.Version,
 		in.RebuildHash,
 		in.ArtifactHash,

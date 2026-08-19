@@ -11,11 +11,8 @@ import (
 // construct them through the public Get* entry points or via the internal
 // builder when richer setup is needed (file is in package domain).
 
-func TestNewMetadata_SignatureAndDateTime(t *testing.T) {
+func TestNewMetadata_DateTime(t *testing.T) {
 	m := newMetadata()
-	if m.signature.String() == "" {
-		t.Error("expected non-zero signature")
-	}
 	if m.dateTime.IsZero() {
 		t.Error("expected dateTime to be set")
 	}
@@ -25,17 +22,12 @@ func TestNewMetadata_SignatureAndDateTime(t *testing.T) {
 }
 
 func TestMetadata_PublicAccessors(t *testing.T) {
-	sig := newMetadata().signature
 	when := time.Now().UTC()
 	m := metadata{
-		signature:  sig,
 		entityName: "User",
 		actionName: "GetInsertable",
 		dateTime:   when,
 		events:     []DomainEvent{},
-	}
-	if got := m.Signature(); got != sig {
-		t.Errorf("Signature() = %v, want %v", got, sig)
 	}
 	if got := m.EntityName(); got != "User" {
 		t.Errorf("EntityName() = %q, want User", got)
@@ -57,7 +49,7 @@ func TestMetadata_PublicAccessors(t *testing.T) {
 func TestInsertable_Accessors_WithoutAggregate(t *testing.T) {
 	id := NewID("11111111-1111-1111-1111-111111111111")
 	source := &plainEntity{}
-	b := newBuilder("Plain", "GetInsertable", newMetadata().signature, nil)
+	b := newBuilder("Plain", "GetInsertable", nil)
 	ins := b.insertable(source, &id)
 
 	ins.entity() // marker
@@ -79,7 +71,7 @@ func TestInsertable_AggregateInfo_WithMeta(t *testing.T) {
 		t.Fatal("expected meta from providerEntity")
 	}
 
-	b := newBuilder("providerEntity", "GetInsertable", newMetadata().signature, nil).
+	b := newBuilder("providerEntity", "GetInsertable", nil).
 		withAggregate(meta)
 	ins := b.insertable(source, nil)
 
@@ -95,7 +87,7 @@ func TestInsertable_AggregateInfo_WithMeta(t *testing.T) {
 func TestUpdatable_Accessors(t *testing.T) {
 	id := NewID("22222222-2222-2222-2222-222222222222")
 	source := &plainEntity{}
-	b := newBuilder("Plain", "GetUpdatable", newMetadata().signature, nil)
+	b := newBuilder("Plain", "GetUpdatable", nil)
 
 	u := b.updatable(source, id, false, ModeUpdate)
 	u.entity()
@@ -124,7 +116,7 @@ func TestUpdatable_Accessors(t *testing.T) {
 func TestArchivable_Accessors(t *testing.T) {
 	id := NewID("33333333-3333-3333-3333-333333333333")
 	source := &plainEntity{}
-	a := newBuilder("Plain", "GetArchivable", newMetadata().signature, nil).archivable(source, id)
+	a := newBuilder("Plain", "GetArchivable", nil).archivable(source, id)
 	a.entity()
 	if a.Source() != source {
 		t.Error("Archivable.Source() mismatch")
@@ -140,7 +132,7 @@ func TestArchivable_Accessors(t *testing.T) {
 func TestDeletable_Accessors(t *testing.T) {
 	id := NewID("44444444-4444-4444-4444-444444444444")
 	source := &plainEntity{}
-	d := newBuilder("Plain", "GetDeletable", newMetadata().signature, nil).deletable(source, id)
+	d := newBuilder("Plain", "GetDeletable", nil).deletable(source, id)
 	d.entity()
 	if d.Source() != source {
 		t.Error("Deletable.Source() mismatch")
@@ -153,7 +145,7 @@ func TestDeletable_Accessors(t *testing.T) {
 func TestUnarchivable_Accessors(t *testing.T) {
 	id := NewID("55555555-5555-5555-5555-555555555555")
 	source := &plainEntity{}
-	un := newBuilder("Plain", "GetUnarchivable", newMetadata().signature, nil).unarchivable(source, id)
+	un := newBuilder("Plain", "GetUnarchivable", nil).unarchivable(source, id)
 	un.entity()
 	if un.Source() != source {
 		t.Error("Unarchivable.Source() mismatch")
@@ -177,7 +169,7 @@ func TestUpdatableArchivableDeletableUnarchivable_AggregateInfoWhenAttached(t *t
 		t.Fatal("expected meta")
 	}
 	id := NewRandomID()
-	b := newBuilder("providerEntity", "X", newMetadata().signature, nil).withAggregate(meta)
+	b := newBuilder("providerEntity", "X", nil).withAggregate(meta)
 
 	u := b.updatable(root, id, false, ModeUpdate)
 	a := b.archivable(root, id)

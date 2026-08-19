@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // The read seam: backend-neutral interfaces the AggregateLoader (and the
 // criteria translator) consume so a live aggregate loads the same way on any
@@ -22,19 +25,21 @@ type Row interface {
 	Scan(dest ...any) error
 }
 
-// Querier is the neutral SQL surface the loader, composer, and the
-// control-plane side-channels (dedup + failure registries) run statements
-// through. Read verbs (Query/QueryRow/QueryMaps) plus a control-plane Exec for
-// the framework-owned bookkeeping tables — NOT a path for entity writes (those
-// go through RelationalEngine's typed write verbs in their own TX).
+// Querier is the neutral READ surface the loader, composer and the consumer's
+// own custom reads run statements through. It carries no way to write: entity
+// writes go through RelationalEngine's typed verbs, which only accept the
+// sealed ValidEntity the domain produced, and the framework's own bookkeeping
+// writes go through ExecQuerier below.
+//
+// The split is deliberate. What a consumer receives from
+// RelationalEngine.Querier() is what the manual has always promised — "for
+// custom reads" — and nothing else. Statement execution used to ride on this
+// same interface, which meant the type handed out for reading also offered a
+// way around the write path entirely: no sealed entity, no state signature, no
+// revision guard, no outbox row, no audit trail.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) Row
-	// Exec runs a statement that returns no rows (the side-channel INSERT/UPDATE
-	// against the framework's bookkeeping tables). Args are bound verbatim — the
-	// caller encodes them via the Dialect. The rows-affected count is not
-	// surfaced (no caller needs it); the error is.
-	Exec(ctx context.Context, sql string, args ...any) error
 	// QueryMaps runs a SELECT and returns each row as a column-keyed map, with
 	// values normalized to the canonical Go forms the composer expects (uuid
 	// columns as strings on every engine, the rest passed through). It is the
@@ -47,4 +52,35 @@ type Querier interface {
 	// returns map[string]any (not bson.M) to keep the relational read surface
 	// free of any Mongo dependency; the composer converts at its boundary.
 	QueryMaps(ctx context.Context, sql string, args ...any) ([]map[string]any, error)
+}
+
+// ExecQuerier adds statement execution to the read surface. Every engine's
+// querier implements it — the separation is about what the PORT hands out, not
+// about capability — and the framework reaches it through Exec below.
+//
+// It exists for the framework's own control plane: the outbox and audit rows,
+// the dedup and failure registries, the view-slot pointers. It is NOT a path
+// for entity writes, and a consumer that reaches for it is stepping outside
+// every guarantee the write path makes.
+type ExecQuerier interface {
+	Querier
+	// Exec runs a statement that returns no rows. Args are bound verbatim — the
+	// caller encodes them via the Dialect. The rows-affected count is not
+	// surfaced (no caller needs it); the error is.
+	Exec(ctx context.Context, sql string, args ...any) error
+}
+
+// Exec runs a control-plane statement through a Querier that can execute one.
+// The framework's own subsystems call this instead of holding an ExecQuerier,
+// so the read port stays read-only wherever it is passed around and the widening
+// happens at the single point that needs it.
+//
+// A Querier that cannot execute is a programming error at the composition root,
+// not a runtime condition: every engine's querier satisfies ExecQuerier.
+func Exec(q Querier, ctx context.Context, sql string, args ...any) error {
+	e, ok := q.(ExecQuerier)
+	if !ok {
+		return fmt.Errorf("db: this Querier cannot execute statements (%T) — the framework's control plane needs an ExecQuerier", q)
+	}
+	return e.Exec(ctx, sql, args...)
 }

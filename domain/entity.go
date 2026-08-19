@@ -2,8 +2,6 @@ package domain
 
 import (
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type ValidEntity interface {
@@ -13,7 +11,6 @@ type ValidEntity interface {
 type Fields map[string]any
 
 type metadata struct {
-	signature  uuid.UUID
 	entityName string
 	actionName string
 	dateTime   time.Time
@@ -21,10 +18,7 @@ type metadata struct {
 }
 
 func newMetadata() metadata {
-	return metadata{
-		signature: uuid.New(),
-		dateTime:  time.Now().UTC(),
-	}
+	return metadata{dateTime: time.Now().UTC()}
 }
 
 // aggregateMeta is attached to a ValidEntity when the source entity implements
@@ -127,8 +121,8 @@ func (un Unarchivable) ID() ID         { return un.id }
 // was produced from an entity implementing AggregateRootProvider.
 // ok=false means the simple single-table path applies.
 //
-// Phase 19: signature lost the mapping return — children types are discovered
-// via reflection from root.AllAggregateItems(); table/ParentID inferred by infra.
+// Children types are discovered via reflection from root.AllAggregateItems();
+// table/ParentID inferred by infra.
 func (i Insertable) AggregateInfo() (root *AggregateRoot, ok bool) {
 	return aggregateInfo(i.aggregate)
 }
@@ -152,7 +146,6 @@ func aggregateInfo(m *aggregateMeta) (*AggregateRoot, bool) {
 	return m.root, true
 }
 
-func (m metadata) Signature() uuid.UUID  { return m.signature }
 func (m metadata) EntityName() string    { return m.entityName }
 func (m metadata) ActionName() string    { return m.actionName }
 func (m metadata) DateTime() time.Time   { return m.dateTime }
@@ -161,17 +154,15 @@ func (m metadata) Events() []DomainEvent { return m.events }
 type validEntityBuilder struct {
 	entityName string
 	actionName string
-	signature  uuid.UUID
 	dateTime   time.Time
 	events     []DomainEvent
 	aggregate  *aggregateMeta
 }
 
-func newBuilder(entityName, actionName string, signature uuid.UUID, events []DomainEvent) validEntityBuilder {
+func newBuilder(entityName, actionName string, events []DomainEvent) validEntityBuilder {
 	return validEntityBuilder{
 		entityName: entityName,
 		actionName: actionName,
-		signature:  signature,
 		dateTime:   time.Now().UTC(),
 		events:     events,
 	}
@@ -184,7 +175,6 @@ func (b validEntityBuilder) withAggregate(meta *aggregateMeta) validEntityBuilde
 
 func (b validEntityBuilder) buildMetadata() metadata {
 	return metadata{
-		signature:  b.signature,
 		entityName: b.entityName,
 		actionName: b.actionName,
 		dateTime:   b.dateTime,

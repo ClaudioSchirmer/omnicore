@@ -4,6 +4,7 @@ package mongo
 
 import (
 	"context"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"strings"
 	"testing"
 	"time"
@@ -206,7 +207,7 @@ func TestDetectViewDrift_FreshInit(t *testing.T) {
 	// drift detection runs (bootstrap: migrations → ApplyMongoSpecs → DetectViewDrift),
 	// so DetectViewDrift always probes a present table. No registry row, no Mongo
 	// docs, empty SoR → FreshInit.
-	if err := pg.Querier().Exec(context.Background(), `CREATE TABLE drift_users (id text)`); err != nil {
+	if err := core.Exec(pg.Querier(), context.Background(), `CREATE TABLE drift_users (id text)`); err != nil {
 		t.Fatalf("create root table: %v", err)
 	}
 	report, err := query.DetectViewDrift(context.Background(), m, pg, []*query.ViewDefinition{v}, testResolver)
@@ -230,7 +231,7 @@ func TestDetectViewDrift_NoneAndArtifactOnlyAndAlienData(t *testing.T) {
 	// The root table exists but is empty (migrations create it before drift
 	// detection at boot); the drift decisions below turn on the registry + Mongo
 	// state, not on the SoR having rows.
-	if err := pg.Querier().Exec(context.Background(), `CREATE TABLE drift_x (id text)`); err != nil {
+	if err := core.Exec(pg.Querier(), context.Background(), `CREATE TABLE drift_x (id text)`); err != nil {
 		t.Fatalf("create root table: %v", err)
 	}
 

@@ -36,6 +36,19 @@
                         comments now match the code.</li>
                 </ul>
             </li>
+            <li><strong>Removed</strong> — <strong>breaking</strong> — <strong><code>metadata.Signature()</code>,
+                and the per-write <code>uuid.New()</code> behind it.</strong> Every sealed write shape carried a
+                UUID minted on each pass through the <code>Get*</code> family that no framework subsystem, no test
+                and no consumer ever read — correlation across the outbox, the audit trail and the logs has always
+                run on the AppContext id. Dead surface with a random draw attached to every write.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>core.Querier</code> is
+                read-only.</strong> Statement execution moved to the new <code>core.ExecQuerier</code>, reached
+                through the <code>core.Exec</code> helper. <code>RelationalEngine.Querier()</code> now hands out
+                what the manual always promised — "for custom reads" — instead of a type that also offered a way
+                around the write path entirely: no sealed entity, no revision guard, no outbox row, no audit
+                trail. Every engine's querier still implements <code>ExecQuerier</code>; the split is
+                about what the port hands out, and the framework's control plane (outbox, audit, dedup and failure
+                registries, view-slot pointers) reaches it deliberately.</li>
             <li><strong>Added</strong> — <strong><a href="#rules-dsl">a domain rule can finish an update as an
                 archive</a> — <code>CompleteAsArchive()</code>.</strong> Called from an <code>IfUpdate</code>
                 closure, it asks the framework to end THIS write archived: the row takes the entity's full field
