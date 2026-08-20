@@ -27,19 +27,19 @@ type sdlUserResponse struct {
 }
 
 type sdlUserRequest struct {
-	Name      *string `query:"name" filter:"eq,in,startswith"`
-	Age       *int64  `query:"age" filter:"eq,gte,lte"`
+	Name      *string `query:"name" filter:"eq,in,startswith" sort:"asc,desc"`
+	Age       *int64  `query:"age" filter:"eq,gte,lte" sort:"asc,desc"`
 	Addresses struct {
-		ZipCode *string `query:"zipCode" filter:"eq"`
+		ZipCode *string `query:"zipCode" filter:"eq" sort:"asc,desc"`
 	} `query:"addresses"`
 	First           *int64  `query:"first"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 // buildReadSchema assembles the SDL for one read field and loads it through
@@ -185,9 +185,18 @@ func TestSDL_OrderByEnumReflectsSortableVocabulary(t *testing.T) {
 	for _, v := range fieldEnum.EnumValues {
 		got[v.Name] = true
 	}
-	for _, want := range []string{"ID", "NAME", "AGE", "CREATED_AT", "ADDRESSES", "ADDRESSES_CITY", "ADDRESSES_ZIP_CODE"} {
-		if !got[want] {
-			t.Errorf("UserOrderField missing value %q (have %v)", want, got)
+	// The enum is EXACTLY what the Request DTO declared orderable — not every
+	// path the Response happens to render. A leaf without the tag (and an
+	// embed group, which carries no value) stays out.
+	want := map[string]bool{"NAME": true, "AGE": true, "ADDRESSES_ZIP_CODE": true}
+	for v := range want {
+		if !got[v] {
+			t.Errorf("UserOrderField missing value %q (have %v)", v, got)
+		}
+	}
+	for v := range got {
+		if !want[v] {
+			t.Errorf("UserOrderField advertises %q, which the DTO did not declare orderable", v)
 		}
 	}
 	dir := schema.Types["OrderDirection"]
@@ -223,20 +232,15 @@ func TestOrderEnumValue_Conversions(t *testing.T) {
 }
 
 // TestOrderFieldMap_CollisionPanics — two wire names folding onto one enum
-// value is a Response modeling error caught at boot.
+// value is a Request modeling error caught at boot.
 func TestOrderFieldMap_CollisionPanics(t *testing.T) {
-	type collideResponse struct {
-		A *string `json:"userName,omitempty"`
-		B *string `json:"user_name,omitempty"`
-	}
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected a collision panic")
 		}
 	}()
-	orderFieldMap("User", extractProjFor(reflect.TypeOf(collideResponse{})))
-}
-
-func extractProjFor(t reflect.Type) *queryschema.ProjectionSchema {
-	return queryschema.ExtractProjectionSchema(t)
+	orderFieldMap("User", map[string]queryschema.SortSpec{
+		"userName":  {GoPath: "UserName", Asc: true},
+		"user_name": {GoPath: "UserName", Asc: true},
+	})
 }

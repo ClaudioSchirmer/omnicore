@@ -239,29 +239,3 @@ func TestBuildWhereClause(t *testing.T) {
 		t.Errorf("none = %q", got)
 	}
 }
-
-type fieldResolverSample struct {
-	domain.BaseEntity
-	Name    string
-	ZipCode string
-}
-
-func TestSchemaFieldResolver(t *testing.T) {
-	r := NewTableSchema[fieldResolverSample]("t").
-		ID("id").
-		Field("Name", "full_name").
-		Field("ZipCode", "zip_code").
-		FieldResolver()
-	if c, ok := r("ID"); !ok || c != "id" {
-		t.Errorf("ID = %q,%v, want id,true", c, ok)
-	}
-	if c, ok := r("Name"); !ok || c != "full_name" {
-		t.Errorf("Name = %q,%v, want full_name", c, ok)
-	}
-	if c, ok := r("ZipCode"); !ok || c != "zip_code" {
-		t.Errorf("ZipCode = %q,%v, want zip_code", c, ok)
-	}
-	if _, ok := r("Missing"); ok {
-		t.Error("Missing should not resolve")
-	}
-}

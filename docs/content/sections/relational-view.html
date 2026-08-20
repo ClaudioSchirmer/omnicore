@@ -107,7 +107,7 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
         <tr><td>Root-field filter — the full 16-operator vocabulary</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>Filter / sort on a root-level <em>sibling</em> or <em>shared-base</em> field (1:1)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span> — LEFT JOIN</td></tr>
         <tr><td>Sort on a root field</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
-        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span> pushed down</td><td><span class="yes-mark">✓</span> pruned after the load</td></tr>
         <tr><td>Pagination (<code>first</code> / <code>last</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
         <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
@@ -156,6 +156,30 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     rule is precise: a relational view serves a filter or sort on any field the aggregate reaches with a <strong>1:1
     load</strong> — a root column, a sibling, or a shared-base field (the last two joined in) — and rejects only what
     would need a 1:N pushdown a single root <code>SELECT</code> cannot express.
+</p>
+<p>
+    <strong>The managed slots count as root columns.</strong> Both readers resolve a Go field name through the same
+    read-path translator, so <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code> and the read-only
+    <code>ParentID</code> projection are filterable and sortable here exactly as they are on a Mongo view — under the
+    fixed logical names the <a href="#table-schema">three-name contract</a> gives them, and only when the schema
+    actually DECLARES that slot (a view with no <code>DeletedAt</code> has no archived state to address, so the name is
+    as unknown as any other). This is a matter of the two backings answering one question the same way; it grants
+    nothing by itself. Whether an END USER may address a field is the <a href="#auto-query-handlers">Request DTO's</a>
+    declaration — <code>filter:</code> and <code>sort:</code>, nothing implicit — and whether the SERVICE addresses one
+    is <code>Query.ToCriteria</code>'s call, which writes Go paths straight onto the criteria and passes no wire gate on
+    either backing. A default <code>OrderBy: CreatedAt desc</code> written there behaves the same whichever backing
+    serves the view.
+</p>
+<p>
+    <strong><code>?fields=</code> shapes the answer here, it does not narrow the query.</strong> The Mongo reader
+    pushes the projection into the find; this loader composes the aggregate as declared and prunes the served
+    document afterwards. The WIRE result is identical on both — the same tokens, the same validation, the same
+    400 on an unknown one — so nothing a consumer can observe differs. What differs is the cost: a narrow
+    <code>?fields=</code> buys no I/O on this backing. Plan for it where it matters, and note the same holds for
+    <code>ReadCriteria.Restrict</code>: the restricted column is read from the SoR and dropped before the
+    document is served, so the field never reaches the wire (and an active reference still answers 403), but it
+    is not withheld from the SELECT. A column whose VALUE must not leave the database belongs behind a view that
+    does not project it, not behind a read-time restriction — on either backing.
 </p>
 
 <h3>Pagination is a camouflaged offset</h3>

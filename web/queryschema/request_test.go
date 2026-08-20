@@ -39,11 +39,13 @@ func TestExtractRequestSchema_PointerTypeAndNestedEmbed(t *testing.T) {
 // ─── ExtractRequestSchema: the closed control vocabulary (boot guard) ────────
 
 type reqAllControlsRequest struct {
+	// The ordering control and its vocabulary are a pair the boot enforces.
+	Name            *string `query:"name" filter:"eq" sort:"asc,desc"`
 	First           *int64  `query:"first"`
+	OrderBy         *string `query:"orderBy"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
@@ -70,7 +72,7 @@ func TestExtractRequestSchema_NonCanonicalControlPanics(t *testing.T) {
 			t.Fatalf("a non-canonical top-level control scalar must panic at extraction")
 		}
 		msg, ok := r.(string)
-		if !ok || !strings.Contains(msg, `query:"limit"`) || !strings.Contains(msg, KeyOrderBy) {
+		if !ok || !strings.Contains(msg, `query:"limit"`) || !strings.Contains(msg, KeyFirst) {
 			t.Fatalf("panic must name the offending tag and the canonical vocabulary, got %v", r)
 		}
 	}()
@@ -107,10 +109,10 @@ func TestExtractRequestSchema_IncludesPartialOperators(t *testing.T) {
 	}
 }
 
-// ─── WalkRequest: pointer deref / non-struct / untagged-field skip / embed ───
+// ─── walkRequest: pointer deref / non-struct / untagged-field skip / embed ───
 
 func TestWalkRequest_NonStructIsEmpty(t *testing.T) {
-	if fields := WalkRequest(reflect.TypeOf(0)); len(fields) != 0 {
+	if fields := walkRequest(reflect.TypeOf(0)); len(fields) != 0 {
 		t.Fatalf("non-struct must yield no fields, got %v", fields)
 	}
 }
@@ -121,7 +123,7 @@ func TestWalkRequest_PointerDerefAndUntaggedSkip(t *testing.T) {
 		Other string  // no query tag → skipped
 		First *int64  `query:"first"` // reserved scalar
 	}
-	fields := WalkRequest(reflect.PointerTo(reflect.TypeOf(inner{})))
+	fields := walkRequest(reflect.PointerTo(reflect.TypeOf(inner{})))
 	if len(fields) != 2 {
 		t.Fatalf("expected 2 query-tagged fields (name, first), got %d: %+v", len(fields), fields)
 	}
@@ -134,7 +136,7 @@ func TestWalkRequest_PointerDerefAndUntaggedSkip(t *testing.T) {
 }
 
 func TestWalkRequest_EmbedGroupMarkerThenInnerLeaves(t *testing.T) {
-	fields := WalkRequest(reflect.TypeOf(reqNestedEmbedRequest{}))
+	fields := walkRequest(reflect.TypeOf(reqNestedEmbedRequest{}))
 	// Declaration order: name (leaf), addresses (group marker), addresses.zipCode,
 	// addresses.city (inner leaves), first (reserved).
 	var sawGroup, sawInner bool
@@ -171,7 +173,7 @@ func TestJoinPath_EmptySegmentReturnsPrefix(t *testing.T) {
 	}
 }
 
-// ─── ReadIncludeArchived ─────────────────────────────────────────────────────
+// ─── ReadIncludeArchivedControl ─────────────────────────────────────────────────────
 
 type iaValueDTO struct {
 	IncludeArchived bool `query:"includeArchived"`
@@ -232,9 +234,191 @@ func TestReadIncludeArchived(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ReadIncludeArchived(reflect.ValueOf(tc.dto)); got != tc.want {
-				t.Errorf("ReadIncludeArchived(%s) = %v, want %v", tc.name, got, tc.want)
+			if got, _ := ReadIncludeArchivedControl(reflect.ValueOf(tc.dto)); got != tc.want {
+				t.Errorf("ReadIncludeArchivedControl(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
+}
+
+// ─── the ordering vocabulary ────────────────────────────────────────────────
+
+type sortableRequest struct {
+	// filterable AND orderable, both directions
+	Code *string `query:"code" filter:"eq,startswith" sort:"asc,desc"`
+	// filterable, NOT orderable
+	Name *string `query:"name" filter:"eq"`
+	// orderable only — a vocabulary leaf, ascending only
+	ID *string `query:"id" sort:"asc"`
+	// descending only
+	Created *string `query:"created" filter:"gte" sort:"desc"`
+
+	Addresses sortableEmbedGroup `query:"addresses"`
+
+	First   *int64  `query:"first"`
+	OrderBy *string `query:"orderBy"`
+}
+
+type sortableEmbedGroup struct {
+	ZipCode *string `query:"zipCode" filter:"eq" sort:"asc,desc"`
+	City    *string `query:"city"    filter:"eq"`
+	// a vocabulary leaf nested inside an embed group
+	Ordinal *int `query:"ordinal" sort:"asc"`
+}
+
+func TestExtractRequestSchema_SortableVocabulary(t *testing.T) {
+	s := ExtractRequestSchema(reflect.TypeOf(sortableRequest{}))
+
+	want := map[string]SortSpec{
+		"code":              {GoPath: "Code", Asc: true, Desc: true},
+		"id":                {GoPath: "ID", Asc: true},
+		"created":           {GoPath: "Created", Desc: true},
+		"addresses.zipCode": {GoPath: "Addresses.ZipCode", Asc: true, Desc: true},
+		"addresses.ordinal": {GoPath: "Addresses.Ordinal", Asc: true},
+	}
+	if len(s.Sortable) != len(want) {
+		t.Fatalf("vocabulary size mismatch: got %v", s.Sortable)
+	}
+	for wire, spec := range want {
+		got, ok := s.Sortable[wire]
+		if !ok {
+			t.Errorf("%q must be orderable", wire)
+			continue
+		}
+		if got != spec {
+			t.Errorf("%q = %+v, want %+v", wire, got, spec)
+		}
+	}
+	// A filter leaf without the tag stays filterable and NOT orderable — the
+	// two vocabularies are independent.
+	if _, orderable := s.Sortable["name"]; orderable {
+		t.Error("a filter leaf must not become orderable by itself")
+	}
+	if _, filterable := s.Filters["name"]; !filterable {
+		t.Error("name must remain filterable")
+	}
+	// A vocabulary leaf is orderable and NOT filterable.
+	if _, filterable := s.Filters["id"]; filterable {
+		t.Error("a vocabulary leaf must not become a filter leaf")
+	}
+	// The control and the vocabulary are a pair: the DTO declares both, and the
+	// boot refuses either alone.
+	if !s.Reserved[KeyOrderBy] {
+		t.Error("the ordering control must be declared alongside the vocabulary")
+	}
+}
+
+func TestExtractRequestSchema_SortableGuards(t *testing.T) {
+	for name, tc := range map[string]struct {
+		dto  any
+		want string
+	}{
+		"bad direction": {struct {
+			A *string `query:"a" sort:"true"`
+		}{}, "must be \"asc\" or \"desc\""},
+		"empty tag": {struct {
+			A *string `query:"a" sort:""`
+		}{}, "must be \"asc\" or \"desc\""},
+		"repeated direction": {struct {
+			A *string `query:"a" sort:"asc,asc"`
+		}{}, "must be \"asc\" or \"desc\""},
+		"tag on embed group": {struct {
+			G struct{} `query:"g" sort:"asc"`
+		}{}, "embed group"},
+		"tag on control key": {struct {
+			S *string `query:"search" sort:"asc"`
+		}{}, "reserved control key"},
+		"dead query tag": {struct {
+			A *string `query:"a"`
+		}{}, "opts nothing in"},
+		"control in a group": {struct {
+			G struct {
+				F *int64 `query:"first"`
+			} `query:"g"`
+		}{}, "endpoint-wide"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("%s must boot-fail", name)
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, tc.want) {
+					t.Errorf("diagnostic must mention %q; got %v", tc.want, r)
+				}
+			}()
+			_ = ExtractRequestSchema(reflect.TypeOf(tc.dto))
+		})
+	}
+}
+
+func TestSortSpec_Allows(t *testing.T) {
+	for _, tc := range []struct {
+		spec      SortSpec
+		asc, desc bool
+	}{
+		{SortSpec{Asc: true}, true, false},
+		{SortSpec{Desc: true}, false, true},
+		{SortSpec{Asc: true, Desc: true}, true, true},
+		{SortSpec{}, false, false},
+	} {
+		if got := tc.spec.Allows(false); got != tc.asc {
+			t.Errorf("%+v.Allows(asc) = %v, want %v", tc.spec, got, tc.asc)
+		}
+		if got := tc.spec.Allows(true); got != tc.desc {
+			t.Errorf("%+v.Allows(desc) = %v, want %v", tc.spec, got, tc.desc)
+		}
+	}
+}
+
+// The switch and the vocabulary are a pair, and each half missing gets its own
+// diagnostic — the dev has to read WHICH one to add, not just that something
+// is off.
+func TestExtractRequestSchema_OrderingPairGuards(t *testing.T) {
+	t.Run("switch without vocabulary", func(t *testing.T) {
+		defer func() {
+			msg, _ := recover().(string)
+			for _, want := range []string{"SWITCH", "refuse every token", SortTag} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the diagnostic must mention %q; got %v", want, msg)
+				}
+			}
+			if strings.Contains(msg, "VOCABULARY on") {
+				t.Error("this is the other half's diagnostic")
+			}
+		}()
+		_ = ExtractRequestSchema(reflect.TypeOf(struct {
+			Name    *string `query:"name" filter:"eq"`
+			OrderBy *string `query:"orderBy"`
+		}{}))
+	})
+
+	t.Run("vocabulary without switch names the offending leaves", func(t *testing.T) {
+		defer func() {
+			msg, _ := recover().(string)
+			for _, want := range []string{"VOCABULARY", "code", "addresses.zipCode", "reach no wire"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the diagnostic must mention %q; got %v", want, msg)
+				}
+			}
+			if strings.Contains(msg, "SWITCH") {
+				t.Error("this is the other half's diagnostic")
+			}
+		}()
+		_ = ExtractRequestSchema(reflect.TypeOf(struct {
+			Code      *string `query:"code" filter:"eq" sort:"asc,desc"`
+			Addresses struct {
+				ZipCode *string `query:"zipCode" filter:"eq" sort:"asc"`
+			} `query:"addresses"`
+		}{}))
+	})
+
+	t.Run("neither half is fine", func(t *testing.T) {
+		s := ExtractRequestSchema(reflect.TypeOf(struct {
+			Name *string `query:"name" filter:"eq"`
+		}{}))
+		if len(s.Sortable) != 0 || s.Reserved[KeyOrderBy] {
+			t.Error("an endpoint that does not order declares neither half")
+		}
+	})
 }

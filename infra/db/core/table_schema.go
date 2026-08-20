@@ -829,55 +829,92 @@ func (s *TableSchema) goNameForRead(column string) (string, bool) {
 	return "", false
 }
 
-// columnForRead returns the physical column for a logical Go field name on the
-// read path — the forward inverse of goNameForRead. Covers mapped fields and
-// the ID (via ColumnOf) plus the three managed columns under their fixed
-// logical names (CreatedAt, UpdatedAt, DeletedAt), so a view can sort/project/
-// filter on a managed column by its Go name symmetrically with the read-back.
-// Returns ok=false for a name the schema does not own.
-func (s *TableSchema) columnForRead(goName string) (string, bool) {
+// FieldOwner says WHERE a resolved column physically lives. A backing that
+// stores one merged document ignores it; a backing that has to reach the column
+// with a JOIN needs it, and deriving it from the resolution instead of
+// re-walking the schema is what keeps the two from drifting.
+type FieldOwner int
+
+const (
+	// OwnerAnchor — the schema's own row: a mapped business field, the id, a
+	// managed slot, or the ParentID projection.
+	OwnerAnchor FieldOwner = iota
+	// OwnerSibling — a 1:1 shared-PK satellite, merged flat into the read
+	// document and reached with a LEFT JOIN on the shared id.
+	OwnerSibling
+	// OwnerSharedBase — the shared base of a role schema, likewise merged flat
+	// and reached by joining the role's foreign key to the base id.
+	OwnerSharedBase
+)
+
+// ResolvedField is the answer to the ONE question every read path asks about a
+// logical Go field name: does it resolve on this schema, to which physical
+// column, and on whose row.
+type ResolvedField struct {
+	Column string
+	// Schema is the schema the column physically belongs to — the anchor
+	// itself, the sibling, or the shared base.
+	Schema *TableSchema
+	Owner  FieldOwner
+}
+
+// Resolve maps a logical Go field name to its physical column on the READ path,
+// and reports whose row it lives on. It is the single resolution surface every
+// read backing consults, so a Mongo view and its relational twin admit exactly
+// the same names — a divergence here is a divergence in what the SAME Request
+// DTO can express, which is never the backing's call.
+//
+// The surface, in order: the schema's own mapped fields and the id (ColumnOf);
+// the three managed slots under their fixed logical names (CreatedAt,
+// UpdatedAt, DeletedAt), which is how every layer above infra addresses them;
+// the read-only ParentID projection; then the 1:1 satellites — each sibling and
+// the shared base — whose fields sit FLAT at the owner's level in the read
+// document because the composer merges them there.
+//
+// Resolving a name grants nothing on its own. What an end user may address is
+// the Request DTO's `filter:` / `sort:` declaration, and what the service
+// addresses is its Query's ToCriteria; both hand this layer a name some layer
+// above deliberately chose.
+func (s *TableSchema) Resolve(goName string) (ResolvedField, bool) {
+	self := func(col string) (ResolvedField, bool) {
+		return ResolvedField{Column: col, Schema: s, Owner: OwnerAnchor}, true
+	}
 	if c, ok := s.ColumnOf(goName); ok {
-		return c, true
+		return self(c)
 	}
 	switch goName {
 	case "CreatedAt":
 		if s.createdAt != "" {
-			return s.createdAt, true
+			return self(s.createdAt)
 		}
 	case "UpdatedAt":
 		if s.updatedAt != "" {
-			return s.updatedAt, true
+			return self(s.updatedAt)
 		}
 	case "DeletedAt":
 		if s.deletedAt != "" {
-			return s.deletedAt, true
+			return self(s.deletedAt)
 		}
 	}
-	// "ParentID" is the read-only projection of the schema's foreign key — resolve it to
-	// the physical ParentID column so a filter / sort / ?fields= on it is a real query.
 	if goName == parentIDGoField {
 		if s.parentIDColumn != "" {
-			return s.parentIDColumn, true
+			return self(s.parentIDColumn)
 		}
 		if s.sharedBaseLink != nil && s.sharedBaseLink.parentIDColumn != "" {
-			return s.sharedBaseLink.parentIDColumn, true
+			return self(s.sharedBaseLink.parentIDColumn)
 		}
 	}
-	// Sibling fields sit FLAT at the owner's level in the read document (the
-	// composer merges them), so they resolve as root-level Go fields here — the
-	// reader filters/sorts/projects them like any owner field.
 	for _, sib := range s.siblings {
 		if c, ok := sib.ColumnOf(goName); ok {
-			return c, true
+			return ResolvedField{Column: c, Schema: sib, Owner: OwnerSibling}, true
 		}
 	}
-	// SharedBase fields are likewise merged flat into the role's read document.
 	if s.sharedBaseLink != nil {
 		if c, ok := s.sharedBaseLink.base.ColumnOf(goName); ok {
-			return c, true
+			return ResolvedField{Column: c, Schema: s.sharedBaseLink.base, Owner: OwnerSharedBase}, true
 		}
 	}
-	return "", false
+	return ResolvedField{}, false
 }
 
 // isExternal reports whether the schema is type-less (built via
@@ -1106,20 +1143,18 @@ func (s *TableSchema) ReadColumns() []string {
 	return cols
 }
 
-// FieldResolver maps a Go field name to its SQL column. The criteria translator
-// builds one from the entity's TableSchema (TableSchema.FieldResolver); ok=false
-// for an unknown / non-persisted field → the translator fails fast (developer
-// bug). The type lives here (the schema foundation) rather than with the
-// translator so both the schema and the translator can name it without a cycle.
+// FieldResolver maps a Go field name to its SQL column; ok=false for an unknown
+// / non-persisted field → the translator fails fast (developer bug). The type
+// lives here (the schema foundation) rather than with the translator so both
+// the schema and the translator can name it without a cycle.
+//
+// Each caller BUILDS its own, because the right resolution surface is the
+// caller's business: the aggregate loader resolves the anchor, then each
+// sibling and the shared base while recording the LEFT JOINs it will have to
+// emit, and only then falls back to the managed slots. A generic
+// schema-in-a-closure resolver cannot do that bookkeeping and would answer
+// with a column from a table the FROM never joined.
 type FieldResolver func(goField string) (column string, ok bool)
-
-// FieldResolver returns a criteria field resolver (Go field → column) backed by
-// the schema. Unknown fields resolve to ok=false (the translator rejects them).
-func (s *TableSchema) FieldResolver() FieldResolver {
-	return func(goField string) (string, bool) {
-		return s.ColumnOf(goField)
-	}
-}
 
 // ValidateChildDepth panics when any declared aggregate child carries its own
 // Child(...) — i.e. a grandchild. Aggregate persistence is root + exactly one

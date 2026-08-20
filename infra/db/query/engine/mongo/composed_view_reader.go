@@ -128,10 +128,11 @@ func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c querie
 	// R3 — sort belongs to the primary. A path into a leg segment is the
 	// canonical Schema rejection (400), same notification the wire allowlist
 	// emits; surfaces that do not pre-validate (GraphQL, manual criteria)
-	// reach it here.
+	// reach it here. The offending path is named, so the consumer reads WHICH
+	// ordering term was refused instead of a bare "sort".
 	for _, sf := range c.OrderBy {
 		if _, _, ok := rt.segMatch(sf.Field); ok {
-			return queries.Page{}, core.SingleNotificationError("Schema", "sort", domain.SchemaViolationNotification{})
+			return queries.Page{}, core.SingleNotificationError("Schema", sf.Field, domain.SchemaViolationNotification{})
 		}
 	}
 

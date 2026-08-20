@@ -114,8 +114,8 @@ func (l *AggregateLoader[T]) AggregateBy(ctx context.Context, q *criteria.Query,
 			}
 		}
 	}
-	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
-	resolve := l.specResolver(joins)
+	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
 	keyCols := make([]string, len(by.fields))

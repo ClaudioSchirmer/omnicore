@@ -71,6 +71,11 @@ func TestReservedGate_UndeclaredControlsReject(t *testing.T) {
 		// field — gated like REST's `?search=`, never read as absent.
 		{"search_empty", &testpb.SearchGadgetsRequest{Pagination: &omnicorepb.PaginationRequest{Search: proto.String("")}}},
 		{"order_by", &testpb.SearchGadgetsRequest{OrderBy: []*omnicorepb.OrderByField{{Field: "name"}}}},
+		// An entry with an EMPTY field is the control asked for with no answer —
+		// REST's `?orderBy=`, which the gate refuses on an endpoint that never
+		// declared it. Skipping the entry outright would make this the one
+		// control gRPC ignores where its REST twin refuses.
+		{"order_by_empty_entry", &testpb.SearchGadgetsRequest{OrderBy: []*omnicorepb.OrderByField{{Field: ""}}}},
 		{"fields", &testpb.SearchGadgetsRequest{Fields: &fieldmaskpb.FieldMask{Paths: []string{"name"}}}},
 	}
 	for _, tc := range cases {

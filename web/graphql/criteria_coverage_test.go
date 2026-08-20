@@ -45,8 +45,8 @@ func covPlan() *criteriaPlan {
 	return newCriteriaPlan("CovCrit", reflect.TypeOf(covCritRequest{}), reflect.TypeOf(covCritQueryResponse{}))
 }
 
-func TestBuildCriteria_UnknownWhereFieldRejected(t *testing.T) {
-	_, _, gerr := covPlan().buildCriteria(map[string]any{
+func TestDecodeArgs_UnknownWhereFieldRejected(t *testing.T) {
+	_, _, gerr := covPlan().decodeArgs(map[string]any{
 		"where": map[string]any{"bogus": map[string]any{"eq": "x"}},
 	})
 	if gerr == nil {
@@ -57,15 +57,15 @@ func TestBuildCriteria_UnknownWhereFieldRejected(t *testing.T) {
 	}
 }
 
-func TestBuildCriteria_NonObjectWhereValueIgnored(t *testing.T) {
-	crit, _, gerr := covPlan().buildCriteria(map[string]any{
+func TestDecodeArgs_NonObjectWhereValueIgnored(t *testing.T) {
+	in, _, gerr := covPlan().decodeArgs(map[string]any{
 		"where": map[string]any{"name": "not-an-operator-object"},
 	})
 	if gerr != nil {
 		t.Fatalf("a non-object where value is skipped defensively, got %v", gerr)
 	}
-	if len(crit.Filter) != 0 {
-		t.Errorf("no clause must be emitted, got %v", crit.Filter)
+	if len(in.Filters) != 0 {
+		t.Errorf("no filter term must be decoded, got %v", in.Filters)
 	}
 }
 

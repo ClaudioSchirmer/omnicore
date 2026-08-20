@@ -109,7 +109,6 @@ type covNoFilterRequest struct {
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
@@ -127,7 +126,7 @@ func TestWhereInput_NoFilterLeavesOmitted(t *testing.T) {
 
 func TestOperatorInput_NonScalarLeafFallsBackToString(t *testing.T) {
 	b := newSDLBuilder()
-	leaf := queryschema.RequestField{
+	leaf := queryschema.RequestLeaf{
 		WirePath: "tags",
 		Field:    reflect.StructField{Name: "Tags", Type: reflect.TypeOf([]string{})},
 		Ops:      []string{queryschema.OpEq, queryschema.OpIn},

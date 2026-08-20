@@ -105,19 +105,6 @@ func TestTableSchema_ScanPlan_ExportedPK(t *testing.T) {
 	}
 }
 
-func TestTableSchema_FieldResolver(t *testing.T) {
-	resolve := covFullSchema().FieldResolver()
-	if col, ok := resolve("Name"); !ok || col != "name" {
-		t.Errorf("resolve(Name) = (%q,%v), want (name,true)", col, ok)
-	}
-	if col, ok := resolve("ID"); !ok || col != "id" {
-		t.Errorf("resolve(ID) = (%q,%v), want (id,true)", col, ok)
-	}
-	if _, ok := resolve("Unknown"); ok {
-		t.Error("resolve(Unknown) must be ok=false")
-	}
-}
-
 func TestTableSchema_ValidateAnchored(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {

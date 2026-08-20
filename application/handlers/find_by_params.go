@@ -34,6 +34,13 @@ type FindByParamsQueryHandler[TQ queries.QueryWithParams[TResult], TResult any] 
 	View   string
 }
 
+// ViewName exposes the view this handler reads. The web wrappers type-assert
+// for it at route registration so a declaration made on the Request DTO — one
+// that only the VIEW can honor, such as accepting `?search=` — can be checked
+// against that view's own declarations at boot, instead of failing on the first
+// request that exercises it.
+func (h *FindByParamsQueryHandler[TQ, TResult]) ViewName() string { return h.View }
+
 func (h *FindByParamsQueryHandler[TQ, TResult]) Handle(ctx *configuration.AppContext, q TQ) (queries.PageOf[TResult], error) {
 	crit, err := q.ToCriteria(ctx)
 	if err != nil {

@@ -17,12 +17,13 @@ import (
 // and `before` plus `sort` — so the tests exercise the post-loop conflict
 // matrix and cursor-tuple alignment checks.
 type pagFindRequest struct {
-	Name *string `query:"name" filter:"eq"`
+	Name  *string `query:"name"  filter:"eq" sort:"asc,desc"`
+	Email *string `query:"email" sort:"asc,desc"`
 
-	Limit  *int64  `query:"first"`
-	After  *string `query:"after"`
-	Before *string `query:"before"`
-	Sort   *string `query:"orderBy"`
+	Limit   *int64  `query:"first"`
+	After   *string `query:"after"`
+	Before  *string `query:"before"`
+	OrderBy *string `query:"orderBy"`
 }
 
 type pagQuery struct {

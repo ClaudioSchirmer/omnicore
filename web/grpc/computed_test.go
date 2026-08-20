@@ -13,18 +13,18 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
-	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/internal/testpb"
 	omnicorepb "github.com/ClaudioSchirmer/omnicore/web/grpc/pb"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // COMPUTED-field parity on the gRPC wire. A computed field is declared on the
 // RESPONSE DTO (`computed:"A,B"`, naming Result fields) and has no column
 // behind it — the Query's FromQueryResult derives it after the read. The two
 // consumers of the read vocabulary therefore diverge exactly as they do on
-// REST: read_mask pushes the SOURCES down (the `?fields=` pushdown) and
-// order_by is refused with ComputedFieldNotSortableNotification (the
-// `?orderBy=` 400, INVALID_ARGUMENT here).
+// REST: read_mask pushes the SOURCES down (the `?fields=` pushdown) while
+// order_by resolves against the Sortable vocabulary, which a computed path is
+// never part of — the `?orderBy=` 400, INVALID_ARGUMENT here.
 
 // computedGadgetItemDTO is the gadget list Response DTO with `kind` declared
 // COMPUTED over the Result's Name+ID — the wire shape stays identical to
@@ -169,33 +169,124 @@ func TestComputedAutoPath_MaskBlanksUnrequestedSources(t *testing.T) {
 	}
 }
 
-// TestComputedSortIsRefused — order_by over a computed field is a wire-
-// contract violation carrying the typed ComputedFieldNotSortableNotification
-// (semantic Schema), reported under the sort entry as the wire spelled it.
-// One offending entry refuses the whole request, exactly like the REST
-// `?orderBy=name,display` 400.
-func TestComputedSortIsRefused(t *testing.T) {
+// TestSortOutsideTheVocabularyIsRefused — order_by resolves against the
+// Sortable vocabulary, which is the Request DTO's declaration. A path that is
+// projectable (it is in Fields) but was never declared orderable fails Build,
+// and one offending entry refuses the whole request.
+func TestSortOutsideTheVocabularyIsRefused(t *testing.T) {
 	_, err := NewCriteria().
 		Fields(map[string]string{"name": "Name", "display": "Display"}).
-		ComputedFields(map[string][]string{"display": {"Name", "UserName"}}).
+		Sortable(map[string]queryschema.SortSpec{"name": {GoPath: "Name", Asc: true, Desc: true}}).
 		OrderBy(&omnicorepb.OrderByField{Field: "name"}, &omnicorepb.OrderByField{Field: "display", Desc: true}).
 		Build()
 	if err == nil {
-		t.Fatal("ordering by a computed field must fail Build")
+		t.Fatal("ordering by an undeclared path must fail Build")
 	}
-	if got := violationFields(t, err); len(got) != 1 || got[0] != "display" {
-		t.Fatalf("the refusal must name the sort entry, got %v", got)
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"display"}) {
+		t.Fatalf("the refusal must name the offending entry, got %v", got)
 	}
-	var carrier domain.NotificationCarrier
-	if !errors.As(err, &carrier) {
-		t.Fatalf("expected a NotificationCarrier, got %T", err)
+}
+
+// TestSortVocabularyMeetsTheProtoSpelling — the vocabulary arrives in the Request
+// DTO's spelling (`createdAt`, `userName`) and the wire sends the proto's
+// (`created_at`, `user_name`). Comparing them verbatim made every MULTI-WORD
+// path unorderable on this surface while it ordered fine on REST — the one
+// thing a shared vocabulary exists to prevent. Both sides fold through
+// normalizePath, the same equivalence the rest of the binder uses.
+func TestSortVocabularyMeetsTheProtoSpelling(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{
+		"createdAt": {GoPath: "CreatedAt", Desc: true},
+		"userName":  {GoPath: "UserName", Asc: true, Desc: true},
 	}
-	msgs := carrier.NotificationContexts()[0].Messages()
-	if _, typed := msgs[0].Notification.(domain.ComputedFieldNotSortableNotification); !typed {
-		t.Fatalf("the refusal must be typed, got %T", msgs[0].Notification)
+	crit, err := NewCriteria().Sortable(vocab).OrderBy(
+		&omnicorepb.OrderByField{Field: "created_at", Desc: true},
+		&omnicorepb.OrderByField{Field: "user_name"},
+	).Build()
+	if err != nil {
+		t.Fatalf("the proto spelling must resolve against the DTO vocabulary, got %v", err)
 	}
-	if msgs[0].Notification.Semantic() != domain.SemanticSchema {
-		t.Fatalf("semantic: %v", msgs[0].Notification.Semantic())
+	want := []queries.OrderByField{{Field: "CreatedAt", Desc: true}, {Field: "UserName"}}
+	if !reflect.DeepEqual(crit.OrderBy, want) {
+		t.Fatalf("order terms = %+v, want %+v", crit.OrderBy, want)
+	}
+	// The direction cut survives the folding.
+	if _, err := NewCriteria().Sortable(vocab).
+		OrderBy(&omnicorepb.OrderByField{Field: "created_at"}).Build(); err == nil {
+		t.Fatal("createdAt admits desc only — the ascending form must still be refused")
+	}
+}
+
+// TestSortRepeatedPathIsRefusedAcrossCalls — the Auto path feeds the entries one
+// call per entry (bind_query walks the repeated field and calls OrderBy for
+// each), so the duplicate check cannot live in a per-call map. This is the
+// shape that actually reaches the wrapper.
+func TestSortRepeatedPathIsRefusedAcrossCalls(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{
+		"code": {GoPath: "Code", Asc: true, Desc: true},
+		"name": {GoPath: "Name", Asc: true, Desc: true},
+	}
+	b := NewCriteria().Sortable(vocab)
+	for _, f := range []*omnicorepb.OrderByField{
+		{Field: "code"},
+		{Field: "name"},
+		{Field: "code", Desc: true},
+	} {
+		b.OrderBy(f)
+	}
+	_, err := b.Build()
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"code"}) {
+		t.Fatalf("a repeated path fed one call at a time must be refused, got %v", got)
+	}
+}
+
+// TestSortRepeatedPathIsRefused — the entries become the reader's sort
+// document, where a duplicated key is malformed. The refusal names the SECOND
+// occurrence, the entry the consumer has to remove — same rule, same choice of
+// token, as REST's `orderBy[<token>]`.
+func TestSortRepeatedPathIsRefused(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{
+		"name":  {GoPath: "Name", Asc: true, Desc: true},
+		"email": {GoPath: "Email", Asc: true, Desc: true},
+	}
+	_, err := NewCriteria().Sortable(vocab).OrderBy(
+		&omnicorepb.OrderByField{Field: "name"},
+		&omnicorepb.OrderByField{Field: "email"},
+		&omnicorepb.OrderByField{Field: "name", Desc: true},
+	).Build()
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"name"}) {
+		t.Fatalf("a repeated ordering path must be refused naming the entry, got %v", got)
+	}
+
+	// Distinct paths in one ordering stay legal.
+	if _, err := NewCriteria().Sortable(vocab).OrderBy(
+		&omnicorepb.OrderByField{Field: "name"},
+		&omnicorepb.OrderByField{Field: "email", Desc: true},
+	).Build(); err != nil {
+		t.Fatalf("a multi-key ordering over distinct paths must pass, got %v", err)
+	}
+}
+
+// TestSortDirectionIsEnforced — a declaration that admits only one direction
+// refuses the other, on this surface exactly as on REST.
+func TestSortDirectionIsEnforced(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{"name": {GoPath: "Name", Asc: true}}
+
+	if _, err := NewCriteria().Sortable(vocab).
+		OrderBy(&omnicorepb.OrderByField{Field: "name"}).Build(); err != nil {
+		t.Fatalf("the admitted direction must pass, got %v", err)
+	}
+	if _, err := NewCriteria().Sortable(vocab).
+		OrderBy(&omnicorepb.OrderByField{Field: "name", Desc: true}).Build(); err == nil {
+		t.Fatal("a direction the declaration does not admit must fail Build")
+	}
+}
+
+// TestSortWithoutAVocabularyRefusesEverything — not calling Sortable means
+// nothing is orderable, the framework-wide default.
+func TestSortWithoutAVocabularyRefusesEverything(t *testing.T) {
+	if _, err := NewCriteria().Fields(map[string]string{"name": "Name"}).
+		OrderBy(&omnicorepb.OrderByField{Field: "name"}).Build(); err == nil {
+		t.Fatal("a raw builder with no declared vocabulary must not order")
 	}
 }
 
@@ -254,8 +345,9 @@ func TestComputedAutoPath_MaskPushesSources(t *testing.T) {
 
 // TestComputedAutoPath_SortRejectsWithNotification — the same plan refuses a
 // sort over that field as INVALID_ARGUMENT, with the canonical envelope in
-// google.rpc details: reason=ComputedFieldNotSortableNotification,
-// semantic=Schema, field=the sort entry.
+// google.rpc details. A computed field backs no column, so it is simply not
+// part of the ordering vocabulary: the refusal is the canonical schema
+// violation, the same one any undeclared path gets.
 func TestComputedAutoPath_SortRejectsWithNotification(t *testing.T) {
 	var saw queries.ReadCriteria
 	client := newComputedGadgetClient(t, "/omnicore.grpctest.v1.GadgetService/SearchGadgetsComputedSort", &saw)
@@ -279,11 +371,8 @@ func TestComputedAutoPath_SortRejectsWithNotification(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if info.GetReason() != "ComputedFieldNotSortableNotification" {
+		if info.GetReason() != "SchemaViolationNotification" {
 			t.Fatalf("reason: %q", info.GetReason())
-		}
-		if got := info.GetMetadata()["field"]; got != "kind" {
-			t.Fatalf("the detail must name the sort entry, got %q", got)
 		}
 		if got := info.GetMetadata()["semantic"]; got != "Schema" {
 			t.Fatalf("semantic: %q", got)

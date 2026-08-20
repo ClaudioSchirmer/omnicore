@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
@@ -29,8 +30,9 @@ type specByEmailRequest struct {
 }
 
 type specListRequest struct {
-	Name  *string `query:"name" filter:"eq,in"`
-	Limit *int64  `query:"limit"`
+	Name    *string `query:"name" filter:"eq,in" sort:"asc,desc"`
+	First   *int64  `query:"first"`
+	OrderBy *string `query:"orderBy"`
 }
 
 type specListItem struct {
@@ -397,8 +399,8 @@ func TestSpec_QueryFilterOperatorsExpandToParameters(t *testing.T) {
 		names[entry["name"].(string)] = true
 	}
 	// filter:"eq,in" on `name` → "name" + "name.in" (eq is the default,
-	// no suffix). Reserved `limit` carries no filter tag → single entry.
-	for _, expected := range []string{"name", "name.in", "limit"} {
+	// no suffix). The reserved `first` carries no filter tag → single entry.
+	for _, expected := range []string{"name", "name.in", "first"} {
 		if !names[expected] {
 			t.Fatalf("query parameter %q missing; got %v", expected, names)
 		}
@@ -722,4 +724,201 @@ func keysOfAny(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// ─── the `?fields=` parameter description ────────────────────────────────────
+
+type fieldsDescRequest struct {
+	Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+	Fields  *string `query:"fields"`
+	OrderBy *string `query:"orderBy"`
+}
+
+type fieldsDescNestedItem struct {
+	ID        *string `json:"id,omitempty"`
+	Addresses []struct {
+		ZipCode *string `json:"zipCode,omitempty"`
+		City    *string `json:"city,omitempty"`
+	} `json:"addresses,omitempty"`
+}
+
+type fieldsDescFlatItem struct {
+	ID   *string `json:"id,omitempty"`
+	Name *string `json:"name,omitempty"`
+}
+
+func fieldsParamOf(t *testing.T, respType reflect.Type) map[string]any {
+	t.Helper()
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{
+			RequestType:  reflect.TypeOf(fieldsDescRequest{}),
+			ResponseType: respType,
+			Paged:        true,
+		},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == "fields" {
+			return p
+		}
+	}
+	t.Fatal("the fields parameter must be emitted")
+	return nil
+}
+
+// The vocabulary is the whole Response tree, so the spec states the rule rather
+// than enumerating it — but the dotted spelling is not guessable, so a Response
+// that HAS a nested path carries a real example lifted from itself.
+func TestFieldsParam_NestedResponseCarriesARealExample(t *testing.T) {
+	desc, _ := fieldsParamOf(t, reflect.TypeOf(fieldsDescNestedItem{}))["description"].(string)
+	if !strings.Contains(desc, "wire (json) names") {
+		t.Errorf("the rule must be stated: %q", desc)
+	}
+	if !strings.Contains(desc, "`addresses,addresses.city`") {
+		t.Errorf("the example must be lifted from THIS Response (alphabetically first nested path): %q", desc)
+	}
+}
+
+func TestFieldsParam_FlatResponseGetsNoExample(t *testing.T) {
+	desc, _ := fieldsParamOf(t, reflect.TypeOf(fieldsDescFlatItem{}))["description"].(string)
+	if desc == "" || strings.Contains(desc, "nested field") {
+		t.Errorf("a flat Response has no second spelling to show: %q", desc)
+	}
+}
+
+func TestFieldsParam_UntypedResponseStillStatesTheRule(t *testing.T) {
+	desc, _ := fieldsParamOf(t, nil)["description"].(string)
+	if !strings.Contains(desc, "refused with 400") {
+		t.Errorf("the rule stands without a typed Response: %q", desc)
+	}
+}
+
+// A `description:` tag on the DTO field wins — the consumer knows its own
+// endpoint better than a canned sentence does.
+func TestFieldsParam_DTODescriptionWins(t *testing.T) {
+	type ownDescRequest struct {
+		Fields *string `query:"fields" description:"pick your columns"`
+	}
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{
+			RequestType:  reflect.TypeOf(ownDescRequest{}),
+			ResponseType: reflect.TypeOf(fieldsDescNestedItem{}),
+			Paged:        true,
+		},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == "fields" && p["description"] != "pick your columns" {
+			t.Errorf("the DTO tag must win, got %v", p["description"])
+		}
+	}
+}
+
+// ─── the `?orderBy=` parameter description ───────────────────────────────────
+
+type orderByDescRequest struct {
+	Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+	Created *string `query:"created" sort:"desc"`
+	OrderBy *string `query:"orderBy"`
+}
+
+func paramOf(t *testing.T, reqType reflect.Type, name string) map[string]any {
+	t.Helper()
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{RequestType: reqType, ResponseType: reflect.TypeOf(fieldsDescNestedItem{}), Paged: true},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == name {
+			return p
+		}
+	}
+	t.Fatalf("parameter %q must be emitted", name)
+	return nil
+}
+
+// Unlike ?fields=, this one ENUMERATES: the vocabulary is a short, deliberate
+// declaration, so listing it states the whole contract in one line.
+func TestOrderByParam_EnumeratesTheDeclaredVocabulary(t *testing.T) {
+	desc, _ := paramOf(t, reflect.TypeOf(orderByDescRequest{}), "orderBy")["description"].(string)
+	for _, want := range []string{"`created` (desc only", "`name` (asc, desc)", "Prefix a token with `-`"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("the description must carry %q: %q", want, desc)
+		}
+	}
+}
+
+// TestOrderByParam_VocabularyLeafEmitsNoParameter — a leaf that carries
+// `sort:` and no `filter:` names a path `?orderBy=` may use; it takes no value
+// of its own, and the request parser rejects `?created=` like any undeclared
+// key. Emitting it would advertise a parameter that can only ever answer 400 —
+// the exact dead-declaration shape ExtractRequestSchema panics to prevent.
+func TestOrderByParam_VocabularyLeafEmitsNoParameter(t *testing.T) {
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{
+			RequestType:  reflect.TypeOf(orderByDescRequest{}),
+			ResponseType: reflect.TypeOf(fieldsDescNestedItem{}),
+			Paged:        true,
+		},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == "created" {
+			t.Fatalf("the vocabulary leaf must not be advertised as a query parameter: %v", p)
+		}
+	}
+	// …while it IS in the orderBy vocabulary the description enumerates, and
+	// the filterable sibling still emits its own parameter.
+	var sawName bool
+	for _, p := range params {
+		if p["name"] == "name" {
+			sawName = true
+		}
+	}
+	if !sawName {
+		t.Fatal("a filter leaf that is also orderable must still emit its filter parameter")
+	}
+}
+
+// A leaf inside an embed group takes the same cut: `addresses.zipCode` is a
+// dotted ordering path, never a filter key.
+func TestOrderByParam_NestedVocabularyLeafEmitsNoParameter(t *testing.T) {
+	type addrVocab struct {
+		ZipCode *string `query:"zipCode" sort:"asc,desc"`
+		City    *string `query:"city" filter:"eq"`
+	}
+	type req struct {
+		Addresses addrVocab `query:"addresses"`
+		OrderBy   *string   `query:"orderBy"`
+	}
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{RequestType: reflect.TypeOf(req{}), Paged: true},
+	}, NewGenerator(nil))
+	names := map[string]bool{}
+	for _, p := range params {
+		names[p["name"].(string)] = true
+	}
+	if names["addresses.zipCode"] {
+		t.Fatal("a nested vocabulary leaf must not be advertised as a query parameter")
+	}
+	if !names["addresses.city"] {
+		t.Fatal("the nested filter leaf must still be advertised")
+	}
+	if !names["orderBy"] {
+		t.Fatal("the control itself must be advertised")
+	}
+}
+
+// The control field is where a description hangs — and the consumer's wins,
+// exactly as it does for ?fields=.
+func TestOrderByParam_DTODescriptionWins(t *testing.T) {
+	type ownDesc struct {
+		Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+		OrderBy *string `query:"orderBy" description:"catalog order; default is by code"`
+	}
+	desc, _ := paramOf(t, reflect.TypeOf(ownDesc{}), "orderBy")["description"].(string)
+	if desc != "catalog order; default is by code" {
+		t.Errorf("the DTO tag must win, got %q", desc)
+	}
 }

@@ -21,39 +21,12 @@ func unsupported(what string) error {
 	return exception.SingleNotificationError("Query", what, notifications.RelationalCapabilityNotification{})
 }
 
-// servable reports whether a filter/sort field is one the loader's root SELECT
-// can express. The resolution surface MIRRORS the loader's specResolver exactly:
-// the ROOT schema's own columns (business fields + id), then each 1:1 sibling
-// (shared-PK satellite), then the shared base (role → base). Those three are 1:1
-// with the root, so the loader reaches them with a LEFT JOIN and the WHERE/ORDER
-// resolves against the joined column. Everything else — a dotted child path, a
-// dotted child-level sibling, or an unknown field — is a 1:N pushdown a single
-// root SELECT cannot express, and stays unservable (→ 400).
-func servable(schema *core.TableSchema, field string) bool {
-	if schema == nil {
-		return false
-	}
-	if _, ok := schema.ColumnOf(field); ok {
-		return true
-	}
-	for _, sib := range schema.Siblings() {
-		if _, ok := sib.ColumnOf(field); ok {
-			return true
-		}
-	}
-	if base, _, ok := schema.SharedBaseRef(); ok {
-		if _, ok := base.ColumnOf(field); ok {
-			return true
-		}
-	}
-	return false
-}
-
 // toExpr translates the wire-neutral ReadCriteria.Filter (Go-field-keyed, the
 // Clause / TextMatch / TextMatchList / MultiClause sentinels) into a criteria
 // expression the loader compiles to root SQL. Keys are visited in sorted order
-// so the AND is deterministic. A field the root SELECT cannot express (child,
-// sibling, unknown) is rejected here as an unsupported capability (400).
+// so the AND is deterministic. A field the root SELECT cannot express — a
+// dotted child path, or a name no schema owns — is rejected here as an
+// unsupported capability (400).
 func toExpr(schema *core.TableSchema, filter map[string]any) (criteria.Expr, error) {
 	if len(filter) == 0 {
 		return nil, nil
@@ -66,7 +39,13 @@ func toExpr(schema *core.TableSchema, filter map[string]any) (criteria.Expr, err
 
 	ands := make([]criteria.Expr, 0, len(fields))
 	for _, field := range fields {
-		if !servable(schema, field) {
+		// core.TableSchema.Resolve is the ONE surface every read backing asks,
+		// so this loader admits exactly the names a Mongo view of the same
+		// schema admits. It takes a single Go NAME, so a dotted child path
+		// (`Addresses.ZipCode`) simply does not resolve — which is the right
+		// answer here: a 1:N pushdown is a boundary of one root SELECT, not a
+		// difference in vocabulary.
+		if _, ok := schema.Resolve(field); !ok {
 			return nil, unsupported(field)
 		}
 		e, err := clauseToExpr(field, filter[field])
@@ -195,12 +174,12 @@ func textListToExpr(field string, t queries.TextMatchList) criteria.Expr {
 	return e
 }
 
-// applySort appends the request's root-field sort terms to the query. A sort on
-// a field the root ORDER BY cannot express (child, sibling, unknown) is rejected
-// as an unsupported capability (400).
+// applySort appends the request's sort terms to the query. A field the root
+// ORDER BY cannot express — a dotted child path, or a name no schema owns — is
+// rejected as an unsupported capability (400).
 func applySort(schema *core.TableSchema, q *criteria.Query, sorts []queries.OrderByField) error {
 	for _, s := range sorts {
-		if !servable(schema, s.Field) {
+		if _, ok := schema.Resolve(s.Field); !ok {
 			return unsupported(s.Field)
 		}
 		if s.Desc {

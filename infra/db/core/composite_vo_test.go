@@ -119,8 +119,8 @@ func TestComposite_ResolvesPathsAndExposedNames(t *testing.T) {
 			t.Errorf("byGo still carries the un-aliased name %q", inVO)
 		}
 	}
-	if col, ok := s.ColumnForRead("SalaryAmount"); !ok || col != "salary_amount" {
-		t.Errorf("ColumnForRead(SalaryAmount) = %q,%v", col, ok)
+	if col, ok := resolvedColumn(s, "SalaryAmount"); !ok || col != "salary_amount" {
+		t.Errorf("Resolve(SalaryAmount) = %q,%v", col, ok)
 	}
 	if go_, ok := s.GoNameForRead("trial_to"); !ok || go_ != "TrialTo" {
 		t.Errorf("GoNameForRead(trial_to) = %q,%v", go_, ok)

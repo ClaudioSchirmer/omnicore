@@ -159,3 +159,76 @@ func TestMapErr_UniqueViolationMapped_DerivedContextName(t *testing.T) {
 			"baseRepoTestEntity", infraErr.Contexts[0].Context())
 	}
 }
+
+// ─── TranslateUniqueViolation ────────────────────────────────────────────────
+
+type seatTakenNotification struct{ domain.DomainNotificationBase }
+
+func (seatTakenNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticConflict
+}
+
+func seatConstraints() map[string]ConstraintBinding {
+	return map[string]ConstraintBinding{
+		"admin_seats_email_key": {Notification: seatTakenNotification{}, Field: "email"},
+	}
+}
+
+func pgUnique(constraint string) error {
+	return &pgconn.PgError{Code: "23505", ConstraintName: constraint}
+}
+
+// The translation is the seat a lifecycle hook reaches for: the hook owns its
+// own tables and its own constraints, and the error it returns travels to the
+// surface verbatim, so this is what turns a raw driver error into the typed
+// envelope the repository path produces.
+func TestTranslateUniqueViolation_BoundConstraintBecomesTheDeclaredNotification(t *testing.T) {
+	err := TranslateUniqueViolation(testPGDialect{}, pgUnique("admin_seats_email_key"), "AdminSeat", seatConstraints())
+
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("expected a NotificationCarrier, got %T", err)
+	}
+	ctxs := carrier.NotificationContexts()
+	if len(ctxs) != 1 || ctxs[0].Context() != "AdminSeat" {
+		t.Fatalf("the context must carry the caller's name, got %+v", ctxs)
+	}
+	msgs := ctxs[0].Messages()
+	if len(msgs) != 1 || msgs[0].FieldName != "email" {
+		t.Fatalf("the binding's field must be reported, got %+v", msgs)
+	}
+	if _, typed := msgs[0].Notification.(seatTakenNotification); !typed {
+		t.Fatalf("the binding's notification must be carried, got %T", msgs[0].Notification)
+	}
+	// The driver error rides along on the message for logs and diagnostics.
+	var pgErr *pgconn.PgError
+	if !errors.As(msgs[0].Err, &pgErr) {
+		t.Errorf("the driver cause must be carried on the message, got %v", msgs[0].Err)
+	}
+}
+
+func TestTranslateUniqueViolation_PassesThroughWhatItCannotClassify(t *testing.T) {
+	plain := errors.New("connection reset")
+	for name, tc := range map[string]struct {
+		dialect Dialect
+		err     error
+	}{
+		"not a unique violation": {testPGDialect{}, plain},
+		"no binding for this constraint": {
+			testPGDialect{}, pgUnique("admin_seats_pkey"),
+		},
+		"nil error":   {testPGDialect{}, nil},
+		"nil dialect": {nil, plain},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := TranslateUniqueViolation(tc.dialect, tc.err, "AdminSeat", seatConstraints())
+			if !errors.Is(got, tc.err) {
+				t.Fatalf("the error must pass through untouched, got %v", got)
+			}
+			var carrier domain.NotificationCarrier
+			if tc.err != nil && errors.As(got, &carrier) {
+				t.Error("an unclassified error must not become a notification")
+			}
+		})
+	}
+}

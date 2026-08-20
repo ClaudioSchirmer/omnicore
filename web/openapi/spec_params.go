@@ -2,6 +2,8 @@ package openapi
 
 import (
 	"reflect"
+	"sort"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
@@ -31,7 +33,10 @@ func canonicalParameters(op Operation, gen *Generator) []map[string]any {
 				out = append(out, p)
 				covered[p["name"].(string)] = true
 			}
-			out = append(out, omitQueryParams(walkQueryTags(t, gen), op.Spec.OmittedQueryParams)...)
+			params := omitQueryParams(walkQueryTags(t, gen), op.Spec.OmittedQueryParams)
+			describeFieldsParam(params, op.Spec.ResponseType)
+			describeOrderByParam(params, t)
+			out = append(out, params...)
 		}
 	}
 
@@ -150,13 +155,16 @@ func walkPathTags(t reflect.Type, gen *Generator) []map[string]any {
 // parameter name (e.g. `addresses.city`, `addresses.city.istartswith`).
 func walkQueryTags(t reflect.Type, gen *Generator) []map[string]any {
 	out := []map[string]any{}
-	for _, leaf := range queryschema.WalkRequest(t) {
-		// Generate the field schema for every query-tagged field, including
-		// embed-group markers, so the type graph each field references is
-		// registered in Components exactly as before — even though a group
-		// emits no parameter of its own.
+	for _, leaf := range queryschema.ExtractRequestSchema(t).Leaves {
+		// Generate the field schema for EVERY declaration, groups included, so
+		// the type graph each one references is registered in Components —
+		// even for a declaration that emits no parameter of its own.
 		schema := gen.Generate(leaf.Field.Type)
-		if leaf.Group {
+		if !leaf.TakesValue() {
+			// A group's inner leaves carry the keys; an ordering leaf names a
+			// path `?orderBy=` may use and takes no value. Advertising either
+			// would document a parameter the request parser refuses on every
+			// call. The DTO decided this once — nothing is re-derived here.
 			continue
 		}
 		if len(leaf.Ops) == 0 {
@@ -232,4 +240,112 @@ func hasBodyFields(t reflect.Type) bool {
 		return true
 	}
 	return false
+}
+
+// describeFieldsParam fills in the `?fields=` parameter's description when the
+// DTO field did not declare one of its own.
+//
+// It states the RULE rather than the vocabulary. The `?fields=` tokens are the
+// whole Response tree — on a real DTO that runs to dozens of paths plus every
+// nested level below them, and enumerating it would bury the parameter instead
+// of documenting it. (`?orderBy=` enumerates precisely because its vocabulary
+// is a short, deliberate declaration.)
+//
+// What the rule alone cannot convey is the spelling of a nested token, so when
+// the Response has one the sentence carries a REAL example lifted from that
+// Response — the endpoint's own syntax, not an invented one. A flat Response
+// gets no example, because there is no second spelling to show.
+func describeFieldsParam(params []map[string]any, respType reflect.Type) {
+	entry := paramNamed(params, queryschema.KeyFields)
+	if entry == nil {
+		return
+	}
+	if _, declared := entry["description"]; declared {
+		return
+	}
+	desc := "Comma-separated subset of the response to return, naming fields by their wire (json) names. " +
+		"Any field the response declares is a legal token; anything else is refused with 400."
+	if root, nested, ok := fieldsExample(respType); ok {
+		desc += " A nested field takes the dotted path through its parent, e.g. `" + root + "," + nested + "`."
+	}
+	entry["description"] = desc
+}
+
+// fieldsExample picks a real (root, nested) token pair off the Response so the
+// description can show the dotted spelling on this endpoint's own shape.
+// Deterministic: the alphabetically first nested path, and the root it hangs
+// from. Reports false for a flat or untyped Response.
+func fieldsExample(respType reflect.Type) (root, nested string, ok bool) {
+	if respType == nil {
+		return "", "", false
+	}
+	for respType.Kind() == reflect.Pointer {
+		respType = respType.Elem()
+	}
+	if respType.Kind() != reflect.Struct {
+		return "", "", false
+	}
+	paths := queryschema.ExtractProjectionSchema(respType).Paths
+	nesteds := make([]string, 0, len(paths))
+	for p := range paths {
+		if strings.Contains(p, ".") {
+			nesteds = append(nesteds, p)
+		}
+	}
+	if len(nesteds) == 0 {
+		return "", "", false
+	}
+	sort.Strings(nesteds)
+	nested = nesteds[0]
+	return nested[:strings.Index(nested, ".")], nested, true
+}
+
+// describeOrderByParam fills in the `?orderBy=` parameter's description when the
+// DTO field did not declare one of its own.
+//
+// Unlike `?fields=`, this one ENUMERATES: the ordering vocabulary is a short,
+// deliberate declaration — the leaves that carry a `sort:` tag — so listing the
+// accepted tokens with the directions each admits states the whole contract in
+// one line, and those are the only values the parameter ever takes.
+func describeOrderByParam(params []map[string]any, reqType reflect.Type) {
+	entry := paramNamed(params, queryschema.KeyOrderBy)
+	if entry == nil {
+		return
+	}
+	if _, declared := entry["description"]; declared {
+		return
+	}
+	sortable := queryschema.ExtractRequestSchema(reqType).Sortable
+	if len(sortable) == 0 {
+		return
+	}
+	wires := make([]string, 0, len(sortable))
+	for wire := range sortable {
+		wires = append(wires, wire)
+	}
+	sort.Strings(wires)
+	tokens := make([]string, 0, len(wires))
+	for _, wire := range wires {
+		spec := sortable[wire]
+		switch {
+		case spec.Asc && spec.Desc:
+			tokens = append(tokens, "`"+wire+"` (asc, desc)")
+		case spec.Desc:
+			tokens = append(tokens, "`"+wire+"` (desc only, prefix with `-`)")
+		default:
+			tokens = append(tokens, "`"+wire+"` (asc only)")
+		}
+	}
+	entry["description"] = "Comma-separated ordering, applied in the order given. Prefix a token with `-` for descending. Accepted: " +
+		strings.Join(tokens, ", ") + "."
+}
+
+// paramNamed finds the emitted parameter carrying name, or nil.
+func paramNamed(params []map[string]any, name string) map[string]any {
+	for _, p := range params {
+		if p["name"] == name {
+			return p
+		}
+	}
+	return nil
 }

@@ -106,7 +106,7 @@
             <tr>
                 <td><code>?search=foo</code></td>
                 <td><code>Search</code></td>
-                <td><code>{$text: {$search: "foo"}}</code> — requires a <code>TextIndex</code> on the view</td>
+                <td><code>{$text: {$search: "foo"}}</code> — requires a <code>TextIndex</code> on the view, <strong>checked at boot</strong>: an endpoint declaring <code>query:"search"</code> over a projected view that declares none fails the boot naming both, instead of surfacing a raw store error on the first request that uses the parameter. A <code>RelationalSource</code> view is exempt — free text over the SoR is a declared capability boundary answered with a typed 400</td>
             </tr>
             <tr>
                 <td><code>?includeArchived=true</code></td>

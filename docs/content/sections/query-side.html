@@ -49,6 +49,7 @@
    ▼
 <span class="auto">extractAllowedKeys(reflect.Type)</span>  ← cached schema
    │   ├─► filters: name(eq), email(eq,in), …          ← from `filter:"ops"` tags
+   │   ├─► sortable: name(asc,desc), createdAt(desc), …   ← from `sort:"asc,desc"` tags
    │   └─► reserved: first/last/after/before/orderBy/fields/search/includeArchived/onlyTotal
    │
    ▼
@@ -197,9 +198,9 @@ func (q FindUsersQuery) FromQueryResult(
         <tr><td><code>BypassMaxLimit bool</code></td><td><strong>Never set from the wire.</strong> Skips the per-view page-size ceiling in <code>ReadPage</code> and uses <code>Limit</code> verbatim — for a trusted internal caller enforcing its OWN operator-set ceiling. The tabular export is the one framework user: it sets <code>Limit</code> to the resolved <code>maxExportRows</code> (deliberately larger than the page-read <code>MaxLimit</code>) and ignores the caller's <code>?first</code>/<code>?last</code>. A client cannot lift the ceiling with it.</td></tr>
     </tbody></table>
     <p>
-        The reserved control keys (<code>?fields=</code>, <code>?orderBy=</code>, <code>?after=</code>/<code>?before=</code>,
-        <code>?first=</code>, <code>?search=</code>, <code>?includeArchived=</code>, <code>?onlyTotal=</code>) and
-        their edge cases are documented on the <a href="#auto-query-handlers">Auto query handlers</a> page —
+        The reserved control keys (<code>?fields=</code>, <code>?orderBy=</code>,
+        <code>?after=</code>/<code>?before=</code>, <code>?first=</code>, <code>?search=</code>,
+        <code>?includeArchived=</code>, <code>?onlyTotal=</code>) and their edge cases are documented on the <a href="#auto-query-handlers">Auto query handlers</a> page —
         the wrapper is where they are parsed and enforced. The two items below — the <strong>filter operator
         vocabulary</strong> and <strong><code>ToCriteria</code></strong> — are the parts shared verbatim by the
         custom path, so they live here on the trunk.

@@ -140,7 +140,7 @@ func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
 // "Material" — the shared-PK secondary the loader reaches with a LEFT JOIN.
 func siblingSchema(table string) *core.TableSchema {
 	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name").
-		Sibling(core.NewSiblingSchema[*guardEnt](table + "_specs").Field("Material", "material"))
+		Sibling(core.NewSiblingSchema[*guardEnt](table+"_specs").Field("Material", "material"))
 }
 
 // baseEnt is a shared-base ROLE entity: it embeds the base's identity and adds a
@@ -160,7 +160,7 @@ func (e *baseEnt) BuildRules(string, domain.Service, *domain.Rules) {}
 // sharedBaseSchema is a role schema whose shared base owns "DisplayName" — a base
 // field the relational reader must now treat as servable (1:1 base JOIN).
 func sharedBaseSchema(table string) *core.TableSchema {
-	base := core.NewSharedBaseSchema(table + "_base").ID("id").Revision("revision").
+	base := core.NewSharedBaseSchema(table+"_base").ID("id").Revision("revision").
 		Field("DisplayName", "display_name").NaturalID("display_name")
 	return core.NewTableSchema[*baseEnt](table).ID("id").
 		SharedBase(base, "id").Field("HolderName", "holder_name")
@@ -189,6 +189,47 @@ func TestServableSharedBaseField_Passes(t *testing.T) {
 	if err := applySort(sharedBaseSchema("holders"), criteria.Where(nil), []queries.OrderByField{{Field: "DisplayName"}}); err != nil {
 		t.Fatalf("a sort on a shared-base field must be servable, got %v", err)
 	}
+}
+
+// managedSchema is guardSchema plus the three managed columns and a ParentID —
+// the slots that surface under FIXED logical Go names (the three-name contract),
+// which is how every consumer above infra addresses them.
+func managedSchema(table string) *core.TableSchema {
+	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name").
+		ParentID("owner_id").
+		CreatedAt("created_at").UpdatedAt("updated_at").DeletedAt("deleted_at")
+}
+
+// TestServableManagedColumns_Passes — the managed slots and the ParentID
+// projection resolve on BOTH backings or on neither, because both go through
+// the one resolution surface (core.TableSchema.Resolve). They used to be two
+// separate walks, so the SAME Request DTO, and the SAME ToCriteria, got
+// different capabilities depending on which backing served the view.
+//
+// `OrderBy: CreatedAt desc` written by a Query's ToCriteria is the most ordinary
+// default ordering there is; it worked on the Mongo projection and answered 400
+// on the RelationalSource twin. Which field a consumer may address is the
+// Request DTO's business (and the dev's, through ToCriteria) — never the
+// backing's.
+func TestServableManagedColumns_Passes(t *testing.T) {
+	schema := managedSchema("gadgets")
+	for _, field := range []string{"CreatedAt", "UpdatedAt", "DeletedAt", "ParentID"} {
+		if _, err := toExpr(schema, map[string]any{field: "x"}); err != nil {
+			t.Errorf("a filter on the managed field %q must be servable, got %v", field, err)
+		}
+		if err := applySort(schema, criteria.Where(nil), []queries.OrderByField{{Field: field, Desc: true}}); err != nil {
+			t.Errorf("a sort on the managed field %q must be servable, got %v", field, err)
+		}
+	}
+}
+
+// TestUnsupportedUndeclaredManagedColumn_MapsTo400 is the other half of the
+// rule: the logical name resolves only when the schema DECLARES that slot. A
+// view with no DeletedAt has no archived state to address, so the name is as
+// unknown as any other.
+func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
+	_, err := toExpr(guardSchema("gadgets"), map[string]any{"CreatedAt": "x"})
+	assertRelationalCapability400(t, err, "CreatedAt")
 }
 
 // TestUnsupportedUnknownField_MapsTo400 keeps the negative control: a flat field

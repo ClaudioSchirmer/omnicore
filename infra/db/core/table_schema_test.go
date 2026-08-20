@@ -104,8 +104,8 @@ func TestTableSchema_FIDReadProjection(t *testing.T) {
 	if g, ok := child.GoNameForRead("order_id"); !ok || g != "ParentID" {
 		t.Errorf("child GoNameForRead(order_id) = %q,%v want ParentID", g, ok)
 	}
-	if c, ok := child.ColumnForRead("ParentID"); !ok || c != "order_id" {
-		t.Errorf("child ColumnForRead(ParentID) = %q,%v want order_id", c, ok)
+	if c, ok := resolvedColumn(child, "ParentID"); !ok || c != "order_id" {
+		t.Errorf("child Resolve(ParentID) = %q,%v want order_id", c, ok)
 	}
 
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
@@ -113,13 +113,13 @@ func TestTableSchema_FIDReadProjection(t *testing.T) {
 	if g, ok := role.GoNameForRead("pessoa_id"); !ok || g != "ParentID" {
 		t.Errorf("role GoNameForRead(pessoa_id) = %q,%v want ParentID", g, ok)
 	}
-	if c, ok := role.ColumnForRead("ParentID"); !ok || c != "pessoa_id" {
-		t.Errorf("role ColumnForRead(ParentID) = %q,%v want pessoa_id", c, ok)
+	if c, ok := resolvedColumn(role, "ParentID"); !ok || c != "pessoa_id" {
+		t.Errorf("role Resolve(ParentID) = %q,%v want pessoa_id", c, ok)
 	}
 
 	root := NewTableSchema[schemaSample]("orders").ID("id").Field("Name", "name")
-	if _, ok := root.ColumnForRead("ParentID"); ok {
-		t.Errorf("schema without an ParentID: ColumnForRead(ParentID) must be false")
+	if _, ok := resolvedColumn(root, "ParentID"); ok {
+		t.Errorf("schema without an ParentID: Resolve(ParentID) must be false")
 	}
 }
 
@@ -384,8 +384,8 @@ func TestTableSchema_ChildWithSibling(t *testing.T) {
 func TestTableSchema_ReadTranslationIncludesSiblings(t *testing.T) {
 	root := NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name").
 		Sibling(NewSiblingSchema[schemaSample]("ext").Field("Removed", "removed"))
-	if c, ok := root.ColumnForRead("Removed"); !ok || c != "removed" {
-		t.Errorf("ColumnForRead(sibling field) = %q,%v — want \"removed\",true", c, ok)
+	if c, ok := resolvedColumn(root, "Removed"); !ok || c != "removed" {
+		t.Errorf("Resolve(sibling field) = %q,%v — want \"removed\",true", c, ok)
 	}
 	if g, ok := root.GoNameForRead("removed"); !ok || g != "Removed" {
 		t.Errorf("GoNameForRead(sibling column) = %q,%v — want \"Removed\",true", g, ok)

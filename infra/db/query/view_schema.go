@@ -55,7 +55,7 @@ type viewEmbed struct {
 // by the composer) and its own children. The role node deliberately suppresses
 // base-children registration: the base's native collections (e.g. Addresses)
 // project at the ROOT of the person document, never inside a role segment.
-// (The role schema's ColumnForRead also resolves the base's shared fields —
+// (The role schema's Resolve also resolves the base's shared fields —
 // harmless here: a `role.sharedField` path translates but matches nothing,
 // because the composer lands shared fields at the root only.)
 func (v *ViewDefinition) BuildViewNode() *ViewNode {
@@ -196,7 +196,7 @@ func newViewNode(schema *core.TableSchema, embeds []embedDef) *ViewNode {
 // composer's mergeOwnChildren nests under the same derived name). Runs at every
 // schema level (root, embed sources and role nodes); children are leaves
 // (depth 1, boot-enforced), and a child's own siblings resolve FLAT via the
-// child node's ColumnForRead. A segment clash with an explicit embed or a
+// child node's Resolve. A segment clash with an explicit embed or a
 // base-child is rejected upstream by ValidateViewSchemas, so a plain overwrite
 // here never fires for a valid view.
 func registerOwnChildren(n *ViewNode, schema *core.TableSchema) {
@@ -377,10 +377,11 @@ func (n *ViewNode) ColumnPath(goPath []string) ([]string, bool) {
 				return nil, false
 			}
 		}
-		col, ok := n.schema.ColumnForRead(goPath[0])
+		r, ok := n.schema.Resolve(goPath[0])
 		if !ok {
 			return nil, false
 		}
+		col := r.Column
 		// A mirror (external) schema keeps its id in `_id` (no physical id column),
 		// so a filter / sort / ?fields= on the id resolves there. Regular schemas
 		// keep it in the physical PK column.

@@ -2,7 +2,6 @@ package graphql
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // ── fixtures: a read quad whose Response carries a well-known scalar struct
@@ -172,11 +172,48 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 
 	// Defense in depth: a value that somehow bypassed validation still errors.
 	plan := newCriteriaPlan("User", reflect.TypeOf(execRequest{}), reflect.TypeOf(execResponse{}))
-	_, _, gerr := plan.buildCriteria(map[string]any{
+	_, badField, gerr := planRead(plan, map[string]any{
 		"orderBy": []any{map[string]any{"field": "BOGUS"}},
 	})
-	if gerr == nil || !strings.Contains(gerr.Message, "orderBy") {
-		t.Fatalf("buildCriteria must reject an unknown order field, got %+v", gerr)
+	if gerr != nil {
+		t.Fatalf("an unknown order field is a typed schema violation, not a prose error: %+v", gerr)
+	}
+	// The refusal names the ENUM MEMBER the consumer sent — this surface's
+	// spelling of REST's `orderBy[<token>]` — so the consumer reads WHICH term
+	// was refused instead of "something about orderBy".
+	if badField != "orderBy[BOGUS]" {
+		t.Fatalf("the read path must report the offending order term, got %q", badField)
+	}
+
+	// The enum can name the orderable members but not say each appears at most
+	// once, and a duplicated key makes the reader's sort document malformed —
+	// so that cut lands here too, on the second occurrence.
+	_, badField, gerr = planRead(plan, map[string]any{
+		"orderBy": []any{
+			map[string]any{"field": "NAME"},
+			map[string]any{"field": "AGE"},
+			map[string]any{"field": "NAME", "direction": "DESC"},
+		},
+	})
+	if gerr != nil {
+		t.Fatalf("a repeated order term is a typed schema violation, not a prose error: %+v", gerr)
+	}
+	if badField != "orderBy[NAME]" {
+		t.Fatalf("a repeated order term must be refused naming the member, got %q", badField)
+	}
+
+	// Distinct members in one ordering stay legal.
+	crit, badField, gerr := planRead(plan, map[string]any{
+		"orderBy": []any{
+			map[string]any{"field": "NAME"},
+			map[string]any{"field": "AGE", "direction": "DESC"},
+		},
+	})
+	if gerr != nil || badField != "" {
+		t.Fatalf("a multi-key ordering over distinct members must pass: %v / %q", gerr, badField)
+	}
+	if len(crit.OrderBy) != 2 {
+		t.Fatalf("both terms must reach the criteria, got %+v", crit.OrderBy)
 	}
 }
 
@@ -207,4 +244,21 @@ func TestExecute_PanicMapsToInternalError(t *testing.T) {
 	if resp.Errors[0].Message != "internal server error" {
 		t.Errorf("message = %q, want the opaque internal message", resp.Errors[0].Message)
 	}
+}
+
+// planRead mirrors the resolver: decode this surface's arguments, then let the
+// shared assembler decide what they mean. The vocabulary, direction and
+// duplicate rules live there, so a test that only decoded would prove nothing
+// about what the consumer actually gets.
+func planRead(p *criteriaPlan, args map[string]any) (queries.ReadCriteria, string, *GraphQLError) {
+	in, badField, gerr := p.decodeArgs(args)
+	if gerr != nil || badField != "" {
+		return queries.ReadCriteria{}, badField, gerr
+	}
+	in.Natural = graphqlNaturalControls
+	crit, _, violation, ok := queryschema.BuildCriteria(p.reqSchema, p.projSchema, in)
+	if !ok {
+		return crit, violation.Field, nil
+	}
+	return crit, "", nil
 }

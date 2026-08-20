@@ -291,44 +291,13 @@ func TestWalkResponseGuard_PointerAndNonStructDefensive(t *testing.T) {
 	}
 }
 
-// ─── ParseOrderByWithSchema / ParseProjection edge cases ────────────────────────
-
-func TestParseOrderByWithSchema_EdgeCases(t *testing.T) {
-	if fields, v, ok := ParseOrderByWithSchema("", nil); !ok || v != nil || fields != nil {
-		t.Fatalf("empty sort = (%v,%+v,%v)", fields, v, ok)
-	}
-	fields, v, ok := ParseOrderByWithSchema("-name,,age", nil)
-	if !ok || v != nil || len(fields) != 2 {
-		t.Fatalf("nil-schema sort = (%v,%+v,%v)", fields, v, ok)
-	}
-	if fields[0].Field != "name" || !fields[0].Desc {
-		t.Errorf("expected name desc, got %+v", fields[0])
-	}
-}
-
-func TestParseOrderByWithSchema_UnknownTokenWithSchema(t *testing.T) {
-	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if _, v, ok := ParseOrderByWithSchema("bogus", ps); ok || v == nil || v.Field != "orderBy[bogus]" {
-		t.Fatalf("expected unknown sort token rejection, got v=%+v ok=%v", v, ok)
-	}
-}
-
-func TestParseOrderByWithSchema_KnownTokenTranslatesToDocPath(t *testing.T) {
-	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	fields, v, ok := ParseOrderByWithSchema("-addresses.zipCode", ps)
-	if !ok || v != nil || len(fields) != 1 {
-		t.Fatalf("sort = (%v,%+v,%v)", fields, v, ok)
-	}
-	if fields[0].Field != "Addresses.ZipCode" || !fields[0].Desc {
-		t.Errorf("expected Addresses.ZipCode desc, got %+v", fields[0])
-	}
-}
+// ─── ParseProjection edge cases ─────────────────────────────────────────────
 
 func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
-	if proj, _, bad, ok := ParseProjection("", nil); !ok || bad != "" || proj != nil {
+	if proj, _, bad, ok := ParseProjection(nil, nil); !ok || bad != "" || proj != nil {
 		t.Fatalf("empty projection = (%v,%q,%v)", proj, bad, ok)
 	}
-	proj, wireSet, bad, ok := ParseProjection("a,,b", nil)
+	proj, wireSet, bad, ok := ParseProjection([]string{"a", "b"}, nil)
 	if !ok || bad != "" || len(proj) != 2 || !wireSet["a"] {
 		t.Fatalf("nil-schema projection = (%v,%v,%q,%v)", proj, wireSet, bad, ok)
 	}
@@ -336,7 +305,7 @@ func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
 
 func TestParseProjection_SchemaTranslatesAndRejects(t *testing.T) {
 	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	proj, wireSet, bad, ok := ParseProjection("name,addresses.zipCode", ps)
+	proj, wireSet, bad, ok := ParseProjection([]string{"name", "addresses.zipCode"}, ps)
 	if !ok || bad != "" {
 		t.Fatalf("expected ok, got bad=%q ok=%v", bad, ok)
 	}
@@ -346,7 +315,7 @@ func TestParseProjection_SchemaTranslatesAndRejects(t *testing.T) {
 	if !wireSet["name"] {
 		t.Errorf("expected wireSet to record name, got %v", wireSet)
 	}
-	if _, _, bad, ok := ParseProjection("bogus", ps); ok || bad != "bogus" {
+	if _, _, bad, ok := ParseProjection([]string{"bogus"}, ps); ok || bad != "bogus" {
 		t.Fatalf("expected unknown token rejection, got bad=%q ok=%v", bad, ok)
 	}
 }

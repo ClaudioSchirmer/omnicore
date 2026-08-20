@@ -18,6 +18,9 @@ func allReserved() map[string]bool {
 	}
 }
 
+// noneReserved declares nothing: every control on the wire is undeclared.
+func noneReserved() map[string]bool { return map[string]bool{} }
+
 func TestValidateControls_CleanForward(t *testing.T) {
 	v := ValidateControls(allReserved(), Controls{First: i64(10), After: true, OrderBy: true}, nil)
 	if len(v) != 0 {
@@ -46,7 +49,7 @@ func TestValidateControls_OptInGate(t *testing.T) {
 		First: i64(10), Last: i64(2), After: true, Before: true,
 		OrderBy: true, Fields: true, Search: true, IncludeArchived: true, OnlyTotal: bp(true),
 	}
-	v := ValidateControls(map[string]bool{}, c, nil)
+	v := ValidateControls(noneReserved(), c, nil)
 	wantKeys := []string{
 		KeyFirst, KeyLast, KeyAfter, KeyBefore, KeyOrderBy,
 		KeyFields, KeySearch, KeyIncludeArchived, KeyOnlyTotal,
@@ -71,15 +74,15 @@ func TestValidateControls_NaturalKeysExempt(t *testing.T) {
 	// GraphQL posture: fields (selection IS the projection) and onlyTotal
 	// (selection shape is the switch) carry no wire name to gate.
 	natural := map[string]bool{KeyFields: true, KeyOnlyTotal: true}
-	if v := ValidateControls(map[string]bool{}, Controls{Fields: true}, natural); len(v) != 0 {
+	if v := ValidateControls(noneReserved(), Controls{Fields: true}, natural); len(v) != 0 {
 		t.Fatalf("natural fields must be exempt from the gate, got %v", v)
 	}
-	if v := ValidateControls(map[string]bool{}, Controls{OnlyTotal: bp(true)}, natural); len(v) != 0 {
+	if v := ValidateControls(noneReserved(), Controls{OnlyTotal: bp(true)}, natural); len(v) != 0 {
 		t.Fatalf("natural onlyTotal must be exempt from the gate, got %v", v)
 	}
 	// The conflict matrix still applies to natural keys — a only-total request
 	// shaped by a projection is contradictory on every surface.
-	v := ValidateControls(map[string]bool{}, Controls{Fields: true, OnlyTotal: bp(true)}, natural)
+	v := ValidateControls(noneReserved(), Controls{Fields: true, OnlyTotal: bp(true)}, natural)
 	if len(v) != 1 || v[0].Kind != ViolationOnlyTotalConflict || v[0].Key != KeyFields {
 		t.Fatalf("natural fields+onlyTotal must still conflict, got %v", v)
 	}
@@ -155,7 +158,7 @@ func TestValidateControls_OnlyTotalPresentButInactive(t *testing.T) {
 	// &false = on the wire but not activating (REST's `?onlyTotal=false`).
 	// The opt-in gate keys on PRESENCE: undeclared → NotDeclared, exactly
 	// like includeArchived=false.
-	v := ValidateControls(map[string]bool{}, Controls{OnlyTotal: bp(false)}, nil)
+	v := ValidateControls(noneReserved(), Controls{OnlyTotal: bp(false)}, nil)
 	if len(v) != 1 || v[0].Kind != ViolationNotDeclared || v[0].Key != KeyOnlyTotal {
 		t.Fatalf("present-but-inactive onlyTotal must gate on presence, got %v", v)
 	}

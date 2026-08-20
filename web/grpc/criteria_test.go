@@ -18,12 +18,24 @@ import (
 )
 
 func TestCriteriaPageSortReadMask(t *testing.T) {
-	after := "cursor-a"
+	// A REAL cursor: every surface runs the same structure check (it must
+	// decode, and its key tuple must be one longer than the ordering), so a
+	// placeholder string is INVALID_ARGUMENT here exactly as it is a 400 on
+	// REST. Two ordering terms below → three tuple elements.
+	after, cursorErr := queries.EncodeCursor([]any{"n", "c", "id"}, "")
+	if cursorErr != nil {
+		t.Fatalf("EncodeCursor: %v", cursorErr)
+	}
 	limit := int64(25)
 	search := "drill"
 	fields := map[string]string{"id": "ID", "name": "Name", "created_at": "CreatedAt"}
+	sortable := map[string]queryschema.SortSpec{
+		"name":       {GoPath: "Name", Asc: true, Desc: true},
+		"created_at": {GoPath: "CreatedAt", Asc: true, Desc: true},
+	}
 	crit, err := NewCriteria().
 		Fields(fields).
+		Sortable(sortable).
 		Page(&pb.PaginationRequest{After: &after, First: &limit, IncludeArchived: proto.Bool(true), Search: &search}).
 		OrderBy(&pb.OrderByField{Field: "name"}, &pb.OrderByField{Field: "created_at", Desc: true}, nil, &pb.OrderByField{}).
 		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"id", "name", ""}}).
@@ -31,7 +43,7 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if crit.After != "cursor-a" || crit.Limit != 25 || !crit.IncludeArchived || crit.Search != "drill" {
+	if crit.After != after || crit.Limit != 25 || !crit.IncludeArchived || crit.Search != "drill" {
 		t.Fatalf("page: %+v", crit)
 	}
 	// wire names resolve to GO FIELD PATHS — the spelling ToCriteria
@@ -90,7 +102,9 @@ func TestCriteriaOnlyTotalConflicts(t *testing.T) {
 			"onlyTotal[fields]"},
 	}
 	for _, tc := range cases {
-		b := NewCriteria().Fields(fields).Page(tc.req)
+		b := NewCriteria().Fields(fields).
+			Sortable(map[string]queryschema.SortSpec{"name": {GoPath: "Name", Asc: true, Desc: true}}).
+			Page(tc.req)
 		if tc.add != nil {
 			b = tc.add(b)
 		}
@@ -147,7 +161,7 @@ func TestCriteriaStringParityWithRESTEmitter(t *testing.T) {
 	spec := queryschema.FilterSpec{DocPath: "Name", GoKind: reflect.String}
 
 	viaREST := map[string]any{}
-	queryschema.ApplyFilterParam(viaREST, spec, queryschema.OpContains, "Dri.ll")
+	queryschema.ApplyFilterValues(viaREST, spec, queryschema.OpContains, []string{"Dri.ll"})
 
 	crit, err := NewCriteria().String("Name", &pb.StringFilter{Conditions: []*pb.StringCondition{
 		{Op: pb.StringOp_STRING_OP_CONTAINS, Values: []string{"Dri.ll"}},
@@ -281,12 +295,16 @@ func TestCriteriaUndeclaredMaskAndSortFailBuild(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "fields") {
 		t.Fatalf("undeclared mask path must fail: %v", err)
 	}
+	// order_by resolves against the Sortable vocabulary, not Fields — and with
+	// none declared nothing is orderable. The refusal is TYPED and names the
+	// entry exactly as the wire spelled it, the gRPC dialect of REST's
+	// `orderBy[<token>]`.
 	_, err = NewCriteria().
 		Fields(map[string]string{"id": "ID"}).
 		OrderBy(&pb.OrderByField{Field: "phone"}).
 		Build()
-	if err == nil || !strings.Contains(err.Error(), "orderBy") {
-		t.Fatalf("undeclared sort field must fail: %v", err)
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"phone"}) {
+		t.Fatalf("undeclared sort field must be refused naming the entry, got %v", got)
 	}
 	// no Fields declared at all → mask/sort unsupported for the view
 	_, err = NewCriteria().

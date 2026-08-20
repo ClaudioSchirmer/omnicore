@@ -38,15 +38,15 @@ func TestCoerceValue_AllKinds(t *testing.T) {
 	}
 }
 
-// ─── ApplyFilterParam: every operator branch + MultiClause folding ───────────
+// ─── ApplyFilterValues: every operator branch + MultiClause folding ─────────
 
-func TestApplyFilterParam_Operators(t *testing.T) {
+func TestApplyFilterValues_Operators(t *testing.T) {
 	spec := FilterSpec{DocPath: "name", GoKind: reflect.String}
 
 	check := func(op string, assert func(t *testing.T, clause any)) {
 		t.Run(op, func(t *testing.T) {
 			f := map[string]any{}
-			ApplyFilterParam(f, spec, op, "Bob")
+			ApplyFilterValues(f, spec, op, []string{"Bob"})
 			assert(t, f["name"])
 		})
 	}
@@ -137,13 +137,13 @@ func TestApplyFilterParam_Operators(t *testing.T) {
 func TestApplyFilterParam_InAndNin(t *testing.T) {
 	spec := FilterSpec{DocPath: "age", GoKind: reflect.Int}
 	f := map[string]any{}
-	ApplyFilterParam(f, spec, "in", "1,2,3")
+	ApplyFilterValues(f, spec, "in", []string{"1", "2", "3"})
 	inCl, ok := f["age"].(queries.Clause)
 	if !ok || inCl.Op != queries.FilterIn || len(inCl.Values) != 3 || inCl.Values[0].(int64) != 1 {
 		t.Fatalf("in = %#v", f["age"])
 	}
 	g := map[string]any{}
-	ApplyFilterParam(g, spec, "nin", "4,5")
+	ApplyFilterValues(g, spec, "nin", []string{"4", "5"})
 	ninCl, ok := g["age"].(queries.Clause)
 	if !ok || ninCl.Op != queries.FilterNin || len(ninCl.Values) != 2 {
 		t.Fatalf("nin = %#v", g["age"])
@@ -153,7 +153,7 @@ func TestApplyFilterParam_InAndNin(t *testing.T) {
 func TestApplyFilterParam_UnknownOperatorNoOp(t *testing.T) {
 	spec := FilterSpec{DocPath: "name", GoKind: reflect.String}
 	f := map[string]any{}
-	ApplyFilterParam(f, spec, "bogus", "Bob")
+	ApplyFilterValues(f, spec, "bogus", []string{"Bob"})
 	if _, present := f["name"]; present {
 		t.Fatalf("unknown operator must not write a clause, got %v", f)
 	}
@@ -162,8 +162,8 @@ func TestApplyFilterParam_UnknownOperatorNoOp(t *testing.T) {
 func TestApplyFilterParam_MultipleOperatorsFoldIntoMultiClause(t *testing.T) {
 	spec := FilterSpec{DocPath: "name", GoKind: reflect.String}
 	f := map[string]any{}
-	ApplyFilterParam(f, spec, "startswith", "Bo")
-	ApplyFilterParam(f, spec, "icontains", "ob")
+	ApplyFilterValues(f, spec, "startswith", []string{"Bo"})
+	ApplyFilterValues(f, spec, "icontains", []string{"ob"})
 	mc, ok := f["name"].(queries.MultiClause)
 	if !ok {
 		t.Fatalf("expected MultiClause after two ops, got %T", f["name"])
@@ -172,7 +172,7 @@ func TestApplyFilterParam_MultipleOperatorsFoldIntoMultiClause(t *testing.T) {
 		t.Fatalf("expected 2 folded clauses, got %d", len(mc.Clauses))
 	}
 	// a third operator appends to the existing MultiClause
-	ApplyFilterParam(f, spec, "contains", "b")
+	ApplyFilterValues(f, spec, "contains", []string{"b"})
 	mc = f["name"].(queries.MultiClause)
 	if len(mc.Clauses) != 3 {
 		t.Fatalf("expected 3 folded clauses, got %d", len(mc.Clauses))

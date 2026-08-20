@@ -11,10 +11,9 @@ func (coreENG) Language() configuration.Language { return configuration.LangENG 
 func (coreENG) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":            "Required field.",
-		"SchemaViolationNotification":          "Request body content does not match the expected schema.",
-		"LimitExceededNotification":            "Requested limit exceeds the maximum allowed.",
-		"ComputedFieldNotSortableNotification": "Computed fields cannot be used for ordering.",
+		"RequiredFieldNotification":   "Required field.",
+		"SchemaViolationNotification": "Request body content does not match the expected schema.",
+		"LimitExceededNotification":   "Requested limit exceeds the maximum allowed.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Cannot insert a record with an existing primary key.",

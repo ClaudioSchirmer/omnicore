@@ -56,24 +56,6 @@ type LimitExceededNotification struct{ DomainNotificationBase }
 
 func (LimitExceededNotification) Semantic() NotificationSemantic { return SemanticSchema }
 
-// ComputedFieldNotSortableNotification is emitted by the read side when a
-// consumer orders by a COMPUTED field — one the Response declares with a
-// `computed:"…"` tag, derived by the Query's FromQueryResult hook after the
-// read instead of stored as a column. Ordering happens in the store and the
-// keyset cursor is built from stored ordering values, so sorting by a derived
-// value is not expressible; the field stays selectable and filterable-free,
-// only the ordering is refused.
-//
-// FieldName names the offending control in the surface's own spelling
-// ("orderBy[display]" on REST/export, the sort entry on gRPC). Carries
-// SemanticSchema → 400 Bad Request; translatable per language via the
-// "ComputedFieldNotSortableNotification" key.
-type ComputedFieldNotSortableNotification struct{ DomainNotificationBase }
-
-func (ComputedFieldNotSortableNotification) Semantic() NotificationSemantic {
-	return SemanticSchema
-}
-
 type UnableToInsertWithIDNotification struct{ DomainNotificationBase }
 type UnableToUpdateWithoutIDNotification struct{ DomainNotificationBase }
 type UnableToDeleteWithoutIDNotification struct{ DomainNotificationBase }

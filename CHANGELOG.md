@@ -11,6 +11,243 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-08-20
+
+### Changed
+
+- **BREAKING — the ordering vocabulary moved to the Request DTO, declared per
+  field.** Ordering was the only store-side read control whose vocabulary came
+  from the OUTPUT DTO: every wire path a Response happened to render was
+  sortable, and a field deliberately kept off the wire could not be ordered by —
+  even though both readers can order by any column of the view. Filtering names a
+  store operation and is declared on the Request; ordering is the same kind of
+  operation and now follows the same rule.
+
+  It is declared in two halves that must travel together. `query:"orderBy"` is
+  the SWITCH — like every other reserved control it decides whether the endpoint
+  accepts the parameter at all, and it is where a `description:` for it lives.
+  `sort:"asc"` / `sort:"desc"` / `sort:"asc,desc"` on a leaf is the VOCABULARY —
+  which paths the parameter accepts and in which directions. The tag mirrors
+  `filter:`: the name states the capability, the value lists the operations
+  admitted. It is legal at any depth, so a leaf inside an embed group contributes
+  its dotted path exactly as a filter leaf does, and it also stands alone:
+  `query:"id" sort:"asc"` is orderable without being filterable and carries no
+  value on the wire — so it emits no OpenAPI query parameter of its own either:
+  a parameter the request parser would reject on every call is exactly the dead
+  declaration the boot guards refuse to ship.
+
+  Either half without the other is a boot failure, each with its own diagnostic:
+  the switch with no vocabulary would accept `?orderBy=` and refuse every token
+  it could be given, and a vocabulary with no switch declares paths orderable on
+  an endpoint that does not take the parameter — the second names the offending
+  leaves. Nothing is orderable until a leaf says so: an unindexed sort is a
+  blocking sort whose cost is proportional to the matching set, so
+  "every path the Response renders" was the wrong default.
+
+  One vocabulary on every surface: REST listing, exports and NewQueryParser; the
+  GraphQL `<Entity>OrderField` enum; gRPC order_by through the new
+  `CriteriaBuilder.Sortable`. A direction the declaration does not admit is
+  refused like any undeclared token, on the token itself — `orderBy[-code]` on
+  REST and export, the enum member on GraphQL, the entry verbatim on gRPC.
+  GraphQL makes that cut in the resolver rather than the schema, since an enum
+  cannot express per-member directions. OpenAPI fills the parameter's
+  description with the accepted tokens and their directions unless the control
+  field carries a `description:` of its own.
+
+  **A path may appear at most once** in one ordering. The terms become the
+  reader's sort document, where a duplicated key is malformed and the store
+  refuses the whole read — so `?orderBy=name,name` and `?orderBy=name,-name` are
+  refused on the SECOND occurrence, which is the token the consumer has to
+  remove. Same rule, same reporting, on all three surfaces.
+
+- **BREAKING — a raw gRPC mount orders by nothing until it declares a
+  vocabulary.** `CriteriaBuilder.Sortable(...)` has NO fallback: `order_by` used
+  to resolve against the `Fields` vocabulary, so a `MountRaw` consumer got
+  ordering for free over everything projectable. It now answers
+  `INVALID_ARGUMENT` for every entry until the builder is handed a vocabulary —
+  the same default the declared path has, for the same reason. The Auto path
+  feeds it from the Request DTO's `sort:` tags and needs no change.
+
+- **BREAKING — the boolean read controls accept exactly `true` or `false`.**
+  `?includeArchived=` and `?onlyTotal=` refuse anything else with the canonical
+  400. The two REST paths disagreed before — the paged wrapper compared strings
+  and never failed, the by-id wrapper delegated to Fiber's binder and took `1`,
+  `t`, `TRUE` — so `?includeArchived=1` was false on a listing and true on a
+  by-id read of the same entity. Strict parsing also aligns REST with the other
+  connectors, where proto `bool` and GraphQL `Boolean` already rejected those
+  spellings.
+
+  PRESENCE is the key being on the query string, not the value being non-empty:
+  `?includeArchived=` is the control asked for with no answer, and both routes
+  refuse it. Reading the empty string as "absent" on one of them would have
+  rebuilt the same list-vs-by-id disagreement on a different spelling.
+
+- **BREAKING — `TableSchema.FieldResolver()` is removed.** It handed out a
+  criteria resolver backed by the bare `ColumnOf`, so it refused the managed
+  slots and `ParentID` — the same gap the two read-path resolvers just closed —
+  and it could not do the LEFT JOIN bookkeeping a sibling or shared-base column
+  needs, which would answer with a column from a table the `FROM` never joined.
+  Nothing in the framework called it. Each caller builds the resolver its own
+  resolution surface requires; the `core.FieldResolver` TYPE stays.
+
+- **BREAKING — `ComputedFieldNotSortableNotification` is removed.** Ordering no
+  longer consults the Response, so a computed field is simply not in the
+  vocabulary and its refusal is the canonical schema violation. The dedicated
+  notification and its seven catalog entries are gone.
+
+- **BREAKING — `web/queryschema` loses five exported symbols and changes one
+  signature.** The read path collapsed onto one assembler and one classification,
+  and these are the surfaces that collapse took with it. Each was exported and
+  announced in an earlier release, so a service that parses reads by hand — a
+  `pipeline.Handler` over `NewQueryParser`, or a bespoke wire adapter — breaks at
+  COMPILE time on an upgrade from 0.54. Nothing changes silently.
+
+  | removed / changed | what replaces it |
+  |---|---|
+  | `ApplyFilterParam(filter, spec, op, value)` | `ApplyFilterValues(filter, spec, op, values)` — the wire splits its own list first (`OperatorTakesList` says which operators take one) |
+  | `ParseOrderByWithSchema(s, projSchema)` | `BuildCriteria` — ordering is validated against the Request DTO's `sort:` vocabulary, not the Response's projection schema |
+  | `WalkRequest(t)` | `ExtractRequestSchema(t).Leaves` — the classification is kept rather than re-derived; the raw walk is internal so a fourth re-derivation cannot be written |
+  | `RequestField` (type) | `RequestLeaf` — the classified form, carrying `Kind` and `TakesValue()` |
+  | `ReadIncludeArchived(v) bool` | `ReadIncludeArchivedControl(v) (value, present bool)` — the opt-in gate keys on PRESENCE, which one bool cannot carry |
+  | `ParseProjection(s string, …)` | `ParseProjection(tokens []string, …)` — a comma is one wire's spelling of a list; a GraphQL selection and a proto FieldMask no longer join a list to have it split back |
+
+### Added
+
+- **`?search=` without a `TextIndex` fails the boot.** Free-text search is a Mongo
+  `$text` query, which the server refuses outright unless the collection carries a
+  text index — but the two halves of that contract are declared where neither can
+  see the other: `query:"search"` on the Request DTO at route registration, and
+  `query.TextIndex(...)` on the ViewDefinition the feature contributes. Nothing put
+  them side by side, so the mismatch surfaced as a raw store error on the first
+  request that used the parameter, from an endpoint that advertised a control it
+  could never serve. The check runs after the Mount phase, which is when both
+  halves exist, and names the view and the Request DTO. Every read surface feeds
+  it — REST's paged and export wrappers, the GraphQL connection field, the gRPC
+  list procedure — because the mismatch belongs to the (DTO, view) pair, not to
+  any one wire: a service that exposes an entity only over gRPC has the same
+  unserveable control as a REST one. A handler that does not name its view (a
+  hand-written `pipeline.Handler` rather than `FindByParamsQueryHandler`) is not
+  covered. A `RelationalSource` view is exempt: free text over the SoR is a
+  declared capability boundary answered with a typed 400, and a DTO shared
+  between a Mongo view and its relational twin is the canonical shape.
+
+- **The `?fields=` parameter documents its own rule.** Its vocabulary is the whole
+  Response tree, too large to enumerate the way `?orderBy=` enumerates its short
+  declared list — so the OpenAPI parameter states the rule (tokens are the
+  response's wire names) and, when the Response has a nested path, carries a REAL
+  dotted example lifted from that Response, since the dotted spelling is the part
+  a rule alone cannot convey. A `description:` tag on the DTO field still wins.
+
+- **`write.TranslateUniqueViolation`** — the constraint-violation translation
+  `BaseRepository` applies to its own writes, exported so an in-TX lifecycle hook
+  can apply it to its own. A hook writing through `core.UnwrapTx(tx)` owns its
+  tables and its unique indexes, and the error it returns reaches the surface
+  verbatim; translating it there produces the same typed, translated envelope a
+  repository-level violation produces, instead of a raw driver error surfacing
+  as a 500. Same behavior as before for the repository path — the body moved,
+  nothing changed.
+
+### Fixed
+
+- **One assembler for every read request, so the surfaces cannot disagree about
+  what a request MEANS.** Five consumers of the read vocabulary each ran their
+  own orchestration — the REST listing, the CSV/XLSX export, the OpenAPI
+  document, the GraphQL connection and the gRPC procedure, plus a by-id
+  variant on three of them. Every one of them re-decided the same questions:
+  which key is a control, whether the endpoint declared it, which operators the
+  leaf admits, which paths are orderable and in which direction, what `?fields=`
+  accepts, how a cursor must be shaped. They answered differently, and each
+  difference was invisible until someone hit it — an export that took a boolean
+  spelling the listing refused, a gRPC procedure that could not order by any
+  multi-word path while REST ordered by it fine, a GraphQL field that accepted
+  a cursor REST rejected, a by-id procedure that quietly ignored a control its
+  REST twin refused.
+
+  `queryschema.BuildCriteria` is now the one place a `ReadCriteria` is built
+  from a wire, and every surface goes through it — including all three by-id
+  routes. A surface decodes its own idiom into `queryschema.Read` (a query
+  string splits on commas, a GraphQL input carries a real array, a proto
+  carries `repeated` values) and owns how it renders a refusal; it owns no
+  opinion about what the endpoint accepts. `CriteriaBuilder` keeps its shape as
+  the `MountRaw` façade and validates against the vocabulary its own calls
+  declared, which is what "no Request DTO" has always meant on that path.
+
+  Two consequences a consumer can see, both of them a surface catching up to
+  the others: GraphQL and gRPC now run the cursor structure check REST always
+  ran (a cursor that does not decode, or whose key tuple does not match the
+  ordering, is refused before dispatch instead of reaching the reader), and a
+  by-id read refuses an undeclared control on every surface instead of ignoring
+  it on gRPC.
+
+- **One classification of the Request DTO, so the surfaces cannot disagree
+  about what a field IS.** Three surfaces re-walked the DTO's tags with rules of
+  their own — the OpenAPI parameter generator, the GraphQL `where` builder and
+  the gRPC filter binder — and a shape one of them had not accounted for leaked
+  onto that surface alone: a leaf that is orderable and nothing else takes no
+  value on the wire, but the parameter generator advertised it, so the document
+  promised a query parameter the request parser refuses on every call.
+
+  `ExtractRequestSchema` already decided what each declaration opted into; it
+  now KEEPS that decision, as `RequestSchema.Leaves`, and every surface reads
+  it. The raw walk is internal, so a fourth re-derivation cannot be written.
+  The generator also inherits the boot guard it used to sidestep: a dead
+  `query:"…"` on a route it documents now fails the boot with the same
+  diagnostic the wrapper gives, instead of rendering a parameter nothing serves.
+
+- **One field-resolution surface, so the two read backings cannot drift.**
+  "Does this Go field name resolve on this view, and to what column" was
+  answered by three separate walks: the Mongo reader had one, and the
+  relational side had two of its own (the capability gate and the SQL
+  resolver). They disagreed — the relational pair resolved only the mapped
+  business fields, so the managed slots (`CreatedAt` / `UpdatedAt` /
+  `DeletedAt`) and the read-only `ParentID` projection were addressable on a
+  Mongo view and refused with a `RelationalCapabilityNotification` on its
+  `RelationalSource` twin. `OrderBy: CreatedAt desc` written by a Query's
+  `ToCriteria`, the most ordinary default ordering there is, worked on one
+  backing and answered 400 on the other from the same code.
+
+  `TableSchema.Resolve` is now that surface, and every read path asks it. It
+  answers with the column AND with whose row the column lives on, so the one
+  thing that genuinely IS the relational backing's business — emitting the
+  `LEFT JOIN` for a sibling or a shared base — falls out of the resolution
+  instead of being re-derived beside it. `TableSchema.ColumnForRead` and the
+  relational `servable` helper are gone; they were the two other spellings of
+  the same question.
+
+  Which field a consumer may address stays where it was: the Request DTO's
+  `filter:` / `sort:` declarations for an end user, `ToCriteria` for the
+  service. Nothing became addressable by existing. What a relational view still
+  refuses is what a single root `SELECT` cannot express — a dotted child path,
+  or a child-level sibling — which is a capability boundary, not a difference
+  in vocabulary.
+
+- **A by-id read honors `ReadCriteria.Projection` on Mongo.** `ReadByID` ignored
+  it while the relational reader applied it, and `ReadCriteria.Restrict` — the
+  field-level access-control seam that answers 403 when a caller actively
+  references a restricted field — implements the removal by writing an exclusion
+  into that projection. A `Restrict` in a by-id `ToCriteria` therefore did not
+  apply at all on a Mongo-backed view. It now applies on every query route, on
+  every backing.
+
+  The GraphQL by-id field is the other half of the same gap, and closes with it.
+  It discarded its selection set, so nothing ever became a projection there: the
+  same restricted field on the same entity was refused through `users(...)` and
+  scrubbed in SILENCE through `user(id:)`. Restrict answers 403 only to an
+  ACTIVE reference, and a selection that reaches no criteria is not one. The
+  singular field now resolves its selection the way the connection field
+  resolves its node's — so the store is asked for what was selected, and the two
+  read fields give one answer about one restricted field.
+
+- **A gRPC `order_by` entry is the control, present — even with an empty field.**
+  It was skipped before it could record presence, so an endpoint whose Request
+  DTO never declared `query:"orderBy"` IGNORED what its REST twin refuses on a
+  bare `?orderBy=`. Presence is the entry being on the wire; an empty field
+  still contributes no ordering term, which is exactly what an empty `?orderBy=`
+  does. The last control that answered differently on one wire.
+
+- **A ComposedView names the ordering term it refuses.** Sorting into a leg
+  segment reported the literal field `sort`; it now reports the offending path.
+
 ## [0.54.0] - 2026-08-19
 
 ### Changed

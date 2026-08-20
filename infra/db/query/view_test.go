@@ -210,7 +210,6 @@ type vsChild struct {
 	ZipCode string
 }
 
-
 // TestViewNode_OwnChildPathResolves proves the translator registers a root's own
 // aggregate children (no embed declared), so a filter/sort on an own-child field
 // resolves via ColumnPath and the read-back nests the collection under its Go

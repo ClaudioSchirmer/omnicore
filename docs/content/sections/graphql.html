@@ -280,16 +280,20 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         No custom <code>pipeline.Handler</code> is required in either case, and the intent is explicit in the
         schema.</li>
     <li><strong>Order vocabulary — a typed enum, reflected like everything else.</strong> When the
-        Request DTO declares <code>query:"orderBy"</code>, the field takes
+        Request DTO declares <code>query:"orderBy"</code> — and, in the
+        <a href="#auto-query-handlers~qry-sort">pair the boot enforces</a>, the
+        <code>sort:</code> leaves that fill it — the field takes
         <code>orderBy: [&lt;Entity&gt;Order!]</code> where <code>&lt;Entity&gt;Order</code> is
         <code>{ field: &lt;Entity&gt;OrderField!, direction: OrderDirection = ASC }</code>. The
-        <code>&lt;Entity&gt;OrderField</code> enum carries one SCREAMING_SNAKE value per sortable wire
-        path of the Response DTO (<code>userName</code> → <code>USER_NAME</code>, nested
+        <code>&lt;Entity&gt;OrderField</code> enum carries one SCREAMING_SNAKE value per declared wire
+        path (<code>userName</code> → <code>USER_NAME</code>, nested
         <code>addresses.zipCode</code> → <code>ADDRESSES_ZIP_CODE</code>) — the SAME allowlist the REST
         <code>?orderBy=</code> tokens are validated against, so the two surfaces cannot drift; the shared
-        <code>OrderDirection { ASC DESC }</code> is emitted once. An undeclared field is not a runtime
+        <code>OrderDirection { ASC DESC }</code> is emitted once. A DTO that does not declare the control has no
+        <code>orderBy</code> argument at all. An undeclared field is not a runtime
         400 here — it is not IN the enum, so introspection never advertises it and gqlparser rejects it
-        before any resolver runs. The fold lands on the same sort terms as the REST tokens, so keyset
+        before any resolver runs. What the enum cannot express is a leaf declared for only ONE
+        direction; that cut lands in the resolver, as the same schema violation. The fold lands on the same sort terms as the REST tokens, so keyset
         cursors stay valid and interchangeable across surfaces. No Go type is involved: like the
         <code>where</code> input, the enum exists only in the SDL, reflected from the DTOs already
         attached. Two wire names colliding on one enum value (e.g. <code>userName</code> and
@@ -299,14 +303,21 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         <strong>Computed fields are excluded from the enum.</strong> A Response field declared
         <code>computed:"Src1,Src2"</code> carries no column — the Query's <code>FromQueryResult</code>
         derives it after the read — and ordering happens in the store, where the keyset cursor is
-        built from stored values. So the field stays a normal, selectable member of the node type
-        while its enum value is simply never emitted: introspection does not advertise it and
-        gqlparser rejects <code>orderBy: [{field: DISPLAY}]</code> at validation, before any resolver
-        runs. This is the surface's own idiom rather than the REST/gRPC
-        <code>ComputedFieldNotSortableNotification</code> envelope — the same posture the reserved-control
-        cut already takes — so a GraphQL consumer gets a schema error, not a notification key. When
-        excluding the computed paths empties the vocabulary, the <code>orderBy</code> argument is
-        omitted entirely, exactly as for a Response with no typed paths.</li>
+        built from stored values. The enum is built from the Request DTO's <code>sort:</code>
+        declarations, and a computed field is never among them, so the field stays a normal,
+        selectable member of the node type while its enum value is simply never emitted:
+        introspection does not advertise it and gqlparser rejects
+        <code>orderBy: [{field: DISPLAY}]</code> at validation, before any resolver runs — this
+        surface's own idiom for the schema violation REST answers with, the same posture the
+        reserved-control cut already takes. A DTO that declares nothing orderable has no
+        <code>orderBy</code> argument at all.</li>
+    <li><strong>Cursors are checked before the resolver runs.</strong> A cursor argument must decode, and its
+        key tuple must be one longer than the ordering it was minted under — the same structure check the REST
+        wire has always run, now reached through the same assembler. A malformed <code>after:</code> is a schema
+        violation here, not something the reader discovers later.</li>
+    <li><strong>The by-id field obeys the same gate as the connection.</strong> Its one control
+        (<code>includeArchived</code>) passes through the canonical opt-in gate rather than a local check, so an
+        endpoint that did not declare it refuses the argument exactly as the listing would.</li>
     <li><strong><code>scalar DateTime</code></strong> is declared when any <code>time.Time</code> field is
         reached; <code>uuid.UUID</code> / <code>domain.ID</code> map to <code>ID</code>.</li>
 </ul>
@@ -332,9 +343,15 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         <code>query:"includeArchived"</code>; otherwise introspection never advertises it and gqlparser
         rejects it as an unknown argument — the twin of the REST by-id rule, where
         <code>?includeArchived</code> is the only recognized query key.</li>
-    <li><strong>No pagination, no <code>where</code>.</strong> The by-id read ignores
-        criteria pagination/projection by design (<code>ReadByID</code> contract); the singular field
-        therefore carries only <code>id</code> + the optional archived gate.</li>
+    <li><strong>No pagination, no <code>where</code>.</strong> A by-id read has one document, so the
+        singular field carries only <code>id</code> + the optional archived gate.</li>
+    <li><strong>The selection set IS the projection here too.</strong> It resolves to
+        <code>ReadCriteria.Projection</code> exactly as a connection node's does, and both read backings
+        honor a by-id projection. That is what makes an explicitly selected restricted field the ACTIVE
+        reference <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a> answers
+        <code>FieldAccessForbiddenNotification</code> (403) to — an unselected one is passively scrubbed,
+        never returned. The two read fields therefore give ONE answer about one restricted field: which of
+        them the consumer happened to call is not part of the question.</li>
     <li><strong>Same node type as the connection</strong> — pass the same entity string to
         <code>QueryWithParams</code> and <code>QueryByID</code> (see "Reflected schema"), so client
         fragments on <code>User</code> work on both fields.</li>

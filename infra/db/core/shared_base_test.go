@@ -48,8 +48,8 @@ func TestSharedBase_ReadTranslationAndScanPlan(t *testing.T) {
 	role := NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 		SharedBase(base, "pessoa_id")
 
-	if c, ok := role.ColumnForRead("Name"); !ok || c != "name" {
-		t.Errorf("ColumnForRead(base field Name) = %q,%v — want \"name\",true", c, ok)
+	if c, ok := resolvedColumn(role, "Name"); !ok || c != "name" {
+		t.Errorf("Resolve(base field Name) = %q,%v — want \"name\",true", c, ok)
 	}
 	if g, ok := role.GoNameForRead("name"); !ok || g != "Name" {
 		t.Errorf("GoNameForRead(base column name) = %q,%v — want \"Name\",true", g, ok)

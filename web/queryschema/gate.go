@@ -22,9 +22,9 @@ const (
 
 // ControlKeys is the canonical vocabulary as a set — the exact spellings a
 // Request DTO may declare as `query:"…"` control scalars, and the wire keys
-// the REST parser recognizes as controls. The set is CLOSED: a top-level
-// query-tagged scalar without a `filter:"…"` tag whose key is not in it is a
-// boot fail at ExtractRequestSchema (a dead declaration would opt nothing in
+// the REST parser recognizes as controls. The set is CLOSED: a query-tagged
+// scalar carrying neither `filter:"…"` nor `sort:"…"` whose key is not in it is
+// a boot fail at ExtractRequestSchema (a dead declaration would opt nothing in
 // while OpenAPI advertised it — fail loud at construction instead).
 var ControlKeys = map[string]bool{
 	KeyFirst: true, KeyLast: true,
@@ -32,6 +32,25 @@ var ControlKeys = map[string]bool{
 	KeyOrderBy: true, KeyFields: true,
 	KeySearch: true, KeyIncludeArchived: true,
 	KeyOnlyTotal: true,
+}
+
+// ParseControlBool reads the wire value of a boolean control key. The accepted
+// spellings are exactly "true" and "false"; anything else is refused.
+//
+// Strictness is the point. The same value has to mean the same thing on every
+// connector, and the other two already enforce it by wire format — proto `bool`
+// and GraphQL `Boolean` cannot carry "1" or "TRUE". A REST parser that quietly
+// read anything-but-"true" as false made `?includeArchived=1` behave one way on
+// a list route and another on a by-id route.
+func ParseControlBool(val string) (bool, bool) {
+	switch val {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // controlKeyList is the canonical keys in declaration order, for diagnostics.

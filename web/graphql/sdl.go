@@ -248,7 +248,7 @@ func (b *sdlBuilder) whereInput(entity string, reqType reflect.Type) (string, bo
 // operatorInput registers (once) the per-leaf operator input object — one
 // field per declared operator, the list operators (in/nin/iin/inin) taking a
 // list of the leaf's scalar.
-func (b *sdlBuilder) operatorInput(entity string, leaf queryschema.RequestField) string {
+func (b *sdlBuilder) operatorInput(entity string, leaf queryschema.RequestLeaf) string {
 	name := entity + "_" + sanitize(leaf.WirePath) + "_Op"
 	scalar := b.scalarName(leaf.Field.Type)
 	if scalar == "" {
@@ -298,33 +298,25 @@ func orderEnumValue(wirePath string) string {
 }
 
 // orderFieldMap derives an entity's sortable vocabulary — ENUM value → wire
-// path — from the Response DTO's projection schema, the SAME allowlist the
-// REST `?orderBy=` tokens are validated against (ParseOrderByWithSchema), so
-// the two surfaces cannot drift. Deterministic (values sorted by wire path);
-// empty when the Response carries no typed paths (the orderBy argument is
-// then omitted from the SDL). Two wire paths colliding on one enum value is a
-// Response-DTO modeling error and panics at boot with both names.
+// path — from the ordering vocabulary the Request DTO declared, the SAME
+// allowlist the REST `?orderBy=` tokens are validated against
+// (queryschema.ParseOrderBy), so the two surfaces cannot drift.
+// Deterministic (values sorted by wire path); empty when the DTO declares
+// nothing orderable (the orderBy argument is then omitted from the SDL). Two
+// wire paths colliding on one enum value is a Request-DTO modeling error and
+// panics at boot with both names.
 //
-// A COMPUTED path (`computed:"…"` on the Response — derived by the Query's
-// FromQueryResult after the read, backed by no column) is EXCLUDED: it stays
-// selectable, but it is not a member of the `<Entity>OrderField` enum, so
-// gqlparser rejects an ordering by it during validation, before any resolver
-// runs. That is this surface's native idiom for the refusal REST answers with
-// ComputedFieldNotSortableNotification — the cut lands in the schema itself,
-// the same posture the reserved-control arguments carry.
-func orderFieldMap(entity string, projSchema *queryschema.ProjectionSchema) (values []string, byValue map[string]string) {
-	if projSchema == nil || len(projSchema.Paths) == 0 {
+// Direction is NOT expressed here. A declaration may admit only one of
+// asc/desc, and the enum cannot say so without splitting into per-direction
+// members; that refusal lands in the resolver instead, which is why this map
+// carries the wire path alone.
+func orderFieldMap(entity string, sortable map[string]queryschema.SortSpec) (values []string, byValue map[string]string) {
+	if len(sortable) == 0 {
 		return nil, nil
 	}
-	wires := make([]string, 0, len(projSchema.Paths))
-	for w := range projSchema.Paths {
-		if _, isComputed := projSchema.Computed[w]; isComputed {
-			continue
-		}
+	wires := make([]string, 0, len(sortable))
+	for w := range sortable {
 		wires = append(wires, w)
-	}
-	if len(wires) == 0 {
-		return nil, nil
 	}
 	sort.Strings(wires)
 	byValue = make(map[string]string, len(wires))
@@ -334,7 +326,7 @@ func orderFieldMap(entity string, projSchema *queryschema.ProjectionSchema) (val
 		if prev, dup := byValue[v]; dup {
 			panic("graphql: orderBy enum value collision on entity " + strconv.Quote(entity) +
 				": wire paths " + strconv.Quote(prev) + " and " + strconv.Quote(w) +
-				" both map to " + v + " — rename one of the Response DTO wire (json) names")
+				" both map to " + v + " — rename one of the Request DTO wire (query) names")
 		}
 		byValue[v] = w
 		values = append(values, v)
@@ -342,14 +334,8 @@ func orderFieldMap(entity string, projSchema *queryschema.ProjectionSchema) (val
 	return values, byValue
 }
 
-// orderInput registers (once) the order vocabulary for an entity — the shared
-// OrderDirection enum, the per-entity `<Entity>OrderField` enum (one value per
-// sortable wire path) and the `<Entity>Order` input `{ field!, direction =
-// ASC }` — and returns the input name. ok=false when the entity has no
-// sortable paths (a Response with no reflectable shape, or one whose every
-// path is computed): the caller then omits the orderBy argument entirely.
-func (b *sdlBuilder) orderInput(entity string, projSchema *queryschema.ProjectionSchema) (string, bool) {
-	values, _ := orderFieldMap(entity, projSchema)
+func (b *sdlBuilder) orderInput(entity string, sortable map[string]queryschema.SortSpec) (string, bool) {
+	values, _ := orderFieldMap(entity, sortable)
 	if len(values) == 0 {
 		return "", false
 	}
@@ -398,20 +384,20 @@ func (b *sdlBuilder) connection(entity, nodeType string) string {
 func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflect.Type) string {
 	node := b.objectTypeAs(entity, respType)
 	conn := b.connection(entity, node)
-	reserved := queryschema.ExtractRequestSchema(reqType).Reserved
+	reqSchema := queryschema.ExtractRequestSchema(reqType)
+	reserved := reqSchema.Reserved
 	args := []string{}
 	if whereName, ok := b.whereInput(entity, reqType); ok {
 		args = append(args, "where: "+whereName)
 	}
 	// orderBy is the one reserved control with a typed, per-entity argument:
-	// `orderBy: [<Entity>Order!]` over the reflected sortable-field enum. When
-	// the Response carries no typed paths the argument is omitted even under
-	// the DTO opt-in — there is nothing to enumerate.
+	// `orderBy: [<Entity>Order!]` over the enum of the fields the Request DTO
+	// declared orderable with `sort:`. The control key switches the argument on,
+	// the declarations fill the enum — a pair the boot enforces, so an opted-in
+	// endpoint always has something to enumerate.
 	orderBySDL := ""
-	if reserved[queryschema.KeyOrderBy] {
-		if in, ok := b.orderInput(entity, queryschema.ExtractProjectionSchema(respType)); ok {
-			orderBySDL = "orderBy: [" + in + "!]"
-		}
+	if in, ok := b.orderInput(entity, reqSchema.Sortable); ok {
+		orderBySDL = "orderBy: [" + in + "!]"
 	}
 	for _, arg := range []struct {
 		key string
@@ -519,11 +505,11 @@ func exportedJSONFields(t reflect.Type) []jsonField {
 
 // filterLeaves returns the filter leaves of a Request DTO in declaration order
 // via the shared queryschema traversal.
-func filterLeaves(reqType reflect.Type) []queryschema.RequestField {
-	var out []queryschema.RequestField
-	for _, f := range queryschema.WalkRequest(reqType) {
-		if f.Ops != nil {
-			out = append(out, f)
+func filterLeaves(reqType reflect.Type) []queryschema.RequestLeaf {
+	var out []queryschema.RequestLeaf
+	for _, leaf := range queryschema.ExtractRequestSchema(reqType).Leaves {
+		if leaf.Kind == queryschema.LeafFilter {
+			out = append(out, leaf)
 		}
 	}
 	return out

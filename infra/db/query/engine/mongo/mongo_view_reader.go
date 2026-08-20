@@ -503,8 +503,21 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	if !c.IncludeArchived && sdOn {
 		filter[sdCol] = nil
 	}
+	// Projection. A by-id read has no wire `?fields=`, so what arrives here
+	// came from the Query's ToCriteria — most often ReadCriteria.Restrict,
+	// the field-level access-control seam, which implements the removal by
+	// writing an exclusion into the projection. Ignoring it would mean the
+	// restriction silently does not apply on this route.
+	findOpts := options.FindOne()
+	if len(c.Projection) > 0 {
+		colProj, perr := translateProjectionKeys(node, c.Projection)
+		if perr != nil {
+			return nil, false, perr
+		}
+		findOpts.SetProjection(buildProjection(colProj, nil))
+	}
 	var doc bson.M
-	err = col.FindOne(ctx, filter).Decode(&doc)
+	err = col.FindOne(ctx, filter, findOpts).Decode(&doc)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, false, nil
 	}

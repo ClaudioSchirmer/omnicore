@@ -25,13 +25,14 @@ func (expLabelModule) Translations() map[string]string {
 }
 
 type expCSVReq struct {
-	Email *string `query:"email" filter:"eq"`
+	Email *string `query:"email" filter:"eq" sort:"asc,desc"`
+	Name  *string `query:"name"  sort:"asc,desc"`
 
 	First           *int64  `query:"first"`
-	OrderBy         *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 // ─── the three-type read fixture backing every export case ─────────────────

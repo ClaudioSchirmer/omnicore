@@ -40,16 +40,16 @@ func (q *execQuery) FromQueryResult(_ *configuration.AppContext, r execResult) (
 }
 
 type execRequest struct {
-	Name            *string `query:"name" filter:"eq,in,startswith"`
-	Age             *int64  `query:"age" filter:"eq,gte"`
+	Name            *string `query:"name" filter:"eq,in,startswith" sort:"asc,desc"`
+	Age             *int64  `query:"age" filter:"eq,gte" sort:"asc,desc"`
 	First           *int64  `query:"first"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 func (r execRequest) ToQuery(crit queries.ReadCriteria) *execQuery {

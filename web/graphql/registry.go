@@ -197,14 +197,25 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*R)(nil)).Elem()
 	plan := newCriteriaPlan(entity, reqType, respType)
+	// `search` is a Mongo $text query, which the store refuses without a
+	// TextIndex on the view. The pair is checked at boot from a registry every
+	// read surface feeds — a field exposed only here is guarded exactly like a
+	// REST route.
+	queryschema.RecordSearchDeclaration(plan.reqSchema, reqType.String(), h)
 	return applyOptions(Field{
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
-				crit, controls, gerr := plan.buildCriteria(args)
+				in, badField, gerr := plan.decodeArgs(args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
+				}
+				// A term that resolved to no declaration — an ordering member
+				// outside the vocabulary — renders through the same seat the
+				// assembler's own refusals use below.
+				if badField != "" {
+					return nil, schemaViolation(pipe, ctx, badField)
 				}
 				// Only-total: a selection of just totalCount (no edges/pageInfo)
 				// is the GraphQL expression of REST's ?onlyTotal=true — no
@@ -216,17 +227,15 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 				// intrinsic to every list envelope on every surface.
 				if onlyTotalSelected(sel, frags) && plan.reqSchema.Reserved[queryschema.KeyOnlyTotal] {
 					active := true
-					controls.OnlyTotal = &active
-					crit.OnlyTotal = true
+					in.Controls.OnlyTotal = &active
 				}
-				// The canonical control gateway — the same three checks REST and
-				// gRPC run (DTO opt-in gate, directional rule, only-total conflict
-				// matrix), rendered in this surface's idiom via schemaViolation.
-				// The SDL already cut undeclared args (gqlparser rejects unknown
-				// arguments before the resolver), so the gate arm is defense in
-				// depth; direction + conflicts are the live checks.
-				if violations := queryschema.ValidateControls(plan.reqSchema.Reserved, controls, graphqlNaturalControls); len(violations) > 0 {
-					return nil, schemaViolation(pipe, ctx, violations[0].Field())
+				// Two controls have no argument on this wire because the language
+				// already expresses them, so the opt-in gate must not ask the DTO
+				// to declare a key that does not exist here.
+				in.Natural = graphqlNaturalControls
+				crit, _, violation, ok := queryschema.BuildCriteria(plan.reqSchema, plan.projSchema, in)
+				if !ok {
+					return nil, renderViolation(pipe, ctx, violation)
 				}
 				// Selection set → projection: an explicitly selected restricted
 				// field trips ReadCriteria.Restrict's active-reference 403 (parity
@@ -278,8 +287,12 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 // argument. The return type is nullable on purpose: a missing document
 // resolves the field to null with the canonical RecordNotFound notification
 // in errors[].extensions (the 404 twin — the GitHub-style not-found shape).
-// Pagination/projection criteria do not apply (ReadByID ignores them by
-// design); the selection set still trims the resolved node.
+//
+// Pagination criteria do not apply — a by-id read has one document. The
+// PROJECTION does: the selection set resolves to one, both read backings honor
+// it on this route, and it is what makes an explicitly selected restricted
+// field the ACTIVE reference ReadCriteria.Restrict answers 403 to, exactly as
+// on the connection field.
 func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[TResult]](
 	name, entity string,
 	responseProjection func(TResult) R,
@@ -290,22 +303,40 @@ func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[T
 	mustValidName("QueryByID", "entity", entity)
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*R)(nil)).Elem()
-	includeArchived := queryschema.ExtractRequestSchema(reqType).Reserved[queryschema.KeyIncludeArchived]
+	byIDSchema := queryschema.ExtractRequestSchema(reqType)
+	includeArchived := byIDSchema.Reserved[queryschema.KeyIncludeArchived]
+	// The Response's wire→doc map, so this field's selection set resolves to a
+	// projection exactly as the connection field's node selection does.
+	byIDProjSchema := queryschema.ExtractProjectionSchema(respType)
 	return applyOptions(Field{
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryByIDFieldSDL(name, entity, respType, includeArchived) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
-			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
+			return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
 				var req TReq
 				// The by-id criteria seat: one reserved control is the whole
-				// argument vocabulary here (the paged sibling builds the full
-				// set in criteriaPlan.buildCriteria).
-				crit := queries.ReadCriteria{Filter: map[string]any{}}
-				if includeArchived {
-					if v, ok := args[queryschema.KeyIncludeArchived].(bool); ok {
-						crit.IncludeArchived = v
-						applyIncludeArchived(reflect.ValueOf(&req).Elem(), v)
-					}
+				// argument vocabulary here, and it goes through the SAME
+				// assembler the connection field uses, so the opt-in gate
+				// answers identically on both.
+				var in queryschema.Read
+				if v, present := args[queryschema.KeyIncludeArchived].(bool); present {
+					in = queryschema.ByIDRead(v, true)
+					applyIncludeArchived(reflect.ValueOf(&req).Elem(), v)
+				}
+				crit, _, violation, ok := queryschema.BuildCriteria(byIDSchema, nil, in)
+				if !ok {
+					return nil, renderViolation(pipe, ctx, violation)
+				}
+				// Selection set → projection, the same seat the connection field
+				// uses. This field IS the node, so its own selection is what
+				// resolves. Both read backings honor a by-id projection, so the
+				// two effects land here too: the store returns only what was
+				// asked for, and an explicitly selected restricted field is the
+				// ACTIVE reference ReadCriteria.Restrict answers 403 to —
+				// without it, the same restricted field was refused on the
+				// listing and scrubbed in silence here.
+				if proj := projectionFromNode(sel, frags, byIDProjSchema); len(proj) > 0 {
+					crit.Projection = proj
 				}
 				q := req.ToQuery(crit)
 				q.SetPathID(asString(args["id"]))
@@ -410,16 +441,23 @@ func (r *Registry) missingPermission(ctx *configuration.AppContext, permission s
 // same way a handler failure surfaces — through pipeline.Run so the message is
 // translated against the request language and carries the typed triple
 // (notificationKey SchemaViolationNotification, field = the offending argument).
-// Used for the only-total-vs-pagination conflict, REST parity with the
-// onlyTotalConflicts 400. Package-level (the read resolver holds pipe, not the
-// Registry).
+// Used where THIS surface is the one refusing (an ordering member outside the
+// enum). Package-level (the read resolver holds pipe, not the Registry).
 func schemaViolation(pipe *pipeline.Pipeline, ctx *configuration.AppContext, field string) []GraphQLError {
+	return renderViolation(pipe, ctx, queryschema.SchemaViolation(field))
+}
+
+// renderViolation is the seat for a refusal the shared assembler produced. It
+// carries the violation's OWN notification rather than flattening every
+// rejection to SchemaViolation: the assembler decides what the refusal MEANS
+// and each surface only renders it, which is what lets REST, gRPC and this
+// surface answer one question with one typed, translated message. A violation
+// with no notification of its own is the canonical schema violation — that
+// default lives on the Violation, so it cannot drift per surface.
+func renderViolation(pipe *pipeline.Pipeline, ctx *configuration.AppContext, v *queryschema.Violation) []GraphQLError {
 	res := pipeline.Run(pipe, ctx, func() (any, error) {
 		nc := domain.NewNotificationContext("Schema")
-		nc.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    field,
-			Notification: domain.SchemaViolationNotification{},
-		})
+		nc.AddNotificationMessage(v.Message())
 		return nil, domain.NewDomainError([]*domain.NotificationContext{nc})
 	})
 	return fromNotifications(res.Notifications())

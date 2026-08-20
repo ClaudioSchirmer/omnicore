@@ -123,8 +123,9 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
   </p>
   <p>
     Because the rule lives in <code>ToCriteria</code>, it is <strong>surface-agnostic</strong>: the
-    <a href="#graphql">GraphQL</a> read enforces it too. There the node selection set
-    (<code>edges { node { … } }</code>) is mapped to <code>ReadCriteria.Projection</code> before
+    <a href="#graphql">GraphQL</a> read enforces it too, on the connection field AND its by-id twin. There
+    the node selection set (<code>edges { node { … } }</code> on the connection, the field's own leaves on
+    <code>user(id:)</code>) is mapped to <code>ReadCriteria.Projection</code> before
     <code>ToCriteria</code>, so explicitly selecting a restricted field is the "active" reference that
     trips the same <code>FieldAccessForbiddenNotification</code> (<code>semantic: "Forbidden"</code> in
     <code>errors[].extensions</code>), while an unselected one is passively scrubbed — never returned.

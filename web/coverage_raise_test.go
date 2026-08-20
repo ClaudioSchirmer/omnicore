@@ -226,43 +226,6 @@ func TestHandleQueryWithParams_MalformedCursor_400(t *testing.T) {
 	}
 }
 
-// ─── validateCursorAgainstCriteria — decode / tuple-length / hash branches ──
-
-func TestValidateCursorAgainstCriteria_AllBranches(t *testing.T) {
-	crit := queries.ReadCriteria{Filter: map[string]any{}}
-	h := queries.HashContext(crit.Filter, crit.OrderBy, crit.Search, crit.IncludeArchived)
-
-	// Valid: K=[_id] → len(K)-1 == 0 == len(Sort); hash matches.
-	okCursor, err := queries.EncodeCursor([]any{"id-1"}, h)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	if bad, ok := validateCursorAgainstCriteria(okCursor, crit, "after"); !ok || bad != "" {
-		t.Errorf("expected valid cursor to pass, got bad=%q ok=%v", bad, ok)
-	}
-
-	// Tuple-length mismatch: K=[a,b] → len(K)-1 == 1 != len(Sort)==0.
-	tupleCursor, _ := queries.EncodeCursor([]any{"a", "b"}, h)
-	if bad, ok := validateCursorAgainstCriteria(tupleCursor, crit, "after"); ok || bad != "after" {
-		t.Errorf("expected tuple-length rejection, got bad=%q ok=%v", bad, ok)
-	}
-
-	// Context-hash mismatch is NOT the wrapper's job: at this layer the
-	// criteria is the pre-ToCriteria wire snapshot, while cursors are stamped
-	// from the post-ToCriteria context — comparing them would reject every
-	// legitimate cursor of an overlay-bearing paged query. The reader performs
-	// the authoritative hash check post-ToCriteria; here the cursor passes.
-	hashCursor, _ := queries.EncodeCursor([]any{"x"}, "deadbeef")
-	if bad, ok := validateCursorAgainstCriteria(hashCursor, crit, "after"); !ok || bad != "" {
-		t.Errorf("expected the hash check to be deferred to the reader, got bad=%q ok=%v", bad, ok)
-	}
-
-	// Decode error: not a valid cursor token.
-	if bad, ok := validateCursorAgainstCriteria("@@not-a-cursor@@", crit, "after"); ok || bad != "after" {
-		t.Errorf("expected decode-error rejection, got bad=%q ok=%v", bad, ok)
-	}
-}
-
 // ─── QueryByID — boot panic on path:"id" + Failure branch ───────────
 
 type idTaggedIDReq struct {

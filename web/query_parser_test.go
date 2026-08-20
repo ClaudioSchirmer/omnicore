@@ -57,7 +57,7 @@ func TestNewQueryParser_EmitsSortOptInWarn(t *testing.T) {
 	// The advisory is warn-once per (Request type, sortable path set), and
 	// earlier tests in this package construct the same pair — clear the dedup
 	// so this test observes the FIRST emission rather than a suppressed one.
-	resetOrderByOptInWarned(t)
+	resetSortableWarned(t)
 
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -67,8 +67,8 @@ func TestNewQueryParser_EmitsSortOptInWarn(t *testing.T) {
 	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
 
 	logs := buf.String()
-	if !strings.Contains(logs, "query.orderBy.opt-in") {
-		t.Fatalf("expected query.orderBy.opt-in warn, log was: %s", logs)
+	if !strings.Contains(logs, "query.sortable") {
+		t.Fatalf("expected query.sortable warn, log was: %s", logs)
 	}
 	// Sortable paths come from extractProjectionSchema(sparseUser); the
 	// projection_test already verifies the path map's contents. Spot check
@@ -88,7 +88,7 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 		Name   *string `query:"name"  filter:"eq"`
 		Fields *string `query:"fields"`
 	}
-	resetOrderByOptInWarned(t)
+	resetSortableWarned(t)
 
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -97,7 +97,7 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 
 	_ = NewQueryParser[fieldsOnlyRequest, sparseUser]()
 
-	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
+	if strings.Contains(buf.String(), "query.sortable") {
 		t.Errorf("did not expect sort opt-in warn when only Fields is declared, log was: %s", buf.String())
 	}
 }
@@ -107,7 +107,7 @@ func TestNewQueryParser_NoWarnWhenSortNotOptedIn(t *testing.T) {
 // scanned once per endpoint serving it, which used to print the identical
 // multi-kilobyte line several times per boot.
 func TestNewQueryParser_SortOptInWarnIsOncePerShape(t *testing.T) {
-	resetOrderByOptInWarned(t)
+	resetSortableWarned(t)
 	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
 
 	var buf bytes.Buffer
@@ -117,24 +117,24 @@ func TestNewQueryParser_SortOptInWarnIsOncePerShape(t *testing.T) {
 
 	_ = NewQueryParser[testFindParamsRequest, sparseUser]()
 
-	if strings.Contains(buf.String(), "query.orderBy.opt-in") {
+	if strings.Contains(buf.String(), "query.sortable") {
 		t.Errorf("expected the second scan of the same shape to be silent, log was: %s", buf.String())
 	}
 	// A DIFFERENT sortable surface still gets its own line.
 	_ = NewQueryParser[testFindSortOnlyRequest, sparseUser]()
-	if !strings.Contains(buf.String(), "query.orderBy.opt-in") {
+	if !strings.Contains(buf.String(), "query.sortable") {
 		t.Errorf("expected a distinct request shape to warn, log was: %s", buf.String())
 	}
 }
 
-// resetOrderByOptInWarned clears the warn-once dedup and restores it when the
+// resetSortableWarned clears the warn-once dedup and restores it when the
 // test ends, so tests observing the advisory stay independent of package test
 // ordering.
-func resetOrderByOptInWarned(t *testing.T) {
+func resetSortableWarned(t *testing.T) {
 	t.Helper()
-	prev := orderByOptInWarned
-	orderByOptInWarned = &sync.Map{}
-	t.Cleanup(func() { orderByOptInWarned = prev })
+	prev := sortableWarned
+	sortableWarned = &sync.Map{}
+	t.Cleanup(func() { sortableWarned = prev })
 }
 
 // ─── Runtime translation via Parse ─────────────────────────────────────────
@@ -264,7 +264,7 @@ func TestNewQueryParser_MapResponseFallsBackToPassThrough(t *testing.T) {
 		crit = got
 		return c.SendStatus(fiber.StatusOK)
 	})
-	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar&orderBy=anything", nil))
+	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar&orderBy=name", nil))
 
 	if v, ok := crit.Projection["foo"]; !ok || v != 1 {
 		t.Errorf("expected foo:1 in pass-through projection, got %v", crit.Projection)
@@ -272,7 +272,9 @@ func TestNewQueryParser_MapResponseFallsBackToPassThrough(t *testing.T) {
 	if _, hasIDExclusion := crit.Projection["_id"]; hasIDExclusion {
 		t.Errorf("pass-through mode should not add _id:0, got %v", crit.Projection)
 	}
-	if len(crit.OrderBy) != 1 || crit.OrderBy[0].Field != "anything" {
-		t.Errorf("expected OrderByField=anything verbatim, got %+v", crit.OrderBy)
+	// `?fields=` falls back to pass-through on an untyped Response; ordering
+	// does not, because its vocabulary is the Request's either way.
+	if len(crit.OrderBy) != 1 || crit.OrderBy[0].Field != "Name" {
+		t.Errorf("expected OrderByField=Name, got %+v", crit.OrderBy)
 	}
 }
