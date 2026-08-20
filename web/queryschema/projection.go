@@ -178,24 +178,27 @@ func computedSources(f reflect.StructField, docPrefix string) []string {
 	return out
 }
 
-// ParseProjection turns a comma-separated wire value into a projection map
-// keyed by Go field path (value=1 for inclusion); the reader translates each
-// Go path to the physical Mongo column via the view's TableSchema. When
-// projSchema is non-nil, each token is validated against the Response DTO's
-// declared wire paths and translated to the corresponding Go field path
-// (nested paths walked segment-by-segment). An unknown token returns
-// (nil, nil, token, false). When projSchema is nil (manual handlers via
-// a QueryParser over an untyped Response), tokens become inclusion entries verbatim — the
-// pass-through.
+// ParseProjection turns the selected wire tokens into a projection map keyed by
+// Go field path (value=1 for inclusion); the reader translates each Go path to
+// the physical column via the view's TableSchema. When projSchema is non-nil,
+// each token is validated against the Response DTO's declared wire paths and
+// translated to the corresponding Go field path (nested paths walked
+// segment-by-segment). An unknown token returns (nil, nil, token, false). When
+// projSchema is nil (a manual handler over an untyped Response), tokens become
+// inclusion entries verbatim — the pass-through.
 //
-// wireSet returns which wire names appeared in the input; the caller uses
-// it to drive the top-level `id` auto-exclusion (the framework adds
-// `_id: 0` when `id` is absent from the wire set).
-func ParseProjection(s string, projSchema *ProjectionSchema) (proj map[string]int, wireSet map[string]bool, badToken string, ok bool) {
-	if s == "" {
+// It takes TOKENS, not a comma-separated value: the comma is how one wire
+// spells a list, and the surfaces that spell it otherwise — a GraphQL
+// selection, a proto FieldMask — would otherwise have to join a list just to
+// have it split back.
+//
+// wireSet returns which wire names appeared in the input; the caller uses it to
+// drive the top-level `id` auto-exclusion (the framework adds `_id: 0` when
+// `id` is absent from the wire set).
+func ParseProjection(tokens []string, projSchema *ProjectionSchema) (proj map[string]int, wireSet map[string]bool, badToken string, ok bool) {
+	if len(tokens) == 0 {
 		return nil, nil, "", true
 	}
-	tokens := strings.Split(s, ",")
 	proj = make(map[string]int, len(tokens))
 	wireSet = make(map[string]bool, len(tokens))
 	for _, t := range tokens {
@@ -332,6 +335,19 @@ func UnrequestedComputedSources(projSchema *ProjectionSchema, wireSet map[string
 // OrderByField renders the canonical wire spelling for a rejected `?orderBy=`
 // token — `orderBy[<token>]`, the prefix every surface reports.
 func OrderByField(token string) string { return KeyOrderBy + "[" + token + "]" }
+
+// OrderByToken is the inverse: the token inside an `orderBy[<token>]` field
+// name, for a surface whose wire has no bracket form to render. gRPC's order_by
+// is already a typed field on the request message, so the prefix would name
+// nothing there — the RULE that refused the token is shared, the spelling of
+// the refusal is the surface's.
+func OrderByToken(field string) (string, bool) {
+	prefix := KeyOrderBy + "["
+	if !strings.HasPrefix(field, prefix) || !strings.HasSuffix(field, "]") {
+		return "", false
+	}
+	return field[len(prefix) : len(field)-1], true
+}
 
 // FieldsField renders the canonical wire spelling for a rejected `?fields=`
 // token — `fields[<token>]`.

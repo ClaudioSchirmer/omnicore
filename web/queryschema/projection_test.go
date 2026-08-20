@@ -294,10 +294,10 @@ func TestWalkResponseGuard_PointerAndNonStructDefensive(t *testing.T) {
 // ─── ParseProjection edge cases ─────────────────────────────────────────────
 
 func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
-	if proj, _, bad, ok := ParseProjection("", nil); !ok || bad != "" || proj != nil {
+	if proj, _, bad, ok := ParseProjection(nil, nil); !ok || bad != "" || proj != nil {
 		t.Fatalf("empty projection = (%v,%q,%v)", proj, bad, ok)
 	}
-	proj, wireSet, bad, ok := ParseProjection("a,,b", nil)
+	proj, wireSet, bad, ok := ParseProjection([]string{"a", "b"}, nil)
 	if !ok || bad != "" || len(proj) != 2 || !wireSet["a"] {
 		t.Fatalf("nil-schema projection = (%v,%v,%q,%v)", proj, wireSet, bad, ok)
 	}
@@ -305,7 +305,7 @@ func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
 
 func TestParseProjection_SchemaTranslatesAndRejects(t *testing.T) {
 	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	proj, wireSet, bad, ok := ParseProjection("name,addresses.zipCode", ps)
+	proj, wireSet, bad, ok := ParseProjection([]string{"name", "addresses.zipCode"}, ps)
 	if !ok || bad != "" {
 		t.Fatalf("expected ok, got bad=%q ok=%v", bad, ok)
 	}
@@ -315,7 +315,7 @@ func TestParseProjection_SchemaTranslatesAndRejects(t *testing.T) {
 	if !wireSet["name"] {
 		t.Errorf("expected wireSet to record name, got %v", wireSet)
 	}
-	if _, _, bad, ok := ParseProjection("bogus", ps); ok || bad != "bogus" {
+	if _, _, bad, ok := ParseProjection([]string{"bogus"}, ps); ok || bad != "bogus" {
 		t.Fatalf("expected unknown token rejection, got bad=%q ok=%v", bad, ok)
 	}
 }

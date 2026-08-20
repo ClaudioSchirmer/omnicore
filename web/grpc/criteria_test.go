@@ -18,7 +18,14 @@ import (
 )
 
 func TestCriteriaPageSortReadMask(t *testing.T) {
-	after := "cursor-a"
+	// A REAL cursor: every surface runs the same structure check (it must
+	// decode, and its key tuple must be one longer than the ordering), so a
+	// placeholder string is INVALID_ARGUMENT here exactly as it is a 400 on
+	// REST. Two ordering terms below → three tuple elements.
+	after, cursorErr := queries.EncodeCursor([]any{"n", "c", "id"}, "")
+	if cursorErr != nil {
+		t.Fatalf("EncodeCursor: %v", cursorErr)
+	}
 	limit := int64(25)
 	search := "drill"
 	fields := map[string]string{"id": "ID", "name": "Name", "created_at": "CreatedAt"}
@@ -36,7 +43,7 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if crit.After != "cursor-a" || crit.Limit != 25 || !crit.IncludeArchived || crit.Search != "drill" {
+	if crit.After != after || crit.Limit != 25 || !crit.IncludeArchived || crit.Search != "drill" {
 		t.Fatalf("page: %+v", crit)
 	}
 	// wire names resolve to GO FIELD PATHS — the spelling ToCriteria
@@ -95,7 +102,9 @@ func TestCriteriaOnlyTotalConflicts(t *testing.T) {
 			"onlyTotal[fields]"},
 	}
 	for _, tc := range cases {
-		b := NewCriteria().Fields(fields).Page(tc.req)
+		b := NewCriteria().Fields(fields).
+			Sortable(map[string]queryschema.SortSpec{"name": {GoPath: "Name", Asc: true, Desc: true}}).
+			Page(tc.req)
 		if tc.add != nil {
 			b = tc.add(b)
 		}
@@ -152,7 +161,7 @@ func TestCriteriaStringParityWithRESTEmitter(t *testing.T) {
 	spec := queryschema.FilterSpec{DocPath: "Name", GoKind: reflect.String}
 
 	viaREST := map[string]any{}
-	queryschema.ApplyFilterParam(viaREST, spec, queryschema.OpContains, "Dri.ll")
+	queryschema.ApplyFilterValues(viaREST, spec, queryschema.OpContains, []string{"Dri.ll"})
 
 	crit, err := NewCriteria().String("Name", &pb.StringFilter{Conditions: []*pb.StringCondition{
 		{Op: pb.StringOp_STRING_OP_CONTAINS, Values: []string{"Dri.ll"}},

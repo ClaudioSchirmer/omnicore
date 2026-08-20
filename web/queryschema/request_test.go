@@ -4,8 +4,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // ─── ExtractRequestSchema: pointer type + nested embed group ─────────────────
@@ -111,10 +109,10 @@ func TestExtractRequestSchema_IncludesPartialOperators(t *testing.T) {
 	}
 }
 
-// ─── WalkRequest: pointer deref / non-struct / untagged-field skip / embed ───
+// ─── walkRequest: pointer deref / non-struct / untagged-field skip / embed ───
 
 func TestWalkRequest_NonStructIsEmpty(t *testing.T) {
-	if fields := WalkRequest(reflect.TypeOf(0)); len(fields) != 0 {
+	if fields := walkRequest(reflect.TypeOf(0)); len(fields) != 0 {
 		t.Fatalf("non-struct must yield no fields, got %v", fields)
 	}
 }
@@ -125,7 +123,7 @@ func TestWalkRequest_PointerDerefAndUntaggedSkip(t *testing.T) {
 		Other string  // no query tag → skipped
 		First *int64  `query:"first"` // reserved scalar
 	}
-	fields := WalkRequest(reflect.PointerTo(reflect.TypeOf(inner{})))
+	fields := walkRequest(reflect.PointerTo(reflect.TypeOf(inner{})))
 	if len(fields) != 2 {
 		t.Fatalf("expected 2 query-tagged fields (name, first), got %d: %+v", len(fields), fields)
 	}
@@ -138,7 +136,7 @@ func TestWalkRequest_PointerDerefAndUntaggedSkip(t *testing.T) {
 }
 
 func TestWalkRequest_EmbedGroupMarkerThenInnerLeaves(t *testing.T) {
-	fields := WalkRequest(reflect.TypeOf(reqNestedEmbedRequest{}))
+	fields := walkRequest(reflect.TypeOf(reqNestedEmbedRequest{}))
 	// Declaration order: name (leaf), addresses (group marker), addresses.zipCode,
 	// addresses.city (inner leaves), first (reserved).
 	var sawGroup, sawInner bool
@@ -175,7 +173,7 @@ func TestJoinPath_EmptySegmentReturnsPrefix(t *testing.T) {
 	}
 }
 
-// ─── ReadIncludeArchived ─────────────────────────────────────────────────────
+// ─── ReadIncludeArchivedControl ─────────────────────────────────────────────────────
 
 type iaValueDTO struct {
 	IncludeArchived bool `query:"includeArchived"`
@@ -236,8 +234,8 @@ func TestReadIncludeArchived(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ReadIncludeArchived(reflect.ValueOf(tc.dto)); got != tc.want {
-				t.Errorf("ReadIncludeArchived(%s) = %v, want %v", tc.name, got, tc.want)
+			if got, _ := ReadIncludeArchivedControl(reflect.ValueOf(tc.dto)); got != tc.want {
+				t.Errorf("ReadIncludeArchivedControl(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
@@ -352,65 +350,6 @@ func TestExtractRequestSchema_SortableGuards(t *testing.T) {
 			_ = ExtractRequestSchema(reflect.TypeOf(tc.dto))
 		})
 	}
-}
-
-func TestParseOrderBy(t *testing.T) {
-	vocab := ExtractRequestSchema(reflect.TypeOf(sortableRequest{})).Sortable
-
-	t.Run("empty value is a no-op", func(t *testing.T) {
-		fields, v, ok := ParseOrderBy("", vocab)
-		if !ok || v != nil || fields != nil {
-			t.Fatalf("got (%v,%+v,%v)", fields, v, ok)
-		}
-	})
-
-	t.Run("translates to the Go path and honors the prefix", func(t *testing.T) {
-		fields, v, ok := ParseOrderBy("code,-addresses.zipCode", vocab)
-		if !ok || v != nil || len(fields) != 2 {
-			t.Fatalf("got (%v,%+v,%v)", fields, v, ok)
-		}
-		if fields[0].Field != "Code" || fields[0].Desc {
-			t.Errorf("first term = %+v", fields[0])
-		}
-		if fields[1].Field != "Addresses.ZipCode" || !fields[1].Desc {
-			t.Errorf("second term = %+v", fields[1])
-		}
-	})
-
-	t.Run("blank segments are skipped", func(t *testing.T) {
-		fields, _, ok := ParseOrderBy("code,,id", vocab)
-		if !ok || len(fields) != 2 {
-			t.Fatalf("got (%v,%v)", fields, ok)
-		}
-	})
-
-	for _, tc := range []struct{ name, token, wantField string }{
-		{"undeclared token", "bogus", "orderBy[bogus]"},
-		{"undeclared token, descending", "-bogus", "orderBy[-bogus]"},
-		{"filterable but not orderable", "name", "orderBy[name]"},
-		{"ascending-only asked descending", "-id", "orderBy[-id]"},
-		{"descending-only asked ascending", "created", "orderBy[created]"},
-		{"one bad token poisons the list", "code,-id", "orderBy[-id]"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fields, v, ok := ParseOrderBy(tc.token, vocab)
-			if ok || fields != nil {
-				t.Fatalf("%q must be refused; got (%v,%v)", tc.token, fields, ok)
-			}
-			if v == nil || v.Field != tc.wantField {
-				t.Fatalf("must report the wire token verbatim; got %+v want %q", v, tc.wantField)
-			}
-			if _, generic := v.Message().Notification.(domain.SchemaViolationNotification); !generic {
-				t.Errorf("every ordering refusal is the canonical schema violation, got %T", v.Message().Notification)
-			}
-		})
-	}
-
-	t.Run("an empty vocabulary refuses everything", func(t *testing.T) {
-		if _, _, ok := ParseOrderBy("code", map[string]SortSpec{}); ok {
-			t.Fatal("nothing is orderable without a declaration")
-		}
-	})
 }
 
 func TestSortSpec_Allows(t *testing.T) {

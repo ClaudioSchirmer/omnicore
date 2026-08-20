@@ -62,8 +62,8 @@ func legFieldsColumnSet(leg *Leg) map[string]struct{} {
 	set := make(map[string]struct{}, len(leg.fields)+1)
 	var node *ViewNode
 	for _, f := range leg.fields {
-		if col, ok := leg.view.schema.ColumnForRead(f); ok {
-			set[col] = struct{}{}
+		if r, ok := leg.view.schema.Resolve(f); ok {
+			set[r.Column] = struct{}{}
 			continue
 		}
 		if node == nil {
@@ -143,7 +143,7 @@ func appendLegFieldsProblems(acc []string, viewName, what string, leg *Leg) []st
 	}
 	var node *ViewNode
 	for _, f := range leg.fields {
-		if _, ok := leg.view.schema.ColumnForRead(f); ok {
+		if _, ok := leg.view.schema.Resolve(f); ok {
 			continue
 		}
 		if node == nil {

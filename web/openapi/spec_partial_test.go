@@ -19,7 +19,7 @@ type specNestedRequest struct {
 	Name      *string         `query:"name"  filter:"eq,startswith"`
 	Addresses specAddrFilter  `query:"addresses"`
 	Meta      *specMetaFilter `query:"meta"`
-	Limit     *int64          `query:"limit"`
+	First     *int64          `query:"first"`
 }
 
 type specAddrFilter struct {
@@ -103,7 +103,7 @@ func TestSpec_NestedEmbedGroupExpandsToDottedParameters(t *testing.T) {
 		"addresses.zipCode",
 		"addresses.zipCode.startswith",
 		"meta.tag",
-		"limit",
+		"first",
 	}
 	for _, want := range expected {
 		if !names[want] {

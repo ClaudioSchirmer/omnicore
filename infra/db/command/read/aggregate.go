@@ -180,8 +180,8 @@ func (l *AggregateLoader[T]) Aggregate(ctx context.Context, q *criteria.Query, s
 	if len(specs) == 0 {
 		return fmt.Errorf("Aggregate: at least one aggregate spec is required")
 	}
-	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
-	resolve := l.specResolver(joins)
+	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 	exprs := make([]string, len(specs))
 	for i, s := range specs {

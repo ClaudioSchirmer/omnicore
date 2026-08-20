@@ -454,6 +454,18 @@ reg.Register(fwgrpc.QueryByID[usersv1.GetUserRequest, usersv1.GetUserResponse](
         <code>SchemaViolationNotification</code>, the same one any undeclared path or disallowed
         direction gets, translated per the request language.</li>
 </ul>
+<ul>
+    <li><strong><code>order_by</code> speaks the DTO's vocabulary in proto spelling.</strong> A declared path is
+        matched regardless of word separators and case, so the DTO's <code>createdAt</code> and the wire's
+        <code>created_at</code> are the same declaration. A path outside the vocabulary, one asked for in a
+        direction the declaration does not admit, or one named twice is refused with the canonical
+        <code>SchemaViolationNotification</code> naming the entry verbatim.</li>
+    <li><strong>Cursors are checked before dispatch.</strong> An <code>after</code>/<code>before</code> that does
+        not decode, or whose key tuple does not match the ordering, is <code>INVALID_ARGUMENT</code> — the same
+        structure check the REST wire runs, through the same assembler.</li>
+    <li><strong>The by-id procedure obeys the same gate.</strong> Its one control passes through the canonical
+        opt-in gate, so a control the endpoint never declared is refused rather than ignored.</li>
+</ul>
 <p>
     On the Auto path the cut is compiled at <code>Register</code> from the Response DTO — nothing to
     wire per call. A hand-rolled <code>MountRaw</code> list gets the same parity by declaring the map

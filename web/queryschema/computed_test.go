@@ -84,7 +84,7 @@ func TestExtractProjectionSchema_RecordsComputedSources(t *testing.T) {
 func TestParseProjection_ComputedPushesSourcesNotItself(t *testing.T) {
 	s := schemaFor(t, computedUserResponse{})
 
-	proj, wireSet, bad, ok := ParseProjection("display", s)
+	proj, wireSet, bad, ok := ParseProjection([]string{"display"}, s)
 	if !ok {
 		t.Fatalf("a computed token must be accepted, got bad=%q", bad)
 	}
@@ -106,7 +106,7 @@ func TestParseProjection_ComputedPushesSourcesNotItself(t *testing.T) {
 func TestParseProjection_ComputedCombinesWithPlainTokens(t *testing.T) {
 	s := schemaFor(t, computedUserResponse{})
 
-	proj, _, bad, ok := ParseProjection("id,display,name", s)
+	proj, _, bad, ok := ParseProjection([]string{"id", "display", "name"}, s)
 	if !ok {
 		t.Fatalf("unexpected rejection of %q", bad)
 	}
@@ -125,7 +125,7 @@ func TestParseProjection_ComputedCombinesWithPlainTokens(t *testing.T) {
 func TestParseProjection_NestedComputedPushesSegmentSources(t *testing.T) {
 	s := schemaFor(t, computedUserResponse{})
 
-	proj, _, bad, ok := ParseProjection("addresses.locale", s)
+	proj, _, bad, ok := ParseProjection([]string{"addresses.locale"}, s)
 	if !ok {
 		t.Fatalf("unexpected rejection of %q", bad)
 	}

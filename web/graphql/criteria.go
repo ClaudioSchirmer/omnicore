@@ -3,7 +3,6 @@ package graphql
 import (
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
@@ -41,112 +40,88 @@ var listOps = map[string]bool{
 	queryschema.OpIIn: true, queryschema.OpINin: true,
 }
 
-// buildCriteria translates a read field's GraphQL arguments into a
-// ReadCriteria, reusing the REST emission (queryschema.ApplyFilterParam) so the
-// where clause folds to the IDENTICAL Mongo criteria a `?name.startswith=…`
-// REST call produces. Pagination / orderBy / search / includeArchived map 1:1.
-// Cursor context-hash validation is left to the reader (it already rejects a
-// stale cursor against the rebuilt criteria).
+// decodeArgs turns a GraphQL argument map into the surface-neutral
+// [queryschema.Read] — the ONE thing this surface owns: how its language spells
+// a value. A `where` entry is `{field: {op: value}}`, a list operand is a real
+// array, a direction is an enum member, and two controls have no argument at
+// all because the language already expresses them (the selection IS the
+// projection, and its shape is the only-total switch).
 //
-// The returned Controls is the canonical snapshot for the control gateway —
-// the resolver completes it (only-total selection shape) and runs
-// queryschema.ValidateControls before dispatch. The SDL already cut
-// undeclared args from the schema (gqlparser rejects them as unknown
-// arguments), so the gate here is defense in depth; the directional rule and
-// the only-total conflicts are the live checks.
-func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria, queryschema.Controls, string, *GraphQLError) {
-	crit := queries.ReadCriteria{Filter: map[string]any{}}
-	var controls queryschema.Controls
+// It decides nothing. gqlparser has already cut every argument the SDL does not
+// declare, so the lookups here are defense in depth; what the endpoint accepts
+// is the Request DTO's answer, applied in [queryschema.BuildCriteria].
+//
+// The second result is the field name to report when a term resolves to no
+// declaration — this surface's own spelling (the enum member), so the consumer
+// reads back what it sent.
+func (p *criteriaPlan) decodeArgs(args map[string]any) (queryschema.Read, string, *GraphQLError) {
+	var in queryschema.Read
 
 	if raw, ok := args["where"].(map[string]any); ok {
 		for field, v := range raw {
 			wirePath, known := p.whereLeaf[field]
 			if !known {
-				return crit, controls, "", errf("where: unknown filter field %q", field)
+				return in, "", errf("where: unknown filter field %q", field)
 			}
-			ops, ok := v.(map[string]any)
-			if !ok {
+			ops, isObject := v.(map[string]any)
+			if !isObject {
 				continue
 			}
-			spec := p.reqSchema.Filters[wirePath]
 			for op, val := range ops {
-				queryschema.ApplyFilterParam(crit.Filter, spec, op, gqlValueToWire(op, val))
+				in.Filters = append(in.Filters, queryschema.FilterTerm{
+					Path: wirePath, Op: op, Values: operandValues(op, val), Raw: field,
+				})
 			}
 		}
 	}
 
 	// Relay direction: `first`/`after` page forward, `last`/`before` page
-	// backward. `last` is the only arg that carries direction on its own (it can
-	// stand without a cursor, walking back from the end), so it sets Backward;
-	// `before` reaches the reader as a cursor, which already implies backward
-	// there. A forward+backward mix is the gateway's directional violation.
+	// backward. A forward+backward mix is the gateway's directional violation.
 	if n, ok := toInt64(args["first"]); ok {
-		first := n
-		controls.First = &first
-		crit.Limit = n
+		in.Controls.First = &n
 	}
 	if n, ok := toInt64(args["last"]); ok {
-		last := n
-		controls.Last = &last
-		crit.Limit = n
-		crit.Backward = true
+		in.Controls.Last = &n
 	}
 	if s, ok := args["after"].(string); ok {
-		controls.After = true
-		crit.After = s
+		in.Controls.After, in.After = true, s
 	}
 	if s, ok := args["before"].(string); ok {
-		controls.Before = true
-		crit.Before = s
+		in.Controls.Before, in.Before = true, s
 	}
 	if s, ok := args["search"].(string); ok {
-		controls.Search = true
-		crit.Search = s
+		in.Controls.Search, in.Search = true, s
 	}
 	if b, ok := args["includeArchived"].(bool); ok {
-		controls.IncludeArchived = true
-		crit.IncludeArchived = b
+		in.Controls.IncludeArchived, in.IncludeArchived = true, b
 	}
+
 	// orderBy is a list of `<Entity>Order` inputs — `{ field: <enum>, direction:
-	// ASC|DESC }`. gqlparser already validated enum membership against the SDL,
-	// so the lookup miss below is defense in depth. The fold lands on the SAME
-	// OrderByField terms the REST `?orderBy=-name` tokens produce (wire path →
-	// Go doc path via the projection schema), so keyset cursors stay valid and
-	// interchangeable across surfaces. An absent direction is ASC.
+	// ASC|DESC }`, an absent direction meaning ASC. The enum member is folded
+	// back to the DTO's own wire path and travels with its own spelling, so a
+	// refusal names the member the consumer wrote.
 	if raw, ok := args["orderBy"]; ok {
-		if list, lok := raw.([]any); lok && len(list) > 0 {
-			controls.OrderBy = true
-			terms := make([]queries.OrderByField, 0, len(list))
-			seen := make(map[string]bool, len(list))
+		if list, isList := raw.([]any); isList && len(list) > 0 {
+			in.Controls.OrderBy = true
 			for _, item := range list {
-				term, tok := item.(map[string]any)
-				if !tok {
-					return crit, controls, "", errf("orderBy: malformed order term %v", item)
+				term, isObject := item.(map[string]any)
+				if !isObject {
+					return in, "", errf("orderBy: malformed order term %v", item)
 				}
-				val := asString(term["field"])
-				wire, known := p.orderField[val]
+				member := asString(term["field"])
+				wirePath, known := p.orderField[member]
 				if !known {
-					return crit, controls, queryschema.OrderByField(val), nil
+					return in, queryschema.OrderByField(member), nil
 				}
-				spec := p.reqSchema.Sortable[wire]
-				desc := asString(term["direction"]) == "DESC"
-				// The enum can name the orderable fields but not the directions
-				// each one admits, so a declaration that allows only asc (or only
-				// desc) makes its cut here rather than in the schema. Nor can it
-				// say a member appears at most once, and a duplicated key makes
-				// the reader's sort document malformed. Both refusals land here,
-				// reported on the enum member the consumer sent — this surface's
-				// spelling of REST's `orderBy[<token>]`.
-				if !spec.Allows(desc) || seen[val] {
-					return crit, controls, queryschema.OrderByField(val), nil
-				}
-				seen[val] = true
-				terms = append(terms, queries.OrderByField{Field: spec.GoPath, Desc: desc})
+				in.OrderBy = append(in.OrderBy, queryschema.OrderTerm{
+					Path: wirePath,
+					Desc: asString(term["direction"]) == "DESC",
+					Raw:  member,
+				})
 			}
-			crit.OrderBy = terms
 		}
 	}
-	return crit, controls, "", nil
+	return in, "", nil
 }
 
 // projectionFromSelection derives a ReadCriteria.Projection (Go field path → 1)
@@ -174,7 +149,7 @@ func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.F
 	if len(paths) == 0 {
 		return nil
 	}
-	proj, _, _, ok := queryschema.ParseProjection(strings.Join(paths, ","), p.projSchema)
+	proj, _, _, ok := queryschema.ParseProjection(paths, p.projSchema)
 	if !ok {
 		return nil
 	}
@@ -279,21 +254,21 @@ func flattenWirePaths(prefix string, sel ast.SelectionSet, frags ast.FragmentDef
 	return out
 }
 
-// gqlValueToWire renders a GraphQL argument value into the string form
-// queryschema.ApplyFilterParam coerces (by the leaf's Go kind). List operators
-// receive a comma-joined string (ApplyFilterParam splits on comma), mirroring
-// the REST `?x.in=a,b,c` wire.
-func gqlValueToWire(op string, v any) string {
-	if listOps[op] {
+// operandValues renders a GraphQL operand as the operand list the shared
+// emitter consumes. A list operator receives a real array here — this language
+// spells a list as one — so nothing is joined and re-split, and a comma inside
+// a value is just a comma.
+func operandValues(op string, v any) []string {
+	if queryschema.OperatorTakesList(op) {
 		if list, ok := v.([]any); ok {
-			parts := make([]string, len(list))
+			out := make([]string, len(list))
 			for i, e := range list {
-				parts[i] = fmt.Sprintf("%v", e)
+				out[i] = fmt.Sprintf("%v", e)
 			}
-			return strings.Join(parts, ",")
+			return out
 		}
 	}
-	return fmt.Sprintf("%v", v)
+	return []string{fmt.Sprintf("%v", v)}
 }
 
 // toInt64 coerces a GraphQL numeric argument (int / int64 / float64) to int64.

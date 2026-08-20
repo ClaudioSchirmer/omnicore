@@ -112,27 +112,28 @@ func ParseKeyAgainstSchema(key string, s *RequestSchema) (string, string) {
 	return wirePath, op
 }
 
-// ApplyFilterParam is the query-string entry point of the shared filter
-// emitter: one wire key carrying one value (list operators pack multiple
-// values comma-separated, the query-string convention). It splits list
-// values and delegates to ApplyFilterValues — the level every wire shares.
-func ApplyFilterParam(filter map[string]any, spec FilterSpec, op, value string) {
+// OperatorTakesList reports whether an operator consumes MANY operands. It is
+// the one fact a wire needs in order to spell a list: a query string packs
+// them comma-separated, a proto sends `repeated`, a GraphQL input sends an
+// array. How the list is spelled is the wire's business; which operators take
+// one is not, so it is answered here.
+func OperatorTakesList(op string) bool {
 	switch op {
 	case OpIn, OpNin, OpIIn, OpINin:
-		ApplyFilterValues(filter, spec, op, splitTrim(value))
+		return true
 	default:
-		ApplyFilterValues(filter, spec, op, []string{value})
+		return false
 	}
 }
 
-// ApplyFilterValues is the wire-neutral filter emitter — the single place
-// the canonical ReadCriteria.Filter clauses are built, shared by the
-// query-string path (ApplyFilterParam, commas split upstream) and the gRPC
-// converter (proto `repeated` values passed verbatim, so that plane has no
-// comma-in-value limitation). List operators consume every element; scalar
-// operators consume values[0]. Unknown operators are ignored, matching the
-// historical ApplyFilterParam contract (the caller validates the allowlist
-// before emission).
+// ApplyFilterValues is the wire-neutral filter emitter — the single place the
+// canonical ReadCriteria.Filter clauses are built, and the only one. Every
+// surface reaches it with the operands already separated: a query string split
+// its commas, a proto passed its `repeated` values verbatim, a GraphQL input
+// passed its array. List operators consume every element; scalar operators
+// consume values[0], which is why an EMPTY operand (`?name.contains=`) must
+// arrive as one empty string and not as no values at all. Unknown operators are
+// ignored — the caller validates the allowlist before emission.
 func ApplyFilterValues(filter map[string]any, spec FilterSpec, op string, values []string) {
 	if len(values) == 0 {
 		return

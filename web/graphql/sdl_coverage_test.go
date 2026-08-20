@@ -126,7 +126,7 @@ func TestWhereInput_NoFilterLeavesOmitted(t *testing.T) {
 
 func TestOperatorInput_NonScalarLeafFallsBackToString(t *testing.T) {
 	b := newSDLBuilder()
-	leaf := queryschema.RequestField{
+	leaf := queryschema.RequestLeaf{
 		WirePath: "tags",
 		Field:    reflect.StructField{Name: "Tags", Type: reflect.TypeOf([]string{})},
 		Ops:      []string{queryschema.OpEq, queryschema.OpIn},

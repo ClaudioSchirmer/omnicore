@@ -248,7 +248,7 @@ func (b *sdlBuilder) whereInput(entity string, reqType reflect.Type) (string, bo
 // operatorInput registers (once) the per-leaf operator input object — one
 // field per declared operator, the list operators (in/nin/iin/inin) taking a
 // list of the leaf's scalar.
-func (b *sdlBuilder) operatorInput(entity string, leaf queryschema.RequestField) string {
+func (b *sdlBuilder) operatorInput(entity string, leaf queryschema.RequestLeaf) string {
 	name := entity + "_" + sanitize(leaf.WirePath) + "_Op"
 	scalar := b.scalarName(leaf.Field.Type)
 	if scalar == "" {
@@ -505,11 +505,11 @@ func exportedJSONFields(t reflect.Type) []jsonField {
 
 // filterLeaves returns the filter leaves of a Request DTO in declaration order
 // via the shared queryschema traversal.
-func filterLeaves(reqType reflect.Type) []queryschema.RequestField {
-	var out []queryschema.RequestField
-	for _, f := range queryschema.WalkRequest(reqType) {
-		if f.Ops != nil {
-			out = append(out, f)
+func filterLeaves(reqType reflect.Type) []queryschema.RequestLeaf {
+	var out []queryschema.RequestLeaf
+	for _, leaf := range queryschema.ExtractRequestSchema(reqType).Leaves {
+		if leaf.Kind == queryschema.LeafFilter {
+			out = append(out, leaf)
 		}
 	}
 	return out

@@ -200,9 +200,9 @@ func (s *TableSchema) MappedColumns() []string {
 	return out
 }
 
-// ColumnForRead / GoNameForRead are the read-path Go↔column translators the Mongo
-// view reader uses (exported wrappers over the internal forms).
-func (s *TableSchema) ColumnForRead(goName string) (string, bool) { return s.columnForRead(goName) }
+// GoNameForRead is the read-path column→Go translator (the inverse of
+// [TableSchema.Resolve], which every read backing uses for the forward
+// direction).
 func (s *TableSchema) GoNameForRead(column string) (string, bool) { return s.goNameForRead(column) }
 
 // ChildSchemaNames returns the Go type names of the declared aggregate child

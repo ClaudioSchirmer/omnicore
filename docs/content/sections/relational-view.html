@@ -157,6 +157,19 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     load</strong> — a root column, a sibling, or a shared-base field (the last two joined in) — and rejects only what
     would need a 1:N pushdown a single root <code>SELECT</code> cannot express.
 </p>
+<p>
+    <strong>The managed slots count as root columns.</strong> Both readers resolve a Go field name through the same
+    read-path translator, so <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code> and the read-only
+    <code>ParentID</code> projection are filterable and sortable here exactly as they are on a Mongo view — under the
+    fixed logical names the <a href="#table-schema">three-name contract</a> gives them, and only when the schema
+    actually DECLARES that slot (a view with no <code>DeletedAt</code> has no archived state to address, so the name is
+    as unknown as any other). This is a matter of the two backings answering one question the same way; it grants
+    nothing by itself. Whether an END USER may address a field is the <a href="#auto-query-handlers">Request DTO's</a>
+    declaration — <code>filter:</code> and <code>sort:</code>, nothing implicit — and whether the SERVICE addresses one
+    is <code>Query.ToCriteria</code>'s call, which writes Go paths straight onto the criteria and passes no wire gate on
+    either backing. A default <code>OrderBy: CreatedAt desc</code> written there behaves the same whichever backing
+    serves the view.
+</p>
 
 <h3>Pagination is a camouflaged offset</h3>
 <p>

@@ -155,26 +155,19 @@ func walkPathTags(t reflect.Type, gen *Generator) []map[string]any {
 // parameter name (e.g. `addresses.city`, `addresses.city.istartswith`).
 func walkQueryTags(t reflect.Type, gen *Generator) []map[string]any {
 	out := []map[string]any{}
-	for _, leaf := range queryschema.WalkRequest(t) {
-		// Generate the field schema for every query-tagged field, including
-		// embed-group markers, so the type graph each field references is
-		// registered in Components exactly as before — even though a group
-		// emits no parameter of its own.
+	for _, leaf := range queryschema.ExtractRequestSchema(t).Leaves {
+		// Generate the field schema for EVERY declaration, groups included, so
+		// the type graph each one references is registered in Components —
+		// even for a declaration that emits no parameter of its own.
 		schema := gen.Generate(leaf.Field.Type)
-		if leaf.Group {
+		if !leaf.TakesValue() {
+			// A group's inner leaves carry the keys; an ordering leaf names a
+			// path `?orderBy=` may use and takes no value. Advertising either
+			// would document a parameter the request parser refuses on every
+			// call. The DTO decided this once — nothing is re-derived here.
 			continue
 		}
 		if len(leaf.Ops) == 0 {
-			// A VOCABULARY leaf (`query:"id" sort:"asc"`, no filter tag)
-			// carries no value on the wire: it names a path `?orderBy=` may
-			// order by, and the request parser rejects `?id=` like any
-			// undeclared key. Emitting it would advertise a parameter that can
-			// only ever answer 400 — the exact dead-parameter shape
-			// ExtractRequestSchema panics to prevent. The reserved controls are
-			// the ones that DO take a value.
-			if leaf.Sort != nil && !queryschema.ControlKeys[leaf.Field.Tag.Get("query")] {
-				continue
-			}
 			out = append(out, queryEntry(leaf.WirePath, schema, leaf.Field))
 			continue
 		}

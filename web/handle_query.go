@@ -176,7 +176,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResu
 	)
 	queryschema.RecordSearchDeclaration(schema, reqType.String(), h)
 	return func(c fiber.Ctx) error {
-		crit, selectedWire, violation, ok := buildCriteria(c, schema, projSchema)
+		crit, selectedWire, violation, ok := readCriteria(c, schema, projSchema)
 		if !ok {
 			return respondViolation[queries.PageOf[TResult]](c, pipe, violation)
 		}
@@ -245,9 +245,9 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any
 		resultType = resultType.Elem()
 	}
 	validateResponseMapping(resultType, respType)
-	includeArchivedOptIn := queryschema.ExtractRequestSchema(reqType).Reserved[queryschema.KeyIncludeArchived]
+	schema := queryschema.ExtractRequestSchema(reqType)
 	return func(c fiber.Ctx) error {
-		if bad, ok := validateByIDQuery(c, includeArchivedOptIn); !ok {
+		if bad, ok := validateByIDQuery(c); !ok {
 			return respondSchemaViolation[TResult](c, pipe, bad)
 		}
 		var req TReq
@@ -257,29 +257,28 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any
 		if bad, ok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !ok {
 			return respondSchemaViolation[TResult](c, pipe, bad)
 		}
-		// The by-id twin of buildCriteria: one reserved control is the whole
-		// wire vocabulary here, so the criteria is built inline and handed to
-		// the same ToQuery(criteria) seat the paged wrapper feeds. Reading it
-		// back off the bound DTO keeps the accepted spellings exactly Fiber's.
-		crit := queries.ReadCriteria{Filter: map[string]any{}}
-		if includeArchivedOptIn {
-			// Read the control off the WIRE, not off the bound DTO: the strict
-			// spelling is the contract, and Fiber's binder would also take
-			// "1"/"t"/"TRUE" — which the paged sibling and the proto/GraphQL
-			// connectors all reject.
-			//
-			// PRESENCE is the key being on the query string, not the value
-			// being non-empty. `?includeArchived=` is the control asked for
-			// with no answer, and the paged sibling refuses it; reading it as
-			// "absent" here would rebuild, on the empty string, exactly the
-			// list-vs-by-id disagreement the strict parsing removed.
-			if args := c.Request().URI().QueryArgs(); args.Has(queryschema.KeyIncludeArchived) {
-				archived, valid := queryschema.ParseControlBool(string(args.Peek(queryschema.KeyIncludeArchived)))
-				if !valid {
-					return respondSchemaViolation[TResult](c, pipe, queryschema.KeyIncludeArchived)
-				}
-				crit.IncludeArchived = archived
+		// One reserved control is this route's whole wire vocabulary, but it
+		// goes through the SAME assembler a listing does, so the opt-in gate
+		// answers identically on both.
+		//
+		// The value is read off the WIRE, not off the bound DTO: the strict
+		// spelling is the contract, and Fiber's binder would also take
+		// "1"/"t"/"TRUE", which every other connector rejects. PRESENCE is the
+		// key being on the query string, not the value being non-empty —
+		// `?includeArchived=` is the control asked for with no answer, and
+		// reading that as "absent" would rebuild, on the empty string, the
+		// list-vs-by-id disagreement the strict parsing removed.
+		var in queryschema.Read
+		if args := c.Request().URI().QueryArgs(); args.Has(queryschema.KeyIncludeArchived) {
+			archived, valid := queryschema.ParseControlBool(string(args.Peek(queryschema.KeyIncludeArchived)))
+			if !valid {
+				return respondSchemaViolation[TResult](c, pipe, queryschema.KeyIncludeArchived)
 			}
+			in = queryschema.ByIDRead(archived, true)
+		}
+		crit, _, violation, ok := queryschema.BuildCriteria(schema, nil, in)
+		if !ok {
+			return respondViolation[TResult](c, pipe, violation)
 		}
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
@@ -372,7 +371,7 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 //	    return fwweb.RespondSchemaViolation(c, pipe, badField)
 //	}
 func (p *QueryParser[Req, Resp]) Parse(c fiber.Ctx) (queries.ReadCriteria, *queryschema.Violation, bool) {
-	crit, _, violation, ok := buildCriteria(c, p.schema, p.projSchema)
+	crit, _, violation, ok := readCriteria(c, p.schema, p.projSchema)
 	return crit, violation, ok
 }
 
@@ -461,187 +460,148 @@ func RespondPaged[TResult any, TResp any](c fiber.Ctx, status int, page queries.
 	})
 }
 
-// buildCriteria walks the query string, validates each key against the schema,
-// and produces ReadCriteria. Returns (criteria, "", true) on success or
-// (zero, badKey, false) on the first violation (unknown wire path OR operator
-// outside the declared list for that path).
+// readCriteria is this surface's whole read path: decode the query string into
+// the neutral request, then let the shared assembler decide what it means.
+// The two steps are the seam every surface has — only the first one is REST's.
+func readCriteria(c fiber.Ctx, s *queryschema.RequestSchema, proj *queryschema.ProjectionSchema) (queries.ReadCriteria, map[string]bool, *queryschema.Violation, bool) {
+	in, violation, ok := decodeQuery(c, s, nil)
+	if !ok {
+		return queries.ReadCriteria{}, nil, violation, false
+	}
+	return queryschema.BuildCriteria(s, proj, in)
+}
+
+// decodeQuery turns a Fiber query string into the surface-neutral
+// [queryschema.Read] — the ONE thing this surface owns: how a URL spells a
+// value. A comma separates a list, an operator rides on the key after a dot,
+// a boolean is exactly "true" or "false", a size is base-10.
 //
-// projSchema is consulted only when the wire carries `?fields=`. When
-// non-nil, each comma-separated token is validated against the Response
-// DTO's declared wire paths and translated to the corresponding Go field
-// path (the reader maps Go → column via the view's TableSchema). An unknown
-// token surfaces the bad field on the canonical 400 envelope as `fields[<token>]`. Top-
-// level `id` triggers the framework's auto-exclusion: when the consumer
-// did NOT request `id`, the projection adds `_id: 0` so Mongo's default
-// `_id` inclusion is dropped from the wire shape. When projSchema is nil,
-// the pass-through behavior applies: every token becomes an
-// inclusion entry verbatim (no allowlist, no translation).
-func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *queryschema.ProjectionSchema) (queries.ReadCriteria, map[string]bool, *queryschema.Violation, bool) {
-	crit := queries.ReadCriteria{Filter: map[string]any{}}
-	// controls is the canonical snapshot handed to the control gateway after
-	// the loop — presence + the values the gate needs. The loop itself owns
-	// only WIRE-SHAPE parsing (numbers, cursor decodability, token
-	// allowlists); the opt-in gate, the directional rule and the only-total
-	// conflict matrix are the gateway's, shared verbatim with GraphQL and
-	// gRPC. Recording presence regardless of the DTO's declaration is
-	// deliberate: the gateway owns the opt-in verdict.
-	var controls queryschema.Controls
+// It decides nothing. Whether a key is accepted, whether an operator is
+// declared for it, whether the endpoint takes the control at all — all of that
+// is the Request DTO's answer, applied once in [queryschema.BuildCriteria].
+// Presence is recorded for every control the wire carried, declared or not:
+// the gate owns that verdict, and reporting it there is what makes the refusal
+// identical on every surface.
+//
+// ignored names the control keys this route accepts and does nothing with —
+// the export's pagination no-ops, documented as omitted OpenAPI parameters. A
+// key in that set is not read at all, so its VALUE is not judged either: a
+// documented no-op that refuses a malformed value would be a strange contract.
+func decodeQuery(c fiber.Ctx, s *queryschema.RequestSchema, ignored map[string]bool) (queryschema.Read, *queryschema.Violation, bool) {
+	var in queryschema.Read
 	var violation *queryschema.Violation
-	// The wire paths the consumer selected via ?fields=, kept so the render can
-	// blank sources read only to feed a selected computed field.
-	var selectedWire map[string]bool
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, v []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll is deprecated; migrating this hot query-parse path to the All() range-over-func iterator is a mechanical follow-up, out of scope for a lint sweep.
 		if !ok {
 			return
 		}
-		key := string(k)
-		val := string(v)
+		key, val := string(k), string(v)
+		reject := func() {
+			violation = queryschema.SchemaViolation(key)
+			ok = false
+		}
 
-		// A reserved spelling that the DTO declared as a FILTER leaf
-		// (`query:"first" filter:"eq"`) keeps its filter meaning — the
-		// reserved vocabulary never shadows an explicit declaration. REST
-		// speaks the canonical DTO keys verbatim, so the recognized wire
-		// set IS queryschema.ControlKeys; controls never carry an operator
-		// suffix.
-		_, isFilterLeaf := s.Filters[key]
-		if queryschema.ControlKeys[key] && !isFilterLeaf {
+		// A reserved spelling the DTO declared as a FILTER leaf
+		// (`query:"first" filter:"eq"`) keeps its filter meaning: the reserved
+		// vocabulary never shadows an explicit declaration.
+		if _, isFilterLeaf := s.Filters[key]; queryschema.ControlKeys[key] && !isFilterLeaf {
+			if ignored[key] {
+				return
+			}
 			switch key {
-			case queryschema.KeyOnlyTotal:
-				// Presence gates (any value on the wire needs the DTO opt-in,
-				// exactly like includeArchived); only `true` ACTIVATES the
-				// count short-circuit — `?onlyTotal=false` stays a no-op on a
-				// declared endpoint, never a page-shaping conflict.
-				active, valid := queryschema.ParseControlBool(val)
-				if !valid {
-					violation = queryschema.SchemaViolation(key)
-					ok = false
-					return
-				}
-				controls.OnlyTotal = &active
-				crit.OnlyTotal = active
 			case queryschema.KeyFirst, queryschema.KeyLast:
 				n, err := strconv.ParseInt(val, 10, 64)
 				if err != nil {
-					violation = queryschema.SchemaViolation(key)
-					ok = false
+					reject()
 					return
 				}
 				if key == queryschema.KeyFirst {
-					controls.First = &n
+					in.Controls.First = &n
 				} else {
-					controls.Last = &n
+					in.Controls.Last = &n
 				}
 			case queryschema.KeyAfter:
-				// Decodability is checked post-gateway (validateCursorAgainstCriteria)
-				// so a gateway violation — the more informative rejection — wins over
-				// a malformed-cursor one.
-				controls.After = true
-				crit.After = val
+				in.Controls.After, in.After = true, val
 			case queryschema.KeyBefore:
-				controls.Before = true
-				crit.Before = val
+				in.Controls.Before, in.Before = true, val
 			case queryschema.KeyOrderBy:
-				controls.OrderBy = true
-				// Undeclared control: leave the verdict to the canonical
-				// gateway, which reports the CONTROL. Parsing the token first
-				// would blame the consumer's spelling for a parameter the
-				// endpoint never offered.
-				if !s.Reserved[queryschema.KeyOrderBy] {
-					return
-				}
-				orderBy, obViolation, obOk := queryschema.ParseOrderBy(val, s.Sortable)
-				if !obOk {
-					violation = obViolation
-					ok = false
-					return
-				}
-				crit.OrderBy = orderBy
+				in.Controls.OrderBy = true
+				in.OrderBy = append(in.OrderBy, decodeOrderTokens(val)...)
 			case queryschema.KeyFields:
-				controls.Fields = true
-				proj, wireSet, bad, projOk := queryschema.ParseProjection(val, projSchema)
-				if !projOk {
-					violation = queryschema.SchemaViolation(queryschema.FieldsField(bad))
-					ok = false
-					return
-				}
-				if projSchema != nil && !wireSet["id"] {
-					// Mongo always returns `_id` unless explicitly excluded.
-					// The consumer did not request `id` (wire); drop it so
-					// the typed Response (every field pointer+omitempty) does
-					// not render an `id` the caller did not ask for.
-					proj["_id"] = 0
-				}
-				crit.Projection = proj
-				selectedWire = wireSet
+				in.Controls.Fields = true
+				in.Fields = append(in.Fields, splitList(val)...)
 			case queryschema.KeySearch:
-				controls.Search = true
-				crit.Search = val
+				in.Controls.Search, in.Search = true, val
 			case queryschema.KeyIncludeArchived:
-				controls.IncludeArchived = true
 				archived, valid := queryschema.ParseControlBool(val)
 				if !valid {
-					violation = queryschema.SchemaViolation(key)
-					ok = false
+					reject()
 					return
 				}
-				crit.IncludeArchived = archived
+				in.Controls.IncludeArchived, in.IncludeArchived = true, archived
+			case queryschema.KeyOnlyTotal:
+				// Presence gates like every control; only `true` ACTIVATES the
+				// count short-circuit, so `?onlyTotal=false` on a declared
+				// endpoint is a no-op, never a page-shaping conflict.
+				active, valid := queryschema.ParseControlBool(val)
+				if !valid {
+					reject()
+					return
+				}
+				in.Controls.OnlyTotal = &active
 			}
 			return
 		}
 
-		wirePath, op := queryschema.ParseKeyAgainstSchema(key, s)
-		if wirePath == "" {
-			violation = queryschema.SchemaViolation(key)
-			ok = false
+		path, op := queryschema.ParseKeyAgainstSchema(key, s)
+		if path == "" {
+			reject()
 			return
 		}
-		spec := s.Filters[wirePath]
-
-		effective := op
-		if effective == "" {
-			effective = OpEq
+		// A query string packs a list with commas — this wire's spelling, and
+		// the only reason the decoder looks at the operator at all. A scalar
+		// operand rides whole, empty included: `?name.contains=` is a present
+		// operand, not an absent one.
+		values := []string{val}
+		if queryschema.OperatorTakesList(op) {
+			values = splitList(val)
 		}
-		if !spec.Ops[effective] {
-			violation = queryschema.SchemaViolation(key)
-			ok = false
-			return
-		}
-		queryschema.ApplyFilterParam(crit.Filter, spec, op, val)
+		in.Filters = append(in.Filters, queryschema.FilterTerm{
+			Path: path, Op: op, Values: values, Raw: key,
+		})
 	})
-	if !ok {
-		return crit, nil, violation, ok
+	return in, violation, ok
+}
+
+// decodeOrderTokens splits an `?orderBy=` value into terms. A `-` prefix is
+// this wire's spelling for descending; the token rides along verbatim so a
+// refusal names exactly what the consumer sent, prefix included.
+func decodeOrderTokens(val string) []queryschema.OrderTerm {
+	var out []queryschema.OrderTerm
+	for _, token := range splitList(val) {
+		term := queryschema.OrderTerm{Path: token, Raw: token}
+		if strings.HasPrefix(token, "-") {
+			term.Desc, term.Path = true, token[1:]
+		}
+		out = append(out, term)
 	}
-	// The canonical control gateway: the DTO opt-in gate, the directional rule
-	// (forward first/after × backward last/before) and the only-total conflict
-	// matrix — one implementation shared by every surface, run BEFORE the
-	// handler. REST has no natural keys (every control has a wire spelling).
-	if violations := queryschema.ValidateControls(s.Reserved, controls, nil); len(violations) > 0 {
-		return crit, nil, &queryschema.Violation{Field: violations[0].Field(), Notification: violations[0].Message().Notification}, false
+	return out
+}
+
+// splitList splits a comma-separated wire value, trimming each entry and
+// dropping empties.
+func splitList(val string) []string {
+	if val == "" {
+		return nil
 	}
-	// Materialize the Relay direction pair into the internal size+direction:
-	// first=N → forward window of N; last=N → backward window of N (with no
-	// cursor, the LAST N of the set).
-	if controls.First != nil {
-		crit.Limit = *controls.First
-	}
-	if controls.Last != nil {
-		crit.Limit = *controls.Last
-		crit.Backward = true
-	}
-	// Post-loop cursor structure checks — after the gateway, so a directional
-	// conflict reports as such before a tuple-length mismatch.
-	if crit.After != "" {
-		if bad, cursorOk := validateCursorAgainstCriteria(crit.After, crit, "after"); !cursorOk {
-			return crit, nil, queryschema.SchemaViolation(bad), false
+	parts := strings.Split(val, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
 		}
 	}
-	if crit.Before != "" {
-		if bad, cursorOk := validateCursorAgainstCriteria(crit.Before, crit, "before"); !cursorOk {
-			return crit, nil, queryschema.SchemaViolation(bad), false
-		}
-	}
-	return crit, selectedWire, nil, true
+	return out
 }
 
 // validateCursorAgainstCriteria decodes the cursor and asserts its STRUCTURE
@@ -675,20 +635,19 @@ func validateCursorAgainstCriteria(cursorStr string, crit queries.ReadCriteria, 
 	return "", true
 }
 
-// validateByIDQuery enforces the by-id allowlist: only `includeArchived` is
-// recognized, and only when the endpoint's Request DTO declared it
-// (includeArchivedOptIn — the same DTO opt-in gate the list wrappers run
-// through the canonical gateway; an undeclared control is a loud 400, never
-// a silent ignore). Returns ("", true) on a clean query string,
-// (badKey, false) otherwise.
-func validateByIDQuery(c fiber.Ctx, includeArchivedOptIn bool) (string, bool) {
+// validateByIDQuery enforces the by-id allowlist: `includeArchived` is the only
+// key this route recognizes at all. WHETHER the endpoint accepts it is not
+// decided here — that is the DTO opt-in gate's answer, applied by the shared
+// assembler like it is on a listing. Returns ("", true) on a clean query
+// string, (badKey, false) otherwise.
+func validateByIDQuery(c fiber.Ctx) (string, bool) {
 	var bad string
 	ok := true
 	c.Request().URI().QueryArgs().VisitAll(func(k, _ []byte) { //nolint:staticcheck // SA1019: fasthttp VisitAll deprecated; All() migration deferred.
 		if !ok {
 			return
 		}
-		if string(k) != queryschema.KeyIncludeArchived || !includeArchivedOptIn {
+		if string(k) != queryschema.KeyIncludeArchived {
 			bad = string(k)
 			ok = false
 		}

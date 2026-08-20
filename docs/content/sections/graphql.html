@@ -311,6 +311,13 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         surface's own idiom for the schema violation REST answers with, the same posture the
         reserved-control cut already takes. A DTO that declares nothing orderable has no
         <code>orderBy</code> argument at all.</li>
+    <li><strong>Cursors are checked before the resolver runs.</strong> A cursor argument must decode, and its
+        key tuple must be one longer than the ordering it was minted under — the same structure check the REST
+        wire has always run, now reached through the same assembler. A malformed <code>after:</code> is a schema
+        violation here, not something the reader discovers later.</li>
+    <li><strong>The by-id field obeys the same gate as the connection.</strong> Its one control
+        (<code>includeArchived</code>) passes through the canonical opt-in gate rather than a local check, so an
+        endpoint that did not declare it refuses the argument exactly as the listing would.</li>
     <li><strong><code>scalar DateTime</code></strong> is declared when any <code>time.Time</code> field is
         reached; <code>uuid.UUID</code> / <code>domain.ID</code> map to <code>ID</code>.</li>
 </ul>

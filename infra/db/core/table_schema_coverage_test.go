@@ -110,7 +110,7 @@ func TestTableSchema_GoNameForRead(t *testing.T) {
 	}
 }
 
-func TestTableSchema_ColumnForRead(t *testing.T) {
+func TestTableSchema_Resolve(t *testing.T) {
 	s := covFullSchema()
 	cases := []struct {
 		goName string
@@ -125,9 +125,9 @@ func TestTableSchema_ColumnForRead(t *testing.T) {
 		{"Unknown", "", false},
 	}
 	for _, c := range cases {
-		got, ok := s.columnForRead(c.goName)
+		got, ok := resolvedColumn(s, c.goName)
 		if got != c.want || ok != c.found {
-			t.Errorf("columnForRead(%q) = (%q,%v), want (%q,%v)", c.goName, got, ok, c.want, c.found)
+			t.Errorf("Resolve(%q) = (%q,%v), want (%q,%v)", c.goName, got, ok, c.want, c.found)
 		}
 	}
 }
@@ -141,8 +141,8 @@ func TestTableSchema_ReadHelpers_ManagedAbsentMissing(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"CreatedAt", "UpdatedAt", "DeletedAt"} {
-		if _, ok := s.columnForRead(name); ok {
-			t.Errorf("columnForRead(%q) should be false when managed columns are absent", name)
+		if _, ok := resolvedColumn(s, name); ok {
+			t.Errorf("Resolve(%q) should be false when managed columns are absent", name)
 		}
 	}
 }
@@ -181,4 +181,13 @@ func TestModeName(t *testing.T) {
 	if got := modeName(domain.ModeUnarchive); got != "ModeUnarchive" {
 		t.Errorf("modeName(ModeUnarchive) = %q", got)
 	}
+}
+
+// resolvedColumn is the column half of [TableSchema.Resolve] — the shape most
+// assertions here care about. Resolve's other half (which row the column lives
+// on) has its own tests; keeping this helper stops every call site from
+// unpacking a struct it does not examine.
+func resolvedColumn(s *TableSchema, goName string) (string, bool) {
+	r, ok := s.Resolve(goName)
+	return r.Column, ok
 }

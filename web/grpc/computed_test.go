@@ -187,6 +187,58 @@ func TestSortOutsideTheVocabularyIsRefused(t *testing.T) {
 	}
 }
 
+// TestSortVocabularyMeetsTheProtoSpelling — the vocabulary arrives in the Request
+// DTO's spelling (`createdAt`, `userName`) and the wire sends the proto's
+// (`created_at`, `user_name`). Comparing them verbatim made every MULTI-WORD
+// path unorderable on this surface while it ordered fine on REST — the one
+// thing a shared vocabulary exists to prevent. Both sides fold through
+// normalizePath, the same equivalence the rest of the binder uses.
+func TestSortVocabularyMeetsTheProtoSpelling(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{
+		"createdAt": {GoPath: "CreatedAt", Desc: true},
+		"userName":  {GoPath: "UserName", Asc: true, Desc: true},
+	}
+	crit, err := NewCriteria().Sortable(vocab).OrderBy(
+		&omnicorepb.OrderByField{Field: "created_at", Desc: true},
+		&omnicorepb.OrderByField{Field: "user_name"},
+	).Build()
+	if err != nil {
+		t.Fatalf("the proto spelling must resolve against the DTO vocabulary, got %v", err)
+	}
+	want := []queries.OrderByField{{Field: "CreatedAt", Desc: true}, {Field: "UserName"}}
+	if !reflect.DeepEqual(crit.OrderBy, want) {
+		t.Fatalf("order terms = %+v, want %+v", crit.OrderBy, want)
+	}
+	// The direction cut survives the folding.
+	if _, err := NewCriteria().Sortable(vocab).
+		OrderBy(&omnicorepb.OrderByField{Field: "created_at"}).Build(); err == nil {
+		t.Fatal("createdAt admits desc only — the ascending form must still be refused")
+	}
+}
+
+// TestSortRepeatedPathIsRefusedAcrossCalls — the Auto path feeds the entries one
+// call per entry (bind_query walks the repeated field and calls OrderBy for
+// each), so the duplicate check cannot live in a per-call map. This is the
+// shape that actually reaches the wrapper.
+func TestSortRepeatedPathIsRefusedAcrossCalls(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{
+		"code": {GoPath: "Code", Asc: true, Desc: true},
+		"name": {GoPath: "Name", Asc: true, Desc: true},
+	}
+	b := NewCriteria().Sortable(vocab)
+	for _, f := range []*omnicorepb.OrderByField{
+		{Field: "code"},
+		{Field: "name"},
+		{Field: "code", Desc: true},
+	} {
+		b.OrderBy(f)
+	}
+	_, err := b.Build()
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"code"}) {
+		t.Fatalf("a repeated path fed one call at a time must be refused, got %v", got)
+	}
+}
+
 // TestSortRepeatedPathIsRefused — the entries become the reader's sort
 // document, where a duplicated key is malformed. The refusal names the SECOND
 // occurrence, the entry the consumer has to remove — same rule, same choice of

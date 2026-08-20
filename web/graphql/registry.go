@@ -207,14 +207,13 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
-				crit, controls, badField, gerr := plan.buildCriteria(args)
+				in, badField, gerr := plan.decodeArgs(args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
 				}
-				// A typed schema violation from the argument fold — an ordering
-				// token outside the declared vocabulary, or one asking for a
-				// direction the declaration does not admit — renders through the
-				// same seat the control gateway uses below.
+				// A term that resolved to no declaration — an ordering member
+				// outside the vocabulary — renders through the same seat the
+				// assembler's own refusals use below.
 				if badField != "" {
 					return nil, schemaViolation(pipe, ctx, badField)
 				}
@@ -228,17 +227,15 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 				// intrinsic to every list envelope on every surface.
 				if onlyTotalSelected(sel, frags) && plan.reqSchema.Reserved[queryschema.KeyOnlyTotal] {
 					active := true
-					controls.OnlyTotal = &active
-					crit.OnlyTotal = true
+					in.Controls.OnlyTotal = &active
 				}
-				// The canonical control gateway — the same three checks REST and
-				// gRPC run (DTO opt-in gate, directional rule, only-total conflict
-				// matrix), rendered in this surface's idiom via schemaViolation.
-				// The SDL already cut undeclared args (gqlparser rejects unknown
-				// arguments before the resolver), so the gate arm is defense in
-				// depth; direction + conflicts are the live checks.
-				if violations := queryschema.ValidateControls(plan.reqSchema.Reserved, controls, graphqlNaturalControls); len(violations) > 0 {
-					return nil, schemaViolation(pipe, ctx, violations[0].Field())
+				// Two controls have no argument on this wire because the language
+				// already expresses them, so the opt-in gate must not ask the DTO
+				// to declare a key that does not exist here.
+				in.Natural = graphqlNaturalControls
+				crit, _, violation, ok := queryschema.BuildCriteria(plan.reqSchema, plan.projSchema, in)
+				if !ok {
+					return nil, schemaViolation(pipe, ctx, violation.Field)
 				}
 				// Selection set → projection: an explicitly selected restricted
 				// field trips ReadCriteria.Restrict's active-reference 403 (parity
@@ -302,7 +299,8 @@ func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[T
 	mustValidName("QueryByID", "entity", entity)
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*R)(nil)).Elem()
-	includeArchived := queryschema.ExtractRequestSchema(reqType).Reserved[queryschema.KeyIncludeArchived]
+	byIDSchema := queryschema.ExtractRequestSchema(reqType)
+	includeArchived := byIDSchema.Reserved[queryschema.KeyIncludeArchived]
 	return applyOptions(Field{
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryByIDFieldSDL(name, entity, respType, includeArchived) },
@@ -310,14 +308,17 @@ func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[T
 			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
 				var req TReq
 				// The by-id criteria seat: one reserved control is the whole
-				// argument vocabulary here (the paged sibling builds the full
-				// set in criteriaPlan.buildCriteria).
-				crit := queries.ReadCriteria{Filter: map[string]any{}}
-				if includeArchived {
-					if v, ok := args[queryschema.KeyIncludeArchived].(bool); ok {
-						crit.IncludeArchived = v
-						applyIncludeArchived(reflect.ValueOf(&req).Elem(), v)
-					}
+				// argument vocabulary here, and it goes through the SAME
+				// assembler the connection field uses, so the opt-in gate
+				// answers identically on both.
+				var in queryschema.Read
+				if v, present := args[queryschema.KeyIncludeArchived].(bool); present {
+					in = queryschema.ByIDRead(v, true)
+					applyIncludeArchived(reflect.ValueOf(&req).Elem(), v)
+				}
+				crit, _, violation, ok := queryschema.BuildCriteria(byIDSchema, nil, in)
+				if !ok {
+					return nil, schemaViolation(pipe, ctx, violation.Field)
 				}
 				q := req.ToQuery(crit)
 				q.SetPathID(asString(args["id"]))

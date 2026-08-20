@@ -44,19 +44,27 @@ func TestPagination_LastIsBackward(t *testing.T) {
 }
 
 // TestPagination_BeforeStaysCursorDriven — `before:` reaches the reader as a
-// cursor; the cursor itself implies backward there, so buildCriteria does NOT set
-// Backward (only `last` does). This keeps REST — which has no `last` and infers
-// direction purely from the cursor — behaving identically.
+// cursor; the cursor itself implies backward there, so the read path does NOT
+// set Backward (only `last` does). This keeps REST — which has no `last` and
+// infers direction purely from the cursor — behaving identically.
+//
+// The cursor is a REAL one: every surface runs the same structure check (it
+// must decode, and its key tuple must be one longer than the ordering), so a
+// placeholder string is a 400 here exactly as it is on REST.
 func TestPagination_BeforeStaysCursorDriven(t *testing.T) {
 	h := &fakeReadHandler{}
 	reg, ctx := newExecRegistry(h)
 
-	resp := reg.Execute(ctx, `{ users(before: "cur") { edges { node { id } } } }`, nil, "")
+	cur, err := queries.EncodeCursor([]any{"id"}, "")
+	if err != nil {
+		t.Fatalf("EncodeCursor: %v", err)
+	}
+	resp := reg.Execute(ctx, `{ users(before: "`+cur+`") { edges { node { id } } } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("unexpected errors: %+v", resp.Errors)
 	}
-	if h.captured.Before != "cur" {
-		t.Errorf("Before = %q, want cur", h.captured.Before)
+	if h.captured.Before != cur {
+		t.Errorf("Before = %q, want the minted cursor", h.captured.Before)
 	}
 	if h.captured.Backward {
 		t.Error("before alone must not set the explicit Backward flag (reader infers from the cursor)")

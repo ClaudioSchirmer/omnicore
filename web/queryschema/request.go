@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // RequestSchema is the cached reflection result for a Request DTO type:
@@ -33,7 +31,53 @@ type RequestSchema struct {
 	// vocabulary is closed and explicit — an endpoint sorts by what it says it
 	// sorts by, and nothing else.
 	Sortable map[string]SortSpec
+
+	// Leaves is the DTO's declarations, CLASSIFIED — what each one opted into,
+	// decided once, here. Every surface reads it instead of re-walking the
+	// tags with rules of its own: three surfaces used to do that, and a shape
+	// one of them had not accounted for (a leaf that is orderable and nothing
+	// else) leaked onto that surface alone. What a field means is the DTO's
+	// answer, and it is the same answer on every wire.
+	Leaves []RequestLeaf
 }
+
+// LeafKind is what one declaration opted into.
+type LeafKind int
+
+const (
+	// LeafFilter takes a VALUE on the wire — one accepted key per declared
+	// operator (`code`, `code.startswith`, …).
+	LeafFilter LeafKind = iota
+	// LeafOrdering names a path `?orderBy=` may use and takes NO value of its
+	// own. It is not a wire key: a surface that advertises one advertises a
+	// parameter its own parser refuses on every call.
+	LeafOrdering
+	// LeafControl is one of the reserved control keys, honored at the top
+	// level only.
+	LeafControl
+	// LeafGroup is an embed-group marker. It carries no value — its inner
+	// leaves carry the keys — but surfaces still see it, so the type it
+	// references is registered (OpenAPI components).
+	LeafGroup
+)
+
+// RequestLeaf is one classified declaration on a Request DTO.
+type RequestLeaf struct {
+	Kind     LeafKind
+	WirePath string
+	GoPath   string
+	Field    reflect.StructField
+	// Ops is the declared operator list in tag order; LeafFilter only.
+	Ops []string
+	// Sort is the ordering declaration when the leaf carries one. Orthogonal
+	// to Kind: a LeafFilter may be orderable too.
+	Sort     *SortSpec
+	TopLevel bool
+}
+
+// TakesValue reports whether the leaf accepts a value on the wire — the one
+// question a surface asks when it decides what to advertise and what to bind.
+func (l RequestLeaf) TakesValue() bool { return l.Kind == LeafFilter || l.Kind == LeafControl }
 
 // SortSpec is one entry of the ordering vocabulary: the Go field path the wire
 // token addresses (the reader translates it to a physical column through the
@@ -53,8 +97,10 @@ func (s SortSpec) Allows(desc bool) bool {
 	return s.Asc
 }
 
-// RequestField is one query-tagged field discovered on a Request DTO, yielded
-// in declaration order by WalkRequest. It is the shared traversal both the
+// requestField is one query-tagged field as the raw walk found it — the
+// UNclassified form. Classification happens once, in ExtractRequestSchema,
+// and reaches every surface as RequestLeaf. Discovered on a Request DTO, yielded
+// in declaration order by walkRequest. It is the shared traversal both the
 // runtime allowlist (ExtractRequestSchema) and the OpenAPI parameter generator
 // consume, so the rules that classify a field — filter leaf vs embed group vs
 // reserved/scalar control, the eq-has-no-suffix operator convention, the
@@ -64,7 +110,7 @@ func (s SortSpec) Allows(desc bool) bool {
 //   - Ops != nil          → filter leaf (`query:"X" filter:"ops"`); Ops holds
 //     the declared operators in tag order.
 //   - Group == true       → embed group (`query:"prefix"` on a struct field
-//     with no filter tag); WalkRequest descends into it and also yields its
+//     with no filter tag); walkRequest descends into it and also yields its
 //     inner fields. The group itself carries no value on the wire.
 //   - Ops == nil && Sort != nil → vocabulary leaf (`query:"id" sort:"asc"`);
 //     part of the endpoint's query vocabulary and orderable, but not
@@ -77,7 +123,7 @@ func (s SortSpec) Allows(desc bool) bool {
 // Sort is orthogonal to the rest: it holds the directions declared by the
 // `sort:` tag, in tag order, and may accompany a filter leaf (filterable
 // AND orderable) or stand alone (the vocabulary leaf above).
-type RequestField struct {
+type requestField struct {
 	WirePath string
 	GoPath   string
 	Field    reflect.StructField
@@ -92,20 +138,20 @@ type RequestField struct {
 // Request DTO reuse the schema.
 var schemaCache sync.Map // map[reflect.Type]*RequestSchema
 
-// WalkRequest walks a Request DTO type and returns every query-tagged exported
+// walkRequest walks a Request DTO type and returns every query-tagged exported
 // field in declaration order (descending into embed groups), classified per
-// RequestField. Pointer types are dereferenced transparently. Unexported
+// requestField. Pointer types are dereferenced transparently. Unexported
 // fields are skipped — a query parameter cannot bind to one.
-func WalkRequest(t reflect.Type) []RequestField {
+func walkRequest(t reflect.Type) []requestField {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	var out []RequestField
+	var out []requestField
 	walkRequestLevel(t, "", "", true, &out)
 	return out
 }
 
-func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel bool, out *[]RequestField) {
+func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel bool, out *[]requestField) {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -134,7 +180,7 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 		sortDirs := splitSort(f)
 
 		if ftag := f.Tag.Get("filter"); ftag != "" {
-			*out = append(*out, RequestField{
+			*out = append(*out, requestField{
 				WirePath: wirePath, GoPath: goPath, Field: f,
 				Ops: splitOps(ftag), Sort: sortDirs, TopLevel: topLevel,
 			})
@@ -148,7 +194,7 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 		if ft.Kind() == reflect.Struct {
 			// Embed group — yield a marker (consumers that document the type
 			// still see it) and recurse with the prefixes extended.
-			*out = append(*out, RequestField{
+			*out = append(*out, requestField{
 				WirePath: wirePath, GoPath: goPath, Field: f,
 				Sort: sortDirs, Group: true, TopLevel: topLevel,
 			})
@@ -157,7 +203,7 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 		}
 
 		// Vocabulary leaf (carries `sort:`) or reserved control scalar.
-		*out = append(*out, RequestField{
+		*out = append(*out, requestField{
 			WirePath: wirePath, GoPath: goPath, Field: f,
 			Sort: sortDirs, TopLevel: topLevel,
 		})
@@ -242,7 +288,7 @@ func splitOps(tag string) []string {
 }
 
 // ExtractRequestSchema inspects a Request DTO's struct tags to produce its
-// runtime schema, folding the shared WalkRequest traversal into the keyed
+// runtime schema, folding the shared walkRequest traversal into the keyed
 // maps the wire-parsing layer consumes:
 //
 //   - filter leaf → Filters[wirePath] = {ops set, Go field path, base kind}.
@@ -266,7 +312,7 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 		Reserved: map[string]bool{},
 		Sortable: map[string]SortSpec{},
 	}
-	for _, leaf := range WalkRequest(t) {
+	for _, leaf := range walkRequest(t) {
 		key := leaf.Field.Tag.Get("query")
 		// The ordering declaration is read before the classification because it
 		// is orthogonal to it: it may ride on a filter leaf or stand alone, and
@@ -292,10 +338,18 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 			}
 			s.Sortable[leaf.WirePath] = spec
 		}
+		classified := RequestLeaf{
+			WirePath: leaf.WirePath, GoPath: leaf.GoPath,
+			Field: leaf.Field, Ops: leaf.Ops, TopLevel: leaf.TopLevel,
+		}
+		if spec, declared := s.Sortable[leaf.WirePath]; declared {
+			classified.Sort = &spec
+		}
 		switch {
 		case leaf.Group:
-			// Marker only — inner leaves carry the keys.
+			classified.Kind = LeafGroup
 		case leaf.Ops != nil:
+			classified.Kind = LeafFilter
 			ops := map[string]bool{}
 			for _, op := range leaf.Ops {
 				ops[op] = true
@@ -310,17 +364,17 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 			}
 			s.Filters[leaf.WirePath] = FilterSpec{Ops: ops, DocPath: leaf.GoPath, GoKind: leafType.Kind()}
 		case leaf.Sort != nil:
-			// Vocabulary leaf — recorded above. It declares no filter and
-			// consumes no wire key of its own; it exists to name a path the
-			// endpoint can order by.
+			classified.Kind = LeafOrdering
 		case leaf.TopLevel && ControlKeys[key]:
+			classified.Kind = LeafControl
 			s.Reserved[key] = true
 		default:
 			// Every remaining shape is a declaration that opts nothing in
-			// while the OpenAPI generator would advertise it. Fail loud at
-			// construction, like the fields-response guard.
+			// while a surface would advertise it. Fail loud at construction,
+			// like the fields-response guard.
 			panic(deadQueryTag(t, leaf, key))
 		}
+		s.Leaves = append(s.Leaves, classified)
 	}
 	if err := validateOrderingPair(t, s); err != "" {
 		panic(err)
@@ -373,60 +427,9 @@ func sortableWirePaths(s *RequestSchema) []string {
 	return out
 }
 
-// ParseOrderBy turns a comma-separated `?orderBy=` value into the ordering
-// terms a ReadCriteria carries. A token may carry a `-` prefix (descending);
-// bare is ascending.
-//
-// Each token is validated against the endpoint's declared ordering vocabulary
-// and translated to the Go field path, which the reader resolves to a physical
-// column through the view's TableSchema — the same two hops a filter leaf
-// takes. A token outside the vocabulary, or one asking for a direction the
-// declaration does not admit, is rejected with the canonical schema violation
-// naming the wire token verbatim, `-` prefix included.
-//
-// A path may appear at most ONCE. A repeated token is not a harmless no-op: the
-// terms become the reader's sort document, and a duplicated key is a malformed
-// one — Mongo refuses the whole read. `?orderBy=name,-name` is the same
-// mistake wearing a direction, so both spellings are refused on the SECOND
-// occurrence, which is the token the consumer has to remove.
-//
-// An empty vocabulary rejects everything, which is unreachable in practice:
-// with nothing declared orderable the endpoint does not accept `?orderBy=` at
-// all, and the control gateway refuses it before this parser is consulted.
-func ParseOrderBy(s string, sortable map[string]SortSpec) (orderBy []queries.OrderByField, violation *Violation, ok bool) {
-	if s == "" {
-		return nil, nil, true
-	}
-	tokens := strings.Split(s, ",")
-	orderBy = make([]queries.OrderByField, 0, len(tokens))
-	seen := make(map[string]bool, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
-		}
-		desc := false
-		wireName := t
-		if strings.HasPrefix(t, "-") {
-			desc = true
-			wireName = t[1:]
-		}
-		spec, declared := sortable[wireName]
-		if !declared || !spec.Allows(desc) {
-			return nil, SchemaViolation(OrderByField(t)), false
-		}
-		if seen[wireName] {
-			return nil, SchemaViolation(OrderByField(t)), false
-		}
-		seen[wireName] = true
-		orderBy = append(orderBy, queries.OrderByField{Field: spec.GoPath, Desc: desc})
-	}
-	return orderBy, nil, true
-}
-
 // deadQueryTag builds the boot-panic diagnostic for a `query:`-tagged field
 // that opts nothing in. Three shapes reach it, each with its own fix.
-func deadQueryTag(t reflect.Type, leaf RequestField, key string) string {
+func deadQueryTag(t reflect.Type, leaf requestField, key string) string {
 	switch {
 	case ControlKeys[key]:
 		return fmt.Sprintf(
@@ -439,54 +442,65 @@ func deadQueryTag(t reflect.Type, leaf RequestField, key string) string {
 	}
 }
 
-// ReadIncludeArchived reports the value bound to the Request DTO field tagged
-// `query:"includeArchived"` — the one reserved control a by-id read accepts.
-// Both `bool` and `*bool` are honored (a nil pointer reads as false) and
-// promoted anonymous structs are walked, so the reader sees exactly what the
-// surface's binder wrote. Returns false when the DTO declares no such field.
+// ReadIncludeArchivedControl reports the `query:"includeArchived"` control as
+// the surface's binder left it on the Request DTO: whether it was PRESENT on
+// the wire, and what it carried. Both `bool` and `*bool` are honored — a
+// pointer distinguishes the two, a plain bool cannot and reads as present —
+// and promoted anonymous structs are walked.
 //
-// The by-id wrappers call it to build the wire ReadCriteria they hand to
-// ToQuery(criteria) — the same seat the paged wrappers feed from
-// buildCriteria, whose control vocabulary is the full set.
-func ReadIncludeArchived(v reflect.Value) bool {
+// Presence and value are separate because the DTO opt-in gate keys on presence:
+// a control the endpoint never declared is a refusal, not a silent false. A
+// by-id read hands both to [BuildCriteria], which answers for the opt-in the
+// same way it does on a listing.
+func ReadIncludeArchivedControl(v reflect.Value) (value, present bool) {
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
-			return false
+			return false, false
 		}
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {
-		return false
+		return false, false
 	}
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if f.Anonymous {
-			if ReadIncludeArchived(v.Field(i)) {
-				return true
+			if val, ok := ReadIncludeArchivedControl(v.Field(i)); ok {
+				return val, true
 			}
 			continue
 		}
 		if !f.IsExported() {
 			continue
 		}
-		tag, _, _ := strings.Cut(f.Tag.Get("query"), ",")
-		if tag != KeyIncludeArchived {
+		if tag, _, _ := strings.Cut(f.Tag.Get("query"), ","); tag != KeyIncludeArchived {
 			continue
 		}
 		fv := v.Field(i)
 		if fv.Kind() == reflect.Pointer {
 			if fv.IsNil() {
-				return false
+				return false, false
 			}
 			fv = fv.Elem()
 		}
 		if fv.Kind() == reflect.Bool {
-			return fv.Bool()
+			return fv.Bool(), true
 		}
-		return false
+		return false, false
 	}
-	return false
+	return false, false
+}
+
+// ByIDRead is the neutral request of a read-by-id: one control is its whole
+// wire vocabulary. It goes through [BuildCriteria] like a listing does, so the
+// opt-in gate answers identically on every surface — a control the endpoint
+// did not declare is refused, never quietly ignored.
+func ByIDRead(includeArchived, present bool) Read {
+	return Read{
+		Controls:        Controls{IncludeArchived: present},
+		IncludeArchived: includeArchived,
+	}
 }
 
 // joinPath concatenates two non-empty segments with a single dot, returning

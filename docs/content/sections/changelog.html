@@ -53,6 +53,14 @@
                         canonical schema violation.</li>
                 </ul>
             </li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>
+                <code>TableSchema.FieldResolver()</code> is removed.</strong> It handed out a criteria resolver
+                backed by the bare <code>ColumnOf</code>, so it refused the managed slots and <code>ParentID</code>
+                — the same gap the two read-path resolvers just closed — and it could not do the
+                <code>LEFT JOIN</code> bookkeeping a sibling or shared-base column needs, which would answer with a
+                column from a table the <code>FROM</code> never joined. Nothing in the framework called it. Each
+                caller builds the resolver its own resolution surface requires; the <code>core.FieldResolver</code>
+                TYPE stays.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a raw gRPC mount orders by
                 nothing until it declares a vocabulary.</strong> <code>CriteriaBuilder.Sortable(...)</code> has NO
                 fallback: <code>order_by</code> used to resolve against the <code>Fields</code> vocabulary, so a
@@ -95,6 +103,47 @@
                 reaches the surface verbatim; translating it there produces the same typed, translated envelope a
                 repository-level violation produces, instead of a raw driver error surfacing as a 500. Same
                 behavior as before for the repository path — the body moved, nothing changed.</li>
+            <li><strong>Fixed</strong> — <strong>one assembler for every read request, so the surfaces cannot
+                disagree about what a request MEANS.</strong> Five consumers of the read vocabulary each ran their
+                own orchestration — the REST listing, the CSV/XLSX export, the OpenAPI document, the GraphQL
+                connection and the gRPC procedure, plus a by-id variant on three of them — and each re-decided the
+                same questions: which key is a control, whether the endpoint declared it, which operators a leaf
+                admits, which paths are orderable and in which direction, what <code>?fields=</code> accepts, how a
+                cursor must be shaped. They answered differently, and each difference stayed invisible until
+                someone hit it: an export that took a boolean spelling the listing refused, a gRPC procedure that
+                could not order by any multi-word path while REST ordered by it fine, a GraphQL field that accepted
+                a cursor REST rejected, a by-id procedure that quietly ignored a control its REST twin refused.
+                <code>queryschema.BuildCriteria</code> is now the one place a <code>ReadCriteria</code> is built
+                from a wire. A surface decodes its own idiom into <code>queryschema.Read</code> and owns how it
+                renders a refusal; it owns no opinion about what the endpoint accepts.
+                <code>CriteriaBuilder</code> keeps its shape as the <code>MountRaw</code> façade and validates
+                against the vocabulary its own calls declared. Two consequences a consumer can see, both a surface
+                catching up: GraphQL and gRPC now run the cursor structure check REST always ran, and a by-id read
+                refuses an undeclared control on every surface.</li>
+            <li><strong>Fixed</strong> — <strong>one classification of the Request DTO, so the surfaces cannot
+                disagree about what a field IS.</strong> Three surfaces re-walked the DTO's tags with rules of
+                their own — the OpenAPI parameter generator, the GraphQL <code>where</code> builder and the gRPC
+                filter binder — and a shape one of them had not accounted for leaked onto that surface alone: a
+                leaf that is orderable and nothing else takes no value on the wire, but the parameter generator
+                advertised it, so the document promised a parameter the request parser refuses on every call.
+                <code>ExtractRequestSchema</code> already decided what each declaration opted into; it now KEEPS
+                that decision, as <code>RequestSchema.Leaves</code>, and every surface reads it. The raw walk is
+                internal, so a fourth re-derivation cannot be written. The generator also inherits the boot guard
+                it used to sidestep.</li>
+            <li><strong>Fixed</strong> — <strong><a href="#relational-view">one field-resolution surface, so the
+                two read backings cannot drift</a>.</strong> "Does this Go field name resolve on this view, and to
+                what column" was answered by THREE separate walks — one in the Mongo reader, two on the relational
+                side (the capability gate and the SQL resolver) — and they disagreed: the managed slots
+                (<code>CreatedAt</code> / <code>UpdatedAt</code> / <code>DeletedAt</code>) and the read-only
+                <code>ParentID</code> projection were addressable on a Mongo view and refused with a
+                <code>RelationalCapabilityNotification</code> on its <code>RelationalSource</code> twin, from the
+                same code. <code>TableSchema.Resolve</code> is now that surface. It answers with the column AND
+                with whose row it lives on, so the one thing that genuinely IS the relational backing's business —
+                emitting the <code>LEFT JOIN</code> for a sibling or a shared base — falls out of the resolution
+                instead of being re-derived beside it. <code>TableSchema.ColumnForRead</code> and the relational
+                <code>servable</code> helper are gone: they were the other two spellings of the same question.
+                Nothing became addressable by existing — the wire vocabulary is still the Request DTO's, and a
+                dotted child path is still a boundary of one root <code>SELECT</code>.</li>
             <li><strong>Fixed</strong> — <strong>a ComposedView names the ordering term it refuses.</strong>
                 Sorting into a leg segment reported the literal field <code>sort</code>; it now reports the
                 offending path.</li>

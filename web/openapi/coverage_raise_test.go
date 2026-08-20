@@ -25,7 +25,11 @@ type covCanonReq struct {
 	secret string  `path:"secret"`  //nolint:unused // reflection-only: skipped (unexported)
 	hidden string  `query:"hidden"` //nolint:unused // reflection-only: skipped (unexported)
 	Status *string `query:"status" filter:"eq,,in"`
-	Limit  *int64  `query:"limit"`
+	// A reserved control, not an improvised key: the parameter walker now goes
+	// through ExtractRequestSchema, so a dead declaration like `query:"limit"`
+	// fails the boot here exactly as it does on the wrapper — the generator
+	// used to be the one place that advertised one silently.
+	First *int64 `query:"first"`
 }
 
 type covResp struct {
@@ -140,7 +144,7 @@ func TestBuildErrorExamplesMap_EmptyReturnsNil(t *testing.T) {
 	}
 }
 
-// walkQueryTags derefs a pointer type before walking (queryschema.WalkRequest
+// walkQueryTags derefs a pointer type before walking (the DTO walk
 // handles the top-level pointer transparently).
 func TestWalkQueryTags_PointerTypeDeref(t *testing.T) {
 	gen := NewGenerator(nil)

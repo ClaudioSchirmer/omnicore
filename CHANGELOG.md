@@ -80,6 +80,14 @@ with `1.0.0`.
   refuse it. Reading the empty string as "absent" on one of them would have
   rebuilt the same list-vs-by-id disagreement on a different spelling.
 
+- **BREAKING — `TableSchema.FieldResolver()` is removed.** It handed out a
+  criteria resolver backed by the bare `ColumnOf`, so it refused the managed
+  slots and `ParentID` — the same gap the two read-path resolvers just closed —
+  and it could not do the LEFT JOIN bookkeeping a sibling or shared-base column
+  needs, which would answer with a column from a table the `FROM` never joined.
+  Nothing in the framework called it. Each caller builds the resolver its own
+  resolution surface requires; the `core.FieldResolver` TYPE stays.
+
 - **BREAKING — `ComputedFieldNotSortableNotification` is removed.** Ordering no
   longer consults the Response, so a computed field is simply not in the
   vocabulary and its refusal is the canonical schema violation. The dedicated
@@ -122,6 +130,78 @@ with `1.0.0`.
   nothing changed.
 
 ### Fixed
+
+- **One assembler for every read request, so the surfaces cannot disagree about
+  what a request MEANS.** Five consumers of the read vocabulary each ran their
+  own orchestration — the REST listing, the CSV/XLSX export, the OpenAPI
+  document, the GraphQL connection and the gRPC procedure, plus a by-id
+  variant on three of them. Every one of them re-decided the same questions:
+  which key is a control, whether the endpoint declared it, which operators the
+  leaf admits, which paths are orderable and in which direction, what `?fields=`
+  accepts, how a cursor must be shaped. They answered differently, and each
+  difference was invisible until someone hit it — an export that took a boolean
+  spelling the listing refused, a gRPC procedure that could not order by any
+  multi-word path while REST ordered by it fine, a GraphQL field that accepted
+  a cursor REST rejected, a by-id procedure that quietly ignored a control its
+  REST twin refused.
+
+  `queryschema.BuildCriteria` is now the one place a `ReadCriteria` is built
+  from a wire, and every surface goes through it — including all three by-id
+  routes. A surface decodes its own idiom into `queryschema.Read` (a query
+  string splits on commas, a GraphQL input carries a real array, a proto
+  carries `repeated` values) and owns how it renders a refusal; it owns no
+  opinion about what the endpoint accepts. `CriteriaBuilder` keeps its shape as
+  the `MountRaw` façade and validates against the vocabulary its own calls
+  declared, which is what "no Request DTO" has always meant on that path.
+
+  Two consequences a consumer can see, both of them a surface catching up to
+  the others: GraphQL and gRPC now run the cursor structure check REST always
+  ran (a cursor that does not decode, or whose key tuple does not match the
+  ordering, is refused before dispatch instead of reaching the reader), and a
+  by-id read refuses an undeclared control on every surface instead of ignoring
+  it on gRPC.
+
+- **One classification of the Request DTO, so the surfaces cannot disagree
+  about what a field IS.** Three surfaces re-walked the DTO's tags with rules of
+  their own — the OpenAPI parameter generator, the GraphQL `where` builder and
+  the gRPC filter binder — and a shape one of them had not accounted for leaked
+  onto that surface alone: a leaf that is orderable and nothing else takes no
+  value on the wire, but the parameter generator advertised it, so the document
+  promised a query parameter the request parser refuses on every call.
+
+  `ExtractRequestSchema` already decided what each declaration opted into; it
+  now KEEPS that decision, as `RequestSchema.Leaves`, and every surface reads
+  it. The raw walk is internal, so a fourth re-derivation cannot be written.
+  The generator also inherits the boot guard it used to sidestep: a dead
+  `query:"…"` on a route it documents now fails the boot with the same
+  diagnostic the wrapper gives, instead of rendering a parameter nothing serves.
+
+- **One field-resolution surface, so the two read backings cannot drift.**
+  "Does this Go field name resolve on this view, and to what column" was
+  answered by three separate walks: the Mongo reader had one, and the
+  relational side had two of its own (the capability gate and the SQL
+  resolver). They disagreed — the relational pair resolved only the mapped
+  business fields, so the managed slots (`CreatedAt` / `UpdatedAt` /
+  `DeletedAt`) and the read-only `ParentID` projection were addressable on a
+  Mongo view and refused with a `RelationalCapabilityNotification` on its
+  `RelationalSource` twin. `OrderBy: CreatedAt desc` written by a Query's
+  `ToCriteria`, the most ordinary default ordering there is, worked on one
+  backing and answered 400 on the other from the same code.
+
+  `TableSchema.Resolve` is now that surface, and every read path asks it. It
+  answers with the column AND with whose row the column lives on, so the one
+  thing that genuinely IS the relational backing's business — emitting the
+  `LEFT JOIN` for a sibling or a shared base — falls out of the resolution
+  instead of being re-derived beside it. `TableSchema.ColumnForRead` and the
+  relational `servable` helper are gone; they were the two other spellings of
+  the same question.
+
+  Which field a consumer may address stays where it was: the Request DTO's
+  `filter:` / `sort:` declarations for an end user, `ToCriteria` for the
+  service. Nothing became addressable by existing. What a relational view still
+  refuses is what a single root `SELECT` cannot express — a dotted child path,
+  or a child-level sibling — which is a capability boundary, not a difference
+  in vocabulary.
 
 - **A by-id read honors `ReadCriteria.Projection` on Mongo.** `ReadByID` ignored
   it while the relational reader applied it, and `ReadCriteria.Restrict` — the

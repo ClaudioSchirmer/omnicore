@@ -191,6 +191,47 @@ func TestServableSharedBaseField_Passes(t *testing.T) {
 	}
 }
 
+// managedSchema is guardSchema plus the three managed columns and a ParentID —
+// the slots that surface under FIXED logical Go names (the three-name contract),
+// which is how every consumer above infra addresses them.
+func managedSchema(table string) *core.TableSchema {
+	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name").
+		ParentID("owner_id").
+		CreatedAt("created_at").UpdatedAt("updated_at").DeletedAt("deleted_at")
+}
+
+// TestServableManagedColumns_Passes — the managed slots and the ParentID
+// projection resolve on BOTH backings or on neither, because both go through
+// the one resolution surface (core.TableSchema.Resolve). They used to be two
+// separate walks, so the SAME Request DTO, and the SAME ToCriteria, got
+// different capabilities depending on which backing served the view.
+//
+// `OrderBy: CreatedAt desc` written by a Query's ToCriteria is the most ordinary
+// default ordering there is; it worked on the Mongo projection and answered 400
+// on the RelationalSource twin. Which field a consumer may address is the
+// Request DTO's business (and the dev's, through ToCriteria) — never the
+// backing's.
+func TestServableManagedColumns_Passes(t *testing.T) {
+	schema := managedSchema("gadgets")
+	for _, field := range []string{"CreatedAt", "UpdatedAt", "DeletedAt", "ParentID"} {
+		if _, err := toExpr(schema, map[string]any{field: "x"}); err != nil {
+			t.Errorf("a filter on the managed field %q must be servable, got %v", field, err)
+		}
+		if err := applySort(schema, criteria.Where(nil), []queries.OrderByField{{Field: field, Desc: true}}); err != nil {
+			t.Errorf("a sort on the managed field %q must be servable, got %v", field, err)
+		}
+	}
+}
+
+// TestUnsupportedUndeclaredManagedColumn_MapsTo400 is the other half of the
+// rule: the logical name resolves only when the schema DECLARES that slot. A
+// view with no DeletedAt has no archived state to address, so the name is as
+// unknown as any other.
+func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
+	_, err := toExpr(guardSchema("gadgets"), map[string]any{"CreatedAt": "x"})
+	assertRelationalCapability400(t, err, "CreatedAt")
+}
+
 // TestUnsupportedUnknownField_MapsTo400 keeps the negative control: a flat field
 // that belongs to NO schema (not root, not a sibling, not the base) is still a
 // 400 — the relaxation admits 1:1 satellites, not arbitrary names.

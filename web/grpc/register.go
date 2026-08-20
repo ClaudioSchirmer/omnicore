@@ -322,7 +322,7 @@ func QueryByID[
 		if err != nil {
 			bootFail("%v", err)
 		}
-		includeArchivedOptIn := queryschema.ExtractRequestSchema(reflect.TypeOf(sample)).Reserved[queryschema.KeyIncludeArchived]
+		reqSchema := queryschema.ExtractRequestSchema(reflect.TypeOf(sample))
 		toQuery := func(msg *PB) (TQ, error) {
 			req, err := pbToDTO[TReq](reqPlan, any(msg).(proto.Message))
 			if err != nil {
@@ -331,10 +331,14 @@ func QueryByID[
 			}
 			// The by-id criteria seat: one reserved control is the whole wire
 			// vocabulary here (the paged sibling composes the omnicore.v1
-			// components instead), read back off the DTO the bind plan filled.
-			crit := queries.ReadCriteria{Filter: map[string]any{}}
-			if includeArchivedOptIn {
-				crit.IncludeArchived = queryschema.ReadIncludeArchived(reflect.ValueOf(req))
+			// components instead), read back off the DTO the bind plan filled
+			// and handed to the same assembler a listing goes through — so an
+			// undeclared control is REFUSED here too, never quietly ignored.
+			archived, present := queryschema.ReadIncludeArchivedControl(reflect.ValueOf(req))
+			crit, _, violation, ok := queryschema.BuildCriteria(reqSchema, nil, queryschema.ByIDRead(archived, present))
+			if !ok {
+				var zero TQ
+				return zero, violationError(violation)
 			}
 			return req.ToQuery(crit), nil
 		}

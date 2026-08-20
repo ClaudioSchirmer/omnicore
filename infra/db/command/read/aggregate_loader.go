@@ -204,12 +204,12 @@ func (l *AggregateLoader[T]) Exists(ctx context.Context, q *criteria.Query) (boo
 // reuse exactly the resolution and gating semantics of findRoots without its
 // SELECT/scan machinery.
 func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause string, args []any, err error) {
-	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
+	joins := &joinedTables{siblings: map[string]*TableSchema{}}
 	return l.compileFilterJoins(q, joins)
 }
 
 // idKindResolver reports the identity typing of a criteria field across the
-// SAME resolution surface specResolver walks — the anchor schema, then its
+// SAME resolution surface resolverRecordingJoins walks — the anchor schema, then its
 // siblings, then the shared base. The kind is derived from the Go struct
 // (TableSchema.IDKindOf — the field TYPE is the declaration), so a bare-string
 // probe on a domain.ID-typed field binds in the dialect's native id form; the
@@ -241,11 +241,11 @@ func (l *AggregateLoader[T]) idKindResolver() func(string) core.IDKind {
 // an aggregate method can resolve its aggregated field through the SAME joins
 // (a sibling field pulls its LEFT JOIN whether it appears in the predicate or
 // in the SELECT aggregate).
-func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *relSpecJoins) (fromJoin, clause string, args []any, err error) {
+func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *joinedTables) (fromJoin, clause string, args []any, err error) {
 	if q == nil {
 		q = criteria.Where(nil)
 	}
-	resolve := l.specResolver(joins)
+	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
 	where, args, err := compileWhere(q.Condition(), resolve, dialect, l.idKindResolver())
@@ -270,7 +270,7 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *relSpe
 		// identifier.
 		clause = " " + clause
 	}
-	fromJoin = dialect.QuoteIdent(l.schema.Table()) + l.specJoinClause(joins, dialect)
+	fromJoin = dialect.QuoteIdent(l.schema.Table()) + l.joinClause(joins, dialect)
 	return fromJoin, clause, args, nil
 }
 
@@ -295,8 +295,8 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// so it is LEFT JOINed below. Sibling columns are unique across the node
 	// (the schema's bijection), so they stay unqualified and unambiguous; only
 	// the shared ID is qualified (in the JOIN ON + the SELECT leading key).
-	joins := &relSpecJoins{siblings: map[string]*TableSchema{}}
-	resolve := l.specResolver(joins)
+	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
 	where, args, err := compileWhere(q.Condition(), resolve, dialect, l.idKindResolver())
@@ -394,7 +394,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// only to make the sibling columns reachable for filtering. The leading ID is
 	// qualified to the anchor table because the shared ID is the one ambiguous
 	// column under the join.
-	joinSQL := l.specJoinClause(joins, dialect)
+	joinSQL := l.joinClause(joins, dialect)
 	leadingPK := dialect.QuoteIdent(l.schema.IDColumn())
 	if joinSQL != "" {
 		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.IDColumn())
@@ -991,46 +991,52 @@ func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string
 	return rows.Err()
 }
 
-// relSpecJoins records which relational-specialization tables a criteria
+// joinedTables records which 1:1 tables a criteria
 // referenced so findRoots can LEFT JOIN exactly those: sibling tables (joined on
 // the shared ID) and/or the shared base (joined on the role's ParentID → base ID).
-type relSpecJoins struct {
+type joinedTables struct {
 	siblings map[string]*TableSchema
 	base     *TableSchema
 	baseFK   string
 }
 
-// specResolver resolves a criteria Go field to its column, checking the anchor,
-// then each sibling, then the shared base — recording any sibling/base referenced
-// so the matching LEFT JOIN is emitted. Sibling and base columns are unique vs
-// the anchor (the schema bijection), so they stay unqualified; only the shared ID
-// is ambiguous under a join, and findRoots/compileFilterJoins qualify it to the
-// anchor table — so a criteria may freely mix the ID and a specialization field.
-func (l *AggregateLoader[T]) specResolver(j *relSpecJoins) core.FieldResolver {
+// resolverRecordingJoins resolves a criteria Go field to its column and records the 1:1
+// join the answer implies, so compileFilterJoins emits the matching LEFT JOIN.
+//
+// The resolution itself is core.TableSchema.Resolve — the ONE surface every
+// read path consults, so this loader admits exactly the names a Mongo view of
+// the same schema admits. What is left here is the part that IS this backing's
+// business: turning "the column lives on that sibling / on the shared base"
+// into a JOIN. Deriving the bookkeeping FROM the resolution is the point — the
+// two used to be separate walks, and a name the walks disagreed about produced
+// a WHERE against a table the FROM never joined.
+//
+// Sibling and base columns are unique vs the anchor (the schema bijection), so
+// they stay unqualified; only the shared ID is ambiguous under a join, and
+// findRoots/compileFilterJoins qualify it to the anchor table — so a criteria
+// may freely mix the ID and a specialization field.
+func (l *AggregateLoader[T]) resolverRecordingJoins(j *joinedTables) core.FieldResolver {
 	return func(goField string) (string, bool) {
-		if col, ok := l.schema.ColumnOf(goField); ok {
-			return col, true
+		r, ok := l.schema.Resolve(goField)
+		if !ok {
+			return "", false
 		}
-		for _, sib := range l.schema.Siblings() {
-			if col, ok := sib.ColumnOf(goField); ok {
-				j.siblings[sib.Table()] = sib
-				return col, true
+		switch r.Owner {
+		case core.OwnerSibling:
+			j.siblings[r.Schema.Table()] = r.Schema
+		case core.OwnerSharedBase:
+			if _, fk, has := l.schema.SharedBaseRef(); has {
+				j.base, j.baseFK = r.Schema, fk
 			}
 		}
-		if base, fk, ok := l.schema.SharedBaseRef(); ok {
-			if col, ok2 := base.ColumnOf(goField); ok2 {
-				j.base, j.baseFK = base, fk
-				return col, true
-			}
-		}
-		return "", false
+		return r.Column, true
 	}
 }
 
-// specJoinClause renders a LEFT JOIN per referenced sibling (shared ID) and the
+// joinClause renders a LEFT JOIN per referenced sibling (shared ID) and the
 // shared base (role ParentID → base ID), ordered deterministically. Empty when the
 // criteria referenced no specialization field.
-func (l *AggregateLoader[T]) specJoinClause(j *relSpecJoins, dialect Dialect) string {
+func (l *AggregateLoader[T]) joinClause(j *joinedTables, dialect Dialect) string {
 	if len(j.siblings) == 0 && j.base == nil {
 		return ""
 	}

@@ -35,8 +35,12 @@ import (
 //	    String("UserName", pb.GetFilters().GetUserName()).
 //	    Build()
 type CriteriaBuilder struct {
-	crit     queries.ReadCriteria
-	controls queryschema.Controls
+	// in is the surface-neutral request this builder accumulates. Build hands
+	// it to queryschema.BuildCriteria, which owns every rule: the opt-in gate,
+	// the directional rule, the only-total matrix, the operator allowlist and
+	// the ordering vocabulary. This surface owns only how proto spells a value.
+	in       queryschema.Read
+	declared *queryschema.RequestSchema
 	fields   map[string]string   // wire (proto snake_case) → Go field path
 	computed map[string][]string // wire → Go source paths (COMPUTED fields)
 	// sortable is the ordering vocabulary: wire (proto snake_case) → the Go
@@ -45,21 +49,29 @@ type CriteriaBuilder struct {
 	// read_mask may project, sortable is what order_by may order by, and a
 	// path may be one without being the other.
 	sortable map[string]queryschema.SortSpec
-	// sortViolations collects the order_by entries the vocabulary refused —
-	// undeclared path, disallowed direction, or a path named twice. They are
-	// rendered as TYPED notifications rather than prose, so the consumer reads
-	// WHICH entry was refused off the error detail, exactly as REST reads it
-	// off `orderBy[<token>]`.
-	sortViolations []string
-	errs           []error
+	errs     []error
 	// masked records the read_mask's wire paths, so HiddenComputedSources can
 	// tell "the mask asked for this" from "we read it as a computed source".
 	masked map[string]bool
 }
 
-// NewCriteria starts a builder with an empty filter map.
+// NewCriteria starts a builder that declares nothing yet: what it accepts is
+// what the calls below name.
 func NewCriteria() *CriteriaBuilder {
-	return &CriteriaBuilder{crit: queries.ReadCriteria{Filter: map[string]any{}}}
+	return &CriteriaBuilder{declared: &queryschema.RequestSchema{
+		Filters:  map[string]queryschema.FilterSpec{},
+		Reserved: rawPathReserved,
+		Sortable: map[string]queryschema.SortSpec{},
+	}}
+}
+
+// withSchema points the builder at a Request DTO's schema instead of the one it
+// declares for itself. The Auto path uses it, so a procedure compiled from a DTO
+// is gated by that DTO exactly as its REST twin is; MountRaw keeps the
+// self-declared schema, which is what "no DTO" means.
+func (b *CriteriaBuilder) withSchema(s *queryschema.RequestSchema) *CriteriaBuilder {
+	b.declared = s
+	return b
 }
 
 // Controls exposes the canonical control snapshot the builder accumulated —
@@ -68,7 +80,7 @@ func NewCriteria() *CriteriaBuilder {
 // Build applies the DTO-less subset of the gateway (directional rule +
 // only-total conflicts).
 func (b *CriteriaBuilder) Controls() queryschema.Controls {
-	return b.controls
+	return b.in.Controls
 }
 
 // Fields declares the view's wire vocabulary for fields and order_by: proto
@@ -124,69 +136,73 @@ func (b *CriteriaBuilder) Page(p *pb.PaginationRequest) *CriteriaBuilder {
 		return b
 	}
 	if p.After != nil {
-		b.controls.After = true
+		b.in.Controls.After = true
 	}
 	if p.Before != nil {
-		b.controls.Before = true
+		b.in.Controls.Before = true
 	}
 	if p.First != nil {
 		n := p.GetFirst()
-		b.controls.First = &n
+		b.in.Controls.First = &n
 	}
 	if p.Last != nil {
 		n := p.GetLast()
-		b.controls.Last = &n
+		b.in.Controls.Last = &n
 	}
 	if p.Search != nil {
-		b.controls.Search = true
+		b.in.Controls.Search = true
 	}
 	if p.IncludeArchived != nil {
-		b.controls.IncludeArchived = true
+		b.in.Controls.IncludeArchived = true
 	}
 	if p.OnlyTotal != nil {
 		active := p.GetOnlyTotal()
-		b.controls.OnlyTotal = &active
+		b.in.Controls.OnlyTotal = &active
 	}
-	b.crit.After = p.GetAfter()
-	b.crit.Before = p.GetBefore()
-	// Materialize the Relay direction pair into the internal size+direction:
-	// first=N → forward window; last=N → backward window (with no cursor, the
-	// LAST N of the set). The mutual exclusivity is the gateway's check.
-	if p.First != nil {
-		b.crit.Limit = p.GetFirst()
-	}
-	if p.Last != nil {
-		b.crit.Limit = p.GetLast()
-		b.crit.Backward = true
-	}
-	b.crit.OnlyTotal = p.GetOnlyTotal()
-	b.crit.IncludeArchived = p.GetIncludeArchived()
-	b.crit.Search = p.GetSearch()
+	b.in.After = p.GetAfter()
+	b.in.Before = p.GetBefore()
+	b.in.IncludeArchived = p.GetIncludeArchived()
+	b.in.Search = p.GetSearch()
 	return b
 }
 
-// OrderBy appends ordering fields in the declared order. Field names are WIRE
-// names (proto snake_case), resolved against the Sortable vocabulary — a field
-// the Request DTO did not declare orderable, one asked for in a direction its
-// declaration does not admit, or one named twice (the terms become the
-// reader's sort document, where a duplicated key is malformed) fails Build as
-// a SchemaViolation naming the offending entry.
+// OrderBy appends ordering terms in the order given. Field names are WIRE
+// names (proto snake_case); they are folded to the vocabulary's spelling here
+// and travel with the entry verbatim, so a refusal names what the wire sent —
+// the gRPC dialect of REST's `orderBy[<token>]` (order_by is already a typed
+// field on the request message, so a bracket prefix would name nothing here).
+//
+// Whether the path is orderable, in that direction, and only once, is decided
+// by the shared assembler at Build.
 func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
-	seen := make(map[string]bool, len(fields))
 	for _, f := range fields {
 		if f == nil || f.GetField() == "" {
 			continue
 		}
-		b.controls.OrderBy = true
-		spec, declared := b.sortableSpec(f.GetField())
-		if !declared || !spec.Allows(f.GetDesc()) || seen[f.GetField()] {
-			b.sortViolations = append(b.sortViolations, f.GetField())
-			continue
-		}
-		seen[f.GetField()] = true
-		b.crit.OrderBy = append(b.crit.OrderBy, queries.OrderByField{Field: spec.GoPath, Desc: f.GetDesc()})
+		b.in.Controls.OrderBy = true
+		b.in.OrderBy = append(b.in.OrderBy, queryschema.OrderTerm{
+			Path: b.vocabularyPath(f.GetField()),
+			Desc: f.GetDesc(),
+			Raw:  f.GetField(),
+		})
 	}
 	return b
+}
+
+// vocabularyPath folds a proto field name onto the declared vocabulary's own
+// spelling. The vocabulary arrives in the Request DTO's spelling (`createdAt`)
+// and the wire sends the proto's (`created_at`); the two meet through
+// normalizePath, the same equivalence the rest of this binder uses to match a
+// proto field against its DTO twin. An unknown name is returned untouched and
+// refused by the assembler, which names it back verbatim.
+func (b *CriteriaBuilder) vocabularyPath(wire string) string {
+	norm := normalizePath(wire)
+	for path := range b.declared.Sortable {
+		if normalizePath(path) == norm {
+			return path
+		}
+	}
+	return wire
 }
 
 // Sortable declares the ordering vocabulary — wire path → the Go field path it
@@ -198,14 +214,8 @@ func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
 // matching set unless an index covers it, so an endpoint sorts by what it says
 // it sorts by and nothing else.
 func (b *CriteriaBuilder) Sortable(vocabulary map[string]queryschema.SortSpec) *CriteriaBuilder {
-	b.sortable = vocabulary
+	b.declared.Sortable = vocabulary
 	return b
-}
-
-// sortableSpec resolves one wire path against the declared vocabulary.
-func (b *CriteriaBuilder) sortableSpec(wirePath string) (queryschema.SortSpec, bool) {
-	spec, ok := b.sortable[wirePath]
-	return spec, ok
 }
 
 // FieldMask applies the partial-response projection (the ?fields= sibling;
@@ -219,9 +229,9 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 	if m == nil || len(m.GetPaths()) == 0 {
 		return b
 	}
-	b.controls.Fields = true
-	if b.crit.Projection == nil {
-		b.crit.Projection = map[string]int{}
+	b.in.Controls.Fields = true
+	if b.in.Projection == nil {
+		b.in.Projection = map[string]int{}
 	}
 	if b.masked == nil {
 		b.masked = map[string]bool{}
@@ -237,11 +247,11 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 		}
 		if sources, isComputed := b.computed[path]; isComputed {
 			for _, src := range sources {
-				b.crit.Projection[src] = 1
+				b.in.Projection[src] = 1
 			}
 			continue
 		}
-		b.crit.Projection[goPath] = 1
+		b.in.Projection[goPath] = 1
 	}
 	return b
 }
@@ -297,6 +307,23 @@ func (b *CriteriaBuilder) HiddenComputedSources() []string {
 	return out
 }
 
+// filter records one operand set against the path it names. The typed methods
+// above are how proto spells a value; the SPEC they declare is what makes the
+// path part of this endpoint's vocabulary, which is what the assembler checks
+// the operator against. A MountRaw consumer therefore declares its filters by
+// calling for them, which is the raw path's whole contract.
+func (b *CriteriaBuilder) filter(spec queryschema.FilterSpec, op string, values []string) {
+	if _, already := b.declared.Filters[spec.DocPath]; !already {
+		b.declared.Filters[spec.DocPath] = queryschema.FilterSpec{
+			Ops: map[string]bool{}, DocPath: spec.DocPath, GoKind: spec.GoKind,
+		}
+	}
+	b.declared.Filters[spec.DocPath].Ops[op] = true
+	b.in.Filters = append(b.in.Filters, queryschema.FilterTerm{
+		Path: spec.DocPath, Op: op, Values: values, Raw: spec.DocPath,
+	})
+}
+
 // String wires a StringFilter onto goFieldPath. nil / empty filters are
 // no-ops (field not sent).
 func (b *CriteriaBuilder) String(goFieldPath string, f *pb.StringFilter) *CriteriaBuilder {
@@ -310,7 +337,7 @@ func (b *CriteriaBuilder) String(goFieldPath string, f *pb.StringFilter) *Criter
 			b.errs = append(b.errs, fmt.Errorf("filter %q: string op %v is not valid", goFieldPath, c.GetOp()))
 			continue
 		}
-		queryschema.ApplyFilterValues(b.crit.Filter, spec, op, c.GetValues())
+		b.filter(spec, op, c.GetValues())
 	}
 	return b
 }
@@ -331,7 +358,7 @@ func (b *CriteriaBuilder) Int64(goFieldPath string, f *pb.Int64Filter) *Criteria
 		for i, v := range c.GetValues() {
 			values[i] = strconv.FormatInt(v, 10)
 		}
-		queryschema.ApplyFilterValues(b.crit.Filter, spec, op, values)
+		b.filter(spec, op, values)
 	}
 	return b
 }
@@ -352,7 +379,7 @@ func (b *CriteriaBuilder) Double(goFieldPath string, f *pb.DoubleFilter) *Criter
 		for i, v := range c.GetValues() {
 			values[i] = strconv.FormatFloat(v, 'f', -1, 64)
 		}
-		queryschema.ApplyFilterValues(b.crit.Filter, spec, op, values)
+		b.filter(spec, op, values)
 	}
 	return b
 }
@@ -369,7 +396,7 @@ func (b *CriteriaBuilder) Bool(goFieldPath string, f *pb.BoolFilter) *CriteriaBu
 			b.errs = append(b.errs, fmt.Errorf("filter %q: bool op %v is not valid", goFieldPath, c.GetOp()))
 			continue
 		}
-		queryschema.ApplyFilterValues(b.crit.Filter, spec, op, []string{strconv.FormatBool(c.GetValue())})
+		b.filter(spec, op, []string{strconv.FormatBool(c.GetValue())})
 	}
 	return b
 }
@@ -395,7 +422,7 @@ func (b *CriteriaBuilder) Timestamp(goFieldPath string, f *pb.TimestampFilter) *
 			}
 			values = append(values, ts.AsTime().UTC().Format(time.RFC3339Nano))
 		}
-		queryschema.ApplyFilterValues(b.crit.Filter, spec, op, values)
+		b.filter(spec, op, values)
 	}
 	return b
 }
@@ -413,60 +440,41 @@ var rawPathReserved = map[string]bool{
 	queryschema.KeyOnlyTotal: true,
 }
 
-// Build returns the criteria, or the accumulated wire-contract violations —
-// the wrappers' conversionError path renders them as SchemaViolation
-// (INVALID_ARGUMENT), the same rejection an unknown REST operator gets.
-// The canonical control gateway runs here for the raw path (directional
-// rule + only-total conflicts); the Auto path additionally applies the DTO
-// opt-in gate at its compiled plan before reaching Build.
+// Build hands the accumulated request to queryschema.BuildCriteria — the one
+// assembler every surface goes through — and renders its refusal in this
+// wire's idiom.
+//
+// What the raw path validates against is the vocabulary the builder itself was
+// given: the paths the typed filter calls named, the ordering vocabulary
+// Sortable declared, and every control (a raw mount answers for its own
+// contract). The Auto path swaps in the Request DTO's schema, so a procedure
+// compiled from a DTO is gated by that DTO exactly as its REST twin is.
 func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
-	if violations := queryschema.ValidateControls(rawPathReserved, b.controls, nil); len(violations) > 0 {
-		return queries.ReadCriteria{}, controlViolationError(violations)
-	}
-	if len(b.sortViolations) > 0 {
-		return queries.ReadCriteria{}, sortViolationError(b.sortViolations)
+	crit, _, violation, ok := queryschema.BuildCriteria(b.declared, nil, b.in)
+	if !ok {
+		return queries.ReadCriteria{}, violationError(violation)
 	}
 	if len(b.errs) > 0 {
 		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %w", errors.Join(b.errs...))
 	}
-	return b.crit, nil
+	return crit, nil
 }
 
-// sortViolationError renders the refused order_by entries the same way
-// controlViolationError renders a gateway violation — a NotificationCarrier
-// under the "Schema" context, so conversionError funnels it through the
-// pipeline's translation and the Connect shell emits INVALID_ARGUMENT with one
-// google.rpc detail per entry. The field name is the entry exactly as the wire
-// spelled it (proto snake_case), the gRPC dialect of REST's
-// `orderBy[<token>]`: order_by is already a typed field on the request
-// message, so the bracket prefix would name nothing on this wire.
-func sortViolationError(entries []string) error {
-	nctx := domain.NewNotificationContext("Schema")
-	for _, entry := range entries {
-		nctx.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    entry,
-			Notification: domain.SchemaViolationNotification{},
-		})
+// violationError renders one refusal as the framework's typed notification
+// error — a NotificationCarrier, so conversionError funnels it through the
+// pipeline's translation and the Connect shell emits INVALID_ARGUMENT with a
+// google.rpc detail carrying the field.
+//
+// An ordering refusal drops REST's `orderBy[…]` wrapper and names the entry
+// verbatim: order_by is already a typed field on this request message, so the
+// prefix would name nothing here. Same rule, this wire's spelling.
+func violationError(v *queryschema.Violation) error {
+	msg := v.Message()
+	if token, wrapped := queryschema.OrderByToken(msg.FieldName); wrapped {
+		msg.FieldName = token
 	}
-	return domain.NewDomainError([]*domain.NotificationContext{nctx})
-}
-
-// controlViolationError renders gateway violations as the framework's typed
-// notification error — a NotificationCarrier, so conversionError preserves
-// the per-field triple and the Connect shell maps it to INVALID_ARGUMENT
-// with google.rpc details, the gRPC self-translation of the same canonical
-// rejection REST serves as a 400 envelope. A NotDeclared violation carries
-// the missing `query:"…"` declaration as the field value, so the consumer
-// reads the fix straight off the error detail.
-func controlViolationError(violations []queryschema.ControlViolation) error {
 	nctx := domain.NewNotificationContext("Schema")
-	for _, v := range violations {
-		msg := v.Message()
-		if v.Kind == queryschema.ViolationNotDeclared {
-			msg.FieldValue = fmt.Sprintf("control not enabled on this endpoint — declare query:%q on its Request DTO", v.Key)
-		}
-		nctx.AddNotificationMessage(msg)
-	}
+	nctx.AddNotificationMessage(msg)
 	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }
 

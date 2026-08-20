@@ -9,6 +9,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/application/translation"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
 
 // ── fixtures: a read quad whose Response carries a well-known scalar struct
@@ -171,7 +172,7 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 
 	// Defense in depth: a value that somehow bypassed validation still errors.
 	plan := newCriteriaPlan("User", reflect.TypeOf(execRequest{}), reflect.TypeOf(execResponse{}))
-	_, _, badField, gerr := plan.buildCriteria(map[string]any{
+	_, badField, gerr := planRead(plan, map[string]any{
 		"orderBy": []any{map[string]any{"field": "BOGUS"}},
 	})
 	if gerr != nil {
@@ -181,13 +182,13 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 	// spelling of REST's `orderBy[<token>]` — so the consumer reads WHICH term
 	// was refused instead of "something about orderBy".
 	if badField != "orderBy[BOGUS]" {
-		t.Fatalf("buildCriteria must report the offending order term, got %q", badField)
+		t.Fatalf("the read path must report the offending order term, got %q", badField)
 	}
 
 	// The enum can name the orderable members but not say each appears at most
 	// once, and a duplicated key makes the reader's sort document malformed —
 	// so that cut lands here too, on the second occurrence.
-	_, _, badField, gerr = plan.buildCriteria(map[string]any{
+	_, badField, gerr = planRead(plan, map[string]any{
 		"orderBy": []any{
 			map[string]any{"field": "NAME"},
 			map[string]any{"field": "AGE"},
@@ -202,7 +203,7 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 	}
 
 	// Distinct members in one ordering stay legal.
-	crit, _, badField, gerr := plan.buildCriteria(map[string]any{
+	crit, badField, gerr := planRead(plan, map[string]any{
 		"orderBy": []any{
 			map[string]any{"field": "NAME"},
 			map[string]any{"field": "AGE", "direction": "DESC"},
@@ -243,4 +244,21 @@ func TestExecute_PanicMapsToInternalError(t *testing.T) {
 	if resp.Errors[0].Message != "internal server error" {
 		t.Errorf("message = %q, want the opaque internal message", resp.Errors[0].Message)
 	}
+}
+
+// planRead mirrors the resolver: decode this surface's arguments, then let the
+// shared assembler decide what they mean. The vocabulary, direction and
+// duplicate rules live there, so a test that only decoded would prove nothing
+// about what the consumer actually gets.
+func planRead(p *criteriaPlan, args map[string]any) (queries.ReadCriteria, string, *GraphQLError) {
+	in, badField, gerr := p.decodeArgs(args)
+	if gerr != nil || badField != "" {
+		return queries.ReadCriteria{}, badField, gerr
+	}
+	in.Natural = graphqlNaturalControls
+	crit, _, violation, ok := queryschema.BuildCriteria(p.reqSchema, p.projSchema, in)
+	if !ok {
+		return crit, violation.Field, nil
+	}
+	return crit, "", nil
 }
