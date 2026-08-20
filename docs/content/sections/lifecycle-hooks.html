@@ -141,7 +141,7 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
         the same translation the Repository uses, exported for exactly this:
     </p>
 <pre><code>tx := core.UnwrapTx(handle)
-if _, err := tx.Exec(ctx, `INSERT INTO admin_seats (...) VALUES (...)`, args...); err != nil {
+if err := tx.Exec(ctx, `INSERT INTO admin_seats (...) VALUES (...)`, args...); err != nil {
     return write.TranslateUniqueViolation(tx.Dialect(), err, "AdminSeat", a.constraints)
 }</code></pre>
     <p>

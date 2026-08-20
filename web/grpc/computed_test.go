@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -23,9 +22,9 @@ import (
 // RESPONSE DTO (`computed:"A,B"`, naming Result fields) and has no column
 // behind it — the Query's FromQueryResult derives it after the read. The two
 // consumers of the read vocabulary therefore diverge exactly as they do on
-// REST: read_mask pushes the SOURCES down (the `?fields=` pushdown) and
-// order_by is refused with ComputedFieldNotSortableNotification (the
-// `?orderBy=` 400, INVALID_ARGUMENT here).
+// REST: read_mask pushes the SOURCES down (the `?fields=` pushdown) while
+// order_by resolves against the Sortable vocabulary, which a computed path is
+// never part of — the `?orderBy=` 400, INVALID_ARGUMENT here.
 
 // computedGadgetItemDTO is the gadget list Response DTO with `kind` declared
 // COMPUTED over the Result's Name+ID — the wire shape stays identical to
@@ -183,8 +182,35 @@ func TestSortOutsideTheVocabularyIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("ordering by an undeclared path must fail Build")
 	}
-	if !strings.Contains(err.Error(), "display") {
-		t.Fatalf("the refusal must name the offending entry, got %v", err)
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"display"}) {
+		t.Fatalf("the refusal must name the offending entry, got %v", got)
+	}
+}
+
+// TestSortRepeatedPathIsRefused — the entries become the reader's sort
+// document, where a duplicated key is malformed. The refusal names the SECOND
+// occurrence, the entry the consumer has to remove — same rule, same choice of
+// token, as REST's `orderBy[<token>]`.
+func TestSortRepeatedPathIsRefused(t *testing.T) {
+	vocab := map[string]queryschema.SortSpec{
+		"name":  {GoPath: "Name", Asc: true, Desc: true},
+		"email": {GoPath: "Email", Asc: true, Desc: true},
+	}
+	_, err := NewCriteria().Sortable(vocab).OrderBy(
+		&omnicorepb.OrderByField{Field: "name"},
+		&omnicorepb.OrderByField{Field: "email"},
+		&omnicorepb.OrderByField{Field: "name", Desc: true},
+	).Build()
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"name"}) {
+		t.Fatalf("a repeated ordering path must be refused naming the entry, got %v", got)
+	}
+
+	// Distinct paths in one ordering stay legal.
+	if _, err := NewCriteria().Sortable(vocab).OrderBy(
+		&omnicorepb.OrderByField{Field: "name"},
+		&omnicorepb.OrderByField{Field: "email", Desc: true},
+	).Build(); err != nil {
+		t.Fatalf("a multi-key ordering over distinct paths must pass, got %v", err)
 	}
 }
 

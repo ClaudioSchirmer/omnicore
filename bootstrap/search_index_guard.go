@@ -20,14 +20,21 @@ import (
 // endpoint that advertised a control it could never serve.
 //
 // This runs after the Mount phase, which is when both halves exist: the views
-// are collected before mounting, and the wrappers record their declarations
-// while mounting.
+// are collected before mounting, and every read surface records its
+// declarations while registering (REST's paged and export wrappers during
+// Mount; the GraphQL field and the gRPC procedure slightly earlier, in
+// mountSurfaceFeatures — both inside this same boot).
+//
+// The registry is DRAINED once consumed, so each boot verifies exactly the
+// declarations recorded since the previous one. Without that, a second
+// composition root in the same binary (tests, a multi-app process) could make
+// this boot fail over a view name the two happen to share, naming a Request
+// DTO that is not even in this app.
 //
 // Two cases are deliberately NOT failures:
 //
-//   - A view name the service does not declare. The registry is process-wide,
-//     so it can carry entries from another composition root in the same binary
-//     (tests, a multi-app process); an unknown name is simply not this boot's
+//   - A view name the service does not declare. It belongs to a surface this
+//     boot did not assemble; an unknown name is simply not this boot's
 //     business.
 //   - A RelationalSource view. Free text over the SoR is a declared capability
 //     boundary, answered with a typed 400 RelationalCapabilityNotification —
@@ -36,6 +43,7 @@ import (
 //     must not fail the boot for it.
 func verifySearchIndexes(features []Feature) error {
 	optIns := queryschema.SearchOptIns()
+	queryschema.ResetSearchOptIns()
 	if len(optIns) == 0 {
 		return nil
 	}

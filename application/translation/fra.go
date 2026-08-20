@@ -11,9 +11,9 @@ func (coreFR) Language() configuration.Language { return configuration.LangFR }
 func (coreFR) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":            "Champ obligatoire.",
-		"SchemaViolationNotification":          "Le contenu du corps de la requête ne correspond pas au schéma attendu.",
-		"LimitExceededNotification":            "La limite demandée dépasse le maximum autorisé.",
+		"RequiredFieldNotification":   "Champ obligatoire.",
+		"SchemaViolationNotification": "Le contenu du corps de la requête ne correspond pas au schéma attendu.",
+		"LimitExceededNotification":   "La limite demandée dépasse le maximum autorisé.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossible d'insérer un enregistrement avec une clé primaire existante.",

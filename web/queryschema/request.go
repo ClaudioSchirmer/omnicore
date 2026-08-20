@@ -24,13 +24,15 @@ type RequestSchema struct {
 	// tag, at ANY depth — a leaf inside an embed group contributes its dotted
 	// path exactly as a filter leaf does.
 	//
-	// The map being non-empty is what makes `?orderBy=` exist on the endpoint:
-	// there is no control key to declare, the field declarations ARE the
-	// switch. Ordering is a store operation whose cost is proportional to the
-	// matching set unless an index covers it, so the vocabulary is closed and
-	// explicit — an endpoint sorts by what it says it sorts by, and nothing else.
+	// It is the VOCABULARY half of the ordering contract: which paths
+	// `?orderBy=` accepts and in which directions. The SWITCH half — whether
+	// the endpoint accepts the parameter at all — is the `query:"orderBy"`
+	// control in Reserved, and validateOrderingPair enforces that the two
+	// travel together. Ordering is a store operation whose cost is
+	// proportional to the matching set unless an index covers it, so the
+	// vocabulary is closed and explicit — an endpoint sorts by what it says it
+	// sorts by, and nothing else.
 	Sortable map[string]SortSpec
-	OrderBy  *string `query:"orderBy"`
 }
 
 // SortSpec is one entry of the ordering vocabulary: the Go field path the wire
@@ -129,12 +131,12 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 		// to be: a filter leaf may also be orderable, and a leaf that is ONLY
 		// orderable is a legal shape of its own. The classification below does
 		// not branch on it — ExtractRequestSchema does.
-		sort := splitSort(f)
+		sortDirs := splitSort(f)
 
 		if ftag := f.Tag.Get("filter"); ftag != "" {
 			*out = append(*out, RequestField{
 				WirePath: wirePath, GoPath: goPath, Field: f,
-				Ops: splitOps(ftag), Sort: sort, TopLevel: topLevel,
+				Ops: splitOps(ftag), Sort: sortDirs, TopLevel: topLevel,
 			})
 			continue
 		}
@@ -148,7 +150,7 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 			// still see it) and recurse with the prefixes extended.
 			*out = append(*out, RequestField{
 				WirePath: wirePath, GoPath: goPath, Field: f,
-				Sort: sort, Group: true, TopLevel: topLevel,
+				Sort: sortDirs, Group: true, TopLevel: topLevel,
 			})
 			walkRequestLevel(ft, wirePath, goPath, false, out)
 			continue
@@ -157,7 +159,7 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 		// Vocabulary leaf (carries `sort:`) or reserved control scalar.
 		*out = append(*out, RequestField{
 			WirePath: wirePath, GoPath: goPath, Field: f,
-			Sort: sort, TopLevel: topLevel,
+			Sort: sortDirs, TopLevel: topLevel,
 		})
 	}
 }
@@ -382,6 +384,12 @@ func sortableWirePaths(s *RequestSchema) []string {
 // declaration does not admit, is rejected with the canonical schema violation
 // naming the wire token verbatim, `-` prefix included.
 //
+// A path may appear at most ONCE. A repeated token is not a harmless no-op: the
+// terms become the reader's sort document, and a duplicated key is a malformed
+// one — Mongo refuses the whole read. `?orderBy=name,-name` is the same
+// mistake wearing a direction, so both spellings are refused on the SECOND
+// occurrence, which is the token the consumer has to remove.
+//
 // An empty vocabulary rejects everything, which is unreachable in practice:
 // with nothing declared orderable the endpoint does not accept `?orderBy=` at
 // all, and the control gateway refuses it before this parser is consulted.
@@ -391,6 +399,7 @@ func ParseOrderBy(s string, sortable map[string]SortSpec) (orderBy []queries.Ord
 	}
 	tokens := strings.Split(s, ",")
 	orderBy = make([]queries.OrderByField, 0, len(tokens))
+	seen := make(map[string]bool, len(tokens))
 	for _, t := range tokens {
 		t = strings.TrimSpace(t)
 		if t == "" {
@@ -406,6 +415,10 @@ func ParseOrderBy(s string, sortable map[string]SortSpec) (orderBy []queries.Ord
 		if !declared || !spec.Allows(desc) {
 			return nil, SchemaViolation(OrderByField(t)), false
 		}
+		if seen[wireName] {
+			return nil, SchemaViolation(OrderByField(t)), false
+		}
+		seen[wireName] = true
 		orderBy = append(orderBy, queries.OrderByField{Field: spec.GoPath, Desc: desc})
 	}
 	return orderBy, nil, true

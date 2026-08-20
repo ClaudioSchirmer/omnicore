@@ -121,26 +121,6 @@ func warnSortableOnce(reqType reflect.Type, sortable map[string]queryschema.Sort
 		"sortable_wire_paths", paths)
 }
 
-// viewNamer is the optional seat a query handler exposes so the wrapper can
-// pair a Request-DTO declaration with the view that has to honor it. The
-// canonical handlers implement it; a hand-written pipeline.Handler need not,
-// and simply is not covered by the boot check below.
-type viewNamer interface{ ViewName() string }
-
-// recordSearchDeclaration notes an endpoint that accepts `?search=` together
-// with the view it reads, when both are knowable at registration. Free-text
-// search is a Mongo $text query, which requires a TextIndex on the view — a
-// declaration the Request DTO cannot see. bootstrap puts the two together after
-// the Mount phase and fails the boot on a mismatch.
-func recordSearchDeclaration(schema *queryschema.RequestSchema, reqType reflect.Type, h any) {
-	if !schema.Reserved[queryschema.KeySearch] {
-		return
-	}
-	if namer, ok := h.(viewNamer); ok {
-		queryschema.RecordSearchOptIn(namer.ViewName(), reqType.String())
-	}
-}
-
 // QueryWithParams creates a fiber.Handler for paged list endpoints. It
 // owns the wire format (query-string parsing, allowlist enforcement, JSON
 // envelope with top-level pagination); the application layer stays Fiber-agnostic.
@@ -194,7 +174,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResu
 		reflect.TypeOf((*TResult)(nil)).Elem(),
 		reflect.TypeOf((*TResp)(nil)).Elem(),
 	)
-	recordSearchDeclaration(schema, reqType, h)
+	queryschema.RecordSearchDeclaration(schema, reqType.String(), h)
 	return func(c fiber.Ctx) error {
 		crit, selectedWire, violation, ok := buildCriteria(c, schema, projSchema)
 		if !ok {
@@ -287,8 +267,14 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any
 			// spelling is the contract, and Fiber's binder would also take
 			// "1"/"t"/"TRUE" — which the paged sibling and the proto/GraphQL
 			// connectors all reject.
-			if raw := c.Query(queryschema.KeyIncludeArchived); raw != "" {
-				archived, valid := queryschema.ParseControlBool(raw)
+			//
+			// PRESENCE is the key being on the query string, not the value
+			// being non-empty. `?includeArchived=` is the control asked for
+			// with no answer, and the paged sibling refuses it; reading it as
+			// "absent" here would rebuild, on the empty string, exactly the
+			// list-vs-by-id disagreement the strict parsing removed.
+			if args := c.Request().URI().QueryArgs(); args.Has(queryschema.KeyIncludeArchived) {
+				archived, valid := queryschema.ParseControlBool(string(args.Peek(queryschema.KeyIncludeArchived)))
 				if !valid {
 					return respondSchemaViolation[TResult](c, pipe, queryschema.KeyIncludeArchived)
 				}

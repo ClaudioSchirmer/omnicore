@@ -11,9 +11,9 @@ func (corePTBR) Language() configuration.Language { return configuration.LangPTB
 func (corePTBR) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":            "Campo obrigatório.",
-		"SchemaViolationNotification":          "Conteúdo do corpo da requisição não corresponde ao esquema esperado.",
-		"LimitExceededNotification":            "O limite solicitado excede o máximo permitido.",
+		"RequiredFieldNotification":   "Campo obrigatório.",
+		"SchemaViolationNotification": "Conteúdo do corpo da requisição não corresponde ao esquema esperado.",
+		"LimitExceededNotification":   "O limite solicitado excede o máximo permitido.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossível efetuar a inclusão de um registro com a chave primária informada.",

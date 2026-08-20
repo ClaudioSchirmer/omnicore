@@ -177,8 +177,42 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 	if gerr != nil {
 		t.Fatalf("an unknown order field is a typed schema violation, not a prose error: %+v", gerr)
 	}
-	if badField != "orderBy" {
-		t.Fatalf("buildCriteria must report the orderBy control, got %q", badField)
+	// The refusal names the ENUM MEMBER the consumer sent — this surface's
+	// spelling of REST's `orderBy[<token>]` — so the consumer reads WHICH term
+	// was refused instead of "something about orderBy".
+	if badField != "orderBy[BOGUS]" {
+		t.Fatalf("buildCriteria must report the offending order term, got %q", badField)
+	}
+
+	// The enum can name the orderable members but not say each appears at most
+	// once, and a duplicated key makes the reader's sort document malformed —
+	// so that cut lands here too, on the second occurrence.
+	_, _, badField, gerr = plan.buildCriteria(map[string]any{
+		"orderBy": []any{
+			map[string]any{"field": "NAME"},
+			map[string]any{"field": "AGE"},
+			map[string]any{"field": "NAME", "direction": "DESC"},
+		},
+	})
+	if gerr != nil {
+		t.Fatalf("a repeated order term is a typed schema violation, not a prose error: %+v", gerr)
+	}
+	if badField != "orderBy[NAME]" {
+		t.Fatalf("a repeated order term must be refused naming the member, got %q", badField)
+	}
+
+	// Distinct members in one ordering stay legal.
+	crit, _, badField, gerr := plan.buildCriteria(map[string]any{
+		"orderBy": []any{
+			map[string]any{"field": "NAME"},
+			map[string]any{"field": "AGE", "direction": "DESC"},
+		},
+	})
+	if gerr != nil || badField != "" {
+		t.Fatalf("a multi-key ordering over distinct members must pass: %v / %q", gerr, badField)
+	}
+	if len(crit.OrderBy) != 2 {
+		t.Fatalf("both terms must reach the criteria, got %+v", crit.OrderBy)
 	}
 }
 

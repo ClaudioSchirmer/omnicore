@@ -216,7 +216,7 @@ func (r *BaseRepository[T]) mapErr(err error) error {
 // repository path produces:
 //
 //	tx := core.UnwrapTx(handle)
-//	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+//	if err := tx.Exec(ctx, sql, args...); err != nil {
 //	    return write.TranslateUniqueViolation(tx.Dialect(), err, "AdminSeat", a.constraints)
 //	}
 //

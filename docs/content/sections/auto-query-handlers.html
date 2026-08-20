@@ -309,17 +309,20 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
         same tag. The wrapper inspects the type (cached by <code>reflect.Type</code> in a module-level
         <code>sync.Map</code>) and rejects any query-string key outside the declared set with 400
         <code>SchemaViolationNotification</code>. Reserved pagination/control keys (<code>first</code>,
-        <code>last</code>, <code>after</code>, <code>before</code>, <code>fields</code>,
+        <code>last</code>, <code>after</code>, <code>before</code>, <code>orderBy</code>, <code>fields</code>,
         <code>search</code>, <code>includeArchived</code>, <code>onlyTotal</code>) are declared with only the
         <code>query:"..."</code> tag (no filter tag) — recognized only at the top level, never inside an embed
-        group. <code>orderBy</code> is the exception: it is recognized on the wire but is
-        <strong>not declarable</strong>, because the <a href="#auto-query-handlers~qry-sort"><code>sort:</code>
-        declarations</a> are its switch. The vocabulary is <strong>closed</strong>: a query-tagged scalar
-        carrying neither <code>filter:</code> nor <code>sort:</code> whose key is not one of the
-        eight declarable controls is a <strong>boot fail</strong> (panic at wrapper construction
-        naming the DTO, the offending tag and the canonical list) — a typo like
-        <code>query:"orderby"</code> or a stale spelling like <code>query:"limit"</code> would
-        otherwise opt nothing in while OpenAPI advertised the dead parameter.
+        group. <code>orderBy</code> is the one control that does not stand alone: it is the SWITCH of a
+        <a href="#auto-query-handlers~qry-sort">pair</a> whose other half is the <code>sort:</code>
+        declarations that fill its vocabulary, and either half without the other is a boot fail of its
+        own. The control vocabulary is <strong>closed</strong>: a query-tagged scalar carrying neither
+        <code>filter:</code> nor <code>sort:</code> whose key is not one of the nine canonical controls
+        is a <strong>boot fail</strong> (panic at wrapper construction naming the DTO, the offending tag
+        and the canonical list) — a typo like <code>query:"orderby"</code> or a stale spelling like
+        <code>query:"limit"</code> would otherwise opt nothing in while OpenAPI advertised the dead
+        parameter. A leaf that carries <code>sort:</code> and no <code>filter:</code> is the third legal
+        shape: it names a path <code>?orderBy=</code> may use and takes no value of its own, so it emits
+        no query parameter either.
     </p>
     <p>
         <strong>Behind the allowlist, the view has the last word.</strong> The allowlist validates a request against

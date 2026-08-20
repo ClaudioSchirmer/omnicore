@@ -117,6 +117,7 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 		if list, lok := raw.([]any); lok && len(list) > 0 {
 			controls.OrderBy = true
 			terms := make([]queries.OrderByField, 0, len(list))
+			seen := make(map[string]bool, len(list))
 			for _, item := range list {
 				term, tok := item.(map[string]any)
 				if !tok {
@@ -125,17 +126,21 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 				val := asString(term["field"])
 				wire, known := p.orderField[val]
 				if !known {
-					return crit, controls, queryschema.KeyOrderBy, nil
+					return crit, controls, queryschema.OrderByField(val), nil
 				}
 				spec := p.reqSchema.Sortable[wire]
 				desc := asString(term["direction"]) == "DESC"
 				// The enum can name the orderable fields but not the directions
 				// each one admits, so a declaration that allows only asc (or only
-				// desc) makes its cut here rather than in the schema. Same
-				// refusal the other surfaces render, one layer later.
-				if !spec.Allows(desc) {
-					return crit, controls, queryschema.KeyOrderBy, nil
+				// desc) makes its cut here rather than in the schema. Nor can it
+				// say a member appears at most once, and a duplicated key makes
+				// the reader's sort document malformed. Both refusals land here,
+				// reported on the enum member the consumer sent — this surface's
+				// spelling of REST's `orderBy[<token>]`.
+				if !spec.Allows(desc) || seen[val] {
+					return crit, controls, queryschema.OrderByField(val), nil
 				}
+				seen[val] = true
 				terms = append(terms, queries.OrderByField{Field: spec.GoPath, Desc: desc})
 			}
 			crit.OrderBy = terms

@@ -45,7 +45,13 @@ type CriteriaBuilder struct {
 	// read_mask may project, sortable is what order_by may order by, and a
 	// path may be one without being the other.
 	sortable map[string]queryschema.SortSpec
-	errs     []error
+	// sortViolations collects the order_by entries the vocabulary refused —
+	// undeclared path, disallowed direction, or a path named twice. They are
+	// rendered as TYPED notifications rather than prose, so the consumer reads
+	// WHICH entry was refused off the error detail, exactly as REST reads it
+	// off `orderBy[<token>]`.
+	sortViolations []string
+	errs           []error
 	// masked records the read_mask's wire paths, so HiddenComputedSources can
 	// tell "the mask asked for this" from "we read it as a computed source".
 	masked map[string]bool
@@ -161,19 +167,23 @@ func (b *CriteriaBuilder) Page(p *pb.PaginationRequest) *CriteriaBuilder {
 
 // OrderBy appends ordering fields in the declared order. Field names are WIRE
 // names (proto snake_case), resolved against the Sortable vocabulary — a field
-// the Request DTO did not declare orderable, or one asked for in a direction
-// its declaration does not admit, fails Build as a SchemaViolation.
+// the Request DTO did not declare orderable, one asked for in a direction its
+// declaration does not admit, or one named twice (the terms become the
+// reader's sort document, where a duplicated key is malformed) fails Build as
+// a SchemaViolation naming the offending entry.
 func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
+	seen := make(map[string]bool, len(fields))
 	for _, f := range fields {
 		if f == nil || f.GetField() == "" {
 			continue
 		}
 		b.controls.OrderBy = true
 		spec, declared := b.sortableSpec(f.GetField())
-		if !declared || !spec.Allows(f.GetDesc()) {
-			b.errs = append(b.errs, fmt.Errorf("orderBy path %q is not orderable on this view in the requested direction", f.GetField()))
+		if !declared || !spec.Allows(f.GetDesc()) || seen[f.GetField()] {
+			b.sortViolations = append(b.sortViolations, f.GetField())
 			continue
 		}
+		seen[f.GetField()] = true
 		b.crit.OrderBy = append(b.crit.OrderBy, queries.OrderByField{Field: spec.GoPath, Desc: f.GetDesc()})
 	}
 	return b
@@ -413,10 +423,32 @@ func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
 	if violations := queryschema.ValidateControls(rawPathReserved, b.controls, nil); len(violations) > 0 {
 		return queries.ReadCriteria{}, controlViolationError(violations)
 	}
+	if len(b.sortViolations) > 0 {
+		return queries.ReadCriteria{}, sortViolationError(b.sortViolations)
+	}
 	if len(b.errs) > 0 {
 		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %w", errors.Join(b.errs...))
 	}
 	return b.crit, nil
+}
+
+// sortViolationError renders the refused order_by entries the same way
+// controlViolationError renders a gateway violation — a NotificationCarrier
+// under the "Schema" context, so conversionError funnels it through the
+// pipeline's translation and the Connect shell emits INVALID_ARGUMENT with one
+// google.rpc detail per entry. The field name is the entry exactly as the wire
+// spelled it (proto snake_case), the gRPC dialect of REST's
+// `orderBy[<token>]`: order_by is already a typed field on the request
+// message, so the bracket prefix would name nothing on this wire.
+func sortViolationError(entries []string) error {
+	nctx := domain.NewNotificationContext("Schema")
+	for _, entry := range entries {
+		nctx.AddNotificationMessage(domain.NotificationMessage{
+			FieldName:    entry,
+			Notification: domain.SchemaViolationNotification{},
+		})
+	}
+	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }
 
 // controlViolationError renders gateway violations as the framework's typed

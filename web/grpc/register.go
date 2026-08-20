@@ -269,6 +269,11 @@ func QueryWithParams[
 		if err != nil {
 			bootFail("%v", err)
 		}
+		// `search` is a Mongo $text query, which the store refuses without a
+		// TextIndex on the view. The pair is checked at boot from a registry
+		// every read surface feeds — a procedure exposed only here is guarded
+		// exactly like a REST route.
+		queryschema.RecordSearchDeclaration(plan.reqSchema, reflect.TypeOf(sample).String(), h)
 		toQuery := func(msg *PB) (TQ, []string, error) {
 			crit, hidden, err := plan.buildCriteria(any(msg).(proto.Message).ProtoReflect())
 			if err != nil {

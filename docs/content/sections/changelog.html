@@ -26,7 +26,9 @@
                     <li>The tag is legal at any depth, so a leaf inside an embed group contributes its dotted
                         path exactly as a filter leaf does, and it also stands alone:
                         <code>query:"id" sort:"asc"</code> is orderable without being filterable and carries no
-                        value on the wire.</li>
+                        value on the wire — so it emits no OpenAPI query parameter of its own either, a
+                        parameter the request parser would reject on every call being exactly the dead
+                        declaration the boot guards refuse to ship.</li>
                     <li><strong>Either half alone fails the boot</strong>, each with its own diagnostic: the
                         switch with no vocabulary would accept the parameter and refuse every token; a vocabulary
                         with no switch declares paths orderable on an endpoint that does not take it. The second
@@ -34,17 +36,30 @@
                     <li><strong>Nothing is orderable until a leaf says so.</strong> An unindexed sort is a
                         blocking sort whose cost is proportional to the matching set, so every
                         <code>?orderBy=</code> token a service relied on must now be declared.</li>
-                    <li>A direction the declaration does not admit is refused like any undeclared token. GraphQL
-                        derives its <code>&lt;Entity&gt;OrderField</code> enum from the same set and cuts direction
-                        in the resolver (an enum cannot express per-member directions); gRPC resolves
-                        <code>order_by</code> through the new <code>CriteriaBuilder.Sortable(...)</code>, which has
-                        no fallback; OpenAPI fills the parameter's description with the accepted tokens unless the
-                        control field carries one of its own.</li>
+                    <li>A direction the declaration does not admit is refused like any undeclared token, ON THE
+                        TOKEN itself — <code>orderBy[-code]</code> on REST and export, the enum member on GraphQL,
+                        the entry verbatim on gRPC. GraphQL derives its <code>&lt;Entity&gt;OrderField</code> enum
+                        from the same set and cuts direction in the resolver (an enum cannot express per-member
+                        directions); gRPC resolves <code>order_by</code> through the new
+                        <code>CriteriaBuilder.Sortable(...)</code>; OpenAPI fills the parameter's description with
+                        the accepted tokens unless the control field carries one of its own.</li>
+                    <li><strong>A path may appear at most once</strong> in one ordering. The terms become the
+                        reader's sort document, where a duplicated key is malformed and the store refuses the whole
+                        read — so <code>?orderBy=name,name</code> and <code>?orderBy=name,-name</code> are refused
+                        on the SECOND occurrence, the token the consumer has to remove. Same rule on all three
+                        surfaces.</li>
                     <li><code>ComputedFieldNotSortableNotification</code> is <strong>removed</strong>: a computed
                         field backs no column, so it is never declared orderable and its refusal is the
                         canonical schema violation.</li>
                 </ul>
             </li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a raw gRPC mount orders by
+                nothing until it declares a vocabulary.</strong> <code>CriteriaBuilder.Sortable(...)</code> has NO
+                fallback: <code>order_by</code> used to resolve against the <code>Fields</code> vocabulary, so a
+                <code>MountRaw</code> consumer got ordering for free over everything projectable. It now answers
+                <code>INVALID_ARGUMENT</code> for every entry until the builder is handed a vocabulary — the same
+                default the declared path has, for the same reason. The Auto path feeds it from the Request DTO's
+                <code>sort:</code> tags and needs no change.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the boolean read controls accept
                 exactly <code>true</code> or <code>false</code>.</strong> <code>?includeArchived=</code> and
                 <code>?onlyTotal=</code> refuse anything else with the canonical 400. The two REST paths disagreed
@@ -52,7 +67,37 @@
                 Fiber's binder and took <code>1</code>, <code>t</code>, <code>TRUE</code> — so
                 <code>?includeArchived=1</code> was false on a listing and true on a by-id read of the same
                 entity. Strict parsing also aligns REST with the other connectors, where proto <code>bool</code>
-                and GraphQL <code>Boolean</code> already rejected those spellings.</li>
+                and GraphQL <code>Boolean</code> already rejected those spellings. PRESENCE is the key being on the
+                query string, not the value being non-empty: <code>?includeArchived=</code> is the control asked
+                for with no answer, and both routes refuse it.</li>
+            <li><strong>New</strong> — <strong><a href="#read-lifecycle-map"><code>?search=</code> without a
+                <code>TextIndex</code> fails the boot</a>.</strong> Free-text search is a Mongo
+                <code>$text</code> query, which the server refuses outright unless the collection carries a text
+                index — but the two halves are declared where neither can see the other:
+                <code>query:"search"</code> on the Request DTO at registration, and
+                <code>query.TextIndex(...)</code> on the ViewDefinition the feature contributes. The mismatch used
+                to surface as a raw store error on the first request that used the parameter. The check runs after
+                the Mount phase, when both halves exist, and names the view and the Request DTO. Every read surface
+                feeds it — REST's paged and export wrappers, the GraphQL connection field, the gRPC list procedure
+                — because the mismatch belongs to the (DTO, view) pair, not to any one wire. A handler that does
+                not name its view is not covered, and a <code>RelationalSource</code> view is exempt: free text
+                over the SoR is a declared capability boundary answered with a typed 400.</li>
+            <li><strong>New</strong> — <strong><a href="#openapi~oa-doc-tags">the <code>?fields=</code> parameter
+                documents its own rule</a>.</strong> Its vocabulary is the whole Response tree, too large to
+                enumerate the way <code>?orderBy=</code> enumerates its short declared list — so the OpenAPI
+                parameter states the rule (tokens are the response's wire names) and, when the Response has a
+                nested path, carries a REAL dotted example lifted from that Response. A <code>description:</code>
+                tag on the DTO field still wins.</li>
+            <li><strong>New</strong> — <strong><a href="#lifecycle-hooks"><code>write.TranslateUniqueViolation</code></a></strong>
+                — the constraint-violation translation <code>BaseRepository</code> applies to its own writes,
+                exported so an in-TX lifecycle hook can apply it to its own. A hook writing through
+                <code>core.UnwrapTx(tx)</code> owns its tables and its unique indexes, and the error it returns
+                reaches the surface verbatim; translating it there produces the same typed, translated envelope a
+                repository-level violation produces, instead of a raw driver error surfacing as a 500. Same
+                behavior as before for the repository path — the body moved, nothing changed.</li>
+            <li><strong>Fixed</strong> — <strong>a ComposedView names the ordering term it refuses.</strong>
+                Sorting into a leg segment reported the literal field <code>sort</code>; it now reports the
+                offending path.</li>
             <li><strong>Fixed</strong> — <strong><a href="#query-side">a by-id read honors
                 <code>ReadCriteria.Projection</code> on Mongo</a>.</strong> <code>ReadByID</code> ignored it while
                 the relational reader applied it, and <code>ReadCriteria.Restrict</code> — the field-level

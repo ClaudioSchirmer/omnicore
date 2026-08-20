@@ -848,6 +848,68 @@ func TestOrderByParam_EnumeratesTheDeclaredVocabulary(t *testing.T) {
 	}
 }
 
+// TestOrderByParam_VocabularyLeafEmitsNoParameter — a leaf that carries
+// `sort:` and no `filter:` names a path `?orderBy=` may use; it takes no value
+// of its own, and the request parser rejects `?created=` like any undeclared
+// key. Emitting it would advertise a parameter that can only ever answer 400 —
+// the exact dead-declaration shape ExtractRequestSchema panics to prevent.
+func TestOrderByParam_VocabularyLeafEmitsNoParameter(t *testing.T) {
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{
+			RequestType:  reflect.TypeOf(orderByDescRequest{}),
+			ResponseType: reflect.TypeOf(fieldsDescNestedItem{}),
+			Paged:        true,
+		},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == "created" {
+			t.Fatalf("the vocabulary leaf must not be advertised as a query parameter: %v", p)
+		}
+	}
+	// …while it IS in the orderBy vocabulary the description enumerates, and
+	// the filterable sibling still emits its own parameter.
+	var sawName bool
+	for _, p := range params {
+		if p["name"] == "name" {
+			sawName = true
+		}
+	}
+	if !sawName {
+		t.Fatal("a filter leaf that is also orderable must still emit its filter parameter")
+	}
+}
+
+// A leaf inside an embed group takes the same cut: `addresses.zipCode` is a
+// dotted ordering path, never a filter key.
+func TestOrderByParam_NestedVocabularyLeafEmitsNoParameter(t *testing.T) {
+	type addrVocab struct {
+		ZipCode *string `query:"zipCode" sort:"asc,desc"`
+		City    *string `query:"city" filter:"eq"`
+	}
+	type req struct {
+		Addresses addrVocab `query:"addresses"`
+		OrderBy   *string   `query:"orderBy"`
+	}
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{RequestType: reflect.TypeOf(req{}), Paged: true},
+	}, NewGenerator(nil))
+	names := map[string]bool{}
+	for _, p := range params {
+		names[p["name"].(string)] = true
+	}
+	if names["addresses.zipCode"] {
+		t.Fatal("a nested vocabulary leaf must not be advertised as a query parameter")
+	}
+	if !names["addresses.city"] {
+		t.Fatal("the nested filter leaf must still be advertised")
+	}
+	if !names["orderBy"] {
+		t.Fatal("the control itself must be advertised")
+	}
+}
+
 // The control field is where a description hangs — and the consumer's wins,
 // exactly as it does for ?fields=.
 func TestOrderByParam_DTODescriptionWins(t *testing.T) {

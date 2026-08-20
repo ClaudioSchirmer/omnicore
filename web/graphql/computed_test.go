@@ -15,11 +15,11 @@ import (
 // COMPUTED-field parity on this surface. A computed field is declared on the
 // RESPONSE DTO (`computed:"A,B"`, naming Result fields) and has no column
 // behind it: the Query's FromQueryResult derives it after the read. The two
-// consequences REST answers with `?fields=` pushdown and a
-// ComputedFieldNotSortableNotification land here in the language's own idiom —
-// the selection IS the projection, and the sortable vocabulary is an ENUM the
-// computed field is simply not a member of, so gqlparser rejects an ordering
-// by it during validation, before any resolver runs.
+// consequences REST answers with `?fields=` pushdown and a schema violation on
+// `?orderBy=` land here in the language's own idiom — the selection IS the
+// projection, and the ordering vocabulary is an ENUM the computed field is
+// simply not a member of, so gqlparser rejects an ordering by it during
+// validation, before any resolver runs.
 
 // ── fixture: a read whose Response carries one computed field ────────────────
 

@@ -165,6 +165,16 @@ func walkQueryTags(t reflect.Type, gen *Generator) []map[string]any {
 			continue
 		}
 		if len(leaf.Ops) == 0 {
+			// A VOCABULARY leaf (`query:"id" sort:"asc"`, no filter tag)
+			// carries no value on the wire: it names a path `?orderBy=` may
+			// order by, and the request parser rejects `?id=` like any
+			// undeclared key. Emitting it would advertise a parameter that can
+			// only ever answer 400 — the exact dead-parameter shape
+			// ExtractRequestSchema panics to prevent. The reserved controls are
+			// the ones that DO take a value.
+			if leaf.Sort != nil && !queryschema.ControlKeys[leaf.Field.Tag.Get("query")] {
+				continue
+			}
 			out = append(out, queryEntry(leaf.WirePath, schema, leaf.Field))
 			continue
 		}

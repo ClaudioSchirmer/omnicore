@@ -77,13 +77,14 @@ type queryPlan struct {
 	// Kept as its own map so the consumer does not have to re-derive it from
 	// the Response at request time.
 	computed map[string][]string
-	// reserved is the Request DTO's declared control set — the canonical
-	// opt-in gate. The shared proto shows every control field; the DTO
-	// decides which ones THIS endpoint honors, and buildCriteria feeds this
-	// set to queryschema.ValidateControls before dispatch. A control set on
-	// the wire without its `query:"…"` declaration is a wire-contract
-	// violation (SchemaViolation → INVALID_ARGUMENT).
-	reserved *queryschema.RequestSchema
+	// reqSchema is the Request DTO's reflected schema — the canonical opt-in
+	// gate (Reserved) plus the ordering vocabulary it declares. The shared
+	// proto shows every control field; the DTO decides which ones THIS endpoint
+	// honors, and buildCriteria feeds the declared set to
+	// queryschema.ValidateControls before dispatch. A control set on the wire
+	// without its `query:"…"` declaration is a wire-contract violation
+	// (SchemaViolation → INVALID_ARGUMENT).
+	reqSchema *queryschema.RequestSchema
 	// sortable is the ordering vocabulary in this surface's spelling: the
 	// Request DTO's declared paths folded to proto snake_case. Kept apart from
 	// fields because order_by and read_mask answer different questions — a
@@ -138,7 +139,7 @@ func compileQueryPlan(
 	// The canonical Reserved gate: the DTO's declared control set, consumed
 	// by ValidateControls at request time (same extractor, same set, same
 	// semantics as the REST wire).
-	plan.reserved = queryschema.ExtractRequestSchema(reqDTO)
+	plan.reqSchema = queryschema.ExtractRequestSchema(reqDTO)
 
 	bindFilter := func(fd protoreflect.FieldDescriptor, prefix string) error {
 		kind, ok := wrapperKinds[fd.Message().FullName()]
@@ -222,7 +223,7 @@ func compileQueryPlan(
 	// orderable path need not be projectable, and `OrderByField.field` is a
 	// free string on the wire, so nothing in the proto has to name it.
 	plan.sortable = map[string]queryschema.SortSpec{}
-	for wirePath, spec := range plan.reserved.Sortable {
+	for wirePath, spec := range plan.reqSchema.Sortable {
 		plan.sortable[normalizePath(wirePath)] = spec
 	}
 	plan.fields = map[string]string{}
@@ -337,7 +338,7 @@ func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCrit
 			b.FieldMask(fm)
 		}
 	}
-	if violations := queryschema.ValidateControls(plan.reserved.Reserved, b.Controls(), nil); len(violations) > 0 {
+	if violations := queryschema.ValidateControls(plan.reqSchema.Reserved, b.Controls(), nil); len(violations) > 0 {
 		return queries.ReadCriteria{}, nil, controlViolationError(violations)
 	}
 	var opErrs []string

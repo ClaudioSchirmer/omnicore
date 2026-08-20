@@ -13,11 +13,11 @@ import (
 // ─── export `?orderBy=`: one vocabulary with the JSON listing ────────────────
 //
 // The export no longer parses ordering against a view-derived path map; it
-// runs the SAME queryschema.ParseOrderByWithSchema the JSON listing uses,
-// against the SAME Response projection schema. The token grammar itself
+// runs the SAME queryschema.ParseOrderBy the JSON listing uses, against the
+// SAME ordering vocabulary the Request DTO declared. The token grammar itself
 // (`-` prefix, empty-token skip, unknown token reported verbatim) is covered
 // where that parser lives; what matters here is that the export ROUTE speaks
-// that vocabulary — a Response-declared wire path sorts, and an undeclared
+// that vocabulary — a declared wire path sorts, and an undeclared
 // one is the canonical 400 with the `orderBy[<token>]` field spelling.
 
 func TestHandleQueryAsCSV_OrderByUsesTheResponseVocabulary(t *testing.T) {

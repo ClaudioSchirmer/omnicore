@@ -116,7 +116,7 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult],
 		reflect.TypeOf((*TResult)(nil)).Elem(),
 		reflect.TypeOf((*TResp)(nil)).Elem(),
 	)
-	recordSearchDeclaration(schema, reqType, h)
+	queryschema.RecordSearchDeclaration(schema, reqType.String(), h)
 	plan := export.PlanFor(reflect.TypeOf((*TResp)(nil)).Elem())
 	translator := deps.Translator
 	maxRows := view.ResolveMaxExportRows(deps.MaxExportRows)

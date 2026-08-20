@@ -4,6 +4,7 @@ package bootstrap
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -111,6 +112,68 @@ func TestVerifySearchIndexes_IgnoresAForeignViewName(t *testing.T) {
 	}
 }
 
+// TestVerifySearchIndexes_DrainsTheRegistry — the registry is process-wide, so
+// a boot that did not clear it would hand its declarations to the NEXT one. Two
+// composition roots in one binary (tests, a multi-app process) that happen to
+// share a view name would then make the second boot fail over the first's
+// Request DTO. Each boot verifies exactly what was recorded since the previous.
+func TestVerifySearchIndexes_DrainsTheRegistry(t *testing.T) {
+	withOptIn(t, "guard_rows")
+	indexed := &searchGuardFeature{views: []*query.ViewDefinition{
+		query.View("guard_rows").Schema(searchGuardSchema()).
+			Indexes(query.TextIndex("name")),
+	}}
+	if err := verifySearchIndexes([]Feature{indexed}); err != nil {
+		t.Fatalf("the declared pair must pass: %v", err)
+	}
+	// Second boot, same binary, same view name — but WITHOUT a text index and
+	// without any declaration of its own. The first boot's record is gone, so
+	// there is nothing to fail over.
+	bare := &searchGuardFeature{views: []*query.ViewDefinition{
+		query.View("guard_rows").Schema(searchGuardSchema()),
+	}}
+	if err := verifySearchIndexes([]Feature{bare}); err != nil {
+		t.Fatalf("a later boot must not inherit an earlier one's declarations: %v", err)
+	}
+}
+
+// The recorder every read surface calls is the one seat that decides whether a
+// declaration enters the registry: a DTO that does not declare `query:"search"`
+// contributes nothing, and neither does a handler that cannot name its view.
+func TestRecordSearchDeclaration_OnlyRecordsTheDeclaredPair(t *testing.T) {
+	queryschema.ResetSearchOptIns()
+	t.Cleanup(queryschema.ResetSearchOptIns)
+
+	type searching struct {
+		Search *string `query:"search"`
+	}
+	type silent struct {
+		First *int64 `query:"first"`
+	}
+
+	searchingSchema := queryschema.ExtractRequestSchema(reflectTypeOf(searching{}))
+	silentSchema := queryschema.ExtractRequestSchema(reflectTypeOf(silent{}))
+
+	// No `query:"search"` → nothing recorded, whatever the handler is.
+	queryschema.RecordSearchDeclaration(silentSchema, "silent", namedViewHandler{view: "guard_rows"})
+	// Declares it, but the handler does not name a view → not covered.
+	queryschema.RecordSearchDeclaration(searchingSchema, "anonymous", struct{}{})
+	if got := queryschema.SearchOptIns(); len(got) != 0 {
+		t.Fatalf("neither shape may enter the registry, got %v", got)
+	}
+
+	queryschema.RecordSearchDeclaration(searchingSchema, "requests.FindGuardRowsRequest",
+		namedViewHandler{view: "guard_rows"})
+	got := queryschema.SearchOptIns()
+	if len(got) != 1 || got[0].View != "guard_rows" || got[0].Request != "requests.FindGuardRowsRequest" {
+		t.Fatalf("the declared pair must be recorded, got %v", got)
+	}
+}
+
+type namedViewHandler struct{ view string }
+
+func (h namedViewHandler) ViewName() string { return h.view }
+
 func TestVerifySearchIndexes_NoDeclarationsIsANoOp(t *testing.T) {
 	queryschema.ResetSearchOptIns()
 	t.Cleanup(queryschema.ResetSearchOptIns)
@@ -118,3 +181,6 @@ func TestVerifySearchIndexes_NoDeclarationsIsANoOp(t *testing.T) {
 		t.Fatalf("nothing declared, nothing to check: %v", err)
 	}
 }
+
+// reflectTypeOf keeps the schema-extraction calls above readable.
+func reflectTypeOf(v any) reflect.Type { return reflect.TypeOf(v) }

@@ -197,6 +197,11 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 	reqType := reflect.TypeOf((*TReq)(nil)).Elem()
 	respType := reflect.TypeOf((*R)(nil)).Elem()
 	plan := newCriteriaPlan(entity, reqType, respType)
+	// `search` is a Mongo $text query, which the store refuses without a
+	// TextIndex on the view. The pair is checked at boot from a registry every
+	// read surface feeds — a field exposed only here is guarded exactly like a
+	// REST route.
+	queryschema.RecordSearchDeclaration(plan.reqSchema, reqType.String(), h)
 	return applyOptions(Field{
 		name:    name,
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },

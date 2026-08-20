@@ -286,12 +286,16 @@ func TestCriteriaUndeclaredMaskAndSortFailBuild(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "fields") {
 		t.Fatalf("undeclared mask path must fail: %v", err)
 	}
+	// order_by resolves against the Sortable vocabulary, not Fields — and with
+	// none declared nothing is orderable. The refusal is TYPED and names the
+	// entry exactly as the wire spelled it, the gRPC dialect of REST's
+	// `orderBy[<token>]`.
 	_, err = NewCriteria().
 		Fields(map[string]string{"id": "ID"}).
 		OrderBy(&pb.OrderByField{Field: "phone"}).
 		Build()
-	if err == nil || !strings.Contains(err.Error(), "orderBy") {
-		t.Fatalf("undeclared sort field must fail: %v", err)
+	if got := violationFields(t, err); !reflect.DeepEqual(got, []string{"phone"}) {
+		t.Fatalf("undeclared sort field must be refused naming the entry, got %v", got)
 	}
 	// no Fields declared at all → mask/sort unsupported for the view
 	_, err = NewCriteria().

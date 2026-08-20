@@ -11,9 +11,9 @@ func (coreDE) Language() configuration.Language { return configuration.LangDE }
 func (coreDE) Translations() map[string]string {
 	return map[string]string{
 		// Domain validation
-		"RequiredFieldNotification":            "Pflichtfeld.",
-		"SchemaViolationNotification":          "Der Inhalt des Anfragerumpfs entspricht nicht dem erwarteten Schema.",
-		"LimitExceededNotification":            "Das angeforderte Limit überschreitet das zulässige Maximum.",
+		"RequiredFieldNotification":   "Pflichtfeld.",
+		"SchemaViolationNotification": "Der Inhalt des Anfragerumpfs entspricht nicht dem erwarteten Schema.",
+		"LimitExceededNotification":   "Das angeforderte Limit überschreitet das zulässige Maximum.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Ein Datensatz mit bereits vorhandenem Primärschlüssel kann nicht eingefügt werden.",
