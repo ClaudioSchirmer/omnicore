@@ -195,19 +195,44 @@ func (r *BaseRepository[T]) effectiveContextName() string {
 // violated constraint name); a non-violation, an unmapped constraint, or a nil
 // engine returns the error raw.
 func (r *BaseRepository[T]) mapErr(err error) error {
-	if err == nil {
-		return nil
-	}
 	if r.Engine == nil {
 		return err
 	}
-	constraint, ok := r.Engine.Dialect().IsUniqueViolation(err)
+	return TranslateUniqueViolation(r.Engine.Dialect(), err, r.effectiveContextName(), r.Constraints)
+}
+
+// TranslateUniqueViolation turns a driver error into the typed notification a
+// ConstraintBinding declares for the violated constraint, or returns it
+// untouched when it is not a unique violation or no binding matches it. The
+// dialect classifies the backend-specific error uniformly (PG SQLSTATE 23505 /
+// MySQL errno 1062 / ORA-00001 / …), so the caller stays engine-agnostic.
+//
+// BaseRepository applies it to its own writes. It is exported because the
+// repository is not the only place a unique index can be hit: an in-TX
+// lifecycle hook (AfterBegin / BeforeCommit) writing through
+// core.UnwrapTx(tx) owns its own tables and its own constraints, and the error
+// it returns travels to the surface verbatim — so translating it here is what
+// turns a raw driver error into the same typed, translated envelope the
+// repository path produces:
+//
+//	tx := core.UnwrapTx(handle)
+//	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+//	    return write.TranslateUniqueViolation(tx.Dialect(), err, "AdminSeat", a.constraints)
+//	}
+//
+// contextName seeds the NotificationContext; constraints is keyed by the
+// constraint (or index) name exactly as the dialect reports it.
+func TranslateUniqueViolation(d Dialect, err error, contextName string, constraints map[string]ConstraintBinding) error {
+	if err == nil || d == nil {
+		return err
+	}
+	constraint, ok := d.IsUniqueViolation(err)
 	if !ok {
 		return err
 	}
-	binding, ok := r.Constraints[constraint]
+	binding, ok := constraints[constraint]
 	if !ok {
 		return err
 	}
-	return FieldErrorWithCause(r.effectiveContextName(), binding.Field, err, binding.Notification)
+	return FieldErrorWithCause(contextName, binding.Field, err, binding.Notification)
 }

@@ -14,7 +14,6 @@ func (coreNL) Translations() map[string]string {
 		"RequiredFieldNotification":            "Verplicht veld.",
 		"SchemaViolationNotification":          "De inhoud van de verzoekbody komt niet overeen met het verwachte schema.",
 		"LimitExceededNotification":            "De gevraagde limiet overschrijdt het toegestane maximum.",
-		"ComputedFieldNotSortableNotification": "Berekende velden kunnen niet worden gebruikt om te sorteren.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Kan een record met een bestaande primaire sleutel niet invoegen.",

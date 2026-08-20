@@ -14,7 +14,6 @@ func (coreDE) Translations() map[string]string {
 		"RequiredFieldNotification":            "Pflichtfeld.",
 		"SchemaViolationNotification":          "Der Inhalt des Anfragerumpfs entspricht nicht dem erwarteten Schema.",
 		"LimitExceededNotification":            "Das angeforderte Limit überschreitet das zulässige Maximum.",
-		"ComputedFieldNotSortableNotification": "Berechnete Felder können nicht zur Sortierung verwendet werden.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Ein Datensatz mit bereits vorhandenem Primärschlüssel kann nicht eingefügt werden.",

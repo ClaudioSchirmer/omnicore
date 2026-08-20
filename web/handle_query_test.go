@@ -66,13 +66,21 @@ func rawItem(r testUserResult) map[string]any {
 // testFindParamsRequest declares an allowlist for the params endpoint:
 // name accepts only equality; email accepts equality + in; the remaining
 // fields are reserved pagination/control keys recognized by the framework.
+type testFindParamsAddresses struct {
+	ZipCode *string `query:"zipCode" sort:"asc,desc"`
+	State   *string `query:"state"   sort:"asc,desc"`
+}
+
 type testFindParamsRequest struct {
-	Name  *string `query:"name"  filter:"eq"`
-	Email *string `query:"email" filter:"eq,in"`
+	Name  *string `query:"name"  filter:"eq"    sort:"asc,desc"`
+	Email *string `query:"email" filter:"eq,in" sort:"asc,desc"`
+
+	// Orderable-only leaves inside an embed group: they add nothing to the
+	// filter vocabulary and prove a nested path reaches the reader.
+	Addresses testFindParamsAddresses `query:"addresses"`
 
 	Limit           *int64  `query:"first"`
 	After           *string `query:"after"`
-	Sort            *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
@@ -183,8 +191,10 @@ func TestHandleQueryWithParams_AllowedOperatorAssemblesCriteria(t *testing.T) {
 	if h.got.Criteria.Limit != 20 {
 		t.Errorf("expected Limit=20, got %d", h.got.Criteria.Limit)
 	}
-	if len(h.got.Criteria.OrderBy) != 1 || h.got.Criteria.OrderBy[0].Field != "name" || !h.got.Criteria.OrderBy[0].Desc {
-		t.Errorf("expected Sort=[-name desc], got %v", h.got.Criteria.OrderBy)
+	// `?orderBy=-name` resolves to the Go field path, the same two hops a
+	// filter leaf takes; the reader maps it to a column via the TableSchema.
+	if len(h.got.Criteria.OrderBy) != 1 || h.got.Criteria.OrderBy[0].Field != "Name" || !h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected Sort=[Name desc], got %v", h.got.Criteria.OrderBy)
 	}
 }
 
@@ -783,60 +793,63 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 // projSchema is built (and the allowlist fires) when sort is the only
 // reserved key requesting Response-side validation.
 type testFindSortOnlyRequest struct {
-	Name *string `query:"name" filter:"eq"`
-	Sort *string `query:"orderBy"`
+	Name *string `query:"name" filter:"eq" sort:"asc,desc"`
 }
 
 func (r testFindSortOnlyRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery {
 	return &testFindParamsQuery{Criteria: crit}
 }
 
-func TestSortParam_OptInWithoutFieldsBuildsProjSchema(t *testing.T) {
-	app := fiber.New()
+// Ordering does not depend on the `?fields=` opt-in: the vocabulary comes from
+// the Request DTO, so a DTO that declares orderable fields and nothing else
+// orders and enforces its allowlist all the same.
+func TestOrdering_WorksWithoutTheFieldsOptIn(t *testing.T) {
 	pipe := newTestPipeline()
-	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, sparseUser{}.FromResult, h))
 
-	// Allowlist must fire even though the DTO did not declare `Fields`.
+	app := fiber.New()
+	app.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, sparseUser{}.FromResult, &capturingParamsHandler{}))
 	resp, _ := app.Test(httptest.NewRequest("GET", "/users?orderBy=bogus", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Fatalf("expected 400 from sort allowlist (sort opt-in alone), got %d", resp.StatusCode)
+		t.Fatalf("an undeclared token must be refused, got %d", resp.StatusCode)
 	}
 
-	// Valid token must translate to the Go field path.
-	h2 := &capturingParamsHandler{}
-	app2 := fiber.New()
-	app2.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, sparseUser{}.FromResult, h2))
-	_, _ = app2.Test(httptest.NewRequest("GET", "/users?orderBy=-addresses.zipCode", nil))
-	if h2.got == nil {
-		t.Fatal("expected handler called")
-	}
-	if len(h2.got.Criteria.OrderBy) != 1 ||
-		h2.got.Criteria.OrderBy[0].Field != "Addresses.ZipCode" ||
-		!h2.got.Criteria.OrderBy[0].Desc {
-		t.Errorf("expected OrderByField=Addresses.ZipCode desc, got %+v", h2.got.Criteria.OrderBy)
-	}
-}
-
-func TestSortParam_MapResponseFallsBackToPassThrough(t *testing.T) {
-	// TResp = map[string]any → projSchema stays nil → tokens land verbatim
-	// with no allowlist enforcement (same fallback fields uses).
-	app := fiber.New()
-	pipe := newTestPipeline()
 	h := &capturingParamsHandler{}
-	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
-
-	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=anything,-not_in_any_schema", nil))
+	app2 := fiber.New()
+	app2.Get("/users", QueryWithParams(pipe, testFindSortOnlyRequest{}, sparseUser{}.FromResult, h))
+	_, _ = app2.Test(httptest.NewRequest("GET", "/users?orderBy=-name", nil))
 	if h.got == nil {
 		t.Fatal("expected handler called")
 	}
-	if len(h.got.Criteria.OrderBy) != 2 {
-		t.Fatalf("expected 2 OrderByFields verbatim, got %d", len(h.got.Criteria.OrderBy))
+	if len(h.got.Criteria.OrderBy) != 1 ||
+		h.got.Criteria.OrderBy[0].Field != "Name" ||
+		!h.got.Criteria.OrderBy[0].Desc {
+		t.Errorf("expected OrderByField=Name desc, got %+v", h.got.Criteria.OrderBy)
 	}
-	if h.got.Criteria.OrderBy[0].Field != "anything" || h.got.Criteria.OrderBy[0].Desc {
-		t.Errorf("expected first OrderByField=anything asc, got %+v", h.got.Criteria.OrderBy[0])
+}
+
+// The Response shape is irrelevant to ordering. With an untyped (map) Response
+// — where `?fields=` falls back to pass-through — the ordering allowlist is
+// unchanged, because it never consulted the Response in the first place.
+func TestOrdering_IgnoresTheResponseShape(t *testing.T) {
+	pipe := newTestPipeline()
+
+	h := &capturingParamsHandler{}
+	app := fiber.New()
+	app.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, h))
+	_, _ = app.Test(httptest.NewRequest("GET", "/users?orderBy=name,-email", nil))
+	if h.got == nil {
+		t.Fatal("expected handler called")
 	}
-	if h.got.Criteria.OrderBy[1].Field != "not_in_any_schema" || !h.got.Criteria.OrderBy[1].Desc {
-		t.Errorf("expected second OrderByField=not_in_any_schema desc, got %+v", h.got.Criteria.OrderBy[1])
+	if len(h.got.Criteria.OrderBy) != 2 ||
+		h.got.Criteria.OrderBy[0].Field != "Name" || h.got.Criteria.OrderBy[0].Desc ||
+		h.got.Criteria.OrderBy[1].Field != "Email" || !h.got.Criteria.OrderBy[1].Desc {
+		t.Errorf("declared tokens must translate, got %+v", h.got.Criteria.OrderBy)
+	}
+
+	app2 := fiber.New()
+	app2.Get("/users", QueryWithParams(pipe, testFindParamsRequest{}, rawItem, &capturingParamsHandler{}))
+	resp, _ := app2.Test(httptest.NewRequest("GET", "/users?orderBy=not_in_any_schema", nil))
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("an untyped Response is not a licence to sort by anything, got %d", resp.StatusCode)
 	}
 }

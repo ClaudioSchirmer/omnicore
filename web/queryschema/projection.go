@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
@@ -254,59 +253,6 @@ func (v Violation) Message() domain.NotificationMessage {
 		n = domain.SchemaViolationNotification{}
 	}
 	return domain.NotificationMessage{FieldName: v.Field, Notification: n}
-}
-
-// ParseOrderByWithSchema turns a comma-separated wire value into a list of
-// OrderByField entries. Each token may carry a `-` prefix (descending);
-// otherwise ascending. When projSchema is non-nil, the wire name (without
-// the prefix) is validated against the Response DTO's declared paths and
-// translated to the corresponding Go field path (nested paths walked
-// segment-by-segment); the reader maps Go → column via the view's TableSchema.
-// An unknown token returns the verbatim wire token (including any `-` prefix) so the
-// caller can surface it on the canonical 400 envelope as `orderBy[<token>]`.
-// When projSchema is nil — a QueryParser whose Response is not a struct, or
-// a wrapper whose Response carries no reflectable shape —
-// tokens become OrderByField entries verbatim (no allowlist, no translation).
-func ParseOrderByWithSchema(s string, projSchema *ProjectionSchema) (orderBy []queries.OrderByField, violation *Violation, ok bool) {
-	if s == "" {
-		return nil, nil, true
-	}
-	tokens := strings.Split(s, ",")
-	orderBy = make([]queries.OrderByField, 0, len(tokens))
-	for _, t := range tokens {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
-		}
-		desc := false
-		wireName := t
-		if strings.HasPrefix(t, "-") {
-			desc = true
-			wireName = t[1:]
-		}
-		if projSchema == nil {
-			orderBy = append(orderBy, queries.OrderByField{Field: wireName, Desc: desc})
-			continue
-		}
-		docPath, allowed := projSchema.Paths[wireName]
-		if !allowed {
-			return nil, SchemaViolation(OrderByField(t)), false
-		}
-		// A computed field is derived AFTER the read, so the store cannot order
-		// by it — and the keyset cursor is built from stored ordering values, so
-		// sorting in memory would break pagination. Refuse here, at the gate,
-		// with the wire token the consumer sent and a notification that SAYS SO,
-		// instead of letting the unresolvable path reach the reader and surface
-		// as an opaque schema error naming an internal Go field.
-		if _, isComputed := projSchema.Computed[wireName]; isComputed {
-			return nil, &Violation{
-				Field:        OrderByField(t),
-				Notification: domain.ComputedFieldNotSortableNotification{},
-			}, false
-		}
-		orderBy = append(orderBy, queries.OrderByField{Field: docPath, Desc: desc})
-	}
-	return orderBy, nil, true
 }
 
 // SelectedComputedPaths returns the Go field paths of the COMPUTED fields the

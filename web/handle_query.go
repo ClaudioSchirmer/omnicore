@@ -61,68 +61,84 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 			panic(queryschema.FormatComputedFiltersGuard(reqType, respType, errs))
 		}
 	}
-	// projSchema is the Response-side mapping (wire path → doc path) used to
-	// validate and translate `?fields=` AND `?orderBy=` values when the Request
-	// DTO opts in to either parameter. Built once and shared between the two
-	// reserved keys. The Response's wire tokens translate to Go field paths
-	// that are — by the alignment guard above — the Result's field names,
-	// which are the canonical document's keys.
+	// projSchema is the Response-side mapping (wire path → doc path) that
+	// validates and translates `?fields=` values. It is a projection concern
+	// only: `?fields=` names OUTPUT fields, so the Response is its authority.
+	// Ordering speaks the Request's vocabulary and never consults it.
 	var projSchema *queryschema.ProjectionSchema
-	fieldsOptIn := schema.Reserved[queryschema.KeyFields]
-	orderByOptIn := schema.Reserved[queryschema.KeyOrderBy]
-	if (fieldsOptIn || orderByOptIn) && respType.Kind() == reflect.Struct {
-		if fieldsOptIn {
-			if errs := queryschema.ValidateFieldsResponse(respType); len(errs) > 0 {
-				panic(queryschema.FormatFieldsResponseGuard(respType, errs))
-			}
-			if errs := queryschema.ValidateFieldsResult(resultType); len(errs) > 0 {
-				panic(queryschema.FormatFieldsResultGuard(resultType, errs))
-			}
+	if schema.Reserved[queryschema.KeyFields] && respType.Kind() == reflect.Struct {
+		if errs := queryschema.ValidateFieldsResponse(respType); len(errs) > 0 {
+			panic(queryschema.FormatFieldsResponseGuard(respType, errs))
+		}
+		if errs := queryschema.ValidateFieldsResult(resultType); len(errs) > 0 {
+			panic(queryschema.FormatFieldsResultGuard(resultType, errs))
 		}
 		projSchema = queryschema.ExtractProjectionSchema(respType)
 	}
-	// Boot-time advisory when the Request DTO accepts ?orderBy=. The framework
-	// has no way to verify, from the wrapper, that the Mongo view declares
-	// indexes covering the sortable wire paths — the ViewDefinition lives in
-	// a separate construction site (ReadableFeature.Views()). The warning
-	// lists every sortable wire path discovered on the Response so the
-	// operator can compare it against the view's .Indexes(...) declaration
-	// during the same boot.
-	if orderByOptIn && projSchema != nil {
-		warnOrderByOptInOnce(reqType, projSchema)
+	// Boot-time advisory when the Request DTO declares an ordering vocabulary.
+	// The framework has no way to verify, from the wrapper, that the Mongo view
+	// declares indexes covering those paths — the ViewDefinition lives in a
+	// separate construction site (ReadableFeature.Views()) — so the operator
+	// gets the declared list to compare against .Indexes(...) in the same boot.
+	if len(schema.Sortable) > 0 {
+		warnSortableOnce(reqType, schema.Sortable)
 	}
 	return schema, projSchema
 }
 
-// orderByOptInWarned dedups the sortable-paths advisory. The same Request DTO
-// is scanned once per endpoint that serves it (the paged wrapper AND the
+// sortableWarned dedups the sortable-paths advisory. The same Request DTO is
+// scanned once per endpoint that serves it (the paged wrapper AND the
 // standalone QueryParser, across the REST/GraphQL/gRPC surfaces), so an
-// undeduped warn repeated one multi-kilobyte line per registration — the same
-// advice, the same paths, nothing new to act on after the first. Keyed by
-// (Request type + the sortable path set) so two endpoints that genuinely
-// expose DIFFERENT sortable surfaces still each get their line. Mirrors the
-// warn-once posture translation.Render already uses for a missing catalog key.
-var orderByOptInWarned = &sync.Map{} // map[string]struct{} keyed by "<reqType>\x1f<paths>"
+// undeduped warn repeated one line per registration — the same advice, the
+// same paths, nothing new to act on after the first. Keyed by (Request type +
+// the declared path set) so two endpoints that genuinely declare DIFFERENT
+// vocabularies still each get their line. Mirrors the warn-once posture
+// translation.Render already uses for a missing catalog key.
+var sortableWarned = &sync.Map{} // map[string]struct{} keyed by "<reqType>\x1f<paths>"
 
-// warnOrderByOptInOnce emits the boot-time advisory the first time a given
-// (Request type, sortable path set) pair is observed. The framework has no way
-// to verify, from the wrapper, that the Mongo view declares indexes covering
-// those paths — the ViewDefinition lives in a separate construction site
-// (ReadableFeature.Views()) — so the operator gets the full path list to
-// compare against the view's .Indexes(...) declaration during the same boot.
-func warnOrderByOptInOnce(reqType reflect.Type, projSchema *queryschema.ProjectionSchema) {
-	paths := make([]string, 0, len(projSchema.Paths))
-	for wirePath := range projSchema.Paths {
+// warnSortableOnce emits the boot-time advisory the first time a given
+// (Request type, declared ordering vocabulary) pair is observed. The framework
+// has no way to verify, from the wrapper, that the Mongo view declares indexes
+// covering those paths — the ViewDefinition lives in a separate construction
+// site (ReadableFeature.Views()).
+//
+// The sort a view actually receives carries `_id` as its trailing tiebreak, so
+// a covering index is the COMPOUND of the declared path and `_id`
+// (query.Compound("name","_id")), not query.Index("name") — a single-field
+// index does not satisfy a two-key sort and leaves a blocking sort in place.
+func warnSortableOnce(reqType reflect.Type, sortable map[string]queryschema.SortSpec) {
+	paths := make([]string, 0, len(sortable))
+	for wirePath := range sortable {
 		paths = append(paths, wirePath)
 	}
 	sort.Strings(paths)
 	request := reqType.String()
-	if _, loaded := orderByOptInWarned.LoadOrStore(request+"\x1f"+strings.Join(paths, ","), struct{}{}); loaded {
+	if _, loaded := sortableWarned.LoadOrStore(request+"\x1f"+strings.Join(paths, ","), struct{}{}); loaded {
 		return
 	}
-	slog.Warn("query.orderBy.opt-in: endpoint accepts ?orderBy=; verify Mongo indexes cover the sortable wire paths to avoid performance degradation on large collections",
+	slog.Warn("query.sortable: endpoint declares an ordering vocabulary; verify Mongo indexes cover each path COMPOUNDED WITH _id to avoid blocking sorts on large collections",
 		"request", request,
 		"sortable_wire_paths", paths)
+}
+
+// viewNamer is the optional seat a query handler exposes so the wrapper can
+// pair a Request-DTO declaration with the view that has to honor it. The
+// canonical handlers implement it; a hand-written pipeline.Handler need not,
+// and simply is not covered by the boot check below.
+type viewNamer interface{ ViewName() string }
+
+// recordSearchDeclaration notes an endpoint that accepts `?search=` together
+// with the view it reads, when both are knowable at registration. Free-text
+// search is a Mongo $text query, which requires a TextIndex on the view — a
+// declaration the Request DTO cannot see. bootstrap puts the two together after
+// the Mount phase and fails the boot on a mismatch.
+func recordSearchDeclaration(schema *queryschema.RequestSchema, reqType reflect.Type, h any) {
+	if !schema.Reserved[queryschema.KeySearch] {
+		return
+	}
+	if namer, ok := h.(viewNamer); ok {
+		queryschema.RecordSearchOptIn(namer.ViewName(), reqType.String())
+	}
 }
 
 // QueryWithParams creates a fiber.Handler for paged list endpoints. It
@@ -178,6 +194,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResu
 		reflect.TypeOf((*TResult)(nil)).Elem(),
 		reflect.TypeOf((*TResp)(nil)).Elem(),
 	)
+	recordSearchDeclaration(schema, reqType, h)
 	return func(c fiber.Ctx) error {
 		crit, selectedWire, violation, ok := buildCriteria(c, schema, projSchema)
 		if !ok {
@@ -266,7 +283,17 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any
 		// back off the bound DTO keeps the accepted spellings exactly Fiber's.
 		crit := queries.ReadCriteria{Filter: map[string]any{}}
 		if includeArchivedOptIn {
-			crit.IncludeArchived = queryschema.ReadIncludeArchived(reflect.ValueOf(&req))
+			// Read the control off the WIRE, not off the bound DTO: the strict
+			// spelling is the contract, and Fiber's binder would also take
+			// "1"/"t"/"TRUE" — which the paged sibling and the proto/GraphQL
+			// connectors all reject.
+			if raw := c.Query(queryschema.KeyIncludeArchived); raw != "" {
+				archived, valid := queryschema.ParseControlBool(raw)
+				if !valid {
+					return respondSchemaViolation[TResult](c, pipe, queryschema.KeyIncludeArchived)
+				}
+				crit.IncludeArchived = archived
+			}
 		}
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
@@ -331,24 +358,20 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 	schema := queryschema.ExtractRequestSchema(reqType)
 
 	var projSchema *queryschema.ProjectionSchema
-	fieldsOptIn := schema.Reserved[queryschema.KeyFields]
-	orderByOptIn := schema.Reserved[queryschema.KeyOrderBy]
-	if fieldsOptIn || orderByOptIn {
+	if schema.Reserved[queryschema.KeyFields] {
 		respType := reflect.TypeOf((*Resp)(nil)).Elem()
 		for respType.Kind() == reflect.Pointer {
 			respType = respType.Elem()
 		}
 		if respType.Kind() == reflect.Struct {
-			if fieldsOptIn {
-				if errs := queryschema.ValidateFieldsResponse(respType); len(errs) > 0 {
-					panic(queryschema.FormatFieldsResponseGuard(respType, errs))
-				}
+			if errs := queryschema.ValidateFieldsResponse(respType); len(errs) > 0 {
+				panic(queryschema.FormatFieldsResponseGuard(respType, errs))
 			}
 			projSchema = queryschema.ExtractProjectionSchema(respType)
 		}
 	}
-	if orderByOptIn && projSchema != nil {
-		warnOrderByOptInOnce(reqType, projSchema)
+	if len(schema.Sortable) > 0 {
+		warnSortableOnce(reqType, schema.Sortable)
 	}
 	return &QueryParser[Req, Resp]{schema: schema, projSchema: projSchema}
 }
@@ -503,7 +526,12 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 				// exactly like includeArchived); only `true` ACTIVATES the
 				// count short-circuit — `?onlyTotal=false` stays a no-op on a
 				// declared endpoint, never a page-shaping conflict.
-				active := val == "true"
+				active, valid := queryschema.ParseControlBool(val)
+				if !valid {
+					violation = queryschema.SchemaViolation(key)
+					ok = false
+					return
+				}
 				controls.OnlyTotal = &active
 				crit.OnlyTotal = active
 			case queryschema.KeyFirst, queryschema.KeyLast:
@@ -529,7 +557,14 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 				crit.Before = val
 			case queryschema.KeyOrderBy:
 				controls.OrderBy = true
-				orderBy, obViolation, obOk := queryschema.ParseOrderByWithSchema(val, projSchema)
+				// An endpoint that declared nothing orderable does not accept
+				// this control at all: leave the verdict to the canonical
+				// gateway, which reports the CONTROL as undeclared instead of
+				// the framework blaming the consumer's token.
+				if len(s.Sortable) == 0 {
+					return
+				}
+				orderBy, obViolation, obOk := queryschema.ParseOrderBy(val, s.Sortable)
 				if !obOk {
 					violation = obViolation
 					ok = false
@@ -558,7 +593,13 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 				crit.Search = val
 			case queryschema.KeyIncludeArchived:
 				controls.IncludeArchived = true
-				crit.IncludeArchived = val == "true"
+				archived, valid := queryschema.ParseControlBool(val)
+				if !valid {
+					violation = queryschema.SchemaViolation(key)
+					ok = false
+					return
+				}
+				crit.IncludeArchived = archived
 			}
 			return
 		}
@@ -589,7 +630,7 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 	// (forward first/after × backward last/before) and the only-total conflict
 	// matrix — one implementation shared by every surface, run BEFORE the
 	// handler. REST has no natural keys (every control has a wire spelling).
-	if violations := queryschema.ValidateControls(s.Reserved, controls, nil); len(violations) > 0 {
+	if violations := queryschema.ValidateControls(s, controls, nil); len(violations) > 0 {
 		return crit, nil, &queryschema.Violation{Field: violations[0].Field(), Notification: violations[0].Message().Notification}, false
 	}
 	// Materialize the Relay direction pair into the internal size+direction:

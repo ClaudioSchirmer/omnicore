@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // ─── ExtractRequestSchema: pointer type + nested embed group ─────────────────
@@ -43,7 +45,6 @@ type reqAllControlsRequest struct {
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
@@ -52,7 +53,7 @@ type reqAllControlsRequest struct {
 
 func TestExtractRequestSchema_AllCanonicalControlsAccepted(t *testing.T) {
 	s := ExtractRequestSchema(reflect.TypeOf(reqAllControlsRequest{}))
-	for key := range ControlKeys {
+	for key := range DeclarableControlKeys {
 		if !s.Reserved[key] {
 			t.Errorf("canonical key %q must land in Reserved, got %v", key, s.Reserved)
 		}
@@ -70,7 +71,7 @@ func TestExtractRequestSchema_NonCanonicalControlPanics(t *testing.T) {
 			t.Fatalf("a non-canonical top-level control scalar must panic at extraction")
 		}
 		msg, ok := r.(string)
-		if !ok || !strings.Contains(msg, `query:"limit"`) || !strings.Contains(msg, KeyOrderBy) {
+		if !ok || !strings.Contains(msg, `query:"limit"`) || !strings.Contains(msg, KeyFirst) {
 			t.Fatalf("panic must name the offending tag and the canonical vocabulary, got %v", r)
 		}
 	}()
@@ -236,5 +237,195 @@ func TestReadIncludeArchived(t *testing.T) {
 				t.Errorf("ReadIncludeArchived(%s) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// ─── the ordering vocabulary ────────────────────────────────────────────────
+
+type sortableRequest struct {
+	// filterable AND orderable, both directions
+	Code *string `query:"code" filter:"eq,startswith" sort:"asc,desc"`
+	// filterable, NOT orderable
+	Name *string `query:"name" filter:"eq"`
+	// orderable only — a vocabulary leaf, ascending only
+	ID *string `query:"id" sort:"asc"`
+	// descending only
+	Created *string `query:"created" filter:"gte" sort:"desc"`
+
+	Addresses sortableEmbedGroup `query:"addresses"`
+
+	First *int64 `query:"first"`
+}
+
+type sortableEmbedGroup struct {
+	ZipCode *string `query:"zipCode" filter:"eq" sort:"asc,desc"`
+	City    *string `query:"city"    filter:"eq"`
+	// a vocabulary leaf nested inside an embed group
+	Ordinal *int `query:"ordinal" sort:"asc"`
+}
+
+func TestExtractRequestSchema_SortableVocabulary(t *testing.T) {
+	s := ExtractRequestSchema(reflect.TypeOf(sortableRequest{}))
+
+	want := map[string]SortSpec{
+		"code":              {GoPath: "Code", Asc: true, Desc: true},
+		"id":                {GoPath: "ID", Asc: true},
+		"created":           {GoPath: "Created", Desc: true},
+		"addresses.zipCode": {GoPath: "Addresses.ZipCode", Asc: true, Desc: true},
+		"addresses.ordinal": {GoPath: "Addresses.Ordinal", Asc: true},
+	}
+	if len(s.Sortable) != len(want) {
+		t.Fatalf("vocabulary size mismatch: got %v", s.Sortable)
+	}
+	for wire, spec := range want {
+		got, ok := s.Sortable[wire]
+		if !ok {
+			t.Errorf("%q must be orderable", wire)
+			continue
+		}
+		if got != spec {
+			t.Errorf("%q = %+v, want %+v", wire, got, spec)
+		}
+	}
+	// A filter leaf without the tag stays filterable and NOT orderable — the
+	// two vocabularies are independent.
+	if _, orderable := s.Sortable["name"]; orderable {
+		t.Error("a filter leaf must not become orderable by itself")
+	}
+	if _, filterable := s.Filters["name"]; !filterable {
+		t.Error("name must remain filterable")
+	}
+	// A vocabulary leaf is orderable and NOT filterable.
+	if _, filterable := s.Filters["id"]; filterable {
+		t.Error("a vocabulary leaf must not become a filter leaf")
+	}
+	// `orderBy` has no reserved key: the declarations are the switch.
+	if s.Reserved[KeyOrderBy] {
+		t.Error("orderBy must not be a reserved key")
+	}
+}
+
+func TestExtractRequestSchema_SortableGuards(t *testing.T) {
+	for name, tc := range map[string]struct {
+		dto  any
+		want string
+	}{
+		"redeclared orderBy": {struct {
+			OrderBy *string `query:"orderBy"`
+		}{}, "Do not redeclare"},
+		"bad direction": {struct {
+			A *string `query:"a" sort:"true"`
+		}{}, "must be \"asc\" or \"desc\""},
+		"empty tag": {struct {
+			A *string `query:"a" sort:""`
+		}{}, "must be \"asc\" or \"desc\""},
+		"repeated direction": {struct {
+			A *string `query:"a" sort:"asc,asc"`
+		}{}, "must be \"asc\" or \"desc\""},
+		"tag on embed group": {struct {
+			G struct{} `query:"g" sort:"asc"`
+		}{}, "embed group"},
+		"tag on control key": {struct {
+			S *string `query:"search" sort:"asc"`
+		}{}, "reserved control key"},
+		"dead query tag": {struct {
+			A *string `query:"a"`
+		}{}, "opts nothing in"},
+		"control in a group": {struct {
+			G struct {
+				F *int64 `query:"first"`
+			} `query:"g"`
+		}{}, "endpoint-wide"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("%s must boot-fail", name)
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, tc.want) {
+					t.Errorf("diagnostic must mention %q; got %v", tc.want, r)
+				}
+			}()
+			_ = ExtractRequestSchema(reflect.TypeOf(tc.dto))
+		})
+	}
+}
+
+func TestParseOrderBy(t *testing.T) {
+	vocab := ExtractRequestSchema(reflect.TypeOf(sortableRequest{})).Sortable
+
+	t.Run("empty value is a no-op", func(t *testing.T) {
+		fields, v, ok := ParseOrderBy("", vocab)
+		if !ok || v != nil || fields != nil {
+			t.Fatalf("got (%v,%+v,%v)", fields, v, ok)
+		}
+	})
+
+	t.Run("translates to the Go path and honors the prefix", func(t *testing.T) {
+		fields, v, ok := ParseOrderBy("code,-addresses.zipCode", vocab)
+		if !ok || v != nil || len(fields) != 2 {
+			t.Fatalf("got (%v,%+v,%v)", fields, v, ok)
+		}
+		if fields[0].Field != "Code" || fields[0].Desc {
+			t.Errorf("first term = %+v", fields[0])
+		}
+		if fields[1].Field != "Addresses.ZipCode" || !fields[1].Desc {
+			t.Errorf("second term = %+v", fields[1])
+		}
+	})
+
+	t.Run("blank segments are skipped", func(t *testing.T) {
+		fields, _, ok := ParseOrderBy("code,,id", vocab)
+		if !ok || len(fields) != 2 {
+			t.Fatalf("got (%v,%v)", fields, ok)
+		}
+	})
+
+	for _, tc := range []struct{ name, token, wantField string }{
+		{"undeclared token", "bogus", "orderBy[bogus]"},
+		{"undeclared token, descending", "-bogus", "orderBy[-bogus]"},
+		{"filterable but not orderable", "name", "orderBy[name]"},
+		{"ascending-only asked descending", "-id", "orderBy[-id]"},
+		{"descending-only asked ascending", "created", "orderBy[created]"},
+		{"one bad token poisons the list", "code,-id", "orderBy[-id]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields, v, ok := ParseOrderBy(tc.token, vocab)
+			if ok || fields != nil {
+				t.Fatalf("%q must be refused; got (%v,%v)", tc.token, fields, ok)
+			}
+			if v == nil || v.Field != tc.wantField {
+				t.Fatalf("must report the wire token verbatim; got %+v want %q", v, tc.wantField)
+			}
+			if _, generic := v.Message().Notification.(domain.SchemaViolationNotification); !generic {
+				t.Errorf("every ordering refusal is the canonical schema violation, got %T", v.Message().Notification)
+			}
+		})
+	}
+
+	t.Run("an empty vocabulary refuses everything", func(t *testing.T) {
+		if _, _, ok := ParseOrderBy("code", map[string]SortSpec{}); ok {
+			t.Fatal("nothing is orderable without a declaration")
+		}
+	})
+}
+
+func TestSortSpec_Allows(t *testing.T) {
+	for _, tc := range []struct {
+		spec      SortSpec
+		asc, desc bool
+	}{
+		{SortSpec{Asc: true}, true, false},
+		{SortSpec{Desc: true}, false, true},
+		{SortSpec{Asc: true, Desc: true}, true, true},
+		{SortSpec{}, false, false},
+	} {
+		if got := tc.spec.Allows(false); got != tc.asc {
+			t.Errorf("%+v.Allows(asc) = %v, want %v", tc.spec, got, tc.asc)
+		}
+		if got := tc.spec.Allows(true); got != tc.desc {
+			t.Errorf("%+v.Allows(desc) = %v, want %v", tc.spec, got, tc.desc)
+		}
 	}
 }

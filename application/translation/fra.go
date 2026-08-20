@@ -14,7 +14,6 @@ func (coreFR) Translations() map[string]string {
 		"RequiredFieldNotification":            "Champ obligatoire.",
 		"SchemaViolationNotification":          "Le contenu du corps de la requête ne correspond pas au schéma attendu.",
 		"LimitExceededNotification":            "La limite demandée dépasse le maximum autorisé.",
-		"ComputedFieldNotSortableNotification": "Les champs calculés ne peuvent pas être utilisés pour le tri.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossible d'insérer un enregistrement avec une clé primaire existante.",

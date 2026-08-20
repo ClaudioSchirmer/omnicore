@@ -291,38 +291,7 @@ func TestWalkResponseGuard_PointerAndNonStructDefensive(t *testing.T) {
 	}
 }
 
-// ─── ParseOrderByWithSchema / ParseProjection edge cases ────────────────────────
-
-func TestParseOrderByWithSchema_EdgeCases(t *testing.T) {
-	if fields, v, ok := ParseOrderByWithSchema("", nil); !ok || v != nil || fields != nil {
-		t.Fatalf("empty sort = (%v,%+v,%v)", fields, v, ok)
-	}
-	fields, v, ok := ParseOrderByWithSchema("-name,,age", nil)
-	if !ok || v != nil || len(fields) != 2 {
-		t.Fatalf("nil-schema sort = (%v,%+v,%v)", fields, v, ok)
-	}
-	if fields[0].Field != "name" || !fields[0].Desc {
-		t.Errorf("expected name desc, got %+v", fields[0])
-	}
-}
-
-func TestParseOrderByWithSchema_UnknownTokenWithSchema(t *testing.T) {
-	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	if _, v, ok := ParseOrderByWithSchema("bogus", ps); ok || v == nil || v.Field != "orderBy[bogus]" {
-		t.Fatalf("expected unknown sort token rejection, got v=%+v ok=%v", v, ok)
-	}
-}
-
-func TestParseOrderByWithSchema_KnownTokenTranslatesToDocPath(t *testing.T) {
-	ps := ExtractProjectionSchema(reflect.TypeOf(sparseUser{}))
-	fields, v, ok := ParseOrderByWithSchema("-addresses.zipCode", ps)
-	if !ok || v != nil || len(fields) != 1 {
-		t.Fatalf("sort = (%v,%+v,%v)", fields, v, ok)
-	}
-	if fields[0].Field != "Addresses.ZipCode" || !fields[0].Desc {
-		t.Errorf("expected Addresses.ZipCode desc, got %+v", fields[0])
-	}
-}
+// ─── ParseProjection edge cases ─────────────────────────────────────────────
 
 func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
 	if proj, _, bad, ok := ParseProjection("", nil); !ok || bad != "" || proj != nil {

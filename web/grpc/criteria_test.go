@@ -22,8 +22,13 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	limit := int64(25)
 	search := "drill"
 	fields := map[string]string{"id": "ID", "name": "Name", "created_at": "CreatedAt"}
+	sortable := map[string]queryschema.SortSpec{
+		"name":       {GoPath: "Name", Asc: true, Desc: true},
+		"created_at": {GoPath: "CreatedAt", Asc: true, Desc: true},
+	}
 	crit, err := NewCriteria().
 		Fields(fields).
+		Sortable(sortable).
 		Page(&pb.PaginationRequest{After: &after, First: &limit, IncludeArchived: proto.Bool(true), Search: &search}).
 		OrderBy(&pb.OrderByField{Field: "name"}, &pb.OrderByField{Field: "created_at", Desc: true}, nil, &pb.OrderByField{}).
 		FieldMask(&fieldmaskpb.FieldMask{Paths: []string{"id", "name", ""}}).

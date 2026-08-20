@@ -52,7 +52,10 @@ func TestSpec_FileResponse_SuccessIsBinaryFileWithReflectedParams(t *testing.T) 
 	for _, p := range params {
 		names[p.(map[string]any)["name"].(string)] = true
 	}
-	for _, want := range []string{"name", "name.in", "limit"} {
+	// `orderBy` has no `query:"…"` scalar to reflect — the sortable
+	// declarations put it there, which is what makes the spec honest about a
+	// control the route accepts.
+	for _, want := range []string{"name", "name.in", "first", "orderBy"} {
 		if !names[want] {
 			t.Fatalf("expected query param %q reflected from RequestType; got %v", want, names)
 		}
@@ -68,7 +71,7 @@ func TestSpec_OmittedQueryParams_HidesListedKeys(t *testing.T) {
 		Name      *string `query:"name" filter:"eq,in"`
 		Search    *string `query:"search"`
 		Fields    *string `query:"fields"`
-		Limit     *int64  `query:"limit"`
+		First     *int64  `query:"first"`
 		After     *string `query:"after"`
 		Before    *string `query:"before"`
 		OnlyTotal *bool   `query:"onlyTotal"`

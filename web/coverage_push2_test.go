@@ -42,7 +42,7 @@ func runBuildCriteria(t *testing.T, schemaType reflect.Type, url string) (*query
 type afterBeforeRequest struct {
 	After  *string `query:"after"`
 	Before *string `query:"before"`
-	Sort   *string `query:"orderBy"`
+	Name   *string `query:"name" sort:"asc,desc"`
 }
 
 func TestBuildCriteria_AfterCursorTupleLengthMismatch(t *testing.T) {

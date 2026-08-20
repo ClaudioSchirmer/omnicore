@@ -133,8 +133,23 @@ var _ persistence.BeforeCommitHookProvider[*User] = (*InsertUserCommand)(nil)</c
     <p>
         <code>UnwrapTx</code> panics with a descriptive diagnostic if passed a foreign <code>TxHandle</code>
         implementation — defensive, never reached against framework-issued handles because the interface is sealed.
-        Constraint-binding translation (<code>write.ConstraintBinding</code>) is not applied at this surface — it lives
-        at the Repository level for the parent entity's declared constraints.
+    </p>
+    <h4>Constraint violations inside a hook</h4>
+    <p>
+        The Repository applies its own <code>write.ConstraintBinding</code> map to its own writes. A hook writes to
+        <strong>its own</strong> tables, with its own unique indexes, so it declares and applies its own map — through
+        the same translation the Repository uses, exported for exactly this:
+    </p>
+<pre><code>tx := core.UnwrapTx(handle)
+if _, err := tx.Exec(ctx, `INSERT INTO admin_seats (...) VALUES (...)`, args...); err != nil {
+    return write.TranslateUniqueViolation(tx.Dialect(), err, "AdminSeat", a.constraints)
+}</code></pre>
+    <p>
+        <code>TranslateUniqueViolation</code> classifies the driver error through the dialect (so the adapter stays
+        engine-agnostic), looks the constraint name up in the map, and returns the declared notification as a
+        <code>NotificationCarrier</code> — or the error untouched when it is not a unique violation or no binding
+        matches. The hook's error travels to the surface verbatim, so what the consumer receives is the same typed,
+        translated envelope a Repository-level violation produces. Without it, the raw driver error surfaces as a 500.
     </p>
     <p>
         <strong>Postgres-only escape hatch.</strong> A service that deliberately pins itself to Postgres — to reach an

@@ -56,9 +56,8 @@ func (q *widgetQuery) FromQueryResult(_ *configuration.AppContext, r widgetResul
 }
 
 type widgetRequest struct {
-	Name    *string `query:"name" filter:"eq"`
-	First   *int64  `query:"first"`
-	OrderBy *string `query:"orderBy"`
+	Name  *string `query:"name" filter:"eq" sort:"asc,desc"`
+	First *int64  `query:"first"`
 }
 
 func (widgetRequest) ToQuery(crit queries.ReadCriteria) *widgetQuery {
@@ -135,10 +134,8 @@ func TestComputed_OrderFieldEnumOmitsComputedPath(t *testing.T) {
 	if body == "" {
 		t.Fatalf("WidgetOrderField enum missing from SDL:\n%s", sdl)
 	}
-	for _, want := range []string{"ID", "NAME"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("sortable enum must carry %s, got %q", want, body)
-		}
+	if !strings.Contains(body, "NAME") {
+		t.Errorf("sortable enum must carry the declared field, got %q", body)
 	}
 	if strings.Contains(body, "DISPLAY") {
 		t.Errorf("a computed path must NOT be sortable, got %q", body)
@@ -148,11 +145,11 @@ func TestComputed_OrderFieldEnumOmitsComputedPath(t *testing.T) {
 	}
 }
 
-// TestComputed_OrderFieldMapExcludesComputed — the same cut at the reflection
-// seam the resolver consults, so a computed spelling has no runtime landing
-// either (defense in depth behind gqlparser's validation).
+// TestComputed_OrderFieldMapExcludesComputed — a computed path is not part of
+// the ordering vocabulary because that vocabulary is the Request DTO's, and a
+// derived value backs no column to order by.
 func TestComputed_OrderFieldMapExcludesComputed(t *testing.T) {
-	values, byValue := orderFieldMap("Widget", queryschema.ExtractProjectionSchema(reflect.TypeOf(widgetResponse{})))
+	values, byValue := orderFieldMap("Widget", queryschema.ExtractRequestSchema(reflect.TypeOf(widgetRequest{})).Sortable)
 	if _, sortable := byValue["DISPLAY"]; sortable {
 		t.Errorf("computed path leaked into the order vocabulary: %v", values)
 	}
@@ -162,8 +159,8 @@ func TestComputed_OrderFieldMapExcludesComputed(t *testing.T) {
 }
 
 // TestComputed_OrderByComputedFailsValidation — ordering by the computed field
-// is rejected by gqlparser as an unknown enum member: the surface's native
-// spelling of REST's ComputedFieldNotSortableNotification 400.
+// is rejected by gqlparser as an unknown enum member: this surface's native
+// spelling of the schema violation REST answers with.
 func TestComputed_OrderByComputedFailsValidation(t *testing.T) {
 	h := &widgetHandler{}
 	reg, ctx := newWidgetRegistry(h)

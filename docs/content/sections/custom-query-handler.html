@@ -246,7 +246,7 @@ g.Get("/:email", func(c fiber.Ctx) error {
         fwqueries.FromQueryResultFiller[appqueries.FindUsersCustomResult](ctx, q))
 }</code></pre>
     <pre><code>listParser := fwweb.NewQueryParser[requests.FindUsersCustomRequest,
-    requests.FindUsersCustomResponse]()   // fields-guard + orderBy-warn fire here at boot
+    requests.FindUsersCustomResponse]()   // fields-guard + the sortable-paths advisory fire here at boot
 
 g.Get("/", func(c fiber.Ctx) error {
     appCtx := fwweb.AppContext(c)
@@ -283,14 +283,13 @@ g.Get("/", func(c fiber.Ctx) error {
             <td>Construct once at Mount. Construction runs the same boot
                 scan the wrapper runs: the sparse-render guard on <code>Resp</code> (panic when any field at any
                 depth is not <code>*T</code>/slice/map with <code>,omitempty</code>, when <code>?fields=</code> is
-                opted in), the <code>slog.Warn</code> advisory listing every sortable wire path (when
-                <code>?orderBy=</code> is opted in), and the wire→doc projection schema.
+                opted in), the <code>slog.Warn</code> advisory listing every wire path the Request DTO
+                declared <a href="#auto-query-handlers~qry-sort">orderable</a> (when it declared any),
+                and the wire→doc projection schema.
                 <code>parser.Parse(c)</code> → <code>(criteria, *queryschema.Violation, ok)</code> with
                 allowlist + translation. The violation carries the wire spelling of the offending
-                control AND the notification that explains it, so a refusal the framework can name —
-                ordering by a <a href="#auto-query-handlers~qry-computed">computed field</a>, say —
-                reaches the consumer as its own translated message here, exactly as on the canonical
-                wrapper. Schema caches are shared with the canonical wrapper, so there is no
+                control AND the notification that explains it, so a refusal reaches the consumer as a
+                translated message here exactly as on the canonical wrapper. Schema caches are shared with the canonical wrapper, so there is no
                 per-route memory penalty for going manual.</td>
         </tr>
         <tr><td><code>fwqueries.ResultFromDoc[TResult](doc)</code> / <code>fwqueries.PageOfFrom(page, fill)</code> / <code>fwqueries.FromQueryResultFiller[TResult](ctx, q)</code></td><td>the doc→Result fill + the <code>FromQueryResult</code> hook</td><td>the exact primitives <code>FindByIDQueryHandler</code> / <code>FindByParamsQueryHandler</code> call — a manual handler reaches them directly instead of re-deriving the semantic pass.</td></tr>

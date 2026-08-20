@@ -17,14 +17,13 @@ import (
 // exercised. Reuses *testFindParamsQuery (from handle_query_test.go) so the
 // fixtures stay small.
 type testOnlyTotalRequest struct {
-	Name  *string `query:"name"  filter:"eq,startswith"`
+	Name  *string `query:"name"  filter:"eq,startswith" sort:"asc,desc"`
 	Email *string `query:"email" filter:"eq,in"`
 
 	First           *int64  `query:"first"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	Sort            *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`

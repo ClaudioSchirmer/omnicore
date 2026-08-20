@@ -14,7 +14,6 @@ func (corePTBR) Translations() map[string]string {
 		"RequiredFieldNotification":            "Campo obrigatório.",
 		"SchemaViolationNotification":          "Conteúdo do corpo da requisição não corresponde ao esquema esperado.",
 		"LimitExceededNotification":            "O limite solicitado excede o máximo permitido.",
-		"ComputedFieldNotSortableNotification": "Campos computados não podem ser utilizados na ordenação.",
 
 		// Domain entity
 		"UnableToInsertWithIDNotification":    "Impossível efetuar a inclusão de um registro com a chave primária informada.",

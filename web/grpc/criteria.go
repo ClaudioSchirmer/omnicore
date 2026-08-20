@@ -39,11 +39,13 @@ type CriteriaBuilder struct {
 	controls queryschema.Controls
 	fields   map[string]string   // wire (proto snake_case) → Go field path
 	computed map[string][]string // wire → Go source paths (COMPUTED fields)
+	// sortable is the ordering vocabulary: wire (proto snake_case) → the Go
+	// field path and the directions the Request DTO declared. Separate from
+	// fields because the two answer different questions — fields is what the
+	// read_mask may project, sortable is what order_by may order by, and a
+	// path may be one without being the other.
+	sortable map[string]queryschema.SortSpec
 	errs     []error
-	// computedSorts collects the sort entries that named a COMPUTED field —
-	// refused as a typed notification (not a prose error) so the envelope
-	// tells the consumer WHY, exactly like the REST 400.
-	computedSorts []string
 	// masked records the read_mask's wire paths, so HiddenComputedSources can
 	// tell "the mask asked for this" from "we read it as a computed source".
 	masked map[string]bool
@@ -87,11 +89,9 @@ func (b *CriteriaBuilder) Fields(wireToGo map[string]string) *CriteriaBuilder {
 //   - read_mask (FieldMask) over a computed path pushes its SOURCES down, so
 //     the reader returns what the derivation needs; the computed path itself
 //     resolves to no column and never reaches the store.
-//   - order_by over a computed path is REFUSED with
-//     ComputedFieldNotSortableNotification (semantic Schema →
-//     INVALID_ARGUMENT): ordering happens in the store and the keyset cursor
-//     is built from stored ordering values, so a derived value is not
-//     expressible.
+//   - order_by is a separate vocabulary (see Sortable): a computed path is
+//     not part of it, because ordering happens in the store and a derived
+//     value backs no column there.
 func (b *CriteriaBuilder) ComputedFields(wireToSources map[string][]string) *CriteriaBuilder {
 	b.computed = wireToSources
 	return b
@@ -160,29 +160,42 @@ func (b *CriteriaBuilder) Page(p *pb.PaginationRequest) *CriteriaBuilder {
 }
 
 // OrderBy appends ordering fields in the declared order. Field names are WIRE
-// names (proto snake_case), resolved against the Fields vocabulary — an
-// undeclared field fails Build as a SchemaViolation, a COMPUTED one (see
-// ComputedFields) as a ComputedFieldNotSortableNotification.
+// names (proto snake_case), resolved against the Sortable vocabulary — a field
+// the Request DTO did not declare orderable, or one asked for in a direction
+// its declaration does not admit, fails Build as a SchemaViolation.
 func (b *CriteriaBuilder) OrderBy(fields ...*pb.OrderByField) *CriteriaBuilder {
 	for _, f := range fields {
 		if f == nil || f.GetField() == "" {
 			continue
 		}
 		b.controls.OrderBy = true
-		// A computed field IS in the vocabulary (it is selectable), so the
-		// refusal has to come first — otherwise the resolution below would
-		// hand the reader a Go path with no column behind it.
-		if _, isComputed := b.computed[f.GetField()]; isComputed {
-			b.computedSorts = append(b.computedSorts, f.GetField())
+		spec, declared := b.sortableSpec(f.GetField())
+		if !declared || !spec.Allows(f.GetDesc()) {
+			b.errs = append(b.errs, fmt.Errorf("orderBy path %q is not orderable on this view in the requested direction", f.GetField()))
 			continue
 		}
-		goPath, ok := b.goField("orderBy", f.GetField())
-		if !ok {
-			continue
-		}
-		b.crit.OrderBy = append(b.crit.OrderBy, queries.OrderByField{Field: goPath, Desc: f.GetDesc()})
+		b.crit.OrderBy = append(b.crit.OrderBy, queries.OrderByField{Field: spec.GoPath, Desc: f.GetDesc()})
 	}
 	return b
+}
+
+// Sortable declares the ordering vocabulary — wire path → the Go field path it
+// addresses plus the directions admitted. The Auto path feeds it from the
+// Request DTO's `sort:` tags; a MountRaw consumer declares its own.
+//
+// Not calling it means nothing is orderable, which is the framework-wide
+// default: ordering is a store operation whose cost is proportional to the
+// matching set unless an index covers it, so an endpoint sorts by what it says
+// it sorts by and nothing else.
+func (b *CriteriaBuilder) Sortable(vocabulary map[string]queryschema.SortSpec) *CriteriaBuilder {
+	b.sortable = vocabulary
+	return b
+}
+
+// sortableSpec resolves one wire path against the declared vocabulary.
+func (b *CriteriaBuilder) sortableSpec(wirePath string) (queryschema.SortSpec, bool) {
+	spec, ok := b.sortable[wirePath]
+	return spec, ok
 }
 
 // FieldMask applies the partial-response projection (the ?fields= sibling;
@@ -382,12 +395,17 @@ func (b *CriteriaBuilder) Timestamp(goFieldPath string, f *pb.TimestampFilter) *
 // no declaration to check — only the directional rule and the only-total
 // conflict matrix apply. The Auto path runs the FULL gate (its compiled
 // plan carries the DTO's Reserved set) before Build.
-var rawPathReserved = map[string]bool{
-	queryschema.KeyFirst: true, queryschema.KeyLast: true,
-	queryschema.KeyAfter: true, queryschema.KeyBefore: true,
-	queryschema.KeyOrderBy: true, queryschema.KeyFields: true,
-	queryschema.KeySearch: true, queryschema.KeyIncludeArchived: true,
-	queryschema.KeyOnlyTotal: true,
+var rawPathReserved = &queryschema.RequestSchema{
+	Reserved: map[string]bool{
+		queryschema.KeyFirst: true, queryschema.KeyLast: true,
+		queryschema.KeyAfter: true, queryschema.KeyBefore: true,
+		queryschema.KeyFields: true, queryschema.KeySearch: true,
+		queryschema.KeyIncludeArchived: true, queryschema.KeyOnlyTotal: true,
+	},
+	// A non-empty vocabulary is what tells the gateway this endpoint accepts
+	// ordering at all. The raw path has no declaration to check, so it admits
+	// ordering the same way it admits every other control.
+	Sortable: map[string]queryschema.SortSpec{"": {}},
 }
 
 // Build returns the criteria, or the accumulated wire-contract violations —
@@ -395,15 +413,10 @@ var rawPathReserved = map[string]bool{
 // (INVALID_ARGUMENT), the same rejection an unknown REST operator gets.
 // The canonical control gateway runs here for the raw path (directional
 // rule + only-total conflicts); the Auto path additionally applies the DTO
-// opt-in gate at its compiled plan before reaching Build. A sort over a
-// COMPUTED field is refused right after the gateway, as its own typed
-// notification rather than a prose error.
+// opt-in gate at its compiled plan before reaching Build.
 func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
 	if violations := queryschema.ValidateControls(rawPathReserved, b.controls, nil); len(violations) > 0 {
 		return queries.ReadCriteria{}, controlViolationError(violations)
-	}
-	if len(b.computedSorts) > 0 {
-		return queries.ReadCriteria{}, computedSortError(b.computedSorts)
 	}
 	if len(b.errs) > 0 {
 		return queries.ReadCriteria{}, fmt.Errorf("grpc criteria: %w", errors.Join(b.errs...))
@@ -430,24 +443,6 @@ func controlViolationError(violations []queryschema.ControlViolation) error {
 	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }
 
-// computedSortError renders the refused computed-field sort entries the same
-// way controlViolationError renders a gateway violation — a
-// NotificationCarrier under the "Schema" context, so conversionError funnels
-// it through the pipeline's translation and the Connect shell emits
-// INVALID_ARGUMENT (semantic Schema) with one google.rpc ErrorInfo per entry,
-// reason=ComputedFieldNotSortableNotification. The field name is the sort
-// entry exactly as the wire spelled it (proto snake_case), the gRPC dialect of
-// REST's `orderBy[<token>]`.
-func computedSortError(entries []string) error {
-	nctx := domain.NewNotificationContext("Schema")
-	for _, entry := range entries {
-		nctx.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    entry,
-			Notification: domain.ComputedFieldNotSortableNotification{},
-		})
-	}
-	return domain.NewDomainError([]*domain.NotificationContext{nctx})
-}
 
 var stringOps = map[pb.StringOp]string{
 	pb.StringOp_STRING_OP_EQ:          queryschema.OpEq,

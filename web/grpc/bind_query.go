@@ -73,10 +73,9 @@ type queryPlan struct {
 	// computed is the COMPUTED subset of fields: proto wire path → the Go
 	// source paths the Response's `computed:"…"` tag names. Such a field has
 	// no column (the Query's FromQueryResult derives it after the read), so
-	// the two consumers of the vocabulary diverge exactly as they do on REST:
-	// a read_mask entry pushes the SOURCES down, a sort entry is refused with
-	// ComputedFieldNotSortableNotification. Kept as its own map so neither
-	// consumer has to re-derive it from the Response at request time.
+	// a read_mask entry pushes the SOURCES down instead of the path itself.
+	// Kept as its own map so the consumer does not have to re-derive it from
+	// the Response at request time.
 	computed map[string][]string
 	// reserved is the Request DTO's declared control set — the canonical
 	// opt-in gate. The shared proto shows every control field; the DTO
@@ -84,7 +83,13 @@ type queryPlan struct {
 	// set to queryschema.ValidateControls before dispatch. A control set on
 	// the wire without its `query:"…"` declaration is a wire-contract
 	// violation (SchemaViolation → INVALID_ARGUMENT).
-	reserved map[string]bool
+	reserved *queryschema.RequestSchema
+	// sortable is the ordering vocabulary in this surface's spelling: the
+	// Request DTO's declared paths folded to proto snake_case. Kept apart from
+	// fields because order_by and read_mask answer different questions — a
+	// path may be projectable without being orderable, and orderable without
+	// being on the Response at all.
+	sortable map[string]queryschema.SortSpec
 }
 
 // listEnvelope is the compiled response plan for one list procedure: the
@@ -133,7 +138,7 @@ func compileQueryPlan(
 	// The canonical Reserved gate: the DTO's declared control set, consumed
 	// by ValidateControls at request time (same extractor, same set, same
 	// semantics as the REST wire).
-	plan.reserved = queryschema.ExtractRequestSchema(reqDTO).Reserved
+	plan.reserved = queryschema.ExtractRequestSchema(reqDTO)
 
 	bindFilter := func(fd protoreflect.FieldDescriptor, prefix string) error {
 		kind, ok := wrapperKinds[fd.Message().FullName()]
@@ -211,6 +216,14 @@ func compileQueryPlan(
 	normComputed := make(map[string][]string, len(proj.Computed))
 	for wirePath, sources := range proj.Computed {
 		normComputed[normalizePath(wirePath)] = sources
+	}
+	// The ordering vocabulary is the Request DTO's, folded to the proto
+	// spelling. It is NOT intersected with the item message's fields: an
+	// orderable path need not be projectable, and `OrderByField.field` is a
+	// free string on the wire, so nothing in the proto has to name it.
+	plan.sortable = map[string]queryschema.SortSpec{}
+	for wirePath, spec := range plan.reserved.Sortable {
+		plan.sortable[normalizePath(wirePath)] = spec
 	}
 	plan.fields = map[string]string{}
 	plan.computed = map[string][]string{}
@@ -305,7 +318,7 @@ func compileListEnvelope(
 // field (HiddenComputedSources) — the wrapper blanks them on each Result
 // before projection, so they never leak onto the masked wire.
 func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCriteria, []string, error) {
-	b := NewCriteria().Fields(plan.fields).ComputedFields(plan.computed)
+	b := NewCriteria().Fields(plan.fields).ComputedFields(plan.computed).Sortable(plan.sortable)
 	if plan.page != nil && msg.Has(plan.page) {
 		if p, ok := msg.Get(plan.page).Message().Interface().(*pb.PaginationRequest); ok {
 			b.Page(p)

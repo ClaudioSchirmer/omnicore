@@ -309,15 +309,17 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
         same tag. The wrapper inspects the type (cached by <code>reflect.Type</code> in a module-level
         <code>sync.Map</code>) and rejects any query-string key outside the declared set with 400
         <code>SchemaViolationNotification</code>. Reserved pagination/control keys (<code>first</code>,
-        <code>last</code>, <code>after</code>, <code>before</code>, <code>orderBy</code>, <code>fields</code>,
+        <code>last</code>, <code>after</code>, <code>before</code>, <code>fields</code>,
         <code>search</code>, <code>includeArchived</code>, <code>onlyTotal</code>) are declared with only the
         <code>query:"..."</code> tag (no filter tag) — recognized only at the top level, never inside an embed
-        group. The vocabulary is <strong>closed</strong>: a top-level query-tagged scalar without a
-        <code>filter:</code> tag whose key is not one of the nine canonical controls is a
-        <strong>boot fail</strong> (panic at wrapper construction naming the DTO, the offending tag and
-        the canonical list) — a typo like <code>query:"orderby"</code> or a stale spelling like
-        <code>query:"limit"</code> would otherwise opt nothing in while OpenAPI advertised the dead
-        parameter.
+        group. <code>orderBy</code> is the exception: it is recognized on the wire but is
+        <strong>not declarable</strong>, because the <a href="#auto-query-handlers~qry-sort"><code>sort:</code>
+        declarations</a> are its switch. The vocabulary is <strong>closed</strong>: a query-tagged scalar
+        carrying neither <code>filter:</code> nor <code>sort:</code> whose key is not one of the
+        eight declarable controls is a <strong>boot fail</strong> (panic at wrapper construction
+        naming the DTO, the offending tag and the canonical list) — a typo like
+        <code>query:"orderby"</code> or a stale spelling like <code>query:"limit"</code> would
+        otherwise opt nothing in while OpenAPI advertised the dead parameter.
     </p>
     <p>
         <strong>Behind the allowlist, the view has the last word.</strong> The allowlist validates a request against
@@ -561,13 +563,12 @@ type FindUsersResponse struct {
             the store in its place. A source read only to feed the derivation is then blanked before
             the Response projection, so the answer carries <code>display</code> alone — the parameter
             keeps shaping the wire even when a source shares the Response.</li>
-        <li><strong><code>?orderBy=display</code> is refused with 400.</strong> Ordering happens in
-            the store and the keyset cursor is built from stored ordering values, so a derived value
-            is not expressible. The refusal carries its own translated
-            <code>ComputedFieldNotSortableNotification</code> on the wire token
-            (<code>orderBy[display]</code>) — distinguishable from the plain
-            <code>SchemaViolationNotification</code> an unknown token still produces, while a stored
-            field on the same Response keeps sorting normally.</li>
+        <li><strong><code>?orderBy=display</code> is refused with 400.</strong> Ordering speaks the
+            Request DTO's <code>sort:</code> vocabulary, and a computed field backs no column to
+            order by — the keyset cursor is built from stored values — so it is never declared there.
+            The refusal is the canonical <code>SchemaViolationNotification</code> on the wire token
+            (<code>orderBy[display]</code>), the same one any undeclared token gets, while a declared
+            field on the same endpoint keeps sorting normally.</li>
         <li><strong>A <code>filter:</code> tag over a computed field is a boot panic.</strong>
             Filtering is evaluated in the store, so the predicate could never run: the framework
             fails at construction rather than shipping an endpoint that 400s on every call. Filter
@@ -584,66 +585,109 @@ type FindUsersResponse struct {
         write side materializes it, and every control works on it unchanged.
     </div>
 
-    <h3 id="qry-sort">Sortable response paths via <code>?orderBy=</code></h3>
+    <h3 id="qry-sort">The ordering vocabulary — <code>sort:</code> and <code>?orderBy=</code></h3>
     <p>
-        Symmetric to <code>?fields=</code>: the consumer asks the framework to order results by
-        Response-declared paths and the wrapper validates + translates the tokens end to end. The
-        Request DTO opts in by declaring <code>OrderBy *string `query:"orderBy"`</code> (no
-        <code>filter:</code> tag — it's a reserved control key, not a filter leaf). When the
-        parameter is declared <em>and</em> the wrapper's Response type <code>R</code> is a struct,
-        two things happen automatically:
-    </p>
-    <ol>
-        <li>
-            <strong>Allowlist + two-hop translation.</strong> Each comma-separated token is
-            stripped of an optional <code>-</code> prefix (descending; bare token = ascending),
-            validated against the Response DTO's declared wire paths, mapped to the Go field path via
-            the Response's <code>json:</code> tags, and finally translated by the reader to the
-            physical Mongo column via the view's <code>TableSchema</code> — the same two-hop pivot
-            <code>?fields=</code> uses. Unknown tokens emit 400 with <code>SchemaViolationNotification</code> on
-            field <code>orderBy[&lt;token&gt;]</code>; the rejected token is surfaced verbatim
-            including any <code>-</code> prefix the consumer sent. The resulting
-            <code>OrderByField{Field: docPath, Desc: bool}</code> entries land on
-            <code>ReadCriteria.OrderBy</code> and the canonical <code>MongoViewReader</code> emits
-            the corresponding <code>bson.D</code> on <code>findOpts.SetSort</code>.
-        </li>
-        <li>
-            <strong>Boot warning when orderBy is declared.</strong> The wrapper has no way to verify
-            from its construction site that the Mongo view declares indexes covering the sortable
-            paths — the <code>ViewDefinition</code> lives in the consumer's
-            <code>ReadableFeature.Views()</code>, separated from the route registration. When
-            <code>OrderBy</code> opt-in is detected and a typed Response is in scope, the framework
-            emits a single <code>slog.Warn</code> at boot listing every sortable wire path so the
-            operator can compare it against the view's <code>.Indexes(…)</code> declaration in
-            the same boot pass and add covering indexes
-            (<code>query.Index</code> / <code>query.Compound</code>) where missing — ordering
-            queries against non-indexed fields scale poorly on large collections.
-        </li>
-    </ol>
-    <p>
-        There is <em>no</em> boot guard analogous to <code>fields</code>' pointer + omitempty rule.
-        <code>?orderBy=</code> only consumes the wire→doc path map; the Response shape is not
-        constrained by it. When <code>fields</code> is also opt-in, the existing guard still fires
-        — it is the <code>fields</code>-side rule, untouched by <code>orderBy</code>.
+        Ordering is a <strong>store operation</strong>, like filtering. Its vocabulary therefore lives
+        where the endpoint declares what it accepts on the wire — the Request DTO — and never on the
+        Response, which governs what comes <em>out</em> (the shape, the export columns, and the one
+        <code>?fields=</code> vocabulary).
     </p>
     <p>
-        The allowlist is opt-in by declaration: a Request DTO without <code>query:"orderBy"</code>
-        does not get the allowlist (and does not consume the <code>?orderBy=</code> wire key). When it
-        does declare it, the allowlist is the Response DTO's projection schema — the same one
-        <code>?fields=</code> consumes — on the canonical wrappers, on the
-        <code>*Spec</code> siblings, on the CSV/XLSX exports, and on a manual route built with
-        <code>fwweb.NewQueryParser[Req, Resp]()</code>.
+        A leaf declares itself orderable with <code>sort:</code>, listing the directions it
+        admits. The tag mirrors <code>filter:</code>: a comma-separated list of what the leaf accepts.
+    </p>
+<pre><code>type FindGadgetsRequest struct {
+    ID    *string `query:"id"                              sort:"asc"`
+    Code  *string `query:"code"    filter:"eq,startswith"   sort:"asc,desc"`
+    Name  *string `query:"name"    filter:"eq,icontains"`
+    Notes *string `query:"notes"   filter:"contains"`
+
+    Addresses AddressFilterParams `query:"addresses"`
+
+    First  *int64  `query:"first"`
+    Fields *string `query:"fields"`
+    // no OrderBy field — `?orderBy=` exists because ID and Code declared themselves
+}
+
+type AddressFilterParams struct {
+    ZipCode *string `query:"zipCode" filter:"eq" sort:"asc,desc"`
+    City    *string `query:"city"    filter:"eq"`
+}</code></pre>
+    <ul>
+        <li><strong>The grammar is closed.</strong> Each entry is <code>asc</code> or <code>desc</code>,
+            listed at most once. Anything else — including <code>sort:"true"</code> or an empty
+            tag — is a boot panic, which keeps room to widen the tag later without silently
+            reinterpreting a value that used to be rejected.</li>
+        <li><strong>It rides on any leaf, at any depth.</strong> On a filter leaf the field is
+            filterable AND orderable; alone (<code>ID</code> above) the leaf is a
+            <em>vocabulary leaf</em> — orderable, not filterable, carrying no value on the wire. A
+            leaf inside an embed group contributes its dotted path
+            (<code>addresses.zipCode</code> → <code>Addresses.ZipCode</code>) exactly as a filter
+            leaf does.</li>
+        <li><strong>The declarations are the switch.</strong> <code>?orderBy=</code> has no control
+            key: an endpoint with at least one orderable leaf accepts it on every connector, one
+            with none does not. Declaring <code>query:"orderBy"</code> is a boot panic saying so —
+            the same posture <code>ReadableFeature</code> and <code>GraphQLFeature</code> take, where
+            the declaration IS the switch. <code>orderBy</code> stays a recognized WIRE key
+            (<code>ControlKeys</code>) but leaves the declarable set
+            (<code>DeclarableControlKeys</code>).</li>
+        <li><strong>Nothing is orderable until something says so.</strong> An unindexed sort is a
+            blocking sort whose cost is proportional to the matching set, not to the page, so the
+            default is no vocabulary at all.</li>
+    </ul>
+    <p>
+        <strong>Translation and refusal.</strong> Each comma-separated token is stripped of an
+        optional <code>-</code> prefix (descending; bare token = ascending), looked up in the declared
+        vocabulary, and mapped to the leaf's Go field path — which the reader then translates to a
+        physical column through the view's <code>TableSchema</code>, the same two hops a filter leaf
+        takes. A token outside the vocabulary, or one asking for a direction the declaration does not
+        admit, is refused with the canonical <code>SchemaViolationNotification</code> on
+        <code>orderBy[&lt;token&gt;]</code>, the token verbatim including any <code>-</code> prefix.
+        There is no ordering-specific notification: a path either resolves to a column and was
+        declared for that direction, or it does not.
     </p>
     <table>
-        <tbody><tr><th>Wire form</th><th>OrderByField emitted</th><th>Notes</th></tr>
-        <tr><td><code>?orderBy=name</code></td><td><code>{Field:"Name", Desc:false}</code></td><td>Bare token → ascending; <code>OrderByField</code> carries the Go field path</td></tr>
-        <tr><td><code>?orderBy=-name</code></td><td><code>{Field:"Name", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
-        <tr><td><code>?orderBy=addresses.zipCode</code></td><td><code>{Field:"Addresses.ZipCode", Desc:false}</code></td><td>Go field path; reader maps <code>ZipCode</code> → column <code>zip_code</code> via the view <code>TableSchema</code></td></tr>
-        <tr><td><code>?orderBy=addresses.state</code></td><td><code>{Field:"Addresses.State", Desc:false}</code></td><td>reader maps <code>State</code> → column <code>st</code> because <code>TableSchema.Field("State","st")</code> declares it</td></tr>
-        <tr><td><code>?orderBy=name,-email</code></td><td>2 entries, independent directions</td><td>Multi-key sort applied in declaration order</td></tr>
-        <tr><td><code>?orderBy=bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>orderBy[bogus]</code></td></tr>
-        <tr><td><code>?orderBy=-bogus</code></td><td>(none — request rejected)</td><td>400 <code>SchemaViolationNotification</code> on field <code>orderBy[-bogus]</code> (prefix preserved)</td></tr>
-    </tbody></table>
+        <tbody><tr><th>Wire form</th><th>Emitted</th><th>Notes</th></tr>
+        <tr><td><code>?orderBy=code</code></td><td><code>{Field:"Code", Desc:false}</code></td><td>bare token → ascending</td></tr>
+        <tr><td><code>?orderBy=-code</code></td><td><code>{Field:"Code", Desc:true}</code></td><td><code>-</code> prefix → descending</td></tr>
+        <tr><td><code>?orderBy=code,-id</code></td><td>(none — rejected)</td><td>400 on <code>orderBy[-id]</code>: <code>ID</code> declared <code>asc</code> only</td></tr>
+        <tr><td><code>?orderBy=addresses.zipCode</code></td><td><code>{Field:"Addresses.ZipCode"}</code></td><td>nested leaf; the reader maps <code>ZipCode</code> → its column via the view <code>TableSchema</code></td></tr>
+        <tr><td><code>?orderBy=name</code></td><td>(none — rejected)</td><td>400: filterable, never declared orderable</td></tr>
+        <tr><td><code>?orderBy=bogus</code></td><td>(none — rejected)</td><td>400 on <code>orderBy[bogus]</code></td></tr>
+        </tbody>
+    </table>
+    <p>
+        <strong>Every surface, one vocabulary.</strong> The canonical wrappers, the <code>*Spec</code>
+        siblings, the CSV/XLSX exports and a manual route built with
+        <code>fwweb.NewQueryParser[Req, Resp]()</code> all consume it. GraphQL derives the
+        <code>&lt;Entity&gt;OrderField</code> enum from it, so introspection advertises exactly the
+        declared paths; a direction the declaration does not admit is cut in the resolver instead,
+        because an enum cannot express per-member directions. gRPC resolves <code>order_by</code>
+        against the same set folded to proto snake_case, via
+        <code>CriteriaBuilder.Sortable(...)</code> — which has no fallback, so a <code>MountRaw</code>
+        consumer that does not call it orders by nothing. OpenAPI synthesizes the
+        <code>orderBy</code> parameter (there is no <code>query:"…"</code> scalar left to reflect) and
+        publishes the accepted tokens with their directions in its description.
+    </p>
+    <div class="callout">
+        <strong>Index coverage — read this before declaring a vocabulary.</strong> Every view sort
+        carries <code>_id</code> as its trailing tiebreak, so <code>?orderBy=name</code> reaches Mongo
+        as <code>{name: 1, _id: 1}</code>. Mongo serves a sort from an index only when the sort is a
+        <em>prefix</em> of the key pattern (or its exact inverse), which means
+        <code>query.Index("name")</code> does <strong>not</strong> cover it —
+        <code>query.Compound("name","_id")</code> does. A mixed-direction multi-key sort
+        (<code>?orderBy=name,-email</code> → <code>{name:1, email:-1, _id:1}</code>) cannot be covered
+        at all: <code>IndexSpec.Desc()</code> flips only the trailing key. The framework emits one
+        <code>slog.Warn</code> at boot per Request DTO listing the declared paths, because the
+        wrapper cannot see the <code>ViewDefinition</code> from its construction site — compare that
+        list against the view's <code>.Indexes(…)</code> in the same boot pass.
+    </div>
+    <p>
+        A default ordering that the consumer does not choose belongs on
+        <code>Query.ToCriteria(ctx)</code> instead: what it writes into
+        <code>ReadCriteria.OrderBy</code> is a Go field path the reader resolves directly, so it
+        passes no wire gate and may name any column of the view.
+    </p>
 
     <h3 id="qry-keyset">Keyset pagination — the Relay direction pair <code>first</code>/<code>after</code> × <code>last</code>/<code>before</code></h3>
     <p>
@@ -907,11 +951,13 @@ fwopenapi.Mount(d.OpenAPIRegistry, app, fiber.MethodGet, "/users.csv", csvH, csv
             projects but the Response does not declare has no wire name and therefore no column —
             exactly as it has no JSON key.</li>
         <li><strong><code>?fields=</code> and <code>?orderBy=</code> speak the SAME tokens as the JSON
-            listing</strong>, validated against the same projection schema
-            (<code>queryschema.ParseProjection</code> / <code>ParseOrderByWithSchema</code>), rejecting
-            with the same canonical 400 spelling (<code>fields[&lt;token&gt;]</code> /
-            <code>orderBy[&lt;token&gt;]</code>). <code>id</code> is a legal token and an exported
-            column whenever the Response declares it.</li>
+            listing</strong>, each against its own authority — <code>?fields=</code> against the
+            Response's projection schema (<code>queryschema.ParseProjection</code>),
+            <code>?orderBy=</code> against the Request's declared ordering vocabulary
+            (<code>queryschema.ParseOrderBy</code>) — and rejecting with the same canonical 400
+            spelling (<code>fields[&lt;token&gt;]</code> / <code>orderBy[&lt;token&gt;]</code>).
+            <code>id</code> is a legal <code>?fields=</code> token and an exported column whenever the
+            Response declares it.</li>
         <li><strong>Cells carry the projected Response values</strong>, so the Query's
             <code>FromQueryResult</code> computation and the Response's <code>FromResult</code> shaping both
             reach the spreadsheet — including the enum convergence to <code>Unknown</code>. Value
@@ -1116,14 +1162,14 @@ package requests
 type FindUsersByParamsRequest struct {
     // Allowlist (consumer declares which fields and operators are accepted).
     Name  *string `query:"name"  filter:"eq"`
-    Email *string `query:"email" filter:"eq,in"`
+    Email *string `query:"email" filter:"eq,in" sort:"asc,desc"`
     City  *string `query:"city"  filter:"eq"`
 
-    // Reserved pagination/control keys — no filter tag.
+    // Reserved pagination/control keys — no filter tag. `?orderBy=` has none:
+    // the sort: declarations above are what make it exist.
     Limit           *int64  `query:"first"`
     After           *string `query:"after"`
     Before          *string `query:"before"`
-    Sort            *string `query:"orderBy"`
     Fields          *string `query:"fields"`
     Search          *string `query:"search"`
     IncludeArchived *bool   `query:"includeArchived"`

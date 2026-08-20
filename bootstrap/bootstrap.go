@@ -929,6 +929,14 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		f.Mount(app, deps)
 	}
 
+	// Both halves of the `?search=` contract exist only now: the views were
+	// collected before mounting, the DTO declarations were recorded while
+	// mounting. Fail here rather than on the first request that uses the
+	// parameter.
+	if err := verifySearchIndexes(wiring.Features); err != nil {
+		return nil, err
+	}
+
 	// Phase Receivers — runs AFTER Phase HTTP (Mount) so a single
 	// feature can register HTTP routes AND integration receivers from
 	// the same struct. Opt-in via the IntegrationFeature interface

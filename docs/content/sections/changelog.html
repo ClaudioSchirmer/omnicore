@@ -7,6 +7,57 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><a href="#auto-query-handlers~qry-sort">the
+                ordering vocabulary moved to the Request DTO, declared per field</a>.</strong> Ordering was the
+                only store-side read control whose vocabulary came from the OUTPUT DTO: every wire path a
+                Response happened to render was sortable, and a field deliberately kept off the wire could not be
+                ordered by — even though both readers can order by any column of the view. Filtering names a
+                store operation and is declared on the Request; ordering is the same kind of operation and now
+                follows the same rule.
+                <ul>
+                    <li>A leaf declares itself orderable with <code>sort:"asc"</code>,
+                        <code>sort:"desc"</code> or <code>sort:"asc,desc"</code>, at any depth — a leaf
+                        inside an embed group contributes its dotted path exactly as a filter leaf does. The tag
+                        also stands alone: <code>query:"id" sort:"asc"</code> is orderable without being
+                        filterable and carries no value on the wire.</li>
+                    <li><strong>The declarations are the switch.</strong> <code>?orderBy=</code> has no control
+                        key any more: a DTO with at least one orderable leaf accepts it on every connector, one
+                        with none does not. A leftover <code>OrderBy *string `query:"orderBy"`</code> is a boot
+                        panic naming the fix.</li>
+                    <li><strong>Nothing is orderable until something says so.</strong> An unindexed sort is a
+                        blocking sort whose cost is proportional to the matching set, so the default is no
+                        vocabulary at all. Every <code>?orderBy=</code> token a service relied on must now be
+                        declared.</li>
+                    <li>A direction the declaration does not admit is refused like any undeclared token. GraphQL
+                        derives its <code>&lt;Entity&gt;OrderField</code> enum from the same set and cuts direction
+                        in the resolver (an enum cannot express per-member directions); gRPC resolves
+                        <code>order_by</code> through the new <code>CriteriaBuilder.Sortable(...)</code>, which has
+                        no fallback; OpenAPI synthesizes the <code>orderBy</code> parameter and publishes the
+                        accepted tokens with their directions.</li>
+                    <li><code>ComputedFieldNotSortableNotification</code> is <strong>removed</strong>: a computed
+                        field backs no column, so it is simply never declared orderable and its refusal is the
+                        canonical schema violation.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the boolean read controls accept
+                exactly <code>true</code> or <code>false</code>.</strong> <code>?includeArchived=</code> and
+                <code>?onlyTotal=</code> refuse anything else with the canonical 400. The two REST paths disagreed
+                before — the paged wrapper compared strings and never failed, the by-id wrapper delegated to
+                Fiber's binder and took <code>1</code>, <code>t</code>, <code>TRUE</code> — so
+                <code>?includeArchived=1</code> was false on a listing and true on a by-id read of the same
+                entity. Strict parsing also aligns REST with the other connectors, where proto <code>bool</code>
+                and GraphQL <code>Boolean</code> already rejected those spellings.</li>
+            <li><strong>Fixed</strong> — <strong><a href="#query-side">a by-id read honors
+                <code>ReadCriteria.Projection</code> on Mongo</a>.</strong> <code>ReadByID</code> ignored it while
+                the relational reader applied it, and <code>ReadCriteria.Restrict</code> — the field-level
+                access-control seam — implements its removal by writing an exclusion into that projection. A
+                <code>Restrict</code> in a by-id <code>ToCriteria</code> therefore did not apply at all on a
+                Mongo-backed view. It now applies on every query route, on every backing.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.54.0</span><span class="release-date">August 19, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong><a href="#old-state">the old-state snapshot is now captured when

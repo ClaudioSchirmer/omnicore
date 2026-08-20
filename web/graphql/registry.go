@@ -202,9 +202,16 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 		sdlLine: func(b *sdlBuilder) string { return b.queryFieldSDL(name, entity, reqType, respType) },
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, sel ast.SelectionSet, frags ast.FragmentDefinitionList) (any, []GraphQLError) {
-				crit, controls, gerr := plan.buildCriteria(args)
+				crit, controls, badField, gerr := plan.buildCriteria(args)
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
+				}
+				// A typed schema violation from the argument fold — an ordering
+				// token outside the declared vocabulary, or one asking for a
+				// direction the declaration does not admit — renders through the
+				// same seat the control gateway uses below.
+				if badField != "" {
+					return nil, schemaViolation(pipe, ctx, badField)
 				}
 				// Only-total: a selection of just totalCount (no edges/pageInfo)
 				// is the GraphQL expression of REST's ?onlyTotal=true — no
@@ -225,7 +232,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 				// The SDL already cut undeclared args (gqlparser rejects unknown
 				// arguments before the resolver), so the gate arm is defense in
 				// depth; direction + conflicts are the live checks.
-				if violations := queryschema.ValidateControls(plan.reqSchema.Reserved, controls, graphqlNaturalControls); len(violations) > 0 {
+				if violations := queryschema.ValidateControls(plan.reqSchema, controls, graphqlNaturalControls); len(violations) > 0 {
 					return nil, schemaViolation(pipe, ctx, violations[0].Field())
 				}
 				// Selection set → projection: an explicitly selected restricted

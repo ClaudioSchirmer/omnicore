@@ -116,6 +116,7 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult],
 		reflect.TypeOf((*TResult)(nil)).Elem(),
 		reflect.TypeOf((*TResp)(nil)).Elem(),
 	)
+	recordSearchDeclaration(schema, reqType, h)
 	plan := export.PlanFor(reflect.TypeOf((*TResp)(nil)).Elem())
 	translator := deps.Translator
 	maxRows := view.ResolveMaxExportRows(deps.MaxExportRows)
@@ -325,7 +326,13 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, projSch
 				return
 			case queryschema.KeyIncludeArchived:
 				controls.IncludeArchived = true
-				crit.IncludeArchived = val == "true"
+				archived, valid := queryschema.ParseControlBool(val)
+				if !valid {
+					violation = queryschema.SchemaViolation(key)
+					ok = false
+					return
+				}
+				crit.IncludeArchived = archived
 				return
 			case queryschema.KeyFields:
 				controls.Fields = true
@@ -347,7 +354,14 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, projSch
 				return
 			case queryschema.KeyOrderBy:
 				controls.OrderBy = true
-				orderBy, obViolation, obOk := queryschema.ParseOrderByWithSchema(val, projSchema)
+				// An endpoint that declared nothing orderable does not accept
+				// this control at all: leave the verdict to the canonical
+				// gateway, which reports the CONTROL as undeclared instead of
+				// the framework blaming the consumer's token.
+				if len(schema.Sortable) == 0 {
+					return
+				}
+				orderBy, obViolation, obOk := queryschema.ParseOrderBy(val, schema.Sortable)
 				if !obOk {
 					violation, ok = obViolation, false
 					return
@@ -375,7 +389,7 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, projSch
 	if !ok {
 		return crit, nil, nil, violation, false
 	}
-	if violations := queryschema.ValidateControls(schema.Reserved, controls, nil); len(violations) > 0 {
+	if violations := queryschema.ValidateControls(schema, controls, nil); len(violations) > 0 {
 		return crit, nil, nil, &queryschema.Violation{Field: violations[0].Field(), Notification: violations[0].Message().Notification}, false
 	}
 	return crit, computedSelected, selectedWire, nil, true

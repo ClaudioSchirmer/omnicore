@@ -560,9 +560,10 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
 </p>
 <p>
     Filter keys on the read side are always Go paths (the request DTO's <code>filter:</code> leaves resolve to Go field
-    names, translated to columns by the schema). Sort and projection translate Go → column through the Response
-    DTO's projection schema, the one <code>?fields=</code>/<code>?orderBy=</code> vocabulary every surface
-    speaks. The application Result keys by the Go field name — the reader already translated the doc — so
+    names, translated to columns by the schema), and <strong>sort keys reach the reader the same way</strong> — from the
+    request DTO's <a href="#auto-query-handlers~qry-sort"><code>sort:</code></a> leaves. Projection translates
+    Go → column through the Response DTO's projection schema, the <code>?fields=</code> vocabulary every surface
+    speaks. Either way the schema has the last word: a Go path it cannot resolve is the canonical 400. The application Result keys by the Go field name — the reader already translated the doc — so
     there is no <code>view:</code> source-key override; the only tag that governs the wire shape is
     <code>json:</code>, on the Response.
 </p>

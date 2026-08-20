@@ -46,17 +46,16 @@ func (d updateGadgetDTO) ToCommand() *updateGadgetCommand {
 // enforces (no `search` — that stays the searchGadgetsWithSearchDTO
 // variant's opt-in).
 type searchGadgetsDTO struct {
-	Name      *string  `query:"name"      filter:"eq,icontains"`
-	Rating    *int64   `query:"rating"    filter:"gte,lte"`
+	Name      *string  `query:"name"      filter:"eq,icontains" sort:"asc,desc"`
+	Rating    *int64   `query:"rating"    filter:"gte,lte" sort:"asc,desc"`
 	Price     *float64 `query:"price"     filter:"gt,lt"`
 	Active    *bool    `query:"active"    filter:"eq"`
-	CreatedAt *string  `query:"createdAt" filter:"gte"`
+	CreatedAt *string  `query:"createdAt" filter:"gte" sort:"asc,desc"`
 
 	First           *int64  `query:"first"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
@@ -114,18 +113,17 @@ func (h searchGadgetsHandler) Handle(ctx *configuration.AppContext, q *searchGad
 // opt-in — the DTO shape that unlocks PaginationRequest.search, mirroring
 // the REST Reserved gate.
 type searchGadgetsWithSearchDTO struct {
-	Name      *string  `query:"name"      filter:"eq,icontains"`
-	Rating    *int64   `query:"rating"    filter:"gte,lte"`
+	Name      *string  `query:"name"      filter:"eq,icontains" sort:"asc,desc"`
+	Rating    *int64   `query:"rating"    filter:"gte,lte" sort:"asc,desc"`
 	Price     *float64 `query:"price"     filter:"gt,lt"`
 	Active    *bool    `query:"active"    filter:"eq"`
-	CreatedAt *string  `query:"createdAt" filter:"gte"`
+	CreatedAt *string  `query:"createdAt" filter:"gte" sort:"asc,desc"`
 	Search    *string  `query:"search"`
 
 	First           *int64  `query:"first"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
-	OrderBy         *string `query:"orderBy"`
 	Fields          *string `query:"fields"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`

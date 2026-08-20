@@ -2,7 +2,6 @@ package graphql
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -172,11 +171,14 @@ func TestExecute_UnsortableOrderByErrors(t *testing.T) {
 
 	// Defense in depth: a value that somehow bypassed validation still errors.
 	plan := newCriteriaPlan("User", reflect.TypeOf(execRequest{}), reflect.TypeOf(execResponse{}))
-	_, _, gerr := plan.buildCriteria(map[string]any{
+	_, _, badField, gerr := plan.buildCriteria(map[string]any{
 		"orderBy": []any{map[string]any{"field": "BOGUS"}},
 	})
-	if gerr == nil || !strings.Contains(gerr.Message, "orderBy") {
-		t.Fatalf("buildCriteria must reject an unknown order field, got %+v", gerr)
+	if gerr != nil {
+		t.Fatalf("an unknown order field is a typed schema violation, not a prose error: %+v", gerr)
+	}
+	if badField != "orderBy" {
+		t.Fatalf("buildCriteria must report the orderBy control, got %q", badField)
 	}
 }
 

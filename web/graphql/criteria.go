@@ -30,7 +30,7 @@ func newCriteriaPlan(entity string, reqType, respType reflect.Type) *criteriaPla
 	for _, leaf := range filterLeaves(reqType) {
 		p.whereLeaf[wireLeafName(leaf.WirePath)] = leaf.WirePath
 	}
-	_, p.orderField = orderFieldMap(entity, p.projSchema)
+	_, p.orderField = orderFieldMap(entity, p.reqSchema.Sortable)
 	return p
 }
 
@@ -54,7 +54,7 @@ var listOps = map[string]bool{
 // undeclared args from the schema (gqlparser rejects them as unknown
 // arguments), so the gate here is defense in depth; the directional rule and
 // the only-total conflicts are the live checks.
-func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria, queryschema.Controls, *GraphQLError) {
+func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria, queryschema.Controls, string, *GraphQLError) {
 	crit := queries.ReadCriteria{Filter: map[string]any{}}
 	var controls queryschema.Controls
 
@@ -62,7 +62,7 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 		for field, v := range raw {
 			wirePath, known := p.whereLeaf[field]
 			if !known {
-				return crit, controls, errf("where: unknown filter field %q", field)
+				return crit, controls, "", errf("where: unknown filter field %q", field)
 			}
 			ops, ok := v.(map[string]any)
 			if !ok {
@@ -120,22 +120,28 @@ func (p *criteriaPlan) buildCriteria(args map[string]any) (queries.ReadCriteria,
 			for _, item := range list {
 				term, tok := item.(map[string]any)
 				if !tok {
-					return crit, controls, errf("orderBy: malformed order term %v", item)
+					return crit, controls, "", errf("orderBy: malformed order term %v", item)
 				}
 				val := asString(term["field"])
 				wire, known := p.orderField[val]
 				if !known {
-					return crit, controls, errf("orderBy: %q is not a sortable field", val)
+					return crit, controls, queryschema.KeyOrderBy, nil
 				}
-				terms = append(terms, queries.OrderByField{
-					Field: p.projSchema.Paths[wire],
-					Desc:  asString(term["direction"]) == "DESC",
-				})
+				spec := p.reqSchema.Sortable[wire]
+				desc := asString(term["direction"]) == "DESC"
+				// The enum can name the orderable fields but not the directions
+				// each one admits, so a declaration that allows only asc (or only
+				// desc) makes its cut here rather than in the schema. Same
+				// refusal the other surfaces render, one layer later.
+				if !spec.Allows(desc) {
+					return crit, controls, queryschema.KeyOrderBy, nil
+				}
+				terms = append(terms, queries.OrderByField{Field: spec.GoPath, Desc: desc})
 			}
 			crit.OrderBy = terms
 		}
 	}
-	return crit, controls, nil
+	return crit, controls, "", nil
 }
 
 // projectionFromSelection derives a ReadCriteria.Projection (Go field path → 1)

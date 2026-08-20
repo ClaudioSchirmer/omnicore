@@ -137,47 +137,6 @@ func TestParseProjection_NestedComputedPushesSegmentSources(t *testing.T) {
 	}
 }
 
-// TestParseOrderByWithSchema_ComputedRejectedAtTheGate — ordering happens in
-// the store and the keyset cursor is built from stored values, so a computed
-// field is refused; the rejection carries the WIRE token (with its `-` prefix),
-// never the internal Go path.
-func TestParseOrderByWithSchema_ComputedRejectedWithItsOwnNotification(t *testing.T) {
-	s := schemaFor(t, computedUserResponse{})
-
-	for _, tc := range []struct{ token, wantField string }{
-		{"display", "orderBy[display]"},
-		{"-display", "orderBy[-display]"},                 // the descending form rejects verbatim
-		{"addresses.locale", "orderBy[addresses.locale]"}, // nested computed field
-	} {
-		_, v, ok := ParseOrderByWithSchema(tc.token, s)
-		if ok {
-			t.Fatalf("orderBy=%q on a computed field must be refused", tc.token)
-		}
-		if v == nil || v.Field != tc.wantField {
-			t.Errorf("orderBy=%q must report the WIRE spelling; got %+v want %q", tc.token, v, tc.wantField)
-		}
-		if _, typed := v.Notification.(domain.ComputedFieldNotSortableNotification); !typed {
-			t.Errorf("orderBy=%q must carry ComputedFieldNotSortableNotification, got %T", tc.token, v.Notification)
-		}
-	}
-
-	// An UNKNOWN token keeps the generic schema violation — the two refusals
-	// must stay distinguishable by the consumer.
-	_, v, ok := ParseOrderByWithSchema("bogus", s)
-	if ok || v == nil || v.Field != "orderBy[bogus]" {
-		t.Fatalf("an unknown token must still reject as orderBy[bogus]; got %+v ok=%v", v, ok)
-	}
-	if _, typed := v.Notification.(domain.ComputedFieldNotSortableNotification); typed {
-		t.Error("an unknown token is not a computed-field refusal")
-	}
-
-	// A stored field beside it still sorts.
-	orderBy, v, ok := ParseOrderByWithSchema("-name", s)
-	if !ok || v != nil || len(orderBy) != 1 || orderBy[0].Field != "Name" || !orderBy[0].Desc {
-		t.Errorf("a stored field must still sort; got %+v v=%+v ok=%v", orderBy, v, ok)
-	}
-}
-
 // TestViolation_MessageDefaultsToSchemaViolation locks the zero-Notification
 // contract every generic rejection relies on.
 func TestViolation_MessageDefaultsToSchemaViolation(t *testing.T) {

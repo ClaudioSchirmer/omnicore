@@ -5,15 +5,48 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // RequestSchema is the cached reflection result for a Request DTO type:
-// every accepted wire key (flat or dotted) → its FilterSpec, plus the
-// reserved pagination/control set (top-level only — embed groups carry
-// filter leaves, not pagination keys).
+// every accepted wire key (flat or dotted) → its FilterSpec, the reserved
+// pagination/control set (top-level only — embed groups carry filter leaves,
+// not pagination keys), and the ordering vocabulary.
 type RequestSchema struct {
 	Filters  map[string]FilterSpec
 	Reserved map[string]bool
+
+	// Sortable is the ordering vocabulary: wire path → the Go field path it
+	// addresses plus the directions the declaration allows. A leaf enters it
+	// by carrying a `sort:"asc"` / `sort:"desc"` / `sort:"asc,desc"`
+	// tag, at ANY depth — a leaf inside an embed group contributes its dotted
+	// path exactly as a filter leaf does.
+	//
+	// The map being non-empty is what makes `?orderBy=` exist on the endpoint:
+	// there is no control key to declare, the field declarations ARE the
+	// switch. Ordering is a store operation whose cost is proportional to the
+	// matching set unless an index covers it, so the vocabulary is closed and
+	// explicit — an endpoint sorts by what it says it sorts by, and nothing else.
+	Sortable map[string]SortSpec
+}
+
+// SortSpec is one entry of the ordering vocabulary: the Go field path the wire
+// token addresses (the reader translates it to a physical column through the
+// view's TableSchema, exactly as it does for a filter leaf) and the directions
+// the declaration admits.
+type SortSpec struct {
+	GoPath string
+	Asc    bool
+	Desc   bool
+}
+
+// Allows reports whether this declaration admits the requested direction.
+func (s SortSpec) Allows(desc bool) bool {
+	if desc {
+		return s.Desc
+	}
+	return s.Asc
 }
 
 // RequestField is one query-tagged field discovered on a Request DTO, yielded
@@ -29,15 +62,23 @@ type RequestSchema struct {
 //   - Group == true       → embed group (`query:"prefix"` on a struct field
 //     with no filter tag); WalkRequest descends into it and also yields its
 //     inner fields. The group itself carries no value on the wire.
-//   - Ops == nil && !Group → reserved/control scalar (`query:"first"` etc.);
-//     honored as a reserved key only when TopLevel, and only for the
-//     canonical ControlKeys vocabulary (anything else is a boot fail —
-//     see ExtractRequestSchema).
+//   - Ops == nil && Sort != nil → vocabulary leaf (`query:"id" sort:"asc"`);
+//     part of the endpoint's query vocabulary and orderable, but not
+//     filterable and carrying no value on the wire. Legal at any depth.
+//   - Ops == nil && Sort == nil && !Group → reserved/control scalar
+//     (`query:"first"` etc.); honored as a reserved key only when TopLevel,
+//     and only for the canonical DeclarableControlKeys vocabulary (anything
+//     else is a boot fail — see ExtractRequestSchema).
+//
+// Sort is orthogonal to the rest: it holds the directions declared by the
+// `sort:` tag, in tag order, and may accompany a filter leaf (filterable
+// AND orderable) or stand alone (the vocabulary leaf above).
 type RequestField struct {
 	WirePath string
 	GoPath   string
 	Field    reflect.StructField
 	Ops      []string
+	Sort     []string
 	Group    bool
 	TopLevel bool
 }
@@ -82,11 +123,16 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 		// translates it to the column via the view's TableSchema. No convention,
 		// no `view:` tag.
 		goPath := joinPath(docPrefix, f.Name)
+		// The ordering declaration rides along on whatever the field turns out
+		// to be: a filter leaf may also be orderable, and a leaf that is ONLY
+		// orderable is a legal shape of its own. The classification below does
+		// not branch on it — ExtractRequestSchema does.
+		sort := splitSort(f)
 
 		if ftag := f.Tag.Get("filter"); ftag != "" {
 			*out = append(*out, RequestField{
 				WirePath: wirePath, GoPath: goPath, Field: f,
-				Ops: splitOps(ftag), TopLevel: topLevel,
+				Ops: splitOps(ftag), Sort: sort, TopLevel: topLevel,
 			})
 			continue
 		}
@@ -100,17 +146,82 @@ func walkRequestLevel(t reflect.Type, wirePrefix, docPrefix string, topLevel boo
 			// still see it) and recurse with the prefixes extended.
 			*out = append(*out, RequestField{
 				WirePath: wirePath, GoPath: goPath, Field: f,
-				Group: true, TopLevel: topLevel,
+				Sort: sort, Group: true, TopLevel: topLevel,
 			})
 			walkRequestLevel(ft, wirePath, goPath, false, out)
 			continue
 		}
 
-		// Reserved pagination/control scalar.
+		// Vocabulary leaf (carries `sort:`) or reserved control scalar.
 		*out = append(*out, RequestField{
-			WirePath: wirePath, GoPath: goPath, Field: f, TopLevel: topLevel,
+			WirePath: wirePath, GoPath: goPath, Field: f,
+			Sort: sort, TopLevel: topLevel,
 		})
 	}
+}
+
+// SortTag is the Request struct tag that puts a field in the endpoint's
+// ordering vocabulary, listing the directions it admits:
+//
+//	Code *string `query:"code" filter:"eq,startswith" sort:"asc,desc"`
+//	ID   *string `query:"id"                          sort:"asc"`
+//
+// It mirrors `filter:` — a comma-separated list of what the leaf accepts —
+// and is legal on a leaf at any depth, including inside an embed group.
+const SortTag = "sort"
+
+// Sort direction tokens accepted by the SortTag. The vocabulary is closed:
+// anything else is a boot fail, which keeps room to widen the tag later
+// without silently reinterpreting a value that used to be rejected.
+const (
+	SortAsc  = "asc"
+	SortDesc = "desc"
+)
+
+// splitSort returns the directions declared by f's `sort:` tag, in tag
+// order. Returns nil when the tag is ABSENT (the field is not orderable) and a
+// possibly-empty slice when it is present, so the caller can tell "not
+// declared" from "declared empty" — the latter is a boot fail.
+func splitSort(f reflect.StructField) []string {
+	raw, ok := f.Tag.Lookup(SortTag)
+	if !ok {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// sortSpecOf folds the declared directions into a SortSpec. Reports false when
+// the list is empty, names something outside the closed {asc, desc} vocabulary,
+// or repeats a direction.
+func sortSpecOf(goPath string, dirs []string) (SortSpec, bool) {
+	spec := SortSpec{GoPath: goPath}
+	if len(dirs) == 0 {
+		return spec, false
+	}
+	for _, d := range dirs {
+		switch d {
+		case SortAsc:
+			if spec.Asc {
+				return spec, false
+			}
+			spec.Asc = true
+		case SortDesc:
+			if spec.Desc {
+				return spec, false
+			}
+			spec.Desc = true
+		default:
+			return spec, false
+		}
+	}
+	return spec, true
 }
 
 // splitOps splits a `filter:"eq,in"` tag into the declared operators in order,
@@ -149,8 +260,34 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 	s := &RequestSchema{
 		Filters:  map[string]FilterSpec{},
 		Reserved: map[string]bool{},
+		Sortable: map[string]SortSpec{},
 	}
 	for _, leaf := range WalkRequest(t) {
+		key := leaf.Field.Tag.Get("query")
+		// The ordering declaration is read before the classification because it
+		// is orthogonal to it: it may ride on a filter leaf or stand alone, and
+		// it is legal at any depth (an embed group's leaves contribute their
+		// dotted paths exactly as filter leaves do).
+		if leaf.Sort != nil {
+			if leaf.Group {
+				panic(fmt.Sprintf(
+					"queryschema: %s.%s declares %s on an embed group — a group carries no value to order by; put the tag on the leaves inside it",
+					t.String(), leaf.Field.Name, SortTag))
+			}
+			if leaf.Ops == nil && ControlKeys[key] {
+				panic(fmt.Sprintf(
+					"queryschema: %s.%s declares %s on the reserved control key %q — a control is not part of the ordering vocabulary",
+					t.String(), leaf.Field.Name, SortTag, key))
+			}
+			spec, ok := sortSpecOf(leaf.GoPath, leaf.Sort)
+			if !ok {
+				panic(fmt.Sprintf(
+					"queryschema: %s.%s declares %s:%q — each entry must be %q or %q, listed at most once",
+					t.String(), leaf.Field.Name, SortTag,
+					leaf.Field.Tag.Get(SortTag), SortAsc, SortDesc))
+			}
+			s.Sortable[leaf.WirePath] = spec
+		}
 		switch {
 		case leaf.Group:
 			// Marker only — inner leaves carry the keys.
@@ -168,24 +305,80 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 				leafType = leafType.Elem()
 			}
 			s.Filters[leaf.WirePath] = FilterSpec{Ops: ops, DocPath: leaf.GoPath, GoKind: leafType.Kind()}
-		case leaf.TopLevel:
-			key := leaf.Field.Tag.Get("query")
-			// The control vocabulary is CLOSED. A non-canonical key here is
-			// always a mistake (typo, or a stale spelling from another
-			// framework's vocabulary): it would opt nothing in — every wire
-			// use keeps rejecting — while the OpenAPI generator advertised
-			// the dead parameter. Fail loud at construction, like the
-			// fields-response guard.
-			if !ControlKeys[key] {
-				panic(fmt.Sprintf(
-					"queryschema: %s.%s declares query:%q, which is not a reserved control key — a top-level query-tagged scalar without a filter:\"…\" tag must be one of the canonical controls (%s); for a filter leaf, add its filter:\"…\" operator tag",
-					t.String(), leaf.Field.Name, key, strings.Join(controlKeyList, ", ")))
-			}
+		case leaf.Sort != nil:
+			// Vocabulary leaf — recorded above. It declares no filter and
+			// consumes no wire key of its own; it exists to name a path the
+			// endpoint can order by.
+		case leaf.TopLevel && DeclarableControlKeys[key]:
 			s.Reserved[key] = true
+		default:
+			// Every remaining shape is a declaration that opts nothing in
+			// while the OpenAPI generator would advertise it. Fail loud at
+			// construction, like the fields-response guard.
+			panic(deadQueryTag(t, leaf, key))
 		}
 	}
 	schemaCache.Store(t, s)
 	return s
+}
+
+// ParseOrderBy turns a comma-separated `?orderBy=` value into the ordering
+// terms a ReadCriteria carries. A token may carry a `-` prefix (descending);
+// bare is ascending.
+//
+// Each token is validated against the endpoint's declared ordering vocabulary
+// and translated to the Go field path, which the reader resolves to a physical
+// column through the view's TableSchema — the same two hops a filter leaf
+// takes. A token outside the vocabulary, or one asking for a direction the
+// declaration does not admit, is rejected with the canonical schema violation
+// naming the wire token verbatim, `-` prefix included.
+//
+// An empty vocabulary rejects everything, which is unreachable in practice:
+// with nothing declared orderable the endpoint does not accept `?orderBy=` at
+// all, and the control gateway refuses it before this parser is consulted.
+func ParseOrderBy(s string, sortable map[string]SortSpec) (orderBy []queries.OrderByField, violation *Violation, ok bool) {
+	if s == "" {
+		return nil, nil, true
+	}
+	tokens := strings.Split(s, ",")
+	orderBy = make([]queries.OrderByField, 0, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		desc := false
+		wireName := t
+		if strings.HasPrefix(t, "-") {
+			desc = true
+			wireName = t[1:]
+		}
+		spec, declared := sortable[wireName]
+		if !declared || !spec.Allows(desc) {
+			return nil, SchemaViolation(OrderByField(t)), false
+		}
+		orderBy = append(orderBy, queries.OrderByField{Field: spec.GoPath, Desc: desc})
+	}
+	return orderBy, nil, true
+}
+
+// deadQueryTag builds the boot-panic diagnostic for a `query:`-tagged field
+// that opts nothing in. Three shapes reach it, each with its own fix.
+func deadQueryTag(t reflect.Type, leaf RequestField, key string) string {
+	switch {
+	case key == KeyOrderBy:
+		return fmt.Sprintf(
+			"queryschema: %s.%s declares query:%q — `?orderBy=` appears on the web connectors automatically when a field declares %s:%q or %s:%q. Do not redeclare it.",
+			t.String(), leaf.Field.Name, key, SortTag, SortAsc, SortTag, SortDesc)
+	case ControlKeys[key]:
+		return fmt.Sprintf(
+			"queryschema: %s.%s declares query:%q inside an embed group — the reserved controls are endpoint-wide and are honored only at the top level of the Request DTO",
+			t.String(), leaf.Field.Name, key)
+	default:
+		return fmt.Sprintf(
+			"queryschema: %s.%s declares query:%q, which opts nothing in — a query-tagged scalar must carry filter:\"…\" to be filterable, %s:\"…\" to be orderable, or be one of the canonical top-level controls (%s)",
+			t.String(), leaf.Field.Name, key, SortTag, strings.Join(declarableControlKeyList, ", "))
+	}
 }
 
 // ReadIncludeArchived reports the value bound to the Request DTO field tagged

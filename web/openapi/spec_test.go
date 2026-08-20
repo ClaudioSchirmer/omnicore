@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
@@ -29,8 +30,8 @@ type specByEmailRequest struct {
 }
 
 type specListRequest struct {
-	Name  *string `query:"name" filter:"eq,in"`
-	Limit *int64  `query:"limit"`
+	Name  *string `query:"name" filter:"eq,in" sort:"asc,desc"`
+	First *int64  `query:"first"`
 }
 
 type specListItem struct {
@@ -397,8 +398,8 @@ func TestSpec_QueryFilterOperatorsExpandToParameters(t *testing.T) {
 		names[entry["name"].(string)] = true
 	}
 	// filter:"eq,in" on `name` → "name" + "name.in" (eq is the default,
-	// no suffix). Reserved `limit` carries no filter tag → single entry.
-	for _, expected := range []string{"name", "name.in", "limit"} {
+	// no suffix). The reserved `first` carries no filter tag → single entry.
+	for _, expected := range []string{"name", "name.in", "first"} {
 		if !names[expected] {
 			t.Fatalf("query parameter %q missing; got %v", expected, names)
 		}
@@ -722,4 +723,91 @@ func keysOfAny(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// ─── the `?fields=` parameter description ────────────────────────────────────
+
+type fieldsDescRequest struct {
+	Name   *string `query:"name" filter:"eq" sort:"asc,desc"`
+	Fields *string `query:"fields"`
+}
+
+type fieldsDescNestedItem struct {
+	ID        *string `json:"id,omitempty"`
+	Addresses []struct {
+		ZipCode *string `json:"zipCode,omitempty"`
+		City    *string `json:"city,omitempty"`
+	} `json:"addresses,omitempty"`
+}
+
+type fieldsDescFlatItem struct {
+	ID   *string `json:"id,omitempty"`
+	Name *string `json:"name,omitempty"`
+}
+
+func fieldsParamOf(t *testing.T, respType reflect.Type) map[string]any {
+	t.Helper()
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{
+			RequestType:  reflect.TypeOf(fieldsDescRequest{}),
+			ResponseType: respType,
+			Paged:        true,
+		},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == "fields" {
+			return p
+		}
+	}
+	t.Fatal("the fields parameter must be emitted")
+	return nil
+}
+
+// The vocabulary is the whole Response tree, so the spec states the rule rather
+// than enumerating it — but the dotted spelling is not guessable, so a Response
+// that HAS a nested path carries a real example lifted from itself.
+func TestFieldsParam_NestedResponseCarriesARealExample(t *testing.T) {
+	desc, _ := fieldsParamOf(t, reflect.TypeOf(fieldsDescNestedItem{}))["description"].(string)
+	if !strings.Contains(desc, "wire (json) names") {
+		t.Errorf("the rule must be stated: %q", desc)
+	}
+	if !strings.Contains(desc, "`addresses,addresses.city`") {
+		t.Errorf("the example must be lifted from THIS Response (alphabetically first nested path): %q", desc)
+	}
+}
+
+func TestFieldsParam_FlatResponseGetsNoExample(t *testing.T) {
+	desc, _ := fieldsParamOf(t, reflect.TypeOf(fieldsDescFlatItem{}))["description"].(string)
+	if desc == "" || strings.Contains(desc, "nested field") {
+		t.Errorf("a flat Response has no second spelling to show: %q", desc)
+	}
+}
+
+func TestFieldsParam_UntypedResponseStillStatesTheRule(t *testing.T) {
+	desc, _ := fieldsParamOf(t, nil)["description"].(string)
+	if !strings.Contains(desc, "refused with 400") {
+		t.Errorf("the rule stands without a typed Response: %q", desc)
+	}
+}
+
+// A `description:` tag on the DTO field wins — the consumer knows its own
+// endpoint better than a canned sentence does.
+func TestFieldsParam_DTODescriptionWins(t *testing.T) {
+	type ownDescRequest struct {
+		Fields *string `query:"fields" description:"pick your columns"`
+	}
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{
+			RequestType:  reflect.TypeOf(ownDescRequest{}),
+			ResponseType: reflect.TypeOf(fieldsDescNestedItem{}),
+			Paged:        true,
+		},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == "fields" && p["description"] != "pick your columns" {
+			t.Errorf("the DTO tag must win, got %v", p["description"])
+		}
+	}
 }

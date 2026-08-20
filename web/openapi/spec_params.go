@@ -2,6 +2,8 @@ package openapi
 
 import (
 	"reflect"
+	"sort"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 )
@@ -31,7 +33,12 @@ func canonicalParameters(op Operation, gen *Generator) []map[string]any {
 				out = append(out, p)
 				covered[p["name"].(string)] = true
 			}
-			out = append(out, omitQueryParams(walkQueryTags(t, gen), op.Spec.OmittedQueryParams)...)
+			params := omitQueryParams(walkQueryTags(t, gen), op.Spec.OmittedQueryParams)
+			describeFieldsParam(params, op.Spec.ResponseType)
+			out = append(out, params...)
+			if p, ok := orderByParam(t, op.Spec); ok {
+				out = append(out, omitQueryParams([]map[string]any{p}, op.Spec.OmittedQueryParams)...)
+			}
 		}
 	}
 
@@ -232,4 +239,117 @@ func hasBodyFields(t reflect.Type) bool {
 		return true
 	}
 	return false
+}
+
+// orderByParam synthesizes the `?orderBy=` query parameter for a route that
+// honors ordering. Unlike every other control, ordering has no `query:"…"`
+// scalar on the Request DTO to reflect — the fields that declare themselves
+// orderable ARE the switch — so the parameter has to be assembled here or the
+// spec would advertise nothing for a control the route accepts.
+//
+// The accepted tokens go in the description with the directions each admits.
+// They are the only legal values, so publishing them is what makes the spec an
+// honest statement of the contract; they stay out of `enum` on purpose, since
+// a closed enum would make generated clients emit a fixed type for a list whose
+// members are per-endpoint.
+//
+// Only the wrappers that honor ordering get it: the paged listing (Paged) and
+// the tabular exports (FileResponse). A by-id route accepts `includeArchived`
+// and nothing else, so it must not advertise this.
+func orderByParam(reqType reflect.Type, spec RouteSpec) (map[string]any, bool) {
+	if !spec.Paged && spec.FileResponse == nil {
+		return nil, false
+	}
+	sortable := queryschema.ExtractRequestSchema(reqType).Sortable
+	if len(sortable) == 0 {
+		return nil, false
+	}
+	wires := make([]string, 0, len(sortable))
+	for wire := range sortable {
+		wires = append(wires, wire)
+	}
+	sort.Strings(wires)
+	tokens := make([]string, 0, len(wires))
+	for _, wire := range wires {
+		s := sortable[wire]
+		switch {
+		case s.Asc && s.Desc:
+			tokens = append(tokens, "`"+wire+"` (asc, desc)")
+		case s.Desc:
+			tokens = append(tokens, "`"+wire+"` (desc only, prefix with `-`)")
+		default:
+			tokens = append(tokens, "`"+wire+"` (asc only)")
+		}
+	}
+	return map[string]any{
+		"in":     "query",
+		"name":   queryschema.KeyOrderBy,
+		"schema": map[string]any{"type": "string"},
+		"description": "Comma-separated ordering, applied in the order given. Prefix a token with `-` for descending. Accepted: " +
+			strings.Join(tokens, ", ") + ".",
+	}, true
+}
+
+// describeFieldsParam fills in the `?fields=` parameter's description when the
+// DTO field did not declare one of its own.
+//
+// It states the RULE rather than the vocabulary. The `?fields=` tokens are the
+// whole Response tree — on a real DTO that runs to dozens of paths plus every
+// nested level below them, and enumerating it would bury the parameter instead
+// of documenting it. (`?orderBy=` enumerates precisely because its vocabulary
+// is a short, deliberate declaration.)
+//
+// What the rule alone cannot convey is the spelling of a nested token, so when
+// the Response has one the sentence carries a REAL example lifted from that
+// Response — the endpoint's own syntax, not an invented one. A flat Response
+// gets no example, because there is no second spelling to show.
+func describeFieldsParam(params []map[string]any, respType reflect.Type) {
+	var entry map[string]any
+	for _, p := range params {
+		if p["name"] == queryschema.KeyFields {
+			entry = p
+			break
+		}
+	}
+	if entry == nil {
+		return
+	}
+	if _, declared := entry["description"]; declared {
+		return
+	}
+	desc := "Comma-separated subset of the response to return, naming fields by their wire (json) names. " +
+		"Any field the response declares is a legal token; anything else is refused with 400."
+	if root, nested, ok := fieldsExample(respType); ok {
+		desc += " A nested field takes the dotted path through its parent, e.g. `" + root + "," + nested + "`."
+	}
+	entry["description"] = desc
+}
+
+// fieldsExample picks a real (root, nested) token pair off the Response so the
+// description can show the dotted spelling on this endpoint's own shape.
+// Deterministic: the alphabetically first nested path, and the root it hangs
+// from. Reports false for a flat or untyped Response.
+func fieldsExample(respType reflect.Type) (root, nested string, ok bool) {
+	if respType == nil {
+		return "", "", false
+	}
+	for respType.Kind() == reflect.Pointer {
+		respType = respType.Elem()
+	}
+	if respType.Kind() != reflect.Struct {
+		return "", "", false
+	}
+	paths := queryschema.ExtractProjectionSchema(respType).Paths
+	nesteds := make([]string, 0, len(paths))
+	for p := range paths {
+		if strings.Contains(p, ".") {
+			nesteds = append(nesteds, p)
+		}
+	}
+	if len(nesteds) == 0 {
+		return "", "", false
+	}
+	sort.Strings(nesteds)
+	nested = nesteds[0]
+	return nested[:strings.Index(nested, ".")], nested, true
 }

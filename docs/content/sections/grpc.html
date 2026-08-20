@@ -447,14 +447,12 @@ reg.Register(fwgrpc.QueryByID[usersv1.GetUserRequest, usersv1.GetUserResponse](
         boundary, exactly as on <code>?fields=</code> — and a source that IS a declared Response
         field is blanked on each Result before projection when the mask did not name it, so a mask
         naming only the computed field answers the computed field alone, never its ingredients.</li>
-    <li><strong><code>order_by</code> is refused.</strong> Ordering happens in the store and the
-        keyset cursor is built from stored ordering values, so a derived value is not expressible.
-        The refusal is <code>INVALID_ARGUMENT</code> carrying
-        <code>ComputedFieldNotSortableNotification</code> — translated per the request language,
-        with one <code>google.rpc.BadRequest</code> field violation per offending entry. The field
-        name is the sort entry <em>verbatim as the proto spelled it</em> (e.g. <code>label</code>),
-        not REST's <code>orderBy[label]</code> bracket form: <code>order_by</code> is already a typed
-        field on the request message, so the prefix would name nothing on this wire.</li>
+    <li><strong><code>order_by</code> is refused.</strong> Ordering resolves against the Sortable
+        vocabulary — the Request DTO's <code>sort:</code> declarations, folded to the proto
+        spelling — and a computed field backs no column to order by, so it is never in it. The
+        refusal is <code>INVALID_ARGUMENT</code> carrying the canonical
+        <code>SchemaViolationNotification</code>, the same one any undeclared path or disallowed
+        direction gets, translated per the request language.</li>
 </ul>
 <p>
     On the Auto path the cut is compiled at <code>Register</code> from the Response DTO — nothing to
