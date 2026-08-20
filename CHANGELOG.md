@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-08-20
+
 ### Changed
 
 - **BREAKING — the ordering vocabulary moved to the Request DTO, declared per
