@@ -10,25 +10,16 @@ func i64(n int64) *int64 { return &n }
 
 func bp(b bool) *bool { return &b }
 
-// allReserved is a Request schema that declares every control AND an ordering
-// vocabulary — `orderBy` has no reserved key of its own, so the gate reads its
-// opt-in from Sortable being non-empty.
-func allReserved() *RequestSchema {
-	return &RequestSchema{
-		Reserved: map[string]bool{
-			KeyFirst: true, KeyLast: true, KeyAfter: true, KeyBefore: true,
-			KeyFields: true, KeySearch: true,
-			KeyIncludeArchived: true, KeyOnlyTotal: true,
-		},
-		Sortable: map[string]SortSpec{"name": {GoPath: "Name", Asc: true, Desc: true}},
+func allReserved() map[string]bool {
+	return map[string]bool{
+		KeyFirst: true, KeyLast: true, KeyAfter: true, KeyBefore: true,
+		KeyOrderBy: true, KeyFields: true, KeySearch: true,
+		KeyIncludeArchived: true, KeyOnlyTotal: true,
 	}
 }
 
-// noneReserved declares nothing: every control on the wire is undeclared, and
-// nothing is orderable.
-func noneReserved() *RequestSchema {
-	return &RequestSchema{Reserved: map[string]bool{}}
-}
+// noneReserved declares nothing: every control on the wire is undeclared.
+func noneReserved() map[string]bool { return map[string]bool{} }
 
 func TestValidateControls_CleanForward(t *testing.T) {
 	v := ValidateControls(allReserved(), Controls{First: i64(10), After: true, OrderBy: true}, nil)

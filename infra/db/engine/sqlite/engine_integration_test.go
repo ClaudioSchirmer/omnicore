@@ -65,13 +65,13 @@ func TestAffinityRoundTrip(t *testing.T) {
 		t.Fatal("no row")
 	}
 	var (
-		gotID              string
-		flag               bool
-		created            time.Time
-		deleted            sql.NullTime
-		amount             string
-		n                  int64
-		f                  float64
+		gotID   string
+		flag    bool
+		created time.Time
+		deleted sql.NullTime
+		amount  string
+		n       int64
+		f       float64
 	)
 	if err := rows.Scan(&gotID, &flag, &created, &deleted, &amount, &n, &f); err != nil {
 		t.Fatalf("scan: %v", err)

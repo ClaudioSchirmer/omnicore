@@ -288,7 +288,7 @@ func TestSharedBaseInsert_UpsertActionPassesGuard(t *testing.T) {
 func TestSharedBaseInsert_ConstructorBaseChildNotReinserted(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(bcAddr{Street: "Existing"}, domain.NewID("addr-1"))}) // loaded
-	domain.AddAggregateChild(e, bcAddr{Street: "New"})                                              // request-added
+	domain.AddAggregateChild(e, bcAddr{Street: "New"})                                                                       // request-added
 	ins, _ := domain.GetInsertable(e, nil, "GetUpsertable")
 	tx := &recTx{queryFn: baseExistsQuery()}
 	be := newFlatBE(&recBeginner{tx: tx})

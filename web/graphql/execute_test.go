@@ -49,6 +49,7 @@ type execRequest struct {
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 func (r execRequest) ToQuery(crit queries.ReadCriteria) *execQuery {

@@ -3,6 +3,7 @@ package queryschema
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -29,6 +30,7 @@ type RequestSchema struct {
 	// matching set unless an index covers it, so the vocabulary is closed and
 	// explicit — an endpoint sorts by what it says it sorts by, and nothing else.
 	Sortable map[string]SortSpec
+	OrderBy  *string `query:"orderBy"`
 }
 
 // SortSpec is one entry of the ordering vocabulary: the Go field path the wire
@@ -67,7 +69,7 @@ func (s SortSpec) Allows(desc bool) bool {
 //     filterable and carrying no value on the wire. Legal at any depth.
 //   - Ops == nil && Sort == nil && !Group → reserved/control scalar
 //     (`query:"first"` etc.); honored as a reserved key only when TopLevel,
-//     and only for the canonical DeclarableControlKeys vocabulary (anything
+//     and only for the canonical ControlKeys vocabulary (anything
 //     else is a boot fail — see ExtractRequestSchema).
 //
 // Sort is orthogonal to the rest: it holds the directions declared by the
@@ -309,7 +311,7 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 			// Vocabulary leaf — recorded above. It declares no filter and
 			// consumes no wire key of its own; it exists to name a path the
 			// endpoint can order by.
-		case leaf.TopLevel && DeclarableControlKeys[key]:
+		case leaf.TopLevel && ControlKeys[key]:
 			s.Reserved[key] = true
 		default:
 			// Every remaining shape is a declaration that opts nothing in
@@ -318,8 +320,55 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 			panic(deadQueryTag(t, leaf, key))
 		}
 	}
+	if err := validateOrderingPair(t, s); err != "" {
+		panic(err)
+	}
 	schemaCache.Store(t, s)
 	return s
+}
+
+// validateOrderingPair enforces that the two halves of the ordering contract
+// travel together, and says which half is missing.
+//
+// They answer different questions and are declared in different places, so the
+// diagnostics keep them apart:
+//
+//   - `query:"orderBy"` is the SWITCH. It decides whether the endpoint accepts
+//     the parameter at all — on every connector — and it is where a
+//     `description:` for it lives.
+//   - `sort:"asc,desc"` on a leaf is the VOCABULARY. It decides which paths the
+//     parameter accepts and in which directions.
+//
+// Either alone is a dead declaration, and the framework fails loud on those
+// rather than shipping a parameter that can only ever answer 400.
+func validateOrderingPair(t reflect.Type, s *RequestSchema) string {
+	switch {
+	case s.Reserved[KeyOrderBy] && len(s.Sortable) == 0:
+		return fmt.Sprintf(
+			"queryschema: %s declares query:%q — the ordering SWITCH — but no field declares the VOCABULARY it switches on. "+
+				"The endpoint would accept `?orderBy=` and then refuse every token it could be given. "+
+				"Tag the orderable leaves (%s:%q / %s:%q / %s:%q), or drop the control field.",
+			t.String(), KeyOrderBy,
+			SortTag, SortAsc, SortTag, SortDesc, SortTag, SortAsc+","+SortDesc)
+	case !s.Reserved[KeyOrderBy] && len(s.Sortable) > 0:
+		return fmt.Sprintf(
+			"queryschema: %s declares the ordering VOCABULARY on %s — but no query:%q field to switch it on. "+
+				"The endpoint does not accept `?orderBy=`, so those tags reach no wire. "+
+				"Add the control field (OrderBy *string, tagged query:%q), or drop the %s tags.",
+			t.String(), strings.Join(sortableWirePaths(s), ", "), KeyOrderBy, KeyOrderBy, SortTag)
+	}
+	return ""
+}
+
+// sortableWirePaths lists the declared ordering vocabulary, sorted, so the
+// diagnostic names the exact leaves instead of pointing at the DTO at large.
+func sortableWirePaths(s *RequestSchema) []string {
+	out := make([]string, 0, len(s.Sortable))
+	for wire := range s.Sortable {
+		out = append(out, wire)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ParseOrderBy turns a comma-separated `?orderBy=` value into the ordering
@@ -366,10 +415,6 @@ func ParseOrderBy(s string, sortable map[string]SortSpec) (orderBy []queries.Ord
 // that opts nothing in. Three shapes reach it, each with its own fix.
 func deadQueryTag(t reflect.Type, leaf RequestField, key string) string {
 	switch {
-	case key == KeyOrderBy:
-		return fmt.Sprintf(
-			"queryschema: %s.%s declares query:%q — `?orderBy=` appears on the web connectors automatically when a field declares %s:%q or %s:%q. Do not redeclare it.",
-			t.String(), leaf.Field.Name, key, SortTag, SortAsc, SortTag, SortDesc)
 	case ControlKeys[key]:
 		return fmt.Sprintf(
 			"queryschema: %s.%s declares query:%q inside an embed group — the reserved controls are endpoint-wide and are honored only at the top level of the Request DTO",
@@ -377,7 +422,7 @@ func deadQueryTag(t reflect.Type, leaf RequestField, key string) string {
 	default:
 		return fmt.Sprintf(
 			"queryschema: %s.%s declares query:%q, which opts nothing in — a query-tagged scalar must carry filter:\"…\" to be filterable, %s:\"…\" to be orderable, or be one of the canonical top-level controls (%s)",
-			t.String(), leaf.Field.Name, key, SortTag, strings.Join(declarableControlKeyList, ", "))
+			t.String(), leaf.Field.Name, key, SortTag, strings.Join(controlKeyList, ", "))
 	}
 }
 

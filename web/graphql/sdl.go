@@ -390,11 +390,11 @@ func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflec
 	if whereName, ok := b.whereInput(entity, reqType); ok {
 		args = append(args, "where: "+whereName)
 	}
-	// orderBy is the one control with a typed, per-entity argument:
+	// orderBy is the one reserved control with a typed, per-entity argument:
 	// `orderBy: [<Entity>Order!]` over the enum of the fields the Request DTO
-	// declared orderable. It carries no reserved key of its own — the
-	// declarations ARE the switch, so an endpoint that declares none simply has
-	// no argument, and there is nothing to enumerate.
+	// declared orderable with `sort:`. The control key switches the argument on,
+	// the declarations fill the enum — a pair the boot enforces, so an opted-in
+	// endpoint always has something to enumerate.
 	orderBySDL := ""
 	if in, ok := b.orderInput(entity, reqSchema.Sortable); ok {
 		orderBySDL = "orderBy: [" + in + "!]"
@@ -411,11 +411,7 @@ func (b *sdlBuilder) queryFieldSDL(name, entity string, reqType, respType reflec
 		{queryschema.KeySearch, "search: String"},
 		{queryschema.KeyIncludeArchived, "includeArchived: Boolean"},
 	} {
-		// orderBy carries no reserved key: its presence in the argument list is
-		// decided by whether the DTO declared an ordering vocabulary, which
-		// orderBySDL already encodes.
-		on := reserved[arg.key] || arg.key == queryschema.KeyOrderBy
-		if on && arg.sdl != "" {
+		if reserved[arg.key] && arg.sdl != "" {
 			args = append(args, arg.sdl)
 		}
 	}

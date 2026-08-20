@@ -20,32 +20,18 @@ const (
 	KeyOnlyTotal       = "onlyTotal"
 )
 
-// ControlKeys is the canonical vocabulary as a set: the wire keys the REST
-// parser recognizes as reserved controls rather than filter leaves. Whether a
-// Request DTO may DECLARE a given key is the narrower question answered by
-// DeclarableControlKeys.
+// ControlKeys is the canonical vocabulary as a set — the exact spellings a
+// Request DTO may declare as `query:"…"` control scalars, and the wire keys
+// the REST parser recognizes as controls. The set is CLOSED: a query-tagged
+// scalar carrying neither `filter:"…"` nor `sort:"…"` whose key is not in it is
+// a boot fail at ExtractRequestSchema (a dead declaration would opt nothing in
+// while OpenAPI advertised it — fail loud at construction instead).
 var ControlKeys = map[string]bool{
 	KeyFirst: true, KeyLast: true,
 	KeyAfter: true, KeyBefore: true,
 	KeyOrderBy: true, KeyFields: true,
 	KeySearch: true, KeyIncludeArchived: true,
 	KeyOnlyTotal: true,
-}
-
-// DeclarableControlKeys is the subset of ControlKeys a Request DTO may declare
-// as a top-level `query:"…"` control scalar. The set is CLOSED: a query-tagged
-// scalar carrying neither `filter:"…"` nor `sort:"…"` whose key is not in
-// it is a boot fail at ExtractRequestSchema (a dead declaration would opt
-// nothing in while OpenAPI advertised it — fail loud at construction instead).
-//
-// KeyOrderBy is deliberately absent. Ordering is switched on by the fields that
-// declare themselves orderable, so a `query:"orderBy"` scalar would carry no
-// meaning; ExtractRequestSchema says so in its own diagnostic.
-var DeclarableControlKeys = map[string]bool{
-	KeyFirst: true, KeyLast: true,
-	KeyAfter: true, KeyBefore: true,
-	KeyFields: true, KeySearch: true,
-	KeyIncludeArchived: true, KeyOnlyTotal: true,
 }
 
 // ParseControlBool reads the wire value of a boolean control key. The accepted
@@ -67,10 +53,9 @@ func ParseControlBool(val string) (bool, bool) {
 	}
 }
 
-// declarableControlKeyList is DeclarableControlKeys in declaration order, for
-// diagnostics.
-var declarableControlKeyList = []string{
-	KeyFirst, KeyLast, KeyAfter, KeyBefore,
+// controlKeyList is the canonical keys in declaration order, for diagnostics.
+var controlKeyList = []string{
+	KeyFirst, KeyLast, KeyAfter, KeyBefore, KeyOrderBy,
 	KeyFields, KeySearch, KeyIncludeArchived, KeyOnlyTotal,
 }
 
@@ -178,13 +163,8 @@ func (v ControlViolation) Message() domain.NotificationMessage {
 //     control present alongside it (fields, orderBy, first, last, after,
 //     before). Filters, search and includeArchived stay valid: counting a
 //     filtered subset is the canonical use case.
-func ValidateControls(schema *RequestSchema, c Controls, natural map[string]bool) []ControlViolation {
+func ValidateControls(reserved map[string]bool, c Controls, natural map[string]bool) []ControlViolation {
 	var out []ControlViolation
-	reserved := schema.Reserved
-	// `orderBy` has no reserved key of its own: an endpoint accepts it when it
-	// declared at least one orderable field, so the opt-in verdict comes from
-	// the ordering vocabulary instead of the control set.
-	orderByDeclared := len(schema.Sortable) > 0
 
 	// 1. DTO opt-in gate, in canonical key order.
 	type presence struct {
@@ -202,11 +182,7 @@ func ValidateControls(schema *RequestSchema, c Controls, natural map[string]bool
 		{KeyIncludeArchived, c.IncludeArchived},
 		{KeyOnlyTotal, c.OnlyTotal != nil},
 	} {
-		declared := reserved[p.key]
-		if p.key == KeyOrderBy {
-			declared = orderByDeclared
-		}
-		if p.present && !natural[p.key] && !declared {
+		if p.present && !natural[p.key] && !reserved[p.key] {
 			out = append(out, ControlViolation{Kind: ViolationNotDeclared, Key: p.key})
 		}
 	}

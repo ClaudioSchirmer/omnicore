@@ -585,7 +585,7 @@ type FindUsersResponse struct {
         write side materializes it, and every control works on it unchanged.
     </div>
 
-    <h3 id="qry-sort">The ordering vocabulary — <code>sort:</code> and <code>?orderBy=</code></h3>
+    <h3 id="qry-sort">The ordering pair — <code>query:"orderBy"</code> and <code>sort:</code></h3>
     <p>
         Ordering is a <strong>store operation</strong>, like filtering. Its vocabulary therefore lives
         where the endpoint declares what it accepts on the wire — the Request DTO — and never on the
@@ -593,9 +593,17 @@ type FindUsersResponse struct {
         <code>?fields=</code> vocabulary).
     </p>
     <p>
-        A leaf declares itself orderable with <code>sort:</code>, listing the directions it
-        admits. The tag mirrors <code>filter:</code>: a comma-separated list of what the leaf accepts.
+        It is declared in two halves, which answer different questions and must travel together:
     </p>
+    <ul>
+        <li><strong><code>query:"orderBy"</code> is the SWITCH.</strong> Like every other reserved
+            control, it decides whether the endpoint accepts the parameter at all — on every
+            connector — and it is where a <code>description:</code> for the parameter lives.</li>
+        <li><strong><code>sort:"asc,desc"</code> on a leaf is the VOCABULARY.</strong> It decides
+            WHICH paths the parameter accepts and in which directions. The tag mirrors
+            <code>filter:</code>: the name states the capability, the value lists the operations
+            admitted.</li>
+    </ul>
 <pre><code>type FindGadgetsRequest struct {
     ID    *string `query:"id"                              sort:"asc"`
     Code  *string `query:"code"    filter:"eq,startswith"   sort:"asc,desc"`
@@ -604,9 +612,9 @@ type FindUsersResponse struct {
 
     Addresses AddressFilterParams `query:"addresses"`
 
-    First  *int64  `query:"first"`
-    Fields *string `query:"fields"`
-    // no OrderBy field — `?orderBy=` exists because ID and Code declared themselves
+    First   *int64  `query:"first"`
+    Fields  *string `query:"fields"`
+    OrderBy *string `query:"orderBy" description:"catalog order; default is by code"`
 }
 
 type AddressFilterParams struct {
@@ -614,26 +622,24 @@ type AddressFilterParams struct {
     City    *string `query:"city"    filter:"eq"`
 }</code></pre>
     <ul>
-        <li><strong>The grammar is closed.</strong> Each entry is <code>asc</code> or <code>desc</code>,
-            listed at most once. Anything else — including <code>sort:"true"</code> or an empty
-            tag — is a boot panic, which keeps room to widen the tag later without silently
-            reinterpreting a value that used to be rejected.</li>
-        <li><strong>It rides on any leaf, at any depth.</strong> On a filter leaf the field is
+        <li><strong>The grammar is closed.</strong> Each <code>sort:</code> entry is <code>asc</code>
+            or <code>desc</code>, listed at most once. Anything else — including
+            <code>sort:"true"</code> or an empty tag — is a boot panic, which keeps room to widen the
+            tag later without silently reinterpreting a value that used to be rejected.</li>
+        <li><strong>The tag rides on any leaf, at any depth.</strong> On a filter leaf the field is
             filterable AND orderable; alone (<code>ID</code> above) the leaf is a
             <em>vocabulary leaf</em> — orderable, not filterable, carrying no value on the wire. A
             leaf inside an embed group contributes its dotted path
             (<code>addresses.zipCode</code> → <code>Addresses.ZipCode</code>) exactly as a filter
             leaf does.</li>
-        <li><strong>The declarations are the switch.</strong> <code>?orderBy=</code> has no control
-            key: an endpoint with at least one orderable leaf accepts it on every connector, one
-            with none does not. Declaring <code>query:"orderBy"</code> is a boot panic saying so —
-            the same posture <code>ReadableFeature</code> and <code>GraphQLFeature</code> take, where
-            the declaration IS the switch. <code>orderBy</code> stays a recognized WIRE key
-            (<code>ControlKeys</code>) but leaves the declarable set
-            (<code>DeclarableControlKeys</code>).</li>
-        <li><strong>Nothing is orderable until something says so.</strong> An unindexed sort is a
+        <li><strong>Half a declaration is a boot failure, and each half has its own
+            diagnostic.</strong> The switch with no vocabulary would accept <code>?orderBy=</code>
+            and then refuse every token it could be given; a vocabulary with no switch declares paths
+            orderable on an endpoint that does not take the parameter, so the tags reach no wire. The
+            second diagnostic names the offending leaves.</li>
+        <li><strong>Nothing is orderable until a leaf says so.</strong> An unindexed sort is a
             blocking sort whose cost is proportional to the matching set, not to the page, so the
-            default is no vocabulary at all.</li>
+            switch alone grants nothing.</li>
     </ul>
     <p>
         <strong>Translation and refusal.</strong> Each comma-separated token is stripped of an
@@ -644,7 +650,8 @@ type AddressFilterParams struct {
         admit, is refused with the canonical <code>SchemaViolationNotification</code> on
         <code>orderBy[&lt;token&gt;]</code>, the token verbatim including any <code>-</code> prefix.
         There is no ordering-specific notification: a path either resolves to a column and was
-        declared for that direction, or it does not.
+        declared for that direction, or it does not. An endpoint that declares no SWITCH rejects the
+        parameter itself, reported on <code>orderBy</code> by the canonical control gate.
     </p>
     <table>
         <tbody><tr><th>Wire form</th><th>Emitted</th><th>Notes</th></tr>
@@ -659,15 +666,16 @@ type AddressFilterParams struct {
     <p>
         <strong>Every surface, one vocabulary.</strong> The canonical wrappers, the <code>*Spec</code>
         siblings, the CSV/XLSX exports and a manual route built with
-        <code>fwweb.NewQueryParser[Req, Resp]()</code> all consume it. GraphQL derives the
-        <code>&lt;Entity&gt;OrderField</code> enum from it, so introspection advertises exactly the
-        declared paths; a direction the declaration does not admit is cut in the resolver instead,
-        because an enum cannot express per-member directions. gRPC resolves <code>order_by</code>
-        against the same set folded to proto snake_case, via
+        <code>fwweb.NewQueryParser[Req, Resp]()</code> all consume it. GraphQL emits the
+        <code>orderBy</code> argument when the DTO declares the control, over an
+        <code>&lt;Entity&gt;OrderField</code> enum built from the vocabulary, so introspection
+        advertises exactly the declared paths; a direction the declaration does not admit is cut in
+        the resolver instead, because an enum cannot express per-member directions. gRPC resolves
+        <code>order_by</code> against the same set folded to proto snake_case, via
         <code>CriteriaBuilder.Sortable(...)</code> — which has no fallback, so a <code>MountRaw</code>
-        consumer that does not call it orders by nothing. OpenAPI synthesizes the
-        <code>orderBy</code> parameter (there is no <code>query:"…"</code> scalar left to reflect) and
-        publishes the accepted tokens with their directions in its description.
+        consumer that does not call it orders by nothing. OpenAPI emits the parameter from the control
+        field and, unless that field carries a <code>description:</code> of its own, fills the
+        description with the accepted tokens and their directions.
     </p>
     <div class="callout">
         <strong>Index coverage — read this before declaring a vocabulary.</strong> Every view sort
@@ -1165,11 +1173,11 @@ type FindUsersByParamsRequest struct {
     Email *string `query:"email" filter:"eq,in" sort:"asc,desc"`
     City  *string `query:"city"  filter:"eq"`
 
-    // Reserved pagination/control keys — no filter tag. `?orderBy=` has none:
-    // the sort: declarations above are what make it exist.
+    // Reserved pagination/control keys — no filter tag.
     Limit           *int64  `query:"first"`
     After           *string `query:"after"`
     Before          *string `query:"before"`
+    Sort            *string `query:"orderBy"`
     Fields          *string `query:"fields"`
     Search          *string `query:"search"`
     IncludeArchived *bool   `query:"includeArchived"`

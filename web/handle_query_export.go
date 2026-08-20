@@ -354,11 +354,11 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, projSch
 				return
 			case queryschema.KeyOrderBy:
 				controls.OrderBy = true
-				// An endpoint that declared nothing orderable does not accept
-				// this control at all: leave the verdict to the canonical
-				// gateway, which reports the CONTROL as undeclared instead of
-				// the framework blaming the consumer's token.
-				if len(schema.Sortable) == 0 {
+				// Undeclared control: leave the verdict to the canonical
+				// gateway, which reports the CONTROL. Parsing the token first
+				// would blame the consumer's spelling for a parameter the
+				// endpoint never offered.
+				if !schema.Reserved[queryschema.KeyOrderBy] {
 					return
 				}
 				orderBy, obViolation, obOk := queryschema.ParseOrderBy(val, schema.Sortable)
@@ -389,7 +389,7 @@ func buildExportCriteria(c fiber.Ctx, schema *queryschema.RequestSchema, projSch
 	if !ok {
 		return crit, nil, nil, violation, false
 	}
-	if violations := queryschema.ValidateControls(schema, controls, nil); len(violations) > 0 {
+	if violations := queryschema.ValidateControls(schema.Reserved, controls, nil); len(violations) > 0 {
 		return crit, nil, nil, &queryschema.Violation{Field: violations[0].Field(), Notification: violations[0].Message().Notification}, false
 	}
 	return crit, computedSelected, selectedWire, nil, true

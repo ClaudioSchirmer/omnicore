@@ -17,27 +17,31 @@
                 store operation and is declared on the Request; ordering is the same kind of operation and now
                 follows the same rule.
                 <ul>
-                    <li>A leaf declares itself orderable with <code>sort:"asc"</code>,
-                        <code>sort:"desc"</code> or <code>sort:"asc,desc"</code>, at any depth — a leaf
-                        inside an embed group contributes its dotted path exactly as a filter leaf does. The tag
-                        also stands alone: <code>query:"id" sort:"asc"</code> is orderable without being
-                        filterable and carries no value on the wire.</li>
-                    <li><strong>The declarations are the switch.</strong> <code>?orderBy=</code> has no control
-                        key any more: a DTO with at least one orderable leaf accepts it on every connector, one
-                        with none does not. A leftover <code>OrderBy *string `query:"orderBy"`</code> is a boot
-                        panic naming the fix.</li>
-                    <li><strong>Nothing is orderable until something says so.</strong> An unindexed sort is a
-                        blocking sort whose cost is proportional to the matching set, so the default is no
-                        vocabulary at all. Every <code>?orderBy=</code> token a service relied on must now be
-                        declared.</li>
+                    <li><strong>Two halves that travel together.</strong> <code>query:"orderBy"</code> is the
+                        SWITCH — like every other reserved control it decides whether the endpoint accepts the
+                        parameter, and it is where a <code>description:</code> for it lives.
+                        <code>sort:"asc,desc"</code> on a leaf is the VOCABULARY — which paths it accepts and in
+                        which directions. The tag mirrors <code>filter:</code>: the name states the capability,
+                        the value lists the operations admitted.</li>
+                    <li>The tag is legal at any depth, so a leaf inside an embed group contributes its dotted
+                        path exactly as a filter leaf does, and it also stands alone:
+                        <code>query:"id" sort:"asc"</code> is orderable without being filterable and carries no
+                        value on the wire.</li>
+                    <li><strong>Either half alone fails the boot</strong>, each with its own diagnostic: the
+                        switch with no vocabulary would accept the parameter and refuse every token; a vocabulary
+                        with no switch declares paths orderable on an endpoint that does not take it. The second
+                        names the offending leaves.</li>
+                    <li><strong>Nothing is orderable until a leaf says so.</strong> An unindexed sort is a
+                        blocking sort whose cost is proportional to the matching set, so every
+                        <code>?orderBy=</code> token a service relied on must now be declared.</li>
                     <li>A direction the declaration does not admit is refused like any undeclared token. GraphQL
                         derives its <code>&lt;Entity&gt;OrderField</code> enum from the same set and cuts direction
                         in the resolver (an enum cannot express per-member directions); gRPC resolves
                         <code>order_by</code> through the new <code>CriteriaBuilder.Sortable(...)</code>, which has
-                        no fallback; OpenAPI synthesizes the <code>orderBy</code> parameter and publishes the
-                        accepted tokens with their directions.</li>
+                        no fallback; OpenAPI fills the parameter's description with the accepted tokens unless the
+                        control field carries one of its own.</li>
                     <li><code>ComputedFieldNotSortableNotification</code> is <strong>removed</strong>: a computed
-                        field backs no column, so it is simply never declared orderable and its refusal is the
+                        field backs no column, so it is never declared orderable and its refusal is the
                         canonical schema violation.</li>
                 </ul>
             </li>

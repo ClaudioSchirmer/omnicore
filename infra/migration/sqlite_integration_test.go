@@ -65,11 +65,11 @@ func TestSQLiteControlPlane_Applies(t *testing.T) {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			cid        int
-			name, typ  string
-			notNull    int
-			dflt       sql.NullString
-			pk         int
+			cid       int
+			name, typ string
+			notNull   int
+			dflt      sql.NullString
+			pk        int
 		)
 		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
 			t.Fatal(err)

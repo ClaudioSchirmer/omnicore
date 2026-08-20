@@ -140,7 +140,7 @@ func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
 // "Material" — the shared-PK secondary the loader reaches with a LEFT JOIN.
 func siblingSchema(table string) *core.TableSchema {
 	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name").
-		Sibling(core.NewSiblingSchema[*guardEnt](table + "_specs").Field("Material", "material"))
+		Sibling(core.NewSiblingSchema[*guardEnt](table+"_specs").Field("Material", "material"))
 }
 
 // baseEnt is a shared-base ROLE entity: it embeds the base's identity and adds a
@@ -160,7 +160,7 @@ func (e *baseEnt) BuildRules(string, domain.Service, *domain.Rules) {}
 // sharedBaseSchema is a role schema whose shared base owns "DisplayName" — a base
 // field the relational reader must now treat as servable (1:1 base JOIN).
 func sharedBaseSchema(table string) *core.TableSchema {
-	base := core.NewSharedBaseSchema(table + "_base").ID("id").Revision("revision").
+	base := core.NewSharedBaseSchema(table+"_base").ID("id").Revision("revision").
 		Field("DisplayName", "display_name").NaturalID("display_name")
 	return core.NewTableSchema[*baseEnt](table).ID("id").
 		SharedBase(base, "id").Field("HolderName", "holder_name")

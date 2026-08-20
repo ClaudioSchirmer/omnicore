@@ -41,7 +41,10 @@ func TestExtractRequestSchema_PointerTypeAndNestedEmbed(t *testing.T) {
 // ─── ExtractRequestSchema: the closed control vocabulary (boot guard) ────────
 
 type reqAllControlsRequest struct {
+	// The ordering control and its vocabulary are a pair the boot enforces.
+	Name            *string `query:"name" filter:"eq" sort:"asc,desc"`
 	First           *int64  `query:"first"`
+	OrderBy         *string `query:"orderBy"`
 	Last            *int64  `query:"last"`
 	After           *string `query:"after"`
 	Before          *string `query:"before"`
@@ -53,7 +56,7 @@ type reqAllControlsRequest struct {
 
 func TestExtractRequestSchema_AllCanonicalControlsAccepted(t *testing.T) {
 	s := ExtractRequestSchema(reflect.TypeOf(reqAllControlsRequest{}))
-	for key := range DeclarableControlKeys {
+	for key := range ControlKeys {
 		if !s.Reserved[key] {
 			t.Errorf("canonical key %q must land in Reserved, got %v", key, s.Reserved)
 		}
@@ -254,7 +257,8 @@ type sortableRequest struct {
 
 	Addresses sortableEmbedGroup `query:"addresses"`
 
-	First *int64 `query:"first"`
+	First   *int64  `query:"first"`
+	OrderBy *string `query:"orderBy"`
 }
 
 type sortableEmbedGroup struct {
@@ -299,9 +303,10 @@ func TestExtractRequestSchema_SortableVocabulary(t *testing.T) {
 	if _, filterable := s.Filters["id"]; filterable {
 		t.Error("a vocabulary leaf must not become a filter leaf")
 	}
-	// `orderBy` has no reserved key: the declarations are the switch.
-	if s.Reserved[KeyOrderBy] {
-		t.Error("orderBy must not be a reserved key")
+	// The control and the vocabulary are a pair: the DTO declares both, and the
+	// boot refuses either alone.
+	if !s.Reserved[KeyOrderBy] {
+		t.Error("the ordering control must be declared alongside the vocabulary")
 	}
 }
 
@@ -310,9 +315,6 @@ func TestExtractRequestSchema_SortableGuards(t *testing.T) {
 		dto  any
 		want string
 	}{
-		"redeclared orderBy": {struct {
-			OrderBy *string `query:"orderBy"`
-		}{}, "Do not redeclare"},
 		"bad direction": {struct {
 			A *string `query:"a" sort:"true"`
 		}{}, "must be \"asc\" or \"desc\""},
@@ -428,4 +430,56 @@ func TestSortSpec_Allows(t *testing.T) {
 			t.Errorf("%+v.Allows(desc) = %v, want %v", tc.spec, got, tc.desc)
 		}
 	}
+}
+
+// The switch and the vocabulary are a pair, and each half missing gets its own
+// diagnostic — the dev has to read WHICH one to add, not just that something
+// is off.
+func TestExtractRequestSchema_OrderingPairGuards(t *testing.T) {
+	t.Run("switch without vocabulary", func(t *testing.T) {
+		defer func() {
+			msg, _ := recover().(string)
+			for _, want := range []string{"SWITCH", "refuse every token", SortTag} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the diagnostic must mention %q; got %v", want, msg)
+				}
+			}
+			if strings.Contains(msg, "VOCABULARY on") {
+				t.Error("this is the other half's diagnostic")
+			}
+		}()
+		_ = ExtractRequestSchema(reflect.TypeOf(struct {
+			Name    *string `query:"name" filter:"eq"`
+			OrderBy *string `query:"orderBy"`
+		}{}))
+	})
+
+	t.Run("vocabulary without switch names the offending leaves", func(t *testing.T) {
+		defer func() {
+			msg, _ := recover().(string)
+			for _, want := range []string{"VOCABULARY", "code", "addresses.zipCode", "reach no wire"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("the diagnostic must mention %q; got %v", want, msg)
+				}
+			}
+			if strings.Contains(msg, "SWITCH") {
+				t.Error("this is the other half's diagnostic")
+			}
+		}()
+		_ = ExtractRequestSchema(reflect.TypeOf(struct {
+			Code      *string `query:"code" filter:"eq" sort:"asc,desc"`
+			Addresses struct {
+				ZipCode *string `query:"zipCode" filter:"eq" sort:"asc"`
+			} `query:"addresses"`
+		}{}))
+	})
+
+	t.Run("neither half is fine", func(t *testing.T) {
+		s := ExtractRequestSchema(reflect.TypeOf(struct {
+			Name *string `query:"name" filter:"eq"`
+		}{}))
+		if len(s.Sortable) != 0 || s.Reserved[KeyOrderBy] {
+			t.Error("an endpoint that does not order declares neither half")
+		}
+	})
 }

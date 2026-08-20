@@ -84,6 +84,7 @@ type testFindParamsRequest struct {
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 // testFindParamsQuery is the Query produced by ToQuery. ToCriteria(ctx) is the
@@ -793,7 +794,8 @@ func TestSortParam_MultipleTokensIndependentDirections(t *testing.T) {
 // projSchema is built (and the allowlist fires) when sort is the only
 // reserved key requesting Response-side validation.
 type testFindSortOnlyRequest struct {
-	Name *string `query:"name" filter:"eq" sort:"asc,desc"`
+	Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+	OrderBy *string `query:"orderBy"`
 }
 
 func (r testFindSortOnlyRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery {

@@ -28,6 +28,7 @@ type testOnlyTotalRequest struct {
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 func (r testOnlyTotalRequest) ToQuery(crit queries.ReadCriteria) *testFindParamsQuery {

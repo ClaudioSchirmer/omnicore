@@ -80,7 +80,7 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 	// declares indexes covering those paths — the ViewDefinition lives in a
 	// separate construction site (ReadableFeature.Views()) — so the operator
 	// gets the declared list to compare against .Indexes(...) in the same boot.
-	if len(schema.Sortable) > 0 {
+	if schema.Reserved[queryschema.KeyOrderBy] {
 		warnSortableOnce(reqType, schema.Sortable)
 	}
 	return schema, projSchema
@@ -370,7 +370,7 @@ func NewQueryParser[Req any, Resp any]() *QueryParser[Req, Resp] {
 			projSchema = queryschema.ExtractProjectionSchema(respType)
 		}
 	}
-	if len(schema.Sortable) > 0 {
+	if schema.Reserved[queryschema.KeyOrderBy] {
 		warnSortableOnce(reqType, schema.Sortable)
 	}
 	return &QueryParser[Req, Resp]{schema: schema, projSchema: projSchema}
@@ -557,11 +557,11 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 				crit.Before = val
 			case queryschema.KeyOrderBy:
 				controls.OrderBy = true
-				// An endpoint that declared nothing orderable does not accept
-				// this control at all: leave the verdict to the canonical
-				// gateway, which reports the CONTROL as undeclared instead of
-				// the framework blaming the consumer's token.
-				if len(s.Sortable) == 0 {
+				// Undeclared control: leave the verdict to the canonical
+				// gateway, which reports the CONTROL. Parsing the token first
+				// would blame the consumer's spelling for a parameter the
+				// endpoint never offered.
+				if !s.Reserved[queryschema.KeyOrderBy] {
 					return
 				}
 				orderBy, obViolation, obOk := queryschema.ParseOrderBy(val, s.Sortable)
@@ -630,7 +630,7 @@ func buildCriteria(c fiber.Ctx, s *queryschema.RequestSchema, projSchema *querys
 	// (forward first/after × backward last/before) and the only-total conflict
 	// matrix — one implementation shared by every surface, run BEFORE the
 	// handler. REST has no natural keys (every control has a wire spelling).
-	if violations := queryschema.ValidateControls(s, controls, nil); len(violations) > 0 {
+	if violations := queryschema.ValidateControls(s.Reserved, controls, nil); len(violations) > 0 {
 		return crit, nil, &queryschema.Violation{Field: violations[0].Field(), Notification: violations[0].Message().Notification}, false
 	}
 	// Materialize the Relay direction pair into the internal size+direction:

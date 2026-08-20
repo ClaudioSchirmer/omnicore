@@ -30,8 +30,9 @@ type specByEmailRequest struct {
 }
 
 type specListRequest struct {
-	Name  *string `query:"name" filter:"eq,in" sort:"asc,desc"`
-	First *int64  `query:"first"`
+	Name    *string `query:"name" filter:"eq,in" sort:"asc,desc"`
+	First   *int64  `query:"first"`
+	OrderBy *string `query:"orderBy"`
 }
 
 type specListItem struct {
@@ -728,8 +729,9 @@ func keysOfAny(m map[string]any) []string {
 // ─── the `?fields=` parameter description ────────────────────────────────────
 
 type fieldsDescRequest struct {
-	Name   *string `query:"name" filter:"eq" sort:"asc,desc"`
-	Fields *string `query:"fields"`
+	Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+	Fields  *string `query:"fields"`
+	OrderBy *string `query:"orderBy"`
 }
 
 type fieldsDescNestedItem struct {
@@ -809,5 +811,52 @@ func TestFieldsParam_DTODescriptionWins(t *testing.T) {
 		if p["name"] == "fields" && p["description"] != "pick your columns" {
 			t.Errorf("the DTO tag must win, got %v", p["description"])
 		}
+	}
+}
+
+// ─── the `?orderBy=` parameter description ───────────────────────────────────
+
+type orderByDescRequest struct {
+	Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+	Created *string `query:"created" sort:"desc"`
+	OrderBy *string `query:"orderBy"`
+}
+
+func paramOf(t *testing.T, reqType reflect.Type, name string) map[string]any {
+	t.Helper()
+	params := canonicalParameters(Operation{
+		Method: "GET", Path: "/x",
+		Spec: RouteSpec{RequestType: reqType, ResponseType: reflect.TypeOf(fieldsDescNestedItem{}), Paged: true},
+	}, NewGenerator(nil))
+	for _, p := range params {
+		if p["name"] == name {
+			return p
+		}
+	}
+	t.Fatalf("parameter %q must be emitted", name)
+	return nil
+}
+
+// Unlike ?fields=, this one ENUMERATES: the vocabulary is a short, deliberate
+// declaration, so listing it states the whole contract in one line.
+func TestOrderByParam_EnumeratesTheDeclaredVocabulary(t *testing.T) {
+	desc, _ := paramOf(t, reflect.TypeOf(orderByDescRequest{}), "orderBy")["description"].(string)
+	for _, want := range []string{"`created` (desc only", "`name` (asc, desc)", "Prefix a token with `-`"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("the description must carry %q: %q", want, desc)
+		}
+	}
+}
+
+// The control field is where a description hangs — and the consumer's wins,
+// exactly as it does for ?fields=.
+func TestOrderByParam_DTODescriptionWins(t *testing.T) {
+	type ownDesc struct {
+		Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+		OrderBy *string `query:"orderBy" description:"catalog order; default is by code"`
+	}
+	desc, _ := paramOf(t, reflect.TypeOf(ownDesc{}), "orderBy")["description"].(string)
+	if desc != "catalog order; default is by code" {
+		t.Errorf("the DTO tag must win, got %q", desc)
 	}
 }

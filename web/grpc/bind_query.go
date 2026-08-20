@@ -337,7 +337,7 @@ func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCrit
 			b.FieldMask(fm)
 		}
 	}
-	if violations := queryschema.ValidateControls(plan.reserved, b.Controls(), nil); len(violations) > 0 {
+	if violations := queryschema.ValidateControls(plan.reserved.Reserved, b.Controls(), nil); len(violations) > 0 {
 		return queries.ReadCriteria{}, nil, controlViolationError(violations)
 	}
 	var opErrs []string

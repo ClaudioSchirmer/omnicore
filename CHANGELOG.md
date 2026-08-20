@@ -13,40 +13,41 @@ with `1.0.0`.
 
 ### Changed
 
-- **BREAKING — `?orderBy=` is declared on the Request DTO, per field.** Ordering
-  was the only store-side read control whose vocabulary came from the OUTPUT
-  DTO: every wire path a Response happened to render was sortable, and a field
-  kept off the wire could not be ordered by even though both readers can order
-  by any view column. Filtering names a store operation and is declared on the
-  Request; ordering is the same kind of operation and now follows the same rule.
+- **BREAKING — the ordering vocabulary moved to the Request DTO, declared per
+  field.** Ordering was the only store-side read control whose vocabulary came
+  from the OUTPUT DTO: every wire path a Response happened to render was
+  sortable, and a field deliberately kept off the wire could not be ordered by —
+  even though both readers can order by any column of the view. Filtering names a
+  store operation and is declared on the Request; ordering is the same kind of
+  operation and now follows the same rule.
 
-  A leaf declares itself orderable with `sort:"asc"`, `sort:"desc"` or
-  `sort:"asc,desc"`, at any depth — a leaf inside an embed group contributes
-  its dotted path exactly as a filter leaf does. The tag also stands alone: a
-  `query:"id" sort:"asc"` leaf is orderable without being filterable and
-  carries no value on the wire.
+  It is declared in two halves that must travel together. `query:"orderBy"` is
+  the SWITCH — like every other reserved control it decides whether the endpoint
+  accepts the parameter at all, and it is where a `description:` for it lives.
+  `sort:"asc"` / `sort:"desc"` / `sort:"asc,desc"` on a leaf is the VOCABULARY —
+  which paths the parameter accepts and in which directions. The tag mirrors
+  `filter:`: the name states the capability, the value lists the operations
+  admitted. It is legal at any depth, so a leaf inside an embed group contributes
+  its dotted path exactly as a filter leaf does, and it also stands alone:
+  `query:"id" sort:"asc"` is orderable without being filterable and carries no
+  value on the wire.
 
-  `?orderBy=` has no control key of its own any more. The declarations ARE the
-  switch: a DTO with at least one orderable leaf accepts the control on every
-  connector, one with none does not. A leftover `OrderBy *string
-  \`query:"orderBy"\`` is a boot panic naming the fix, and `orderBy` is no
-  longer a declarable member of the control vocabulary (`ControlKeys` keeps it
-  as a recognized WIRE key; `DeclarableControlKeys` is the narrower set a DTO
-  may declare).
+  Either half without the other is a boot failure, each with its own diagnostic:
+  the switch with no vocabulary would accept `?orderBy=` and refuse every token
+  it could be given, and a vocabulary with no switch declares paths orderable on
+  an endpoint that does not take the parameter — the second names the offending
+  leaves. Nothing is orderable until a leaf says so: an unindexed sort is a
+  blocking sort whose cost is proportional to the matching set, so
+  "every path the Response renders" was the wrong default.
 
-  Nothing is orderable until something says so. Ordering is a store operation
-  whose cost is proportional to the matching set unless an index covers it, so
-  the default is no longer "every path the Response renders".
-
-  Every surface follows one vocabulary: REST (listing, exports and a manual
-  `NewQueryParser`), the GraphQL `<Entity>OrderField` enum, and the gRPC
-  `order_by` field via the new `CriteriaBuilder.Sortable(...)` — which has no
-  fallback, so a `MountRaw` consumer that does not call it orders by nothing.
-  OpenAPI synthesizes the `orderBy` parameter and publishes the accepted tokens
-  with their directions in its description, since there is no `query:"…"` scalar
-  left to reflect. A direction the declaration does not admit is refused like
-  any other undeclared token; GraphQL makes that cut in the resolver rather than
-  the schema, because an enum cannot express per-member directions.
+  One vocabulary on every surface: REST listing, exports and NewQueryParser; the
+  GraphQL `<Entity>OrderField` enum; gRPC order_by through the new
+  `CriteriaBuilder.Sortable`, which has no fallback. A direction the declaration
+  does not admit is refused like any undeclared token; GraphQL makes that cut in
+  the resolver rather than the schema, since an enum cannot express per-member
+  directions. OpenAPI fills the parameter's description with the accepted tokens
+  and their directions unless the control field carries a `description:` of its
+  own.
 
 - **BREAKING — the boolean read controls accept exactly `true` or `false`.**
   `?includeArchived=` and `?onlyTotal=` refuse anything else with the canonical
@@ -61,10 +62,6 @@ with `1.0.0`.
   longer consults the Response, so a computed field is simply not in the
   vocabulary and its refusal is the canonical schema violation. The dedicated
   notification and its seven catalog entries are gone.
-
-- **BREAKING — `queryschema.ValidateControls` takes the `*RequestSchema`.** The
-  `orderBy` opt-in verdict comes from the ordering vocabulary rather than the
-  reserved set, so the gateway needs both halves.
 
 ### Added
 

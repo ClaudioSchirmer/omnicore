@@ -232,7 +232,7 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 				// The SDL already cut undeclared args (gqlparser rejects unknown
 				// arguments before the resolver), so the gate arm is defense in
 				// depth; direction + conflicts are the live checks.
-				if violations := queryschema.ValidateControls(plan.reqSchema, controls, graphqlNaturalControls); len(violations) > 0 {
+				if violations := queryschema.ValidateControls(plan.reqSchema.Reserved, controls, graphqlNaturalControls); len(violations) > 0 {
 					return nil, schemaViolation(pipe, ctx, violations[0].Field())
 				}
 				// Selection set → projection: an explicitly selected restricted

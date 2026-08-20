@@ -32,6 +32,7 @@ type expCSVReq struct {
 	Fields          *string `query:"fields"`
 	Search          *string `query:"search"`
 	IncludeArchived *bool   `query:"includeArchived"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 // ─── the three-type read fixture backing every export case ─────────────────

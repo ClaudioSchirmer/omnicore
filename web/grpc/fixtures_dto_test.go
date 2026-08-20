@@ -59,6 +59,7 @@ type searchGadgetsDTO struct {
 	Fields          *string `query:"fields"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 func (searchGadgetsDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {
@@ -127,6 +128,7 @@ type searchGadgetsWithSearchDTO struct {
 	Fields          *string `query:"fields"`
 	IncludeArchived *bool   `query:"includeArchived"`
 	OnlyTotal       *bool   `query:"onlyTotal"`
+	OrderBy         *string `query:"orderBy"`
 }
 
 func (searchGadgetsWithSearchDTO) ToQuery(c queries.ReadCriteria) *searchGadgetsQuery {

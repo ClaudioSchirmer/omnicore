@@ -56,8 +56,9 @@ func (q *widgetQuery) FromQueryResult(_ *configuration.AppContext, r widgetResul
 }
 
 type widgetRequest struct {
-	Name  *string `query:"name" filter:"eq" sort:"asc,desc"`
-	First *int64  `query:"first"`
+	Name    *string `query:"name" filter:"eq" sort:"asc,desc"`
+	First   *int64  `query:"first"`
+	OrderBy *string `query:"orderBy"`
 }
 
 func (widgetRequest) ToQuery(crit queries.ReadCriteria) *widgetQuery {

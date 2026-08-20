@@ -395,17 +395,12 @@ func (b *CriteriaBuilder) Timestamp(goFieldPath string, f *pb.TimestampFilter) *
 // no declaration to check — only the directional rule and the only-total
 // conflict matrix apply. The Auto path runs the FULL gate (its compiled
 // plan carries the DTO's Reserved set) before Build.
-var rawPathReserved = &queryschema.RequestSchema{
-	Reserved: map[string]bool{
-		queryschema.KeyFirst: true, queryschema.KeyLast: true,
-		queryschema.KeyAfter: true, queryschema.KeyBefore: true,
-		queryschema.KeyFields: true, queryschema.KeySearch: true,
-		queryschema.KeyIncludeArchived: true, queryschema.KeyOnlyTotal: true,
-	},
-	// A non-empty vocabulary is what tells the gateway this endpoint accepts
-	// ordering at all. The raw path has no declaration to check, so it admits
-	// ordering the same way it admits every other control.
-	Sortable: map[string]queryschema.SortSpec{"": {}},
+var rawPathReserved = map[string]bool{
+	queryschema.KeyFirst: true, queryschema.KeyLast: true,
+	queryschema.KeyAfter: true, queryschema.KeyBefore: true,
+	queryschema.KeyOrderBy: true, queryschema.KeyFields: true,
+	queryschema.KeySearch: true, queryschema.KeyIncludeArchived: true,
+	queryschema.KeyOnlyTotal: true,
 }
 
 // Build returns the criteria, or the accumulated wire-contract violations —
@@ -442,7 +437,6 @@ func controlViolationError(violations []queryschema.ControlViolation) error {
 	}
 	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }
-
 
 var stringOps = map[pb.StringOp]string{
 	pb.StringOp_STRING_OP_EQ:          queryschema.OpEq,
