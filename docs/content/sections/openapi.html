@@ -308,13 +308,14 @@ spec.Examples = map[string]fwopenapi.Example{"alice": {Value: WhoamiResponse{Sub
     <p>Use the <code>ResponseSpec</code> struct literal directly when keeping every field on screen is the preference — both paths coexist; the helper is the common-case shortcut, not the only path.</p>
 
     <h3>Parameter extraction — path, query, header</h3>
-    <p>The framework derives parameters from the route's Fiber path AND the Request DTO's struct tags. Five mechanisms feed the rendered <code>parameters[]</code> block:</p>
+    <p>The framework derives parameters from the route's Fiber path AND the Request DTO's struct tags. Seven mechanisms feed the rendered <code>parameters[]</code> block:</p>
     <ol>
         <li><strong>Fiber path → <code>{name}</code> templating.</strong> Every <code>:name</code> segment in the route's Fiber path becomes <code>{name}</code> on the OpenAPI path. <code>/users/:id/archive</code> renders as <code>/users/{id}/archive</code>; <code>/tenants/:tenantId/users/:id</code> renders as <code>/tenants/{tenantId}/users/{id}</code>.</li>
         <li><strong>Request DTO <code>path:"X"</code> tag.</strong> Each tagged field of the Request DTO emits one <code>parameters[].in=path</code> entry with the field's reflected type driving the schema. The same field is skipped from the body schema.</li>
         <li><strong>Auto-stubbed <code>:id</code>.</strong> When <code>RouteSpec.HasPathID</code> is true (every framework wrapper that auto-binds <code>:id</code>) AND the Request DTO didn't tag <code>path:"id"</code>, the spec assembler adds a string-typed <code>id</code> path parameter automatically. Combined with custom path tags so compound routes like <code>/tenants/:tenantId/users/:id</code> document every segment without per-route configuration.</li>
         <li><strong>Request DTO <code>query:"X" filter:"ops"</code> tag.</strong> Each leaf emits one query parameter per declared operator: <code>query:"name" filter:"eq,in,startswith"</code> produces <code>?name</code>, <code>?name.in</code>, and <code>?name.startswith</code> (the bare <code>eq</code> form has no suffix; every other operator surfaces as <code>name.&lt;op&gt;</code>). The same field is skipped from the body schema.</li>
         <li><strong>Nested embed groups.</strong> A struct-typed Request field carrying <code>query:"prefix"</code> (no <code>filter:</code>) is an embed group — every leaf below contributes a wire key prefixed by its parent. Example: <code>Addresses AddressFilter \`query:"addresses"\`</code> with <code>City *string \`query:"city" filter:"eq,istartswith"\`</code> inside renders <code>?addresses.city</code> + <code>?addresses.city.istartswith</code>.</li>
+        <li><strong>Reserved control keys.</strong> A top-level <code>query:"…"</code> scalar with no <code>filter:</code> tag — one of the canonical controls (<code>first</code>, <code>last</code>, <code>after</code>, <code>before</code>, <code>orderBy</code>, <code>fields</code>, <code>search</code>, <code>includeArchived</code>, <code>onlyTotal</code>) — emits one query parameter. The DTO decides which of them this endpoint exposes; a key outside that closed set is a boot fail rather than a dead parameter. Two of them fill their own <code>description</code> when the field does not (see <a href="#openapi~oa-doc-tags">below</a>).</li>
         <li><strong><code>RawSpec.Parameters</code>.</strong> Raw routes declare each parameter inline via <code>PathParam</code> / <code>QueryParam</code> or a <code>Parameter</code> literal. The framework normalizes <code>Required=true</code> for every <code>InPath</code> entry at registration time.</li>
     </ol>
 
@@ -363,8 +364,9 @@ spec.Examples = map[string]fwopenapi.Example{"alice": {Value: WhoamiResponse{Sub
     </table>
     <p><strong>Required-field rule.</strong> Strict (handler embeds <code>pipeline.FullBody</code>): every kept field is required. Lenient: required when the field is non-pointer AND the json tag does not carry <code>,omitempty</code>.</p>
 
-    <p><strong>Per-property <code>example:</code> tag.</strong> Annotate scalar fields on Request and Response DTOs to seed concrete values into Swagger UI. The generator reads <code>f.Tag.Get("example")</code> in <code>walkFields</code>, converts the raw string via the field's reflected type, and sets the schema's <code>example</code> — Swagger UI then aggregates per-property examples into a composite object example automatically. Use this for the common case (one representative payload per DTO field). The <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code> map remains the path for N exemplos per status or shapes a single tag cannot express (arrays of structs with specific items, multi-field objects with cross-field semantics).</p>
-    <pre><code>type InsertUserRequest struct {
+    <p><strong>Per-property <code>example:</code> tag.</strong> Annotate scalar fields on <strong>body</strong> Request DTOs and on Response DTOs to seed concrete values into Swagger UI. The generator reads <code>f.Tag.Get("example")</code> in <code>walkFields</code>, converts the raw string via the field's reflected type, and sets the schema's <code>example</code> — Swagger UI then aggregates per-property examples into a composite object example automatically. Use this for the common case (one representative payload per DTO field). The <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code> map remains the path for N exemplos per status or shapes a single tag cannot express (arrays of structs with specific items, multi-field objects with cross-field semantics).</p>
+    <pre><code>// A COMMAND pair: the request is a BODY, so `example:` applies to both sides.
+type InsertUserRequest struct {
     Name  string  `json:"name"            example:"Alice"`
     Email string  `json:"email"           example:"alice@example.com"`
     Phone *string `json:"phone,omitempty" example:"+5511999998888"`
@@ -374,6 +376,57 @@ type InsertUserResponse struct {
     Name  string    `json:"name"  example:"Alice"`
     Email string    `json:"email" example:"alice@example.com"`
 }</code></pre>
+
+    <h3 id="oa-doc-tags">Which tag documents what — and where it is silently ignored</h3>
+    <p>
+        Two different generators are at work, and each reads a different tag. The <strong>schema</strong>
+        generator walks struct fields into a JSON Schema (request bodies, response shapes) and reads
+        <code>example:</code>. The <strong>parameter</strong> generator walks a READ Request DTO's
+        <code>query:</code> / <code>path:</code> tags into <code>parameters[]</code> entries and reads
+        <code>description:</code>. Neither reads the other's tag, and an unread tag produces
+        <strong>no error — it simply does not appear</strong>, so the boundary is worth knowing:
+    </p>
+    <table>
+        <tbody><tr><th>Field lives on</th><th><code>example:"…"</code></th><th><code>description:"…"</code></th></tr>
+        <tr><td>Body Request DTO (a command's payload)</td><td>rendered on the property</td><td>ignored</td></tr>
+        <tr><td>Response DTO</td><td>rendered on the property</td><td>ignored</td></tr>
+        <tr><td>Read Request DTO — a <code>query:</code> or <code>path:</code> field</td><td>ignored</td><td>rendered on the parameter</td></tr>
+        </tbody>
+    </table>
+    <p>
+        So a read endpoint documents itself through <code>description:</code> on the fields that become
+        parameters — filter leaves, path segments and the reserved controls alike:
+    </p>
+    <pre><code>// A READ Request: every field here becomes a PARAMETER, so `description:` is the
+// tag that lands and `example:` is the one that does not.
+type FindUsersByParamsRequest struct {
+    Email *string `query:"email" filter:"eq,in" sort:"asc,desc" description:"Exact match, or a comma-separated list with .in"`
+    Name  *string `query:"name"  filter:"icontains"             description:"Case-insensitive substring"`
+
+    First   *int64  `query:"first"`
+    After   *string `query:"after"`
+    Fields  *string `query:"fields"`
+    OrderBy *string `query:"orderBy" description:"Catalog order; the listing default is by name"`
+}</code></pre>
+    <p>
+        <strong>Two parameters describe themselves when you do not.</strong> Both carry a closed
+        vocabulary the consumer cannot guess, so leaving them bare would ship a parameter nobody can
+        use correctly. Each explains itself in its own way, and a <code>description:</code> on the
+        field always wins:
+    </p>
+    <ul>
+        <li><strong><code>?orderBy=</code> enumerates.</strong> The
+            <a href="#auto-query-handlers~qry-sort">ordering vocabulary</a> is a short, deliberate
+            declaration, so the description lists the accepted tokens with the directions each admits
+            — <em>"Accepted: <code>code</code> (asc, desc), <code>id</code> (asc only)"</em>. Those are
+            the only values the parameter ever takes.</li>
+        <li><strong><code>?fields=</code> states the rule.</strong> Its vocabulary is the whole
+            Response tree — dozens of paths on a real DTO, plus every nested level below them — so
+            enumerating would bury the parameter instead of documenting it. The description says the
+            tokens are the response's own wire names and, when the Response has a nested path, carries
+            a real dotted example lifted from that Response, since the dotted spelling is the part a
+            rule alone cannot convey.</li>
+    </ul>
 
     <h3>N exemplos per route — <code>Doc.RequestExamples</code> / <code>Doc.ResponseExamples</code></h3>
     <p>When a single tag per field is not enough — multiple representative payloads ("minimal", "withAddress", "edgeCase"), or shapes that compose nested arrays of structs that the tag cannot express — declare them on the <code>Mount</code> call's <code>Doc</code>. Each entry is an <code>openapi.Example</code> with optional <code>Summary</code> (dropdown label), optional <code>Description</code> (markdown), and the actual <code>Value</code> (any JSON-marshalable Go value or <code>json.RawMessage</code>):</p>
