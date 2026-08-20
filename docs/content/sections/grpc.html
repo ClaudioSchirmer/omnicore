@@ -463,6 +463,11 @@ reg.Register(fwgrpc.QueryByID[usersv1.GetUserRequest, usersv1.GetUserResponse](
     <li><strong>Cursors are checked before dispatch.</strong> An <code>after</code>/<code>before</code> that does
         not decode, or whose key tuple does not match the ordering, is <code>INVALID_ARGUMENT</code> — the same
         structure check the REST wire runs, through the same assembler.</li>
+    <li><strong>An <code>order_by</code> entry is PRESENCE, even with an empty field.</strong> A repeated
+        entry on the wire is the control asked for — the proto dialect of REST's bare <code>?orderBy=</code> —
+        so an endpoint whose DTO never declared <code>query:"orderBy"</code> refuses it here exactly as its
+        REST twin does. An empty field contributes no ordering term, which is also what an empty
+        <code>?orderBy=</code> does.</li>
     <li><strong>The by-id procedure obeys the same gate.</strong> Its one control passes through the canonical
         opt-in gate, so a control the endpoint never declared is refused rather than ignored.</li>
 </ul>

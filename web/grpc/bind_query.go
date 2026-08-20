@@ -85,6 +85,11 @@ type queryPlan struct {
 	// without its `query:"…"` declaration is a wire-contract violation
 	// (SchemaViolation → INVALID_ARGUMENT).
 	reqSchema *queryschema.RequestSchema
+	// sortIndex folds reqSchema.Sortable's keys to their normalized spelling,
+	// which is how a proto `order_by` entry (`created_at`) meets the DTO's
+	// declaration (`createdAt`). Compiled here, once at Register, because the
+	// answer is a property of the DTO and not of any request.
+	sortIndex map[string]string
 }
 
 // listEnvelope is the compiled response plan for one list procedure: the
@@ -124,6 +129,7 @@ func compileQueryPlan(
 	// of them is a filter is the DTO's answer, decided once in
 	// ExtractRequestSchema — this surface reads it, it does not re-derive it.
 	plan.reqSchema = queryschema.ExtractRequestSchema(reqDTO)
+	plan.sortIndex = sortableIndex(plan.reqSchema.Sortable)
 
 	// Filter leaves keyed by normalized wire path AND normalized Go path — the
 	// per-field operator allowlist, reachable by either spelling a proto field
@@ -307,10 +313,15 @@ func compileListEnvelope(
 // field (HiddenComputedSources) — the wrapper blanks them on each Result
 // before projection, so they never leak onto the masked wire.
 func (plan *queryPlan) buildCriteria(msg protoreflect.Message) (queries.ReadCriteria, []string, error) {
-	// The DTO's schema IS the gate here: same declarations, same vocabulary, same
-	// assembler as its REST twin. A raw mount answers for its own contract; a
-	// compiled one answers for the Request DTO's.
-	b := NewCriteria().withSchema(plan.reqSchema).
+	// The DTO's declarations ARE the gate here: same controls, same ordering
+	// vocabulary, same assembler as its REST twin. A raw mount answers for its
+	// own contract; a compiled one answers for the Request DTO's.
+	//
+	// withSchema borrows those two read-only; the FILTER gate is not among them
+	// because it already ran, earlier and by name — compileQueryPlan bound every
+	// proto filter field to a `filter:`-tagged leaf at boot, and each binding
+	// checks the operator against that leaf's tag just below.
+	b := NewCriteria().withSchema(plan.reqSchema, plan.sortIndex).
 		Fields(plan.fields).ComputedFields(plan.computed)
 	if plan.page != nil && msg.Has(plan.page) {
 		if p, ok := msg.Get(plan.page).Message().Interface().(*pb.PaginationRequest); ok {

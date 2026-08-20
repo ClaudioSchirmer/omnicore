@@ -18,9 +18,11 @@ package web_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -619,3 +621,90 @@ var validCursor = func() string {
 // conformSchema is the endpoint's declaration — the thing every surface answers
 // from, and the dictionary the fold above resolves a refusal against.
 var conformSchema = queryschema.ExtractRequestSchema(reflect.TypeOf(conformRequest{}))
+
+// ─── the vocabulary is the DTO's, and stays the DTO's ────────────────────────
+
+// vocabularySnapshot renders everything a Request DTO declares — the filter
+// keys with their operators, the control opt-ins, the ordering vocabulary with
+// its directions — as one deterministic string. It is "what this endpoint
+// accepts", written down.
+func vocabularySnapshot(s *queryschema.RequestSchema) string {
+	var b strings.Builder
+	keys := make([]string, 0, len(s.Filters))
+	for k := range s.Filters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		ops := make([]string, 0, len(s.Filters[k].Ops))
+		for op := range s.Filters[k].Ops {
+			ops = append(ops, op)
+		}
+		sort.Strings(ops)
+		b.WriteString("filter " + k + "=" + strings.Join(ops, "|") + "\n")
+	}
+	reserved := make([]string, 0, len(s.Reserved))
+	for k := range s.Reserved {
+		reserved = append(reserved, k)
+	}
+	sort.Strings(reserved)
+	b.WriteString("controls " + strings.Join(reserved, "|") + "\n")
+	sortable := make([]string, 0, len(s.Sortable))
+	for k := range s.Sortable {
+		sortable = append(sortable, k)
+	}
+	sort.Strings(sortable)
+	for _, k := range sortable {
+		spec := s.Sortable[k]
+		b.WriteString(fmt.Sprintf("sort %s asc=%v desc=%v\n", k, spec.Asc, spec.Desc))
+	}
+	return b.String()
+}
+
+// sweepEverySurface runs the whole conformance table on every surface and
+// returns the verdicts, keyed by case name and surface.
+func sweepEverySurface(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, tc := range conformanceCases() {
+		out[tc.name+"/rest"] = restVerdict(t, tc.rest).String()
+		out[tc.name+"/export"] = exportVerdict(t, tc.rest).String()
+		if tc.restOnly {
+			continue
+		}
+		out[tc.name+"/graphql"] = graphqlVerdict(t, tc.gql).String()
+		out[tc.name+"/grpc"] = grpcVerdict(t, tc.grpc).String()
+	}
+	return out
+}
+
+// TestConformance_NoSurfaceChangesWhatTheEndpointAccepts is the invariant
+// behind every case above, stated once about the schema itself.
+//
+// A reflected Request schema is memoized per type and shared by all five
+// consumers and by every request each of them serves. It is the DTO's answer to
+// "what does this endpoint accept" — so a REQUEST is something that answer
+// judges, never something that extends it. One surface that records into it
+// makes the endpoint's contract depend on traffic history: after a gRPC call,
+// REST accepted a key it had refused a moment earlier, and no document said so.
+//
+// The table above cannot see that, because each case asks one question once.
+// This asks whether ASKING changed the answer.
+func TestConformance_NoSurfaceChangesWhatTheEndpointAccepts(t *testing.T) {
+	schema := queryschema.ExtractRequestSchema(reflect.TypeOf(conformRequest{}))
+	before := vocabularySnapshot(schema)
+
+	first := sweepEverySurface(t)
+
+	if after := vocabularySnapshot(schema); after != before {
+		t.Fatalf("a request changed what the endpoint accepts:\n--- before\n%s--- after\n%s", before, after)
+	}
+
+	// The consequence, asserted where a consumer would feel it: the same
+	// question a second time gets the same answer.
+	for name, second := range sweepEverySurface(t) {
+		if first[name] != second {
+			t.Errorf("%s: verdict changed between two identical requests — %s then %s", name, first[name], second)
+		}
+	}
+}

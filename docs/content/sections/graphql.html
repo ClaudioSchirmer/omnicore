@@ -343,9 +343,15 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
         <code>query:"includeArchived"</code>; otherwise introspection never advertises it and gqlparser
         rejects it as an unknown argument — the twin of the REST by-id rule, where
         <code>?includeArchived</code> is the only recognized query key.</li>
-    <li><strong>No pagination, no <code>where</code>.</strong> The by-id read ignores
-        criteria pagination/projection by design (<code>ReadByID</code> contract); the singular field
-        therefore carries only <code>id</code> + the optional archived gate.</li>
+    <li><strong>No pagination, no <code>where</code>.</strong> A by-id read has one document, so the
+        singular field carries only <code>id</code> + the optional archived gate.</li>
+    <li><strong>The selection set IS the projection here too.</strong> It resolves to
+        <code>ReadCriteria.Projection</code> exactly as a connection node's does, and both read backings
+        honor a by-id projection. That is what makes an explicitly selected restricted field the ACTIVE
+        reference <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a> answers
+        <code>FieldAccessForbiddenNotification</code> (403) to — an unselected one is passively scrubbed,
+        never returned. The two read fields therefore give ONE answer about one restricted field: which of
+        them the consumer happened to call is not part of the question.</li>
     <li><strong>Same node type as the connection</strong> — pass the same entity string to
         <code>QueryWithParams</code> and <code>QueryByID</code> (see "Reflected schema"), so client
         fragments on <code>User</code> work on both fields.</li>

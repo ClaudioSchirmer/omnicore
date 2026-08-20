@@ -604,37 +604,6 @@ func splitList(val string) []string {
 	return out
 }
 
-// validateCursorAgainstCriteria decodes the cursor and asserts its STRUCTURE
-// against the current wire criteria:
-//
-//   - decodability: the cursor must parse under the cursor schema.
-//   - tuple length: len(K)-1 == len(OrderBy) (the trailing K element is always
-//     _id). Protects against malformed cursors before the reader's keyset
-//     builder indexes the tuple.
-//
-// Either case rejects with 400 SchemaViolationNotification on the cursor's
-// wire key. The CONTEXT-HASH check (cursor.H vs the full listing context —
-// filter + sort + search + includeArchived) deliberately does NOT run here:
-// at this layer the criteria is the WIRE snapshot, BEFORE the Query's
-// ToCriteria(ctx) layers identity overlays (tenant, owner, business gates)
-// onto it — while the reader stamps outgoing cursors from the POST-ToCriteria
-// criteria it received. Comparing the two snapshots rejects every legitimate
-// cursor the moment a paged query carries an overlay. The authoritative hash
-// check lives in the reader (mongo.MongoViewReader / the composed reader),
-// which validates against the same post-ToCriteria context it stamps — a
-// mid-navigation context change is still rejected with the same canonical
-// 400, on every surface (REST and GraphQL alike), never silently honored.
-func validateCursorAgainstCriteria(cursorStr string, crit queries.ReadCriteria, wireKey string) (string, bool) {
-	cursor, err := queries.DecodeCursor(cursorStr)
-	if err != nil {
-		return wireKey, false
-	}
-	if len(cursor.K)-1 != len(crit.OrderBy) {
-		return wireKey, false
-	}
-	return "", true
-}
-
 // validateByIDQuery enforces the by-id allowlist: `includeArchived` is the only
 // key this route recognizes at all. WHETHER the endpoint accepts it is not
 // decided here — that is the DTO opt-in gate's answer, applied by the shared

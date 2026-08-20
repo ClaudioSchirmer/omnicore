@@ -487,7 +487,7 @@ func (r *RelationalViewReader) resolveWindow(crit queries.ReadCriteria, limit, t
 
 // offsetTuple encodes the absolute row offset a relational cursor carries in a
 // tuple shaped like the Mongo keyset cursor the WIRE layer validates: its
-// length must be len(sort)+1 (the web's validateCursorAgainstCriteria asserts
+// length must be len(sort)+1 (queryschema.BuildCriteria asserts
 // len(K)-1 == len(sort), the trailing slot being the keyset _id). The offset
 // lives in K[0]; the remaining slots are inert padding, so an incoming cursor
 // passes the structural check on every surface while the reader only ever reads

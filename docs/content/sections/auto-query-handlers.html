@@ -325,6 +325,22 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
         no query parameter either.
     </p>
     <p>
+        <strong>The boolean controls accept exactly <code>true</code> or <code>false</code>.</strong>
+        <code>?includeArchived=</code> and <code>?onlyTotal=</code> refuse every other spelling —
+        <code>1</code>, <code>t</code>, <code>TRUE</code>, <code>yes</code> — with the canonical 400 on the
+        control's own key. Strictness is the point: the same value has to mean the same thing on every
+        connector, and the other two enforce it by wire format already (a proto <code>bool</code> and a GraphQL
+        <code>Boolean</code> cannot carry <code>"1"</code>). A parser that quietly read anything-but-<code>true</code>
+        as false is what let <code>?includeArchived=1</code> be false on a listing and true on a by-id read of the
+        same entity.
+    </p>
+    <p>
+        PRESENCE is the key being on the query string, not the value being non-empty. <code>?onlyTotal=</code>
+        is the control asked for with no answer, and it is refused on the value — not read as "absent", which
+        would rebuild the same list-vs-by-id disagreement on a different spelling. A control the endpoint never
+        declared is refused either way, on the same key.
+    </p>
+    <p>
         <strong>Behind the allowlist, the view has the last word.</strong> The allowlist validates a request against
         the <em>DTO</em>; the reader then resolves each Go field path against the <em>view's</em> <code>TableSchema</code>
         tree. A path the view cannot resolve — a DTO field that does not match any column or segment the view projects,
@@ -875,7 +891,8 @@ query:
         <tr><td><code>?onlyTotal=true&amp;first=10</code></td><td>400 — <code>onlyTotal[first]</code></td></tr>
         <tr><td><code>?onlyTotal=true&amp;after=cur-xyz</code></td><td>400 — <code>onlyTotal[after]</code></td></tr>
         <tr><td><code>?onlyTotal=true&amp;before=cur-xyz</code></td><td>400 — <code>onlyTotal[before]</code></td></tr>
-        <tr><td><code>?onlyTotal=</code> (any value) on endpoint that did not declare it</td><td>400 — presence gates, exactly like <code>?includeArchived=</code></td></tr>
+        <tr><td><code>?onlyTotal=true</code> on an endpoint that did not declare it</td><td>400 on <code>onlyTotal</code> — presence gates, exactly like <code>?includeArchived=</code></td></tr>
+        <tr><td><code>?onlyTotal=1</code> / <code>?onlyTotal=</code> (any other spelling)</td><td>400 on <code>onlyTotal</code> — the boolean controls take exactly <code>true</code> or <code>false</code>, declared or not</td></tr>
         <tr><td><code>?onlyTotal=false</code> (or omitted) on a declared endpoint</td><td>Listing envelope unchanged — only <code>true</code> activates the count mode, so a present-but-inactive key never trips the conflict matrix (<code>?onlyTotal=false&amp;first=10</code> is a plain paged read)</td></tr>
     </tbody></table>
     <p>

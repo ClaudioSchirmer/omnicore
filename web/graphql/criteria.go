@@ -145,11 +145,29 @@ func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.F
 	if nodeSel == nil {
 		return nil
 	}
-	paths := flattenWirePaths("", nodeSel, frags)
+	return projectionFromNode(nodeSel, frags, p.projSchema)
+}
+
+// projectionFromNode turns a NODE selection — the leaves of one entity, however
+// the field reached them — into a ReadCriteria.Projection. The connection field
+// digs its node out of `edges { node { … } }` first; a by-id field IS the node,
+// so its own selection set arrives here directly.
+//
+// It is the same seat for both because the two effects are the same on both:
+// Mongo (and the relational loader) return only the requested fields, and an
+// explicitly selected restricted field is the ACTIVE reference that trips
+// ReadCriteria.Restrict's 403 in ToCriteria. A by-id read that skipped this
+// answered 403 on the listing and scrubbed silently on the singular field — the
+// same query, two verdicts, decided by which field the consumer happened to
+// call.
+//
+// Returns nil when nothing resolves, which leaves the read whole-document.
+func projectionFromNode(sel ast.SelectionSet, frags ast.FragmentDefinitionList, projSchema *queryschema.ProjectionSchema) map[string]int {
+	paths := flattenWirePaths("", sel, frags)
 	if len(paths) == 0 {
 		return nil
 	}
-	proj, _, _, ok := queryschema.ParseProjection(paths, p.projSchema)
+	proj, _, _, ok := queryschema.ParseProjection(paths, projSchema)
 	if !ok {
 		return nil
 	}

@@ -95,6 +95,22 @@ with `1.0.0`.
   vocabulary and its refusal is the canonical schema violation. The dedicated
   notification and its seven catalog entries are gone.
 
+- **BREAKING — `web/queryschema` loses five exported symbols and changes one
+  signature.** The read path collapsed onto one assembler and one classification,
+  and these are the surfaces that collapse took with it. Each was exported and
+  announced in an earlier release, so a service that parses reads by hand — a
+  `pipeline.Handler` over `NewQueryParser`, or a bespoke wire adapter — breaks at
+  COMPILE time on an upgrade from 0.54. Nothing changes silently.
+
+  | removed / changed | what replaces it |
+  |---|---|
+  | `ApplyFilterParam(filter, spec, op, value)` | `ApplyFilterValues(filter, spec, op, values)` — the wire splits its own list first (`OperatorTakesList` says which operators take one) |
+  | `ParseOrderByWithSchema(s, projSchema)` | `BuildCriteria` — ordering is validated against the Request DTO's `sort:` vocabulary, not the Response's projection schema |
+  | `WalkRequest(t)` | `ExtractRequestSchema(t).Leaves` — the classification is kept rather than re-derived; the raw walk is internal so a fourth re-derivation cannot be written |
+  | `RequestField` (type) | `RequestLeaf` — the classified form, carrying `Kind` and `TakesValue()` |
+  | `ReadIncludeArchived(v) bool` | `ReadIncludeArchivedControl(v) (value, present bool)` — the opt-in gate keys on PRESENCE, which one bool cannot carry |
+  | `ParseProjection(s string, …)` | `ParseProjection(tokens []string, …)` — a comma is one wire's spelling of a list; a GraphQL selection and a proto FieldMask no longer join a list to have it split back |
+
 ### Added
 
 - **`?search=` without a `TextIndex` fails the boot.** Free-text search is a Mongo
@@ -212,6 +228,22 @@ with `1.0.0`.
   into that projection. A `Restrict` in a by-id `ToCriteria` therefore did not
   apply at all on a Mongo-backed view. It now applies on every query route, on
   every backing.
+
+  The GraphQL by-id field is the other half of the same gap, and closes with it.
+  It discarded its selection set, so nothing ever became a projection there: the
+  same restricted field on the same entity was refused through `users(...)` and
+  scrubbed in SILENCE through `user(id:)`. Restrict answers 403 only to an
+  ACTIVE reference, and a selection that reaches no criteria is not one. The
+  singular field now resolves its selection the way the connection field
+  resolves its node's — so the store is asked for what was selected, and the two
+  read fields give one answer about one restricted field.
+
+- **A gRPC `order_by` entry is the control, present — even with an empty field.**
+  It was skipped before it could record presence, so an endpoint whose Request
+  DTO never declared `query:"orderBy"` IGNORED what its REST twin refuses on a
+  bare `?orderBy=`. Presence is the entry being on the wire; an empty field
+  still contributes no ordering term, which is exactly what an empty `?orderBy=`
+  does. The last control that answered differently on one wire.
 
 - **A ComposedView names the ordering term it refuses.** Sorting into a leg
   segment reported the literal field `sort`; it now reports the offending path.

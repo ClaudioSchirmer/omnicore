@@ -103,6 +103,31 @@
                 reaches the surface verbatim; translating it there produces the same typed, translated envelope a
                 repository-level violation produces, instead of a raw driver error surfacing as a 500. Same
                 behavior as before for the repository path — the body moved, nothing changed.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>web/queryschema</code> loses
+                five exported symbols and changes one signature.</strong> The read path collapsed onto one
+                assembler and one classification, and these are the surfaces that collapse took with it. Each was
+                exported and announced in an earlier release, so a service that parses reads by hand — a
+                <code>pipeline.Handler</code> over <code>NewQueryParser</code>, or a bespoke wire adapter — breaks
+                at COMPILE time on an upgrade from 0.54. Nothing changes silently.
+                <ul>
+                    <li><code>ApplyFilterParam</code> → <code>ApplyFilterValues</code>: the wire splits its own
+                        list first (<code>OperatorTakesList</code> says which operators take one).</li>
+                    <li><code>ParseOrderByWithSchema</code> → <code>BuildCriteria</code>: ordering is validated
+                        against the Request DTO's <code>sort:</code> vocabulary, not the Response's projection
+                        schema.</li>
+                    <li><code>WalkRequest</code> → <code>ExtractRequestSchema(t).Leaves</code>: the
+                        classification is kept rather than re-derived, and the raw walk is internal so a fourth
+                        re-derivation cannot be written.</li>
+                    <li><code>RequestField</code> → <code>RequestLeaf</code>, the classified form carrying
+                        <code>Kind</code> and <code>TakesValue()</code>.</li>
+                    <li><code>ReadIncludeArchived(v) bool</code> →
+                        <code>ReadIncludeArchivedControl(v) (value, present bool)</code>: the opt-in gate keys on
+                        PRESENCE, which one bool cannot carry.</li>
+                    <li><code>ParseProjection</code> takes <code>[]string</code> instead of a comma-separated
+                        <code>string</code>: the comma is one wire's spelling of a list, and a GraphQL selection
+                        or a proto FieldMask no longer joins a list to have it split back.</li>
+                </ul>
+            </li>
             <li><strong>Fixed</strong> — <strong>one assembler for every read request, so the surfaces cannot
                 disagree about what a request MEANS.</strong> Five consumers of the read vocabulary each ran their
                 own orchestration — the REST listing, the CSV/XLSX export, the OpenAPI document, the GraphQL
@@ -152,7 +177,24 @@
                 the relational reader applied it, and <code>ReadCriteria.Restrict</code> — the field-level
                 access-control seam — implements its removal by writing an exclusion into that projection. A
                 <code>Restrict</code> in a by-id <code>ToCriteria</code> therefore did not apply at all on a
-                Mongo-backed view. It now applies on every query route, on every backing.</li>
+                Mongo-backed view. It now applies on every query route, on every backing.
+                <ul>
+                    <li>The <a href="#graphql">GraphQL by-id field</a> is the other half of the same gap and
+                        closes with it. It discarded its selection set, so nothing ever became a projection
+                        there: the same restricted field on the same entity was refused through
+                        <code>users(...)</code> and scrubbed in SILENCE through <code>user(id:)</code>.
+                        <code>Restrict</code> answers 403 only to an ACTIVE reference, and a selection that
+                        reaches no criteria is not one. The singular field now resolves its selection the way
+                        the connection field resolves its node's, so the two read fields give ONE answer about
+                        one restricted field.</li>
+                </ul>
+            </li>
+            <li><strong>Fixed</strong> — <strong>a gRPC <code>order_by</code> entry is the control, present —
+                even with an empty field.</strong> It was skipped before it could record presence, so an
+                endpoint whose Request DTO never declared <code>query:"orderBy"</code> IGNORED what its REST
+                twin refuses on a bare <code>?orderBy=</code>. Presence is the entry being on the wire; an
+                empty field still contributes no ordering term, which is exactly what an empty
+                <code>?orderBy=</code> does.</li>
         </ul>
     </div>
     <div class="release">
