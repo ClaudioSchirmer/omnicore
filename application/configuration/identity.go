@@ -23,9 +23,9 @@ import (
 // which custom claims exist or how they are named.
 //
 // Identity is treated as immutable after the auth middleware populates it.
-// HasPermission caches the parsed permissions set on first call without
-// locking — the same *Identity is never shared across goroutines (Fiber
-// dispatches one goroutine per request).
+// HasPermission / IsSuperAdmin cache the parsed permissions set on first
+// call without locking — the same *Identity is never shared across
+// goroutines (Fiber dispatches one goroutine per request).
 type Identity struct {
 	Subject   string
 	Issuer    string
@@ -37,6 +37,20 @@ type Identity struct {
 	parsedPermissions map[string]struct{}
 }
 
+// superAdminGrant is the claim entry that satisfies every permission check.
+// Asked for directly via IsSuperAdmin; never accepted as a HasPermission
+// argument.
+const superAdminGrant = "*:*"
+
+// permissions returns the parsed permissions claim, populating the cache on
+// first use. See the Identity doc comment on why no locking is needed.
+func (i *Identity) permissions() map[string]struct{} {
+	if i.parsedPermissions == nil {
+		i.parsedPermissions = parsePermissionsClaim(i.Claims[permissionsClaimName()])
+	}
+	return i.parsedPermissions
+}
+
 // HasPermission reports whether the Identity's permissions claim grants the
 // given action. Matches exact ("users:read"), resource wildcard ("users:*"),
 // and super-admin wildcard ("*:*"). Returns false on a nil Identity.
@@ -45,7 +59,8 @@ type Identity struct {
 // panic at runtime (the claim wildcards; the request does not). An empty
 // string or a string without ':' also panics — symmetric with the boot panic
 // on fwopenapi.RequirePermission. Compose "any of A or B" with an explicit
-// OR over concrete actions; do not pass "users:*" to ask.
+// OR over concrete actions; do not pass "users:*" to ask. To ask the
+// super-admin question itself, call IsSuperAdmin.
 //
 // The parsed claim set is cached on the Identity after the first call;
 // subsequent calls are direct map lookups + at most one extra comparison.
@@ -58,22 +73,48 @@ func (i *Identity) HasPermission(p string) bool {
 	}
 	if strings.Contains(p, "*") {
 		panic("configuration.Identity.HasPermission: wildcards are not allowed on the caller side; got " +
-			strconv.Quote(p) + ". Compose explicit OR over concrete actions.")
+			strconv.Quote(p) + ". Compose explicit OR over concrete actions, or call IsSuperAdmin.")
 	}
-	if i.parsedPermissions == nil {
-		i.parsedPermissions = parsePermissionsClaim(i.Claims[permissionsClaimName()])
-	}
-	if _, ok := i.parsedPermissions["*:*"]; ok {
+	perms := i.permissions()
+	if _, ok := perms[superAdminGrant]; ok {
 		return true
 	}
-	if _, ok := i.parsedPermissions[p]; ok {
+	if _, ok := perms[p]; ok {
 		return true
 	}
 	colon := strings.Index(p, ":")
-	if _, ok := i.parsedPermissions[p[:colon+1]+"*"]; ok {
+	if _, ok := perms[p[:colon+1]+"*"]; ok {
 		return true
 	}
 	return false
+}
+
+// IsSuperAdmin reports whether the permissions claim carries the "*:*"
+// grant — the entry HasPermission honors as satisfying every action.
+// Returns false on a nil Identity and on a principal whose claim is absent.
+//
+// This is the only sanctioned way to ask the super-admin question:
+// HasPermission("*:*") panics by design, because a caller-side wildcard
+// blurs which action a route actually requires. IsSuperAdmin asks a
+// different, well-defined question, so it does not weaken that invariant.
+//
+// Prefer naming a concrete permission ("users:admin") and letting "*:*"
+// satisfy it — that is the framework's intended shape and keeps the grant
+// auditable per resource. Reach for IsSuperAdmin only where there is no
+// concrete permission to name: cross-tenant bypass inside
+// Query.ToCriteria(ctx), a /whoami flag for the UI, decisions that belong
+// to no single resource.
+//
+// Like every other Identity helper, unaffected by the authorization master
+// switch (auth.authorization.enabled) — it reads the token, not the gate.
+// Shares the parsed-claim cache with HasPermission and honors the claim
+// name configured via authorization.permissionsClaim.
+func (i *Identity) IsSuperAdmin() bool {
+	if i == nil {
+		return false
+	}
+	_, ok := i.permissions()[superAdminGrant]
+	return ok
 }
 
 // TenantID returns the tenant claim configured via

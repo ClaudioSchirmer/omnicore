@@ -11,6 +11,43 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-08-21
+
+### Added
+
+- **`configuration.Identity.IsSuperAdmin()`** — the sanctioned way to ask
+  whether the authenticated principal carries the `*:*` grant. The grant
+  itself was always honored: `HasPermission("users:read")` returns true for a
+  principal holding `*:*`. What had no expression was the question — because
+  caller-side wildcards panic by design, `HasPermission("*:*")` was a runtime
+  panic, and services reaching for "is this a super-admin?" had to re-read and
+  re-parse the permissions claim by hand. Hand-rolling it is a silent-failure
+  trap: the claim NAME is configurable via `authorization.permissionsClaim`,
+  so a service hardcoding `Claims["permissions"]` starts answering false the
+  day an operator renames it to `scope`, and the claim arrives in four shapes
+  (`[]string`, `[]any`, space-separated string, comma-separated string).
+
+  `IsSuperAdmin()` is nil-safe, reads the configured claim name, tolerates
+  every shape `HasPermission` does, and shares the same parsed-claim cache —
+  entering through either method leaves the other seeing the same set, at no
+  extra parse. Like every `Identity` helper it reads the token, not the gate,
+  so it is unaffected by the `auth.authorization.enabled` master switch.
+  A resource wildcard is not a super-admin grant: `users:*` reports false.
+
+  **This is not the default way to express admin.** Naming a concrete
+  permission (`users:admin`) and asking for it stays the intended shape — a
+  principal carrying `*:*` satisfies it automatically and the grant stays
+  auditable per resource. `IsSuperAdmin()` is for the residual cases where
+  there is no concrete permission to name: cross-tenant bypass inside
+  `Query.ToCriteria(ctx)`, a `/whoami` flag for the UI, decisions that belong
+  to no single resource.
+
+### Changed
+
+- **`HasPermission`'s caller-side wildcard panic now names the alternative** —
+  the message ends "Compose explicit OR over concrete actions, or call
+  IsSuperAdmin." The panic's trigger conditions are unchanged.
+
 ## [0.55.0] - 2026-08-20
 
 ### Changed
