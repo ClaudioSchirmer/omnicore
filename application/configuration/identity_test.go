@@ -132,6 +132,66 @@ func TestIdentity_HasPermission_SuperAdmin(t *testing.T) {
 	}
 }
 
+func TestIdentity_IsSuperAdmin(t *testing.T) {
+	cases := []struct {
+		name  string
+		claim any
+		want  bool
+	}{
+		{"grant present", []string{"*:*"}, true},
+		{"grant among others", []any{"users:read", "*:*"}, true},
+		{"string claim", "orders:read *:*", true},
+		{"resource wildcard is not super-admin", []string{"users:*"}, false},
+		{"concrete permissions only", []string{"users:read", "users:write"}, false},
+		{"claim absent", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := &Identity{Claims: map[string]any{"permissions": tc.claim}}
+			if got := id.IsSuperAdmin(); got != tc.want {
+				t.Errorf("IsSuperAdmin() = %v, want %v (claim %#v)", got, tc.want, tc.claim)
+			}
+		})
+	}
+}
+
+func TestIdentity_IsSuperAdmin_NilSafe(t *testing.T) {
+	var id *Identity
+	if id.IsSuperAdmin() {
+		t.Error("nil Identity must not report super-admin")
+	}
+}
+
+func TestIdentity_IsSuperAdmin_CustomClaimName(t *testing.T) {
+	defer SetPermissionsClaim("") // restore default
+	SetPermissionsClaim("scope")
+	id := &Identity{Claims: map[string]any{"scope": "*:*"}}
+	if !id.IsSuperAdmin() {
+		t.Error("custom claim name must be honored")
+	}
+	// The default name must NOT be consulted once reconfigured.
+	other := &Identity{Claims: map[string]any{"permissions": "*:*"}}
+	if other.IsSuperAdmin() {
+		t.Error("stale default claim name must not be read")
+	}
+}
+
+// IsSuperAdmin and HasPermission share one parsed-claim cache — entering
+// through either method must leave the other seeing the same set.
+func TestIdentity_IsSuperAdmin_SharesCacheWithHasPermission(t *testing.T) {
+	id := &Identity{Claims: map[string]any{"permissions": []string{"*:*"}}}
+	if !id.IsSuperAdmin() {
+		t.Fatal("*:* must report super-admin")
+	}
+	if id.parsedPermissions == nil {
+		t.Error("cache must populate after first IsSuperAdmin")
+	}
+	id.Claims["permissions"] = []string{"users:read"}
+	if !id.HasPermission("anything:goes") {
+		t.Error("HasPermission must hit the cache IsSuperAdmin populated, not re-parse")
+	}
+}
+
 func TestIdentity_HasPermission_CallerWildcardPanics(t *testing.T) {
 	id := &Identity{Claims: map[string]any{"permissions": []string{"users:read"}}}
 	defer func() {

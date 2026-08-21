@@ -7,6 +7,43 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.56.0</span><span class="release-date">August 21, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#authz-seams">
+                <code>Identity.IsSuperAdmin()</code></a></strong> — the sanctioned way to ask whether the
+                authenticated principal carries the <code>*:*</code> grant. The grant itself was always
+                honored: <code>HasPermission("users:read")</code> returns true for a principal holding
+                <code>*:*</code>. What had no expression was the question — caller-side wildcards panic by
+                design, so <code>HasPermission("*:*")</code> was a runtime panic and services had to re-read
+                and re-parse the permissions claim by hand.
+                <ul>
+                    <li><strong>Hand-rolling it is a silent-failure trap.</strong> The claim NAME is
+                        configurable via <code>authorization.permissionsClaim</code>, so a service hardcoding
+                        <code>Claims["permissions"]</code> starts answering false the day an operator renames it
+                        to <code>scope</code> — and the claim arrives in four shapes
+                        (<code>[]string</code>, <code>[]any</code>, space-separated string, comma-separated
+                        string).</li>
+                    <li><strong>Nil-safe, cache-sharing, gate-independent.</strong> It reads the configured
+                        claim name, tolerates every shape <code>HasPermission</code> does, and shares the same
+                        parsed-claim cache — entering through either method leaves the other seeing the same
+                        set, at no extra parse. Like every <code>Identity</code> helper it reads the token, not
+                        the gate, so it is unaffected by the <code>auth.authorization.enabled</code> master
+                        switch. A resource wildcard is not a super-admin grant: <code>users:*</code> reports
+                        false.</li>
+                    <li><strong>Not the default way to express admin.</strong> Naming a concrete permission
+                        (<code>users:admin</code>) and asking for it stays the intended shape — a principal
+                        carrying <code>*:*</code> satisfies it automatically and the grant stays auditable per
+                        resource. <code>IsSuperAdmin()</code> is for the residual cases with no concrete
+                        permission to name: cross-tenant bypass inside <code>Query.ToCriteria(ctx)</code>, a
+                        <code>/whoami</code> flag for the UI, decisions belonging to no single resource.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <code>HasPermission</code>'s caller-side wildcard panic now names the
+                alternative, ending "Compose explicit OR over concrete actions, or call IsSuperAdmin." The
+                panic's trigger conditions are unchanged.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.55.0</span><span class="release-date">August 20, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><a href="#auto-query-handlers~qry-sort">the
