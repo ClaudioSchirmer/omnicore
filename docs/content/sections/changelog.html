@@ -7,6 +7,34 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.56.1</span><span class="release-date">August 21, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong><a href="#aggregate-persistence">
+                <code>BaseAggregateRepository</code> embeds the write base directly</a></strong> — the
+                aggregate repository now embeds <code>write.BaseRepository[T]</code> instead of reaching it
+                through the <code>read</code> package's local generic type alias
+                (<code>read.BaseRepository[T any] = write.BaseRepository[T]</code>).
+                <ul>
+                    <li><strong>Nothing changes for your service.</strong> A type alias is an identity, so the
+                        promoted field keeps the same name (<code>BaseRepository</code>) and the same type:
+                        existing struct literals
+                        (<code>BaseAggregateRepository[T]{BaseRepository: …}</code>) and every promoted
+                        selector compile unchanged. The alias stays exported for services that spell the write
+                        base unqualified through the <code>read</code> package.</li>
+                    <li><strong>What it fixes is your IDE.</strong> Field promotion across a <em>generic</em>
+                        type alias (a Go 1.24 feature) is not resolved by GoLand's Go plugin, which reported a
+                        phantom <code>Ambiguous reference</code> <em>error</em> on every line touching
+                        <code>repo.Engine</code> or <code>repo.Constraints</code> — on code that
+                        <code>go build</code>, <code>go vet</code> and <code>gopls</code> all accept, and that
+                        could not be ambiguous in the first place: in Go an ambiguous selector is a compile
+                        error, not a warning. Measured shape by shape, the alias is the trigger at any embed
+                        depth and the direct embed is clean; it was the framework's only generic type alias, so
+                        one embed closes the false positive for every consumer at once.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.56.0</span><span class="release-date">August 21, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#authz-seams">

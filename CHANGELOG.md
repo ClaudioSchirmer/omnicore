@@ -11,6 +11,29 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-08-21
+
+### Fixed
+
+- **`read.BaseAggregateRepository` now embeds `write.BaseRepository[T]`
+  directly** instead of reaching it through the local generic type alias
+  (`read.BaseRepository[T any] = write.BaseRepository[T]`). **No API change:**
+  a type alias is an identity, so the promoted field keeps the same name
+  (`BaseRepository`) and the same type — existing struct literals
+  (`BaseAggregateRepository[T]{BaseRepository: ...}`) and every promoted
+  selector compile unchanged, and the alias stays exported for services that
+  spell the write base unqualified through the `read` package.
+
+  What it fixes is downstream tooling. Field promotion ACROSS a **generic type
+  alias** (a Go 1.24 feature) is not resolved by GoLand's Go plugin: it
+  reported a phantom `Ambiguous reference` **error** on every consumer line
+  touching `repo.Engine` or `repo.Constraints` — on code that `go build`,
+  `go vet` and `gopls` all accept, and that could not be ambiguous in the first
+  place, since in Go an ambiguous selector is a compile error, not a warning.
+  Measured shape by shape: the alias is the trigger at any embed depth, and the
+  direct embed is clean. This was the framework's only generic type alias, so
+  the one embed closes the false positive for every consumer at once.
+
 ## [0.56.0] - 2026-08-21
 
 ### Added
