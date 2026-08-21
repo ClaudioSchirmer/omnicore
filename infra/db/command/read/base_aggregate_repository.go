@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/command/write"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -38,7 +39,15 @@ import (
 // Config still live on the embedded BaseRepository; setting them after New is
 // equivalent to the direct struct-literal of BaseRepository[T].
 type BaseAggregateRepository[T domain.Entity] struct {
-	BaseRepository[T]
+	// Qualified on purpose — NOT the local BaseRepository[T] alias. A type alias
+	// is an identity, so the promoted field name (BaseRepository) and its type are
+	// the same either way; what changes is the IDE. Reaching a promoted field
+	// ACROSS a generic type alias makes GoLand's Go plugin report a phantom
+	// "Ambiguous reference" ERROR on every consumer that touches r.Engine or
+	// r.Constraints, while go build, go vet and gopls stay silent. Measured shape
+	// by shape: the alias is the trigger at any embed depth; this qualified form
+	// is clean. Do not "simplify" it back to the alias.
+	write.BaseRepository[T]
 	Loader *AggregateLoader[T]
 }
 
@@ -52,7 +61,7 @@ type BaseAggregateRepository[T domain.Entity] struct {
 // remains available: r.ContextName = "..." + r.Loader.WithContextName("...").
 func NewBaseAggregateRepository[T domain.Entity](eng RelationalEngine, newEntity func() T) BaseAggregateRepository[T] {
 	return BaseAggregateRepository[T]{
-		BaseRepository: BaseRepository[T]{
+		BaseRepository: write.BaseRepository[T]{
 			Engine:    eng,
 			NewEntity: newEntity,
 		},
