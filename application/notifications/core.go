@@ -45,6 +45,21 @@ func (ReadTimeoutNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticRequestTimeout
 }
 
+// UnsupportedCapabilityNotification is emitted by a read engine when a request
+// asks for something the store the view is read from cannot serve — free-text
+// search, or a filter or sort on a field a single-root read cannot reach. It names
+// no backing on purpose: EVERY engine raises this same notification, so the four
+// surfaces render one refusal whatever serves the view, and adding an engine adds
+// no vocabulary here. The offending capability or Go field path rides in the
+// notification's FieldName. Carries Semantic = SemanticSchema -> 400 Bad Request.
+type UnsupportedCapabilityNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (UnsupportedCapabilityNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticSchema
+}
+
 // MissingAuthorizationNotification is emitted by the auth middleware when the
 // Authorization header is absent or does not follow the `Bearer <token>`
 // shape — the client never presented a credential.

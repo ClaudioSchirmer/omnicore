@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // idLabel renders headers deterministically for tests: the json wire leaf when
@@ -156,7 +158,7 @@ func TestPlanFor_ResponseDeclaredIDIsAnExportedColumn(t *testing.T) {
 		t.Fatalf("expected a root `id` column, got %+v", plan.Root.Columns)
 	}
 
-	pruned := plan.PruneToProjection(map[string]int{"ID": 1})
+	pruned := plan.PruneToProjection(queries.ProjectOnlyPaths("ID"))
 	if len(pruned.Root.Columns) != 1 || pruned.Root.Columns[0].WireLeaf != "id" {
 		t.Fatalf("inclusion by Go path ID must keep the id column alone, got %+v", pruned.Root.Columns)
 	}
@@ -179,20 +181,20 @@ func TestPlanFor_ResponseDeclaredIDIsAnExportedColumn(t *testing.T) {
 
 func TestPruneToProjection_EmptyOrAutoIDOnlyKeepsWholePlan(t *testing.T) {
 	plan := planOf[exportUserResponse](t)
-	if got := plan.PruneToProjection(nil); got != plan {
+	if got := plan.PruneToProjection(queries.Projection{}); got != plan {
 		t.Error("nil projection must return the plan unchanged")
 	}
-	if got := plan.PruneToProjection(map[string]int{}); got != plan {
+	if got := plan.PruneToProjection(queries.Projection{}); got != plan {
 		t.Error("empty projection must return the plan unchanged")
 	}
-	if got := plan.PruneToProjection(map[string]int{"_id": 0}); got != plan {
+	if got := plan.PruneToProjection(queries.Projection{}); got != plan {
 		t.Error("`_id`-only auto-exclusion must count as whole-doc")
 	}
 }
 
 func TestPruneToProjection_InclusionKeepsFlaggedLeaves(t *testing.T) {
 	plan := planOf[exportUserResponse](t)
-	pruned := plan.PruneToProjection(map[string]int{"Name": 1})
+	pruned := plan.PruneToProjection(queries.ProjectOnlyPaths("Name"))
 	if len(pruned.Root.Columns) != 1 || pruned.Root.Columns[0].GoField != "Name" {
 		t.Fatalf("expected only Name to survive, got %+v", pruned.Root.Columns)
 	}
@@ -203,7 +205,7 @@ func TestPruneToProjection_InclusionKeepsFlaggedLeaves(t *testing.T) {
 
 func TestPruneToProjection_InclusionOfSegmentPathKeepsWholeSegment(t *testing.T) {
 	plan := planOf[exportUserResponse](t)
-	pruned := plan.PruneToProjection(map[string]int{"Addresses": 1})
+	pruned := plan.PruneToProjection(queries.ProjectOnlyPaths("Addresses"))
 	if len(pruned.Root.Columns) != 0 {
 		t.Fatalf("root scalars must drop in inclusion mode, got %+v", pruned.Root.Columns)
 	}
@@ -221,7 +223,7 @@ func TestPruneToProjection_InclusionOfSegmentPathKeepsWholeSegment(t *testing.T)
 
 func TestPruneToProjection_InclusionOfNestedLeafDropsSiblings(t *testing.T) {
 	plan := planOf[exportUserResponse](t)
-	pruned := plan.PruneToProjection(map[string]int{"Addresses.City": 1})
+	pruned := plan.PruneToProjection(queries.ProjectOnlyPaths("Addresses.City"))
 	if len(pruned.Root.Columns) != 0 {
 		t.Fatalf("root scalars must drop, got %+v", pruned.Root.Columns)
 	}
@@ -239,7 +241,7 @@ func TestPruneToProjection_InclusionOfNestedLeafDropsSiblings(t *testing.T) {
 
 func TestPruneToProjection_ExclusionDropsFlaggedPaths(t *testing.T) {
 	plan := planOf[exportUserResponse](t)
-	pruned := plan.PruneToProjection(map[string]int{"Email": 0})
+	pruned := plan.PruneToProjection(queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"Email": true}})
 	cols := pruned.Root.Columns
 	if len(cols) != 1 || cols[0].GoField != "Name" {
 		t.Fatalf("expected Email dropped, Name kept, got %+v", cols)
@@ -251,7 +253,7 @@ func TestPruneToProjection_ExclusionDropsFlaggedPaths(t *testing.T) {
 
 func TestPruneToProjection_ExclusionOfSegmentDropsWholeSegment(t *testing.T) {
 	plan := planOf[exportUserResponse](t)
-	pruned := plan.PruneToProjection(map[string]int{"Addresses": 0})
+	pruned := plan.PruneToProjection(queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"Addresses": true}})
 	if len(pruned.Root.Columns) != 2 {
 		t.Fatalf("root scalars must survive, got %+v", pruned.Root.Columns)
 	}

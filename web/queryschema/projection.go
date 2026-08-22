@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // ProjectionSchema is the cached reflection result for a Response DTO:
@@ -192,14 +194,18 @@ func computedSources(f reflect.StructField, docPrefix string) []string {
 // selection, a proto FieldMask — would otherwise have to join a list just to
 // have it split back.
 //
-// wireSet returns which wire names appeared in the input; the caller uses it to
-// drive the top-level `id` auto-exclusion (the framework adds `_id: 0` when
-// `id` is absent from the wire set).
-func ParseProjection(tokens []string, projSchema *ProjectionSchema) (proj map[string]int, wireSet map[string]bool, badToken string, ok bool) {
+// wireSet returns which wire names appeared in the input, so a caller can tell
+// what the consumer actually asked for by its own spelling.
+//
+// The result is an INCLUSION projection over Go field paths. Nothing here decides
+// what a backing does about its own identity key when the consumer did not ask
+// for the id: an unnamed path is simply not selected, and each read engine takes
+// that from there.
+func ParseProjection(tokens []string, projSchema *ProjectionSchema) (proj queries.Projection, wireSet map[string]bool, badToken string, ok bool) {
 	if len(tokens) == 0 {
-		return nil, nil, "", true
+		return queries.Projection{}, nil, "", true
 	}
-	proj = make(map[string]int, len(tokens))
+	proj = queries.Projection{Mode: queries.ProjectOnly, Paths: make(map[string]bool, len(tokens))}
 	wireSet = make(map[string]bool, len(tokens))
 	for _, t := range tokens {
 		t = strings.TrimSpace(t)
@@ -207,25 +213,25 @@ func ParseProjection(tokens []string, projSchema *ProjectionSchema) (proj map[st
 			continue
 		}
 		if projSchema == nil {
-			proj[t] = 1
+			proj.Paths[t] = true
 			wireSet[t] = true
 			continue
 		}
 		docPath, allowed := projSchema.Paths[t]
 		if !allowed {
-			return nil, nil, t, false
+			return queries.Projection{}, nil, t, false
 		}
 		// A computed field has no column: push its SOURCES down instead, so the
 		// reader returns what FromQueryResult needs to derive it. Requesting
 		// the computed path itself would not resolve to a column.
 		if sources, isComputed := projSchema.Computed[t]; isComputed {
 			for _, src := range sources {
-				proj[src] = 1
+				proj.Paths[src] = true
 			}
 			wireSet[t] = true
 			continue
 		}
-		proj[docPath] = 1
+		proj.Paths[docPath] = true
 		wireSet[t] = true
 	}
 	return proj, wireSet, "", true

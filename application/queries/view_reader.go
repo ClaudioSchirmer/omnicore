@@ -17,13 +17,11 @@ type OrderByField struct {
 // ReadCriteria is the transport-agnostic input for a paged read.
 // Filter values are passed through to the underlying ViewReader as-is.
 //
-// Projection carries the per-field include (value 1) or exclude (value 0)
-// flags Mongo accepts. Empty map → no projection (whole doc). When the
-// caller wants the response to drop `_id` (the wrapper does this when the
-// consumer-requested `fields` list does not include `id`), it adds an
-// explicit `_id: 0` entry alongside the include-1 entries — Mongo allows
-// `_id: 0` mixed with include-1 entries (the single permitted exclusion in
-// otherwise-inclusion projections).
+// Projection is the store-neutral field selection, keyed by Go field path (see
+// the Projection type). Its zero value is the whole document. It names no store's
+// convention: how an include-list is rendered — and what a backing does about its
+// own identity key when the caller did not ask for the id — is that backing's
+// private business, decided below the read seam.
 //
 // OnlyTotal switches the read into the only-total mode: the implementation
 // runs the underlying store's count primitive against Filter (with the
@@ -40,7 +38,7 @@ type OrderByField struct {
 type ReadCriteria struct {
 	Filter     map[string]any
 	OrderBy    []OrderByField
-	Projection map[string]int
+	Projection Projection
 	// Limit is the internal page size. The wire speaks the Relay pair — a
 	// `first=N` maps to Limit=N (forward), a `last=N` maps to Limit=N with
 	// Backward=true — and the directional exclusivity is enforced by the
@@ -99,7 +97,7 @@ func (c *ReadCriteria) referencesField(goFieldPath string) bool {
 	if _, ok := c.Filter[goFieldPath]; ok {
 		return true
 	}
-	if c.Projection[goFieldPath] == 1 {
+	if c.Projection.IsInclusion() && c.Projection.Selects(goFieldPath) {
 		return true
 	}
 	for _, s := range c.OrderBy {
@@ -110,31 +108,10 @@ func (c *ReadCriteria) referencesField(goFieldPath string) bool {
 	return false
 }
 
-// projectionIncludes reports inclusion mode: any real column flagged 1 (the
-// `_id` auto-exclusion never counts — it rides along in either mode).
-func projectionIncludes(proj map[string]int) bool {
-	for k, v := range proj {
-		if v == 1 && k != "_id" {
-			return true
-		}
-	}
-	return false
-}
-
 // scrubField removes the field from the projection (mode-aware), the ordering,
 // and the filter so it reaches neither the store nor the wire.
 func (c *ReadCriteria) scrubField(goFieldPath string) {
-	if c.Projection == nil {
-		c.Projection = map[string]int{}
-	}
-	if projectionIncludes(c.Projection) {
-		// Inclusion mode (?fields=): drop the include — Mongo forbids mixing an
-		// exclusion into an otherwise-inclusion projection.
-		delete(c.Projection, goFieldPath)
-	} else {
-		// Whole-doc or exclusion mode: a pure exclusion strips the field.
-		c.Projection[goFieldPath] = 0
-	}
+	c.Projection.Drop(goFieldPath)
 	if len(c.OrderBy) > 0 {
 		kept := c.OrderBy[:0]
 		for _, s := range c.OrderBy {
@@ -192,14 +169,14 @@ type Page struct {
 	// wrapper ignores this field; it stays nil for only-total reads.
 	ItemCursors []string
 
-	// Projection is the effective per-field include/exclude map the read used —
-	// the post-ToCriteria ReadCriteria.Projection echoed back. The tabular-export
+	// Projection is the effective field selection the read used — the
+	// post-ToCriteria ReadCriteria.Projection echoed back. The tabular-export
 	// wrapper prunes its column plan to this (export.Plan.PruneToProjection), so a
 	// field a Query removed from the criteria (e.g. via ReadCriteria.Restrict)
 	// disappears from the CSV/XLSX columns — header included — not just from the
 	// JSON, which keeps ToCriteria the single source of truth for which fields
 	// surface across all formats. Empty/nil = whole-doc read (every column).
-	Projection map[string]int
+	Projection Projection
 }
 
 // ViewReader is the read-side port of CQRS. Implementations live in infra

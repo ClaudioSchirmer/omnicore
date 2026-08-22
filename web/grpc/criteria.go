@@ -290,9 +290,6 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 		return b
 	}
 	b.in.Controls.Fields = true
-	if b.in.Projection == nil {
-		b.in.Projection = map[string]int{}
-	}
 	if b.masked == nil {
 		b.masked = map[string]bool{}
 	}
@@ -307,11 +304,11 @@ func (b *CriteriaBuilder) FieldMask(m *fieldmaskpb.FieldMask) *CriteriaBuilder {
 		}
 		if sources, isComputed := b.computed[path]; isComputed {
 			for _, src := range sources {
-				b.in.Projection[src] = 1
+				b.in.Projection.Include(src)
 			}
 			continue
 		}
-		b.in.Projection[goPath] = 1
+		b.in.Projection.Include(goPath)
 	}
 	return b
 }

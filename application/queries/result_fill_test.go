@@ -13,7 +13,7 @@ import (
 // the reference implementation the direct fill must match field for field.
 func legacyResultFromDoc[TResult any](doc map[string]any) TResult {
 	var out TResult
-	if raw, err := json.Marshal(applyIDFallback(doc)); err == nil {
+	if raw, err := json.Marshal(doc); err == nil {
 		_ = json.Unmarshal(raw, &out)
 	}
 	plan := resultPlanFor(reflect.TypeOf(out))
@@ -84,7 +84,7 @@ type fillEnumNote struct{ domain.DomainNotificationBase }
 
 func fillDoc() map[string]any {
 	return map[string]any{
-		"_id":     "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51",
+		"ID":      "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51",
 		"Origin":  "embedded-src",
 		"Name":    "Alice",
 		"Alias":   "ali",
@@ -122,7 +122,7 @@ func TestFill_ParityWithLegacyRoundTrip(t *testing.T) {
 		t.Fatalf("direct fill diverged from the JSON round-trip:\n got: %#v\nwant: %#v", got, want)
 	}
 	if got.ID.Value() != "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51" {
-		t.Fatalf("expected the _id fallback onto ID, got %q", got.ID.Value())
+		t.Fatalf("expected the identity filled onto ID, got %q", got.ID.Value())
 	}
 	if got.Origin != "embedded-src" {
 		t.Fatalf("expected the promoted embedded field filled, got %q", got.Origin)
@@ -202,14 +202,17 @@ func TestFill_NilAndEmptyDoc(t *testing.T) {
 	}
 }
 
-func TestFill_IDFallbackOnlyWhenIDAbsent(t *testing.T) {
+// The filler knows ONE identity spelling: the Go field "ID". A store's own key
+// name never reaches this layer — settling it is the read engine's job — so a
+// stray one is just another unmapped document entry.
+func TestFill_IdentityIsTheGoFieldOnly(t *testing.T) {
 	doc := map[string]any{
-		"_id": "from-underscore",
+		"_id": "a-store-key",
 		"ID":  "explicit",
 	}
 	got := ResultFromDoc[fillResult](doc)
 	if got.ID.Value() != "explicit" {
-		t.Fatalf("expected the explicit ID to win over _id, got %q", got.ID.Value())
+		t.Fatalf("expected the Go field ID to fill, got %q", got.ID.Value())
 	}
 }
 

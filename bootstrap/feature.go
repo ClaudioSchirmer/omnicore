@@ -89,9 +89,21 @@ type GRPCFeature interface {
 // closure captures a snapshot of the per-view overrides + the yaml-supplied
 // default; the framework constant fallback (100) lives in the reader itself
 // so a returned 0 here signals "delegate to the framework default".
-func buildViewMaxLimitResolver(views []*query.ViewDefinition, yamlDefault int64) func(view string) int64 {
-	overrides := make(map[string]int64, len(views))
+func buildViewMaxLimitResolver(views []*query.ViewDefinition, relational []*query.RelationalViewDefinition, yamlDefault int64) func(view string) int64 {
+	overrides := make(map[string]int64, len(views)+len(relational))
 	for _, v := range views {
+		if n := v.MaxLimitValue(); n > 0 {
+			overrides[v.Name()] = n
+		}
+	}
+	// Both families feed ONE resolver, and the SAME closure is wired into every
+	// backing: a view's ceiling then applies identically whichever engine serves
+	// it, and the cascade cannot drift between them. View names are unique across
+	// the families (ValidateRelationalViews), so the map cannot collide.
+	for _, v := range relational {
+		if v == nil {
+			continue
+		}
 		if n := v.MaxLimitValue(); n > 0 {
 			overrides[v.Name()] = n
 		}

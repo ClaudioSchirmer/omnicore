@@ -71,6 +71,7 @@ func (coreNL) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Service niet beschikbaar.",
 		"RequestTimeoutNotification":        "De aanvraag heeft de tijdslimiet overschreden.",
 		"ReadTimeoutNotification":           "De aanvraag is niet binnen de tijdslimiet ontvangen.",
+		"UnsupportedCapabilityNotification": "Deze mogelijkheid wordt niet ondersteund door de opslag waaruit deze view wordt gelezen.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization-header ontbreekt of is misvormd.",

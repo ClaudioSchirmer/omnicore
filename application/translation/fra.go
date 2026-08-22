@@ -71,6 +71,7 @@ func (coreFR) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Service indisponible.",
 		"RequestTimeoutNotification":        "La requête a dépassé le délai imparti.",
 		"ReadTimeoutNotification":           "La requête n'a pas été reçue dans le délai imparti.",
+		"UnsupportedCapabilityNotification": "Cette capacité n'est pas prise en charge par le magasin depuis lequel cette vue est lue.",
 
 		// Auth
 		"MissingAuthorizationNotification": "En-tête d'autorisation absent ou mal formé.",

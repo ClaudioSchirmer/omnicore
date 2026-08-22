@@ -116,21 +116,53 @@ func translateSortFields(node *query.ViewNode, src []queries.OrderByField) ([]qu
 
 // translateProjectionKeys rewrites a Go-field-path projection into physical
 // columns. The reserved "_id" key passes through untranslated.
-func translateProjectionKeys(node *query.ViewNode, src map[string]int) (map[string]int, error) {
-	if len(src) == 0 {
-		return src, nil
+// normalizeIdentity settles the store's own identity key before the document
+// leaves this reader. `_id` is Mongo's spelling and it stops here: a document
+// whose schema maps a physical id column already carries "ID" (ToGoDoc
+// translated it), but a mirror of an upstream collection is stored under `_id`
+// alone, and no schema column maps it. Lifting it onto the Go field "ID" here is
+// what lets every layer above speak one identity vocabulary — the application
+// layer used to carry this fallback, which meant it knew a store's key name.
+func normalizeIdentity(doc map[string]any) map[string]any {
+	if doc == nil {
+		return doc
 	}
-	out := make(map[string]int, len(src))
-	for k, v := range src {
-		if k == "_id" {
-			out[k] = v
-			continue
-		}
-		col, err := translateDotted(node, k)
+	if _, has := doc[idGoField]; has {
+		return doc
+	}
+	if v, ok := doc["_id"].(string); ok {
+		doc[idGoField] = v
+	}
+	return doc
+}
+
+// idGoField is the Go field name the root identity resolves under — fixed by the
+// Entity contract, and the path a selection names when it wants the id.
+const idGoField = "ID"
+
+func translateProjectionKeys(node *query.ViewNode, src queries.Projection) (map[string]int, error) {
+	if !src.Narrows() {
+		return nil, nil
+	}
+	flag := 0
+	if src.IsInclusion() {
+		flag = 1
+	}
+	out := make(map[string]int, len(src.Paths)+1)
+	for path := range src.Paths {
+		col, err := translateDotted(node, path)
 		if err != nil {
 			return nil, err
 		}
-		out[col] = v
+		out[col] = flag
+	}
+	// `_id` is Mongo's, and it stops here. The driver returns it on every
+	// inclusion projection unless it is explicitly excluded, so a selection that
+	// did not name the identity has to say so — in the store's own vocabulary,
+	// inside the store's own reader. Above this line the identity is just the Go
+	// path "ID", selected or not like any other.
+	if src.IsInclusion() && !src.Selects(idGoField) {
+		out["_id"] = 0
 	}
 	return out, nil
 }
@@ -451,7 +483,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		for docField, sdCol := range childSDCleanup {
 			removeChildSDColumn(m, strings.Split(docField, "."), sdCol)
 		}
-		items = append(items, node.ToGoDoc(m))
+		items = append(items, normalizeIdentity(node.ToGoDoc(m)))
 	}
 
 	isFirstForward := c.After == "" && c.Before == ""
@@ -509,7 +541,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	// writing an exclusion into the projection. Ignoring it would mean the
 	// restriction silently does not apply on this route.
 	findOpts := options.FindOne()
-	if len(c.Projection) > 0 {
+	if c.Projection.Narrows() {
 		colProj, perr := translateProjectionKeys(node, c.Projection)
 		if perr != nil {
 			return nil, false, perr
@@ -531,7 +563,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	if !c.IncludeArchived {
 		node.StripArchivedChildren(m)
 	}
-	return node.ToGoDoc(m), true, nil
+	return normalizeIdentity(node.ToGoDoc(m)), true, nil
 }
 
 // normalizeBSONValues rewrites driver-specific BSON scalars into their plain

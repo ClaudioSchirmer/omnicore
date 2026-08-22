@@ -191,7 +191,7 @@ func TestComputed_SelectionPushesSources(t *testing.T) {
 	if resp := reg.Execute(ctx, `query { widgets { edges { node { display } } } }`, nil, ""); len(resp.Errors) != 0 {
 		t.Fatalf("selecting a computed field must resolve: %+v", resp.Errors)
 	}
-	want := map[string]int{"Name": 1, "Code": 1}
+	want := queries.ProjectOnlyPaths("Name", "Code")
 	if !reflect.DeepEqual(h.captured.Projection, want) {
 		t.Fatalf("projection must carry the sources, got %+v", h.captured.Projection)
 	}
@@ -205,7 +205,7 @@ func TestComputed_SelectionMixesSourcesWithStoredPaths(t *testing.T) {
 	if resp := reg.Execute(ctx, `query { widgets { edges { node { id name display } } } }`, nil, ""); len(resp.Errors) != 0 {
 		t.Fatalf("mixed selection must resolve: %+v", resp.Errors)
 	}
-	want := map[string]int{"ID": 1, "Name": 1, "Code": 1}
+	want := queries.ProjectOnlyPaths("ID", "Name", "Code")
 	if !reflect.DeepEqual(h.captured.Projection, want) {
 		t.Fatalf("projection: %+v", h.captured.Projection)
 	}

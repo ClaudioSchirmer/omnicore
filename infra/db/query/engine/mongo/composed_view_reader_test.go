@@ -565,11 +565,7 @@ func TestComposedReader_OnlyTotalSkipsLegs(t *testing.T) {
 
 func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 	env := newCVREnv()
-	crit := queries.ReadCriteria{Projection: map[string]int{
-		"Code":       1,
-		"Notes.Text": 1,
-		"_id":        0,
-	}}
+	crit := queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Code", "Notes.Text")}
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full", crit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -613,7 +609,7 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 		}
 	}
 	// Projection echo carries the COMPOSED projection for export pruning.
-	if page.Projection["Notes.Text"] != 1 {
+	if !page.Projection.Selects("Notes.Text") {
 		t.Fatalf("expected the composed projection echoed, got %#v", page.Projection)
 	}
 }
@@ -621,7 +617,7 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 func TestComposedReader_ExclusionProjectionDropsLeg(t *testing.T) {
 	env := newCVREnv()
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Projection: map[string]int{"Notes": 0}})
+		queries.ReadCriteria{Projection: queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"Notes": true}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -637,7 +633,7 @@ func TestComposedReader_ExclusionProjectionDropsLeg(t *testing.T) {
 func TestComposedReader_WholeSegmentInclusion(t *testing.T) {
 	env := newCVREnv()
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Projection: map[string]int{"Notes": 1, "_id": 0}})
+		queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Notes")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -799,7 +795,7 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 	// a helper and strips it afterwards.
 	env2 := newCVREnvByMirrorID()
 	page2, err := env2.reader.ReadPage(context.Background(), "gadgets_mirrored",
-		queries.ReadCriteria{Projection: map[string]int{"Code": 1, "UpstreamMirror": 1, "_id": 0}})
+		queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Code", "UpstreamMirror")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -815,7 +811,7 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 	// lifted for the join and restored afterwards.
 	env3 := newCVREnvByMirrorID()
 	page3, err := env3.reader.ReadPage(context.Background(), "gadgets_mirrored",
-		queries.ReadCriteria{Projection: map[string]int{"MirrorID": 0}})
+		queries.ReadCriteria{Projection: queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"MirrorID": true}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -902,11 +898,7 @@ func TestComposedReader_CursorEdgeCases(t *testing.T) {
 func TestComposedReader_PartialMirrorProjectionStillJoins(t *testing.T) {
 	env := newCVREnv()
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Projection: map[string]int{
-			"Code":                1,
-			"UpstreamMirror.Code": 1,
-			"_id":                 0,
-		}})
+		queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Code", "UpstreamMirror.Code")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

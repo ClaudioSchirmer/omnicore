@@ -23,6 +23,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/relational"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
@@ -179,6 +180,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	if err != nil {
 		return err
 	}
+	// Relational read models are collected HERE, next to the projected ones,
+	// because the read-side wiring below needs both: one max-limit resolver serves
+	// every backing. Like composed views, collection is a pure walk over the
+	// features; the cross-family name validation runs later, once all three sets
+	// are resolved.
+	relationalViews, err := collectRelationalViews(wiring.Features)
+	if err != nil {
+		return err
+	}
 
 	// Wire the read-side per-view max-limit resolver into the framework's
 	// MongoViewReader. Resolution at read time: ViewDefinition.MaxLimit
@@ -187,16 +197,25 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// hook by design — they own their own limit policy.
 	if engine, ok := deps.ViewReader.(*query.ViewReaderEngine); ok {
 		if mvr, ok := engine.Fallback().(*mongo.MongoViewReader); ok {
-			mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
+			mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, relationalViews, cfg.Query.MaxLimit))
 			// Register the views so the reader can translate criteria/documents
 			// between Go field names and physical columns via each view's
 			// TableSchema tree.
 			mvr.SetViews(views)
 		}
-		// No per-view backing is registered: every view is served by the fallback.
-		// A second backing plugs in at this exact seat via engine.Register(reader,
-		// views) — the seam names no store, so nothing above it changes when one
-		// arrives.
+		// Install the relational read backing: a view declared with
+		// query.RelationalView is served from the source of record through the
+		// loader it carries, and the seam routes to it BY NAME. Mutation, not a
+		// reassignment — handlers that captured deps.ViewReader earlier keep
+		// dispatching correctly. The same max-limit closure the projection reader
+		// got is wired here, so a view's ceiling applies identically whichever
+		// backing serves it.
+		if rel := relational.NewViewReader(relationalViews); !rel.Empty() {
+			rel.SetMaxLimitResolver(buildViewMaxLimitResolver(views, relationalViews, cfg.Query.MaxLimit))
+			names := rel.ViewNames()
+			engine.Register(rel, names)
+			deps.Logger.Info("relational read models registered", "count", len(names))
+		}
 	}
 
 	for _, f := range wiring.Features {
@@ -227,6 +246,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		if err := validateUpstreamSubscriptions(upstreamSubs, views, composedViews, cfg.Profile, deps.Logger); err != nil {
 			return err
 		}
+	}
+
+	// Relational read models are validated against BOTH other families, because a
+	// read-model name is one namespace across every backing — a surface asks for a
+	// name, not for a store. They contribute nothing to the Mongo posture below:
+	// they materialize no collection, need no broker and take no part in drift,
+	// rebuild or reconciliation.
+	if err := query.ValidateRelationalViews(relationalViews, views, composedViews); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
 	}
 
 	// Infra-free posture: Mongo is opt-out by its own config block (mongo.uri), so

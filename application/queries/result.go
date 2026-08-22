@@ -35,7 +35,7 @@ type PageOf[TResult any] struct {
 	ItemCursors []string
 
 	// Projection is the effective read projection echo — see Page.Projection.
-	Projection map[string]int
+	Projection Projection
 }
 
 // PageOfFrom converts a reader-level Page into the typed PageOf by filling
@@ -92,7 +92,6 @@ func FromQueryResultFiller[TResult any](ctx *configuration.AppContext, q interfa
 //
 // Normalizations applied (the read-side semantic pass, shared by every
 // transport surface because it runs before any of them):
-//   - Top-level "ID" ← _id when "ID" is absent and "_id" is a string.
 //   - Nil slice fields → empty typed slice at every level.
 //   - EnumValueObject fields carrying an out-of-set value converge to the
 //     Unknown sentinel — parity with the write-side entity reconstruction,
@@ -104,42 +103,14 @@ func ResultFromDoc[TResult any](doc map[string]any) TResult {
 	// codec passes. Anything else (map, pointer, scalar TResult) keeps the
 	// round-trip verbatim.
 	if fp := fillPlanFor(reflect.TypeOf(out)); fp != nil {
-		fillStructFromDoc(reflect.ValueOf(&out).Elem(), applyIDFallback(doc), fp)
-	} else if raw, err := json.Marshal(applyIDFallback(doc)); err == nil {
+		fillStructFromDoc(reflect.ValueOf(&out).Elem(), doc, fp)
+	} else if raw, err := json.Marshal(doc); err == nil {
 		_ = json.Unmarshal(raw, &out)
 	}
 	plan := resultPlanFor(reflect.TypeOf(out))
 	normalizeResultSlices(reflect.ValueOf(&out).Elem(), plan)
 	convergeResultEnums(reflect.ValueOf(&out).Elem(), plan)
 	return out
-}
-
-// applyIDFallback returns a doc with the Go ID field "ID" ← _id when "ID"
-// is absent and "_id" is a string. The reader maps the ID column to the Go
-// field "ID"; this covers external/mirror schemas where the doc carries only
-// the store id. Top-level only. Does not mutate the input; allocates a
-// shallow copy only when a rewrite is needed.
-func applyIDFallback(doc map[string]any) map[string]any {
-	if doc == nil {
-		return doc
-	}
-	if _, hasID := doc["ID"]; hasID {
-		return doc
-	}
-	v, ok := doc["_id"]
-	if !ok {
-		return doc
-	}
-	s, ok := v.(string)
-	if !ok {
-		return doc
-	}
-	patched := make(map[string]any, len(doc)+1)
-	for k, val := range doc {
-		patched[k] = val
-	}
-	patched["ID"] = s
-	return patched
 }
 
 // resultFieldKind classifies a Result field for the normalization walkers.

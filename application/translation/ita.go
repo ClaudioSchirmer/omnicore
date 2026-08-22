@@ -71,6 +71,7 @@ func (coreIT) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Servizio non disponibile.",
 		"RequestTimeoutNotification":        "La richiesta ha superato il limite di tempo.",
 		"ReadTimeoutNotification":           "La richiesta non è stata ricevuta entro il limite di tempo.",
+		"UnsupportedCapabilityNotification": "Questa funzionalità non è supportata dall'archivio da cui viene letta questa vista.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Header di autorizzazione mancante o malformato.",

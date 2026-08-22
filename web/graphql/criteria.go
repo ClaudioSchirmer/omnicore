@@ -128,7 +128,7 @@ func (p *criteriaPlan) decodeArgs(args map[string]any) (queryschema.Read, string
 // from the Relay node sub-selection (`edges { node { … } }`) of a read field's
 // selection set. Two effects, both matching the REST `?fields=` path: (1) an
 // explicitly selected restricted field trips ReadCriteria.Restrict's
-// active-reference 403 in ToCriteria (referencesField sees Projection[goPath]==1),
+// active-reference 403 in ToCriteria (referencesField sees the path selected),
 // and (2) Mongo projects only the requested fields (pushdown). Returns nil when no
 // node leaf is selected — the resolver then leaves Projection empty (whole-doc,
 // the prior behavior). The selection set was already validated against the schema
@@ -140,10 +140,10 @@ func (p *criteriaPlan) decodeArgs(args map[string]any) (queryschema.Read, string
 // column), exactly as REST's `?fields=<computed>` does. The value is then
 // derived by the Query's FromQueryResult and rendered from the projected
 // Response — what this surface resolves node fields against.
-func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.FragmentDefinitionList) map[string]int {
+func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.FragmentDefinitionList) queries.Projection {
 	nodeSel := relayNodeSelection(sel, frags)
 	if nodeSel == nil {
-		return nil
+		return queries.Projection{}
 	}
 	return projectionFromNode(nodeSel, frags, p.projSchema)
 }
@@ -161,15 +161,16 @@ func (p *criteriaPlan) projectionFromSelection(sel ast.SelectionSet, frags ast.F
 // same query, two verdicts, decided by which field the consumer happened to
 // call.
 //
-// Returns nil when nothing resolves, which leaves the read whole-document.
-func projectionFromNode(sel ast.SelectionSet, frags ast.FragmentDefinitionList, projSchema *queryschema.ProjectionSchema) map[string]int {
+// Returns the zero Projection when nothing resolves, which leaves the read
+// whole-document.
+func projectionFromNode(sel ast.SelectionSet, frags ast.FragmentDefinitionList, projSchema *queryschema.ProjectionSchema) queries.Projection {
 	paths := flattenWirePaths("", sel, frags)
 	if len(paths) == 0 {
-		return nil
+		return queries.Projection{}
 	}
 	proj, _, _, ok := queryschema.ParseProjection(paths, projSchema)
 	if !ok {
-		return nil
+		return queries.Projection{}
 	}
 	return proj
 }
@@ -238,19 +239,18 @@ func pageInfoOnlySelected(sel ast.SelectionSet, frags ast.FragmentDefinitionList
 	return sawPageInfo
 }
 
-// keysOnlyProjection is the minimal inclusion projection a pagination probe
-// needs: the ordering fields (whose values compose the keyset tuple). Mongo
-// includes _id implicitly on inclusion projections — the tuple's trailing
-// element — so an unordered probe degenerates to {_id: 1}.
-func keysOnlyProjection(orderBy []queries.OrderByField) map[string]int {
-	proj := make(map[string]int, len(orderBy)+1)
+// keysOnlyProjection is the minimal inclusion selection a pagination probe needs:
+// the ordering fields, whose values compose the cursor tuple. An unordered probe
+// degenerates to the identity alone — the tuple's trailing element.
+func keysOnlyProjection(orderBy []queries.OrderByField) queries.Projection {
+	if len(orderBy) == 0 {
+		return queries.ProjectOnlyPaths("ID")
+	}
+	paths := make([]string, 0, len(orderBy))
 	for _, f := range orderBy {
-		proj[f.Field] = 1
+		paths = append(paths, f.Field)
 	}
-	if len(proj) == 0 {
-		proj["_id"] = 1
-	}
-	return proj
+	return queries.ProjectOnlyPaths(paths...)
 }
 
 // flattenWirePaths flattens a node selection into dotted wire paths

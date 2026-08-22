@@ -71,6 +71,7 @@ func (coreDE) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Dienst nicht verfügbar.",
 		"RequestTimeoutNotification":        "Die Anfrage hat das Zeitlimit überschritten.",
 		"ReadTimeoutNotification":           "Die Anfrage wurde nicht innerhalb des Zeitlimits empfangen.",
+		"UnsupportedCapabilityNotification": "Diese Funktion wird von dem Speicher, aus dem diese View gelesen wird, nicht unterstützt.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization-Header fehlt oder ist fehlerhaft.",

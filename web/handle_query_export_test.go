@@ -364,10 +364,7 @@ type expHideQuery struct {
 
 func (q *expHideQuery) ToCriteria(_ *configuration.AppContext) (queries.ReadCriteria, error) {
 	crit := q.Criteria
-	if crit.Projection == nil {
-		crit.Projection = map[string]int{}
-	}
-	crit.Projection["Email"] = 0 // exclusion overlay — whole-doc read minus Email
+	crit.Projection.Drop("Email") // exclusion overlay — whole-doc read minus Email
 	return crit, nil
 }
 

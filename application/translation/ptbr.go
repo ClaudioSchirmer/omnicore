@@ -71,6 +71,7 @@ func (corePTBR) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Serviço indisponível.",
 		"RequestTimeoutNotification":        "A requisição excedeu o tempo limite.",
 		"ReadTimeoutNotification":           "A requisição não foi recebida dentro do tempo limite.",
+		"UnsupportedCapabilityNotification": "Esta capacidade não é suportada pelo repositório de onde esta view é lida.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Cabeçalho de autorização ausente ou em formato inválido.",
