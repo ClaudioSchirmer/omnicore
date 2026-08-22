@@ -11,6 +11,113 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Read joins — `WithJoins` on the aggregate repository.** A read join lets one
+  aggregate's queries reach across a foreign key into another aggregate: filter
+  and sort by the joined columns, and bring a few of them back on the loaded
+  entity. `read.InnerJoin(target)` / `read.LeftJoin(target)` hang off the root;
+  `read.InnerJoinInChild(child).To(target)` / `read.LeftJoinInChild(child).To(target)`
+  hang off one of the root's own aggregate children. `.On(fkColumn)` names the
+  foreign key on the joining table; `.Field(goField, column)` maps one column of
+  the target onto a Go field of your entity, taking the same two arguments in the
+  same order as `TableSchema.Field`.
+
+  Declared on the repository, the join is threaded into the loader, so ONE
+  declaration reaches `FindOne`, `FindAll`, `Exists`, `Aggregate`,
+  `ScopedReader` — and any `query.RelationalView` over that loader, which
+  inherits the reach and declares nothing itself.
+
+  It is read-only structurally: a join field is not part of the `TableSchema`, so
+  `WriteFields` never sees it and no `INSERT`/`UPDATE` can carry it; the write
+  repository holds a schema with no loader in sight. The `TableSchema` is
+  untouched, so a projected view over the same entity is unaffected.
+
+  Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
+  nullable one would silently drop aggregates from every read, `FindByID`
+  included), a `LeftJoin` field must be nullable in Go, one foreign key reaches
+  one table, the child of a `...InChild` must be one the root declares, and every
+  column and Go field must exist.
+
+- **`query.RelationalView(name, loader)`** — the declaration for a read model
+  served straight from the relational store, as its own type. Its only structural
+  input is the loader, which carries the schema, so the two cannot disagree.
+  Accepts `MaxLimit` and `MaxExportRows` and nothing else. Contributed by a
+  feature through `bootstrap.RelationalReadableFeature.RelationalViews()`, the
+  sibling of `ReadableFeature`.
+
+  It has no version, no registry row, no rebuild, no drift, no collection and no
+  Mongo spec, and takes no part in schema evolution. The projection machinery
+  takes `*query.ViewDefinition` concretely, so a relational view cannot reach it.
+
+- **`query.AggregateReader`** — the type-erased face of the aggregate loader a
+  relational read model is declared over (`FindAllEntities` / `CountEntities` /
+  `Schema` / `JoinFields`). `read.AggregateLoader[T]` satisfies it structurally.
+
+- **`infra/db/hydrate`** — the store-neutral aggregate hydrator: a
+  `core.TableSchema` plus a `core.RelationalEngine` in, a column-keyed document
+  out (root row, siblings merged flat, children nested, shared base flattened).
+  It imports neither the view layer nor any engine.
+
+### Changed
+
+- **breaking**: **`ReadCriteria.Projection` and `Page.Projection` are now
+  `queries.Projection`**, a store-neutral field selection — a mode
+  (`ProjectAll` / `ProjectOnly` / `ProjectExcept`) plus the Go field paths it
+  names — instead of `map[string]int`. Nothing above the read seam names a
+  store's identity key or include/exclude convention any more; each read engine
+  renders the selection its own way.
+
+  *Migration*: `Query.ToCriteria` and `ReadCriteria.Restrict` are unaffected —
+  `Restrict` takes a Go field path and returns an error, and the projection is
+  manipulated behind it. Only a hand-written `queries.ViewReader` implementation
+  changes, because it produces a `queries.Page`.
+
+- **breaking**: **`core.FieldResolver` now answers with a `core.ResolvedField`**
+  (column, owning schema, owner, qualifier) instead of a bare column string. A
+  column name alone cannot say whether it needs a table prefix, and a read that
+  crosses into another aggregate always does. `core.FieldOwner` gains
+  `OwnerJoin`, and `ResolvedField` gains `Qualifier`.
+
+- **breaking**: **`read.AggregateLoader[T].BoundTable()` is replaced by
+  `Schema()`**, which answers with the whole `*core.TableSchema` rather than only
+  its table name.
+
+- **breaking**: **the read seam is backing-neutral.**
+  `query.ViewReaderEngine.SetRelational` is now `Register(reader, views)`,
+  `MongoReader()` is now `Fallback()`. The seam names no store: it holds a
+  fallback reader and a per-view override, both typed as the neutral port.
+
+- **breaking**: **`RelationalCapabilityNotification` is replaced by
+  `UnsupportedCapabilityNotification`.** Every read engine raises this same one,
+  so the four surfaces render one refusal whatever serves the view, and adding an
+  engine adds no vocabulary. Semantic and status are unchanged
+  (`SemanticSchema` → 400).
+
+### Removed
+
+- **breaking**: **`query.View(...).RelationalSource(loader)`.** A read model
+  served from the relational store is declared with `query.RelationalView`, which
+  is its own type. Removing the marker also removed everything the projection
+  machinery needed to skip a marked view: `DriftRelationalSync`,
+  `SyncEngine.SyncRelationalRegistry`, the relational branches of the drift
+  decision, and the skips in the projection, rebuild, reconcile and Mongo-spec
+  passes.
+
+  *Migration*: replace `query.View(name).Version(n).Schema(s).RelationalSource(repo.Loader)`
+  with `query.RelationalView(name, repo.Loader)`, and contribute it through
+  `RelationalViews()` instead of `Views()`. A converted view leaves its Mongo
+  collection and `omnicore_mongo_views` row behind — drop both, or the
+  DB-per-service guard reports the collection as foreign (a warning under `dev`,
+  a boot abort otherwise).
+
+- **breaking**: **`read.RootScanner` / `read.ChildScanner` and
+  `WithRootScanner` / `WithChildScanner`.** The `TableSchema` is the single
+  mapping between a row and an entity; a read that needs a different shape
+  declares a different schema over a different type, which is cheaper to write
+  than a scanner and cannot be half-wired. For a query the framework does not
+  generate at all, `deps.DB.Querier()` remains the read-only raw surface.
+
 ## [0.56.1] - 2026-08-21
 
 ### Fixed

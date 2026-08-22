@@ -57,6 +57,10 @@
         "label": "Aggregate persistence"
       },
       {
+        "id": "read-joins",
+        "label": "Read joins"
+      },
+      {
         "id": "lifecycle-hooks",
         "label": "Lifecycle hooks"
       },

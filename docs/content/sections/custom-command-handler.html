@@ -254,8 +254,9 @@ var (
         and the 5 writes also come from <code>BaseRepository</code> via embed. <code>WithSchema(schema)</code>
         declares the <code>TableSchema</code> once and feeds both the write binding and the read loader; child
         tables come from the schema's <code>.Child(...)</code> declarations. The <code>*AggregateLoader[T]</code>
-        is exposed as a public <code>Loader</code> field — call the manual-scanner escape hatches
-        <code>WithRootScanner</code> / <code>WithChildScanner</code> on it directly when auto-scan does not fit.
+        is exposed as a public <code>Loader</code> field — that is where criteria reads
+        (<code>FindOne</code> / <code>FindAll</code> / <code>Exists</code>) and
+        <a href="#read-joins">read joins</a> live.
     </p>
     <p>
         <strong>When NOT to use it</strong> (keep the old pattern of direct embed
@@ -325,9 +326,8 @@ _ = top.Found // false ⇔ no active order matched (0 can be a real MAX — chec
         criteria.Ne("ID", excludeID)))</code>. The loader has its
         <strong>own SQL engine</strong>: it builds the <code>SELECT</code> from the columns your
         <code>TableSchema</code> declares (the same Go↔column map that drives writes) and scans each row
-        straight into the matched struct field — you write neither the SQL nor the scanner.
-        For exotic decoding the auto-scan doesn't cover (JOIN, CASE, COALESCE) there is a manual-scanner
-        escape hatch; both scan modes coexist.
+        straight into the matched struct field — you write neither the SQL nor the scanner. To reach a column of
+        ANOTHER aggregate across a foreign key, declare a <a href="#read-joins">read join</a> on the repository.
     </p>
 
     <h4 id="aggregate-loader-groupby">Grouped aggregates — <code>AggregateBy</code> + <code>read.By</code></h4>
@@ -518,7 +518,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
         <code>NULL</code>-able columns map to <strong>pointer types</strong> in the domain
         (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>). The engine
         writes <code>NULL</code> when the pointer is <code>nil</code>; reads <code>NULL</code> as
-        <code>nil</code> on auto-scan. Recommended boundary convention: <em>empty JSON input
+        <code>nil</code>. Recommended boundary convention: <em>empty JSON input
         becomes <code>nil</code> via a local helper</em> (e.g., <code>NilIfEmpty(s string) *string</code>
         in your service's <code>commands</code> package).
     </p>
@@ -528,51 +528,10 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
         The engine caches the <code>column → field index</code> mapping by <code>reflect.Type</code>
         in <code>sync.Map</code>. The first call pays the reflection (~µs); subsequent calls
         do direct lookup and <code>row.Scan</code> writes each column straight into its struct
-        field address, with no intermediate allocations. This is why auto-scan is the leaner
-        default: the manual scanner receives a column-keyed <code>map[string]any</code> — every
-        column boxed into an interface value, plus the map itself — so it allocates more per row
-        than auto-scan's direct field writes. The manual path's cost buys arbitrary decode
-        flexibility (JOINs, <code>CASE</code>/<code>COALESCE</code>, non-id lookups); reach for it
-        only when the query needs something auto-scan cannot express.
+        field address, with no intermediate allocations. A query that needs a shape the schema does not describe
+        belongs behind its own <code>TableSchema</code> over its own type, or — to reach another aggregate by
+        foreign key — behind a <a href="#read-joins">read join</a>.
     </p>
-
-    <h4 id="aggregate-loader-manual">Manual mode (escape hatch)</h4>
-    <p>
-        When the query needs something the engine does not generate — JOIN with another table,
-        <code>CASE</code>/<code>COALESCE</code>, aggregate SQL expressions, lookup by non-id field,
-        external materialized view — you provide the scan function via
-        <code>WithRootScanner</code> and/or <code>WithChildScanner</code>. The loader keeps handling
-        children dispatch and <code>AggregateConstructor</code>; only the decoding is up to you.
-    </p>
-    <pre><code>// Manual mode selects the schema's columns (never SELECT *) and hands you a
-// column-keyed map — read BY NAME, order-independent and stable across an online
-// ADD COLUMN. Populate the id and SetID — the criteria path carries no input id,
-// so the scanner owns it — then decode the rest however you like.
-r.loader = read.NewAggregateLoader[*User](eng, factory).
-    WithRootScanner(func(m map[string]any) (*User, error) {
-        u := &amp;User{}
-        id, _ := m["id"].(string)
-        firstName, _ := m["first_name"].(string)
-        lastName, _ := m["last_name"].(string)
-        u.SetID(domain.NewID(id)) // REQUIRED: FindOne/FindAll recover the id via GetID()
-        u.Name = firstName + " " + lastName
-        return u, nil
-    })
-// Address keeps auto: it is declared on the schema via .Child(...) and the
-// schema is threaded with r.WithSchema(UserSchema()); WithRootScanner overrides
-// only the root decode.</code></pre>
-    <p>
-        Auto and manual <strong>coexist per typeName</strong>: for the same child,
-        the manual scanner wins over auto when both are registered. The manual mode
-        uses <code>SELECT *</code> (compatible with custom queries you may write).
-    </p>
-    <div class="box warn">
-        <strong>Manual root scanner + <code>FindOne</code>/<code>FindAll</code>:</strong> the scanner
-        <strong>must populate the entity id</strong> (scan it and call <code>SetID</code>). The criteria
-        path has no input id to inject (unlike the old by-id load), so the framework recovers the id via
-        <code>GetID()</code> after your scanner runs — an empty id is a configuration error. Auto-scan reads
-        the id back automatically; only the manual path carries this requirement.
-    </div>
 
     <h4>Errors and edge cases</h4>
     <ul>
@@ -581,14 +540,11 @@ r.loader = read.NewAggregateLoader[*User](eng, factory).
             <a href="#status-mapping">Semantic mapping</a>).</li>
         <li><strong>More than one match in <code>FindOne</code></strong> → error ("expected one"):
             the contract is a single match; use <code>FindAll</code> or a more specific criterion.</li>
-        <li><strong>Aggregate without children</strong> — declare no <code>.Child(...)</code> on the schema
-            (and no <code>WithChildScanner</code>) and the load only does <code>SELECT root</code>.</li>
-        <li><strong>Entity without exported domain fields</strong> in auto mode:
-            <code>FindOne</code>/<code>FindAll</code> return a descriptive error suggesting
-            <code>WithRootScanner</code> (typically a bug — an entity with no data at all is rare).</li>
-        <li><strong>Type registered in <code>WithChildScanner</code> without an entry in
-            <code>AggregateChildren()</code></strong> — silently ignored
-            (compatible with evolving aggregate).</li>
+        <li><strong>Aggregate without children</strong> — declare no <code>.Child(...)</code> on the schema and the
+            load only does <code>SELECT root</code>.</li>
+        <li><strong>Entity without exported domain fields</strong>:
+            <code>FindOne</code>/<code>FindAll</code> return a descriptive error naming
+            <code>TableSchema.Field(...)</code> (typically a bug — an entity with no data at all is rare).</li>
     </ul>
 
     <div class="box good">
@@ -596,5 +552,5 @@ r.loader = read.NewAggregateLoader[*User](eng, factory).
         typed validation and i18n, atomic transaction with outbox, structured audit,
         event publication, standardized HTTP response and automatic error
         translation per <code>AppContext.Language()</code>, and
-        <code>FindByID</code> comes for free via auto-scan.
+        <code>FindByID</code> comes for free from the schema-driven scan.
     </div>

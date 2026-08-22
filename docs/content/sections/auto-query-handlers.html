@@ -450,16 +450,10 @@ type AddressFilterParams struct {
             whole subtree.
         </li>
         <li>
-            <strong>Auto-exclusion of <code>_id</code>.</strong> Mongo always returns <code>_id</code>
-            unless excluded. When the wire <code>fields</code> list does <em>not</em> include
-            <code>id</code>, the framework adds <code>_id: 0</code> to the projection so the typed
-            Response stays clean (no phantom <code>id</code> the consumer didn't ask for). When
-            <code>id</code> is among the tokens, no <code>_id: 0</code> is added — Mongo returns
-            both <code>id</code> and <code>_id</code>, and the Result fill's
-            <code>ID ← _id</code> fallback keeps the wire output
-            stable across both cases. Mongo's projection rules allow <code>_id: 0</code> to be
-            mixed with inclusion entries — it is the only permitted exclusion in an otherwise-
-            inclusion projection.
+            <strong>The identity is a path like any other.</strong> An inclusion selection returns exactly the paths it
+            names, the root <code>id</code> included: ask for it and you get it, leave it out and the typed Response
+            stays clean — no phantom <code>id</code> the consumer did not request. What each store has to do to honor
+            that is the store's own business, decided below the read seam and invisible on the wire.
         </li>
     </ol>
     <p>
@@ -524,11 +518,11 @@ func (FindUsersByParamsResponse) FromResult(
     return fwresponses.Map[FindUsersByParamsResponse](r)
 }</code></pre>
     <table>
-        <tbody><tr><th>Wire form</th><th>Mongo projection emitted</th><th>Notes</th></tr>
-        <tr><td><code>?fields=name,email</code></td><td><code>{name:1, email:1, _id:0}</code></td><td><code>id</code> not requested → <code>_id:0</code> added; wire response omits <code>id</code></td></tr>
-        <tr><td><code>?fields=id,name</code></td><td><code>{id:1, name:1}</code></td><td><code>id</code> requested → no <code>_id:0</code>; Mongo auto-includes <code>_id</code>; the Result fill resolves <code>ID</code> from the doc</td></tr>
-        <tr><td><code>?fields=addresses</code></td><td><code>{addresses:1, _id:0}</code></td><td>Whole nested subtree returned</td></tr>
-        <tr><td><code>?fields=addresses.zipCode</code></td><td><code>{"addresses.zip_code":1, _id:0}</code></td><td>The view's <code>TableSchema</code> maps <code>ZipCode</code> → <code>zip_code</code>; only that leaf per element is populated; siblings render absent via <code>omitempty</code></td></tr>
+        <tbody><tr><th>Wire form</th><th>Paths selected</th><th>Notes</th></tr>
+        <tr><td><code>?fields=name,email</code></td><td><code>Name</code>, <code>Email</code></td><td><code>id</code> not named → not selected; the wire response omits it</td></tr>
+        <tr><td><code>?fields=id,name</code></td><td><code>ID</code>, <code>Name</code></td><td><code>id</code> named → the identity is returned</td></tr>
+        <tr><td><code>?fields=addresses</code></td><td><code>Addresses</code></td><td>Whole nested subtree returned</td></tr>
+        <tr><td><code>?fields=addresses.zipCode</code></td><td><code>Addresses.ZipCode</code></td><td>Only that leaf per element is populated; siblings render absent via <code>omitempty</code></td></tr>
         <tr><td><code>?fields=bogus</code></td><td>(none — request rejected)</td><td>400 with <code>SchemaViolationNotification</code> on field <code>fields[bogus]</code></td></tr>
     </tbody></table>
     <p>
@@ -790,7 +784,7 @@ type AddressFilterParams struct {
         are emitted exactly where those flags are true. A button is therefore driven by the flag
         and fed by the cursor on the same side — both go quiet together at the ends of the set.
         This holds on EVERY backing: flipping a view between the projected Mongo collection and
-        <code>RelationalSource</code> does not change the envelope a consumer parses.
+        the read backing does not change the envelope a consumer parses.
     </p>
     <table>
         <tbody><tr><th>Wire</th><th>Outcome</th></tr>

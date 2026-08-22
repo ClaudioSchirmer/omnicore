@@ -729,13 +729,6 @@ func OrdersView() *query.ViewDefinition {
     resolve by Go field name too.
 </p>
 
-<h3>Manual scanners bypass the schema by design</h3>
-<p>
-    <code>WithRootScanner</code> / <code>WithChildScanner</code> hand the SELECT and the scan to the developer, who owns
-    the column names directly. The schema governs the auto-scan path; the manual path stays a full escape hatch (a manual
-    root scanner used with <code>FindOne</code>/<code>FindAll</code> must populate the id itself).
-</p>
-
 <h3 id="normalize-3nf">Normalizing a flat entity — children, siblings, and shared bases</h3>
 <p>
     The schema is also where a <strong>flat Go entity</strong> becomes a <strong>normalized relational layout</strong> and
@@ -801,6 +794,14 @@ func OrdersView() *query.ViewDefinition {
     removes the sibling rows by shared ID before the owner. On <strong>read</strong>, the loader <code>LEFT JOIN</code>s
     each sibling on the shared ID and scans its columns straight into the flat struct (an absent sibling row leaves those
     fields at their zero value); a criteria predicate on a sibling field triggers the same <code>LEFT JOIN</code>.
+</p>
+
+<p class="note">
+    <strong>A sibling belongs to this entity; another aggregate does not.</strong> A sibling and a shared base are
+    part of the schema's own closure, so the framework loads them as part of the entity and resolves their fields
+    under the same Go names. Reaching across a foreign key into a <em>different</em> aggregate — filtering orders by
+    the customer's name, say — is a separate concern with its own declaration on the repository: see
+    <a href="#read-joins">read joins</a>.
 </p>
 
 <h3 id="shared-base">Shared base — identity shared across roles (party-role)</h3>
@@ -1092,7 +1093,7 @@ func StudentSchema() *core.TableSchema {
 
 <h3 id="supported-column-shapes">Supported column shapes</h3>
 <div class="box">
-    <strong>The relational store is PostgreSQL, MySQL, SQL Server, Oracle, <em>or</em> SQLite; the read projection is MongoDB — except for views that opt into <a href="#relational-view">RelationalSource()</a>, which serve straight from the relational store.</strong>
+    <strong>The relational store is PostgreSQL, MySQL, SQL Server, Oracle, <em>or</em> SQLite; the read projection is MongoDB — except for a <a href="#relational-view">relational view</a>, which serves straight from the relational store.</strong>
     The write path, the entity-search <code>criteria</code> engine, and the auto-scan read-back run against the relational
     backend selected by <code>relational.dialect</code> (<code>postgres</code> | <code>mysql</code> | <code>sqlserver</code> | <code>oracle</code>),
     emitting dialect-specific SQL through the engine's <code>Dialect</code> seam (placeholders, identifier quoting, the UUID
@@ -1212,9 +1213,8 @@ func StudentSchema() *core.TableSchema {
     custom codecs, a Go type <code>pgx</code> cannot encode/decode out of the box — <code>google/uuid.UUID</code>, a typed Go
     enum, a PostGIS geometry, a bespoke domain type — cannot be a persisted field <em>as-is</em>. Two supported ways out:
     (1) map the column to one of the <code>pgx</code>-native Go types above (a <code>UUID</code> column → Go <code>string</code>,
-    an enum → its underlying <code>string</code>/<code>int</code>); or (2) drop to a manual scanner
-    (<code>WithRootScanner</code> / <code>WithChildScanner</code>), where you own the <code>SELECT</code> and the
-    <code>Scan</code> and can decode any shape <code>pgx</code> supports through an explicit target.
+    an enum → its underlying <code>string</code>/<code>int</code>); or (2) express it as a
+    <a href="#value-objects">value object</a>, whose underlying scalar is what the schema persists.
 </p>
 
 <h3>Supported column shapes — Go ↔ MySQL</h3>
@@ -1298,9 +1298,8 @@ func StudentSchema() *core.TableSchema {
     <strong>Nullability is a pointer</strong> (same convention as Postgres): a nullable column maps to a Go pointer
     (<code>*string</code>, <code>*int64</code>, <code>*time.Time</code>, …) — the driver writes <code>NULL</code> for a
     <code>nil</code> pointer and reads <code>NULL</code> back as <code>nil</code>. A non-pointer field on a nullable column
-    fails to scan a <code>NULL</code> row. For anything the driver cannot handle natively, the same escape hatch applies:
-    map the column to a driver-native Go type, or drop to a manual scanner (<code>WithRootScanner</code> /
-    <code>WithChildScanner</code>), which receives the backend-neutral <code>core.Row</code> / <code>core.Rows</code>.
+    fails to scan a <code>NULL</code> row. For anything the driver cannot handle natively, the same rule applies: map the
+    column to a driver-native Go type, or express it as a <a href="#value-objects">value object</a> over one.
 </p>
 
 <h3>Supported column shapes — Go ↔ SQL Server</h3>

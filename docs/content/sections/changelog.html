@@ -7,6 +7,85 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">in development</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#read-joins">Read joins</a></strong>: an aggregate's queries
+                can reach across a foreign key into ANOTHER aggregate — filter and sort by the joined columns, and bring
+                a few of them back on the loaded entity. Declared on the repository with <code>WithJoins</code>:
+                <code>read.InnerJoin(target)</code> / <code>read.LeftJoin(target)</code> from the root,
+                <code>read.InnerJoinInChild(child).To(target)</code> / <code>read.LeftJoinInChild(child).To(target)</code>
+                from one of the root's own aggregate children. <code>.On(fk)</code> names the foreign key on the joining
+                table; <code>.Field(goField, column)</code> maps one column of the target onto a Go field of your
+                entity — the same two arguments, in the same order, as <code>TableSchema.Field</code>, so renaming is
+                free.
+                <ul>
+                    <li><strong>One declaration, every consumer.</strong> The join is threaded into the loader, so
+                        <code>FindOne</code>, <code>FindAll</code>, <code>Exists</code>, <code>Aggregate</code> and
+                        <code>ScopedReader</code> all gain the reach — and a
+                        <a href="#relational-view">relational view</a> over that loader inherits it without declaring
+                        anything.</li>
+                    <li><strong>Read-only structurally.</strong> A join field is not part of the
+                        <code>TableSchema</code>, so it never enters an <code>INSERT</code> or <code>UPDATE</code>, and
+                        the write repository holds a schema with no loader in sight. The <code>TableSchema</code> is
+                        untouched, so a projected view over the same entity is unaffected.</li>
+                    <li><strong>Validated at construction</strong>, never on the first request:
+                        <code>InnerJoin</code> only over a non-nullable foreign key (a nullable one would silently drop
+                        aggregates from every read, <code>FindByID</code> included), a <code>LeftJoin</code> field must
+                        be nullable in Go, one foreign key reaches one table, and every column, child and Go field must
+                        exist.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong><a href="#relational-view"><code>query.RelationalView(name, loader)</code></a></strong>:
+                the declaration for a read model served straight from the relational store, as its own type. Its only
+                structural input is the loader, which carries the schema — so the two cannot disagree. It accepts
+                <code>MaxLimit</code> and <code>MaxExportRows</code> and nothing else, has no version, no registry row,
+                no rebuild, no drift and no collection, and is contributed by a feature through
+                <code>RelationalViews()</code>, the sibling of <code>Views()</code>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>the read-side field selection is
+                store-neutral.</strong> <code>ReadCriteria.Projection</code> and <code>Page.Projection</code> are now a
+                <code>queries.Projection</code> — a mode (whole document / only these paths / all but these) plus the
+                <strong>Go field paths</strong> it names — instead of <code>map[string]int</code>. Nothing above the
+                read seam names a store's identity key or its include/exclude convention any more; each engine renders
+                the selection its own way. <em>Migration</em>: <code>Query.ToCriteria</code> and
+                <code>ReadCriteria.Restrict</code> are unaffected — <code>Restrict</code> takes a Go field path and the
+                projection is manipulated behind it. Only a hand-written <code>queries.ViewReader</code> changes,
+                because it produces a <code>queries.Page</code>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong><code>core.FieldResolver</code> answers
+                with a <code>core.ResolvedField</code></strong> (column, owning schema, owner, qualifier) instead of a
+                bare column string. A column name alone cannot say whether it needs a table prefix, and a read that
+                crosses into another aggregate always does. <code>core.FieldOwner</code> gains <code>OwnerJoin</code>;
+                <code>ResolvedField</code> gains <code>Qualifier</code>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>:
+                <strong><code>read.AggregateLoader[T].BoundTable()</code> is replaced by <code>Schema()</code></strong>,
+                which answers with the whole <code>*core.TableSchema</code> rather than only its table name.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>the read seam names no store.</strong>
+                <code>query.ViewReaderEngine.SetRelational</code> is now <code>Register(reader, views)</code> and
+                <code>MongoReader()</code> is now <code>Fallback()</code>: the seam holds a fallback reader and a
+                per-view override, both typed as the neutral port.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>:
+                <strong><code>RelationalCapabilityNotification</code> is replaced by
+                <code>UnsupportedCapabilityNotification</code></strong>. Every read engine raises this same one, so the
+                four surfaces render one refusal whatever serves the view, and adding an engine adds no vocabulary.
+                Semantic and status are unchanged (<code>SemanticSchema</code> → 400).</li>
+            <li><strong>Removed</strong> — <strong>breaking</strong>:
+                <code>query.View(...).RelationalSource(loader)</code>. A read model served from the relational store is
+                declared with <a href="#relational-view"><code>query.RelationalView</code></a>, which is its own type;
+                with the marker went everything the projection machinery needed in order to skip a marked view.
+                <em>Migration</em>: replace
+                <code>query.View(name).Version(n).Schema(s).RelationalSource(repo.Loader)</code> with
+                <code>query.RelationalView(name, repo.Loader)</code>, and contribute it through
+                <code>RelationalViews()</code> instead of <code>Views()</code>. A converted view leaves its Mongo
+                collection and <code>omnicore_mongo_views</code> row behind — drop both, or the DB-per-service guard
+                reports the collection as foreign (a warning under <code>dev</code>, a boot abort otherwise).</li>
+            <li><strong>Removed</strong> — <strong>breaking</strong>: <code>read.RootScanner</code> /
+                <code>read.ChildScanner</code> and <code>WithRootScanner</code> / <code>WithChildScanner</code>. The
+                <a href="#table-schema"><code>TableSchema</code></a> is the single mapping between a row and an entity;
+                a read that needs a different shape declares a different schema over a different type, which is cheaper
+                to write than a scanner and cannot be half-wired. For a query the framework does not generate at all,
+                <code>deps.DB.Querier()</code> remains the read-only raw surface.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.56.1</span><span class="release-date">August 21, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong><a href="#aggregate-persistence">
