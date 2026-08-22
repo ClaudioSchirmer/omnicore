@@ -31,7 +31,10 @@ func liftResolver() core.FieldResolver {
 		"ID": "id", "Name": "name",
 		"BuyerID": "buyer_id", "PartnerID": "partner_id",
 	}
-	return func(f string) (string, bool) { c, ok := m[f]; return c, ok }
+	return func(f string) (core.ResolvedField, bool) {
+		c, ok := m[f]
+		return core.ResolvedField{Column: c}, ok
+	}
 }
 
 func TestIDLift_MySQL(t *testing.T) {

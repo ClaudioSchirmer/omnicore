@@ -36,9 +36,21 @@ type sqlVisitor struct {
 // qualifyCol quotes col, prefixing the anchor-table qualifier when col is the
 // anchor id column under a join (idQualifier non-empty). All other columns are
 // unique across the node, so they stay unqualified.
-func qualifyCol(col, idCol, idQualifier string, dialect Dialect) string {
-	q := dialect.QuoteIdent(col)
-	if idQualifier != "" && col == idCol {
+// qualifyCol renders a resolved field as the SQL identifier the statement needs.
+//
+// Qualification is decided by WHERE the column lives, not by which column it is.
+// A joined aggregate always carries a qualifier — its columns share a namespace
+// with nobody, so an unqualified "name" could belong to either side. The anchor,
+// its siblings and its shared base stay bare: the schema's bijection makes their
+// names unique across the node. The one exception is the anchor's own id under a
+// join, which the joined table also has; idQualifier carries the anchor table
+// when the caller knows a join is in play.
+func qualifyCol(rf core.ResolvedField, idCol, idQualifier string, dialect Dialect) string {
+	q := dialect.QuoteIdent(rf.Column)
+	if rf.Qualifier != "" {
+		return dialect.QuoteIdent(rf.Qualifier) + "." + q
+	}
+	if idQualifier != "" && rf.Column == idCol {
 		return idQualifier + "." + q
 	}
 	return q
@@ -81,11 +93,11 @@ func liftIDProbe(val any) any {
 }
 
 func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
-	col, ok := v.resolve(c.Field)
+	rf, ok := v.resolve(c.Field)
 	if !ok {
 		return fmt.Errorf("criteria: unknown field %q (not a persisted field of the entity)", c.Field)
 	}
-	col = qualifyCol(col, v.idCol, v.idQualifier, v.dialect)
+	col := qualifyCol(rf, v.idCol, v.idQualifier, v.dialect)
 
 	switch c.Op {
 	case criteria.OpIsNull:
@@ -290,11 +302,11 @@ func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolv
 	}
 	parts := make([]string, len(order))
 	for i, o := range order {
-		col, ok := resolve(o.Field)
+		rf, ok := resolve(o.Field)
 		if !ok {
 			return "", fmt.Errorf("criteria: unknown order field %q", o.Field)
 		}
-		col = qualifyCol(col, idCol, idQualifier, dialect)
+		col := qualifyCol(rf, idCol, idQualifier, dialect)
 		if o.Desc {
 			parts[i] = col + " DESC"
 		} else {

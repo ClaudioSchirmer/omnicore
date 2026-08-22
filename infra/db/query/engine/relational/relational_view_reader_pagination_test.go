@@ -40,7 +40,8 @@ func (p *pageLoader) FindAllEntities(_ context.Context, q *criteria.Query) ([]do
 func (p *pageLoader) CountEntities(context.Context, *criteria.Query) (int64, error) {
 	return int64(len(p.rows)), nil
 }
-func (p *pageLoader) Schema() *core.TableSchema { return guardSchema(p.table) }
+func (p *pageLoader) Schema() *core.TableSchema       { return guardSchema(p.table) }
+func (p *pageLoader) JoinFields() map[string][]string { return nil }
 
 // mkRows builds n guardEnt roots with ids/names r0..r{n-1}, ascending — the
 // deterministic order the reader's ORDER BY ID tiebreak assumes.

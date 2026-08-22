@@ -161,11 +161,11 @@ func (a *FloatAgg) absorb(v any) error {
 }
 
 func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect) (string, error) {
-	col, ok := resolve(goField)
+	rf, ok := resolve(goField)
 	if !ok {
 		return "", fmt.Errorf("aggregate: unknown field %q (not a persisted field of the entity)", goField)
 	}
-	return fn + "(" + dialect.QuoteIdent(col) + ")", nil
+	return fn + "(" + dialect.QuoteIdent(rf.Column) + ")", nil
 }
 
 // Aggregate executes ONE SELECT computing every requested spec over the same
@@ -180,7 +180,7 @@ func (l *AggregateLoader[T]) Aggregate(ctx context.Context, q *criteria.Query, s
 	if len(specs) == 0 {
 		return fmt.Errorf("Aggregate: at least one aggregate spec is required")
 	}
-	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 	exprs := make([]string, len(specs))

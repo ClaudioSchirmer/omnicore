@@ -36,6 +36,10 @@ type AggregateLoader[T domain.Entity] struct {
 	newEntity   func() T
 	contextName string
 	schema      *TableSchema
+	// joins are the READ-ONLY traversals this aggregate may reach across —
+	// declared on the repository, validated against the schema at construction,
+	// and inert until a read actually uses one. See join.go.
+	joins []Join
 }
 
 // NewAggregateLoader initializes a loader over a RelationalEngine. Every read
@@ -68,6 +72,49 @@ func (l *AggregateLoader[T]) effectiveContextName() string {
 func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T] {
 	l.schema = schema
 	return l
+}
+
+// WithJoins declares the READ-ONLY traversals this aggregate may reach across in
+// a query — see join.go for what a join is and why it lives here rather than on
+// the TableSchema. Every declaration is validated against the schema NOW: a join
+// naming a column, a child or a Go field that does not exist panics at
+// construction, never on the first request. Call WithSchema first.
+func (l *AggregateLoader[T]) WithJoins(bindings ...*JoinBinding) *AggregateLoader[T] {
+	joins := make([]Join, 0, len(bindings))
+	for _, b := range bindings {
+		if b == nil {
+			continue
+		}
+		joins = append(joins, b.build())
+	}
+	validateJoins(l.effectiveContextName(), l.schema, joins)
+	l.joins = append(l.joins, joins...)
+	return l
+}
+
+// Joins exposes the declared traversals. A read model built over this loader
+// reads them to know which fields it can serve beyond the schema's own.
+func (l *AggregateLoader[T]) Joins() []Join { return l.joins }
+
+// JoinFields names the Go fields the declared joins add, keyed by the table they
+// land on — the root's for a root join, the child's for a child join. A read
+// model over this loader consults it to know what it can serve beyond the
+// TableSchema; the fields themselves are ordinary fields of the loaded entity.
+func (l *AggregateLoader[T]) JoinFields() map[string][]string {
+	if len(l.joins) == 0 {
+		return nil
+	}
+	out := map[string][]string{}
+	for _, j := range l.joins {
+		table := l.schema.Table()
+		if j.Child != nil {
+			table = j.Child.Table()
+		}
+		for _, f := range j.Fields {
+			out[table] = append(out[table], f.GoField)
+		}
+	}
+	return out
 }
 
 // FindOne loads exactly one aggregate matching the criteria — root + children,
@@ -167,7 +214,7 @@ func (l *AggregateLoader[T]) Exists(ctx context.Context, q *criteria.Query) (boo
 // reuse exactly the resolution and gating semantics of findRoots without its
 // SELECT/scan machinery.
 func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause string, args []any, err error) {
-	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
 	return l.compileFilterJoins(q, joins)
 }
 
@@ -216,7 +263,7 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *joined
 		return "", "", nil, err
 	}
 	rootQualifier := ""
-	if len(joins.siblings) > 0 || joins.base != nil {
+	if joins.any() {
 		rootQualifier = dialect.QuoteIdent(l.schema.Table())
 		// Qualify the anchor id under the 1:1 join so a predicate mixing the id
 		// and a sibling/base field (e.g. an exclude-self uniqueness probe) is
@@ -251,7 +298,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// so it is LEFT JOINed below. Sibling columns are unique across the node
 	// (the schema's bijection), so they stay unqualified and unambiguous; only
 	// the shared ID is qualified (in the JOIN ON + the SELECT leading key).
-	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
@@ -267,7 +314,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// column must be table-qualified (the base carries its own deleted_at) — the
 	// same disambiguation the leading ID gets below.
 	rootQualifier := ""
-	if len(joins.siblings) > 0 || joins.base != nil {
+	if joins.any() {
 		rootQualifier = dialect.QuoteIdent(table)
 		// The shared id column lives in BOTH the anchor and the joined 1:1 table,
 		// so a bare "id" in the predicate or the ORDER BY … , id tiebreak is
@@ -304,11 +351,12 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		)
 	}
 	// When the criteria referenced a sibling field, LEFT JOIN those tables so the
-	// WHERE/ORDER can resolve against them. The SELECT list stays anchor-only (the
-	// sibling VALUES are loaded separately by hydrateSiblings); the join exists
-	// only to make the sibling columns reachable for filtering. The leading ID is
-	// qualified to the anchor table because the shared ID is the one ambiguous
-	// column under the join.
+	// WHERE/ORDER can resolve against them. Their VALUES are loaded separately by
+	// hydrateSiblings, so the SELECT list carries no sibling column — that join
+	// exists only for reachability. A DECLARED join is different: it is always in
+	// the FROM and its fields ride THIS SELECT, so they cost no extra round trip.
+	// The leading ID is qualified to the anchor table because the shared ID is the
+	// one ambiguous column under any join.
 	joinSQL := l.joinClause(joins, dialect)
 	leadingPK := dialect.QuoteIdent(l.schema.IDColumn())
 	if joinSQL != "" {
@@ -329,6 +377,9 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 			selectCols += ", " + strings.Join(quoteIdentifiers(ms.cols, dialect), ", ")
 		}
 	}
+	if exprs := joinSelectExprs(l.joins, dialect); len(exprs) > 0 {
+		selectCols += ", " + strings.Join(exprs, ", ")
+	}
 	sql := "SELECT " + leadingPK + ", " + selectCols + " FROM " + dialect.QuoteIdent(table) + joinSQL
 	sql += tailClause(clause, orderSQL)
 	sql, err = applyWindow(dialect, sql, limit, offset, orderSQL)
@@ -347,7 +398,15 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	)
 	for rows.Next() {
 		root := l.newEntity()
-		raw, err := core.ScanLeadingKeyTrailing(rows, any(root), cols, byCol, ms.targets()...)
+		// The declared joins' values ride the same row, AFTER the managed columns
+		// — the order joinSelectExprs listed them in.
+		trailing := ms.targets()
+		joinTargets, err := joinScanTargets(any(root), l.joins)
+		if err != nil {
+			return nil, nil, err
+		}
+		trailing = append(trailing, joinTargets...)
+		raw, err := core.ScanLeadingKeyTrailing(rows, any(root), cols, byCol, trailing...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -473,14 +532,24 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		// domain.Managed, so it is no longer a struct field — it and the managed
 		// columns are stamped onto the carrier via ms.apply after the scan.
 		ms := newChildManagedScan(child)
-		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, childFilter, dialect, ms.cols)
+		cJoins := childJoinsOf(l.joins, child.Table())
+		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, childFilter, dialect, ms.cols, cJoins)
 		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			vp := reflect.New(child.GoType())
-			fkRaw, err := core.ScanLeadingKeyTrailing(rows, vp.Interface(), scanCols, scanByCol, ms.targets()...)
+			trailing := ms.targets()
+			if len(cJoins) > 0 {
+				jt, jerr := joinScanTargetsFor(vp.Interface(), cJoins)
+				if jerr != nil {
+					rows.Close()
+					return jerr
+				}
+				trailing = append(trailing, jt...)
+			}
+			fkRaw, err := core.ScanLeadingKeyTrailing(rows, vp.Interface(), scanCols, scanByCol, trailing...)
 			if err != nil {
 				rows.Close()
 				return err
@@ -870,7 +939,28 @@ type joinedTables struct {
 	siblings map[string]*TableSchema
 	base     *TableSchema
 	baseFK   string
+	// hasDeclared reports whether the owner declares any ROOT join. Unlike the
+	// 1:1 satellites above — pulled in only when a criteria names one of their
+	// fields — a declared join is ALWAYS in the FROM, because its Fields are
+	// loaded on every read. A field that appeared only when a filter happened to
+	// mention it would leave the same entity populated on one call and blank on
+	// the next, silently.
+	hasDeclared bool
 }
+
+// any reports whether ANY join was pulled in — sibling, shared base or declared.
+// It is what makes the anchor id ambiguous: every joined table has an "id" of its
+// own, so a bare "id" in the predicate or the ORDER BY tiebreak must be qualified
+// to the anchor once any of them is in the FROM.
+func (j *joinedTables) any() bool {
+	return len(j.siblings) > 0 || j.base != nil || j.hasDeclared
+}
+
+// joinAlias is the table alias one declared join is rendered under. It is keyed
+// on the FOREIGN KEY rather than the target table because two joins may reach
+// the same table (bill_to and ship_to both to customers) — the FK is what tells
+// them apart, and WithJoins guarantees it is unique per owner.
+func joinAlias(j Join) string { return "j_" + j.FKColumn }
 
 // resolverRecordingJoins resolves a criteria Go field to its column and records the 1:1
 // join the answer implies, so compileFilterJoins emits the matching LEFT JOIN.
@@ -887,29 +977,58 @@ type joinedTables struct {
 // they stay unqualified; only the shared ID is ambiguous under a join, and
 // findRoots/compileFilterJoins qualify it to the anchor table — so a criteria
 // may freely mix the ID and a specialization field.
+//
+// A name the SCHEMA does not answer may still be a field of a declared join
+// (WithJoins). Those resolve LAST — the schema always wins, so declaring a join
+// can never change the meaning of a name the entity already had — and they come
+// back qualified by the join's alias, because a joined aggregate shares no
+// namespace with the anchor.
 func (l *AggregateLoader[T]) resolverRecordingJoins(j *joinedTables) core.FieldResolver {
-	return func(goField string) (string, bool) {
-		r, ok := l.schema.Resolve(goField)
-		if !ok {
-			return "", false
-		}
-		switch r.Owner {
-		case core.OwnerSibling:
-			j.siblings[r.Schema.Table()] = r.Schema
-		case core.OwnerSharedBase:
-			if _, fk, has := l.schema.SharedBaseRef(); has {
-				j.base, j.baseFK = r.Schema, fk
+	return func(goField string) (core.ResolvedField, bool) {
+		if r, ok := l.schema.Resolve(goField); ok {
+			switch r.Owner {
+			case core.OwnerSibling:
+				j.siblings[r.Schema.Table()] = r.Schema
+			case core.OwnerSharedBase:
+				if _, fk, has := l.schema.SharedBaseRef(); has {
+					j.base, j.baseFK = r.Schema, fk
+				}
 			}
+			return r, true
 		}
-		return r.Column, true
+		return l.resolveDeclaredJoin(j, goField)
 	}
+}
+
+// resolveDeclaredJoin answers a Go field name declared by a ROOT join, recording
+// the traversal so joinClause emits it. Child joins are load-only and are not
+// offered here: filtering the root by a field of a 1:N child is a pushdown a
+// single root SELECT cannot express.
+func (l *AggregateLoader[T]) resolveDeclaredJoin(j *joinedTables, goField string) (core.ResolvedField, bool) {
+	for _, dj := range l.joins {
+		if dj.Child != nil {
+			continue
+		}
+		for _, f := range dj.Fields {
+			if f.GoField != goField {
+				continue
+			}
+			return core.ResolvedField{
+				Column:    f.Column,
+				Schema:    dj.Target,
+				Owner:     core.OwnerJoin,
+				Qualifier: joinAlias(dj),
+			}, true
+		}
+	}
+	return core.ResolvedField{}, false
 }
 
 // joinClause renders a LEFT JOIN per referenced sibling (shared ID) and the
 // shared base (role ParentID → base ID), ordered deterministically. Empty when the
 // criteria referenced no specialization field.
 func (l *AggregateLoader[T]) joinClause(j *joinedTables, dialect Dialect) string {
-	if len(j.siblings) == 0 && j.base == nil {
+	if len(j.siblings) == 0 && j.base == nil && len(rootJoins(l.joins)) == 0 {
 		return ""
 	}
 	anchor := dialect.QuoteIdent(l.schema.Table())
@@ -929,7 +1048,78 @@ func (l *AggregateLoader[T]) joinClause(j *joinedTables, dialect Dialect) string
 		sb.WriteString(" LEFT JOIN " + bt + " ON " + bt + "." + dialect.QuoteIdent(j.base.IDColumn()) +
 			" = " + anchor + "." + dialect.QuoteIdent(j.baseFK))
 	}
+	// Declared joins (WithJoins), each under its own alias so two traversals to
+	// the SAME table stay distinct. Emitted in declaration order, which is the
+	// order the SELECT list and the scan targets follow.
+	for _, dj := range rootJoins(l.joins) {
+		verb := " LEFT JOIN "
+		if dj.Kind == JoinInner {
+			verb = " INNER JOIN "
+		}
+		qa := dialect.QuoteIdent(joinAlias(dj))
+		sb.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " AS " + qa +
+			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
+			" = " + anchor + "." + dialect.QuoteIdent(dj.FKColumn))
+	}
 	return sb.String()
+}
+
+// rootJoins is the declared traversals that hang off the root, in declaration
+// order — the order the FROM, the SELECT list and the scan targets all follow, so
+// the three cannot drift.
+func rootJoins(joins []Join) []Join {
+	out := make([]Join, 0, len(joins))
+	for _, j := range joins {
+		if j.Child == nil {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// joinSelectExprs renders the alias-qualified column list a declared join
+// contributes to the root SELECT, in the same order joinScanTargets builds its
+// destinations.
+func joinSelectExprs(joins []Join, dialect Dialect) []string {
+	var out []string
+	for _, j := range rootJoins(joins) {
+		alias := dialect.QuoteIdent(joinAlias(j))
+		for _, f := range j.Fields {
+			out = append(out, alias+"."+dialect.QuoteIdent(f.Column))
+		}
+	}
+	return out
+}
+
+// joinScanTargets returns an addressable destination per join field, in the same
+// order joinSelectExprs listed them. The fields were proven to exist and be
+// exported at construction (validateJoins), so a missing one here would be a
+// framework bug, not a declaration mistake — it surfaces as an error rather than
+// a panic in a row loop.
+func joinScanTargets(target any, joins []Join) ([]any, error) {
+	return joinScanTargetsFor(target, rootJoins(joins))
+}
+
+// joinScanTargetsFor is joinScanTargets over an explicit, already-filtered list.
+func joinScanTargetsFor(target any, joins []Join) ([]any, error) {
+	rv := reflect.ValueOf(target)
+	for rv.Kind() == reflect.Pointer {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("join scan: destination must be a struct, got %s", rv.Kind())
+	}
+	var out []any
+	for _, j := range joins {
+		for _, f := range j.Fields {
+			fv := rv.FieldByName(f.GoField)
+			if !fv.IsValid() || !fv.CanAddr() {
+				return nil, fmt.Errorf("join scan: field %q is not addressable on %s", f.GoField, rv.Type())
+			}
+			out = append(out, fv.Addr().Interface())
+		}
+	}
+	return out, nil
 }
 
 // hydrateSharedBase loads a role's shared-base columns into the role entity,
@@ -974,10 +1164,10 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 // SELECT after the scanned struct columns, in the same order the caller's
 // trailing scan targets expect. They are read into external destinations, not
 // struct fields, so they never enter scanCols/scanByCol.
-func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, childFilter string, dialect Dialect, trailingCols []string) (string, []string, map[string]core.FieldPath) {
+func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, childFilter string, dialect Dialect, trailingCols []string, joins []Join) (string, []string, map[string]core.FieldPath) {
 	ct := dialect.QuoteIdent(child.Table())
 	sibs := child.Siblings()
-	if len(sibs) == 0 {
+	if len(sibs) == 0 && len(joins) == 0 {
 		sel := dialect.QuoteIdent(fkCol) + ", " + strings.Join(quoteIdentifiers(childCols, dialect), ", ")
 		for _, c := range trailingCols {
 			sel += ", " + dialect.QuoteIdent(c)
@@ -1014,9 +1204,38 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 	for _, c := range trailingCols {
 		sel += ", " + ct + "." + dialect.QuoteIdent(c)
 	}
+	// Declared child joins, each under its own alias. They come LAST in the
+	// SELECT, in declaration order — the order childJoinScanTargets builds its
+	// destinations — and after the carrier columns, so the trailing target list
+	// reads carrier-then-joins on both sides.
+	for _, dj := range joins {
+		verb := " LEFT JOIN "
+		if dj.Kind == JoinInner {
+			verb = " INNER JOIN "
+		}
+		qa := dialect.QuoteIdent(joinAlias(dj))
+		join.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " AS " + qa +
+			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
+			" = " + ct + "." + dialect.QuoteIdent(dj.FKColumn))
+		for _, f := range dj.Fields {
+			sel += ", " + qa + "." + dialect.QuoteIdent(f.Column)
+		}
+	}
 	sql := "SELECT " + sel + " FROM " + ct + join.String() +
 		" WHERE " + ct + "." + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
 	return sql, scanCols, scanByCol
+}
+
+// childJoinsOf is the declared traversals hanging off ONE child, in declaration
+// order — the order the child's FROM, SELECT list and scan targets follow.
+func childJoinsOf(joins []Join, childTable string) []Join {
+	out := make([]Join, 0, len(joins))
+	for _, j := range joins {
+		if j.Child != nil && j.Child.Table() == childTable {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // quoteIdentifiers quotes each name via the dialect (which validates against the

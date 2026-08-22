@@ -42,4 +42,14 @@ type AggregateReader interface {
 	// id, the managed columns, the children, the siblings and the shared base. A
 	// read model takes its schema from here, so schema and loader cannot disagree.
 	Schema() *core.TableSchema
+	// JoinFields names the Go fields a declared READ JOIN adds beyond the schema,
+	// keyed by the table they land on — the root's table for a root join, the
+	// child's for a child join. They are ordinary fields of the loaded entity, so a
+	// read model serves them like any other; they are simply absent from the
+	// TableSchema, which is why a reader has to be told about them.
+	//
+	// Only the ROOT's entry is addressable in a criteria: a child join is
+	// load-only, since filtering the root by a field of a 1:N child is a pushdown
+	// a single root SELECT cannot express.
+	JoinFields() map[string][]string
 }

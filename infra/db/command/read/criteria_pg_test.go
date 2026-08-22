@@ -11,7 +11,10 @@ import (
 
 func testResolver() core.FieldResolver {
 	m := map[string]string{"ID": "id", "Email": "email", "Name": "name", "Age": "age", "Phone": "phone"}
-	return func(f string) (string, bool) { c, ok := m[f]; return c, ok }
+	return func(f string) (core.ResolvedField, bool) {
+		c, ok := m[f]
+		return core.ResolvedField{Column: c}, ok
+	}
 }
 
 func TestPgVisitor_Operators(t *testing.T) {

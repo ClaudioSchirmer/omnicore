@@ -172,6 +172,7 @@ func (l *byIDLoader) FindAllEntities(_ context.Context, q *criteria.Query) ([]do
 }
 func (l *byIDLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
 func (l *byIDLoader) Schema() *core.TableSchema                                     { return guardSchema(l.table) }
+func (l *byIDLoader) JoinFields() map[string][]string                               { return nil }
 
 func byIDReader(t *testing.T, l *byIDLoader) *ViewReader {
 	t.Helper()

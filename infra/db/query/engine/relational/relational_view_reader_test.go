@@ -28,6 +28,7 @@ func (f *fakeLoader) FindAllEntities(context.Context, *criteria.Query) ([]domain
 }
 func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
 func (f *fakeLoader) Schema() *core.TableSchema                                     { return guardSchema(f.table) }
+func (f *fakeLoader) JoinFields() map[string][]string                               { return nil }
 
 // guardEnt is a minimal entity — enough to build an AggregateLoader over a schema
 // without a database: the declaration only ever reads the loader's schema.
@@ -113,14 +114,14 @@ func assertUnsupportedCapability400(t *testing.T, err error, wantField string) {
 // TestUnsupportedChildFilter_MapsTo400 covers a filter pushed at a child (dotted)
 // field: a root SELECT cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Addresses.ZipCode": "12345"})
+	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Addresses.ZipCode": "12345"})
 	assertUnsupportedCapability400(t, err, "Addresses.ZipCode")
 }
 
 // TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
 // a root ORDER BY cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
-	err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Addresses.ZipCode"}})
+	err := applySort(guardSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Addresses.ZipCode"}})
 	assertUnsupportedCapability400(t, err, "Addresses.ZipCode")
 }
 
@@ -159,10 +160,10 @@ func sharedBaseSchema(table string) *core.TableSchema {
 // satellite the loader LEFT JOINs, so a filter AND a sort on it are servable —
 // no longer the 400 they once were.
 func TestServableSiblingField_Passes(t *testing.T) {
-	if _, err := toExpr(siblingSchema("gadgets"), map[string]any{"Material": "steel"}); err != nil {
+	if _, err := toExpr(siblingSchema("gadgets"), nil, map[string]any{"Material": "steel"}); err != nil {
 		t.Fatalf("a root-level sibling field must be servable (1:1 LEFT JOIN), got %v", err)
 	}
-	if err := applySort(siblingSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Material"}}); err != nil {
+	if err := applySort(siblingSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Material"}}); err != nil {
 		t.Fatalf("a sort on a root-level sibling field must be servable, got %v", err)
 	}
 }
@@ -171,10 +172,10 @@ func TestServableSiblingField_Passes(t *testing.T) {
 // relaxation: a base field (DisplayName) the loader reaches by joining the role
 // to its shared base is servable for both filter and sort.
 func TestServableSharedBaseField_Passes(t *testing.T) {
-	if _, err := toExpr(sharedBaseSchema("holders"), map[string]any{"DisplayName": "ACME"}); err != nil {
+	if _, err := toExpr(sharedBaseSchema("holders"), nil, map[string]any{"DisplayName": "ACME"}); err != nil {
 		t.Fatalf("a shared-base field must be servable (1:1 base JOIN), got %v", err)
 	}
-	if err := applySort(sharedBaseSchema("holders"), criteria.Where(nil), []queries.OrderByField{{Field: "DisplayName"}}); err != nil {
+	if err := applySort(sharedBaseSchema("holders"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "DisplayName"}}); err != nil {
 		t.Fatalf("a sort on a shared-base field must be servable, got %v", err)
 	}
 }
@@ -202,10 +203,10 @@ func managedSchema(table string) *core.TableSchema {
 func TestServableManagedColumns_Passes(t *testing.T) {
 	schema := managedSchema("gadgets")
 	for _, field := range []string{"CreatedAt", "UpdatedAt", "DeletedAt", "ParentID"} {
-		if _, err := toExpr(schema, map[string]any{field: "x"}); err != nil {
+		if _, err := toExpr(schema, nil, map[string]any{field: "x"}); err != nil {
 			t.Errorf("a filter on the managed field %q must be servable, got %v", field, err)
 		}
-		if err := applySort(schema, criteria.Where(nil), []queries.OrderByField{{Field: field, Desc: true}}); err != nil {
+		if err := applySort(schema, nil, criteria.Where(nil), []queries.OrderByField{{Field: field, Desc: true}}); err != nil {
 			t.Errorf("a sort on the managed field %q must be servable, got %v", field, err)
 		}
 	}
@@ -216,7 +217,7 @@ func TestServableManagedColumns_Passes(t *testing.T) {
 // view with no DeletedAt has no archived state to address, so the name is as
 // unknown as any other.
 func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"CreatedAt": "x"})
+	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"CreatedAt": "x"})
 	assertUnsupportedCapability400(t, err, "CreatedAt")
 }
 
@@ -224,17 +225,17 @@ func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
 // that belongs to NO schema (not root, not a sibling, not the base) is still a
 // 400 — the relaxation admits 1:1 satellites, not arbitrary names.
 func TestUnsupportedUnknownField_MapsTo400(t *testing.T) {
-	_, err := toExpr(siblingSchema("gadgets"), map[string]any{"Nonexistent": "x"})
+	_, err := toExpr(siblingSchema("gadgets"), nil, map[string]any{"Nonexistent": "x"})
 	assertUnsupportedCapability400(t, err, "Nonexistent")
 }
 
 // TestServableRootField_Passes is the positive control: a bona fide root column
 // (Name) is NOT rejected — parity with the Mongo reader for root filters/sorts.
 func TestServableRootField_Passes(t *testing.T) {
-	if _, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": "x"}); err != nil {
+	if _, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Name": "x"}); err != nil {
 		t.Fatalf("a root-own field must be servable, got %v", err)
 	}
-	if err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Name"}}); err != nil {
+	if err := applySort(guardSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Name"}}); err != nil {
 		t.Fatalf("a root-own sort field must be servable, got %v", err)
 	}
 }

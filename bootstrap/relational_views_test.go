@@ -23,6 +23,7 @@ func (l relStubLoader) FindAllEntities(context.Context, *criteria.Query) ([]doma
 }
 func (l relStubLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
 func (l relStubLoader) Schema() *core.TableSchema                                     { return l.schema }
+func (l relStubLoader) JoinFields() map[string][]string                               { return nil }
 
 func relStub(table string) relStubLoader {
 	return relStubLoader{schema: core.NewTableSchema[*relStubEntity](table).ID("id")}

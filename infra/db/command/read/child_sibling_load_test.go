@@ -23,7 +23,7 @@ func TestChildScanSQL_WithSibling(t *testing.T) {
 		Sibling(NewSiblingSchema[csLoadChild]("cs_child_ext").Field("Note", "note"))
 	cols, byCol := child.ScanPlan()
 	ms := newChildManagedScan(child)
-	sql, scanCols, scanByCol := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "AND deleted_at IS NULL", testPGDialect{}, ms.cols)
+	sql, scanCols, scanByCol := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "AND deleted_at IS NULL", testPGDialect{}, ms.cols, nil)
 
 	if !strings.Contains(sql, "LEFT JOIN") || !strings.Contains(sql, "cs_child_ext") {
 		t.Errorf("a child with a sibling must LEFT JOIN it: %q", sql)
@@ -50,7 +50,7 @@ func TestChildScanSQL_NoSibling(t *testing.T) {
 	child := NewTableSchema[csLoadChild]("cs_child").ID("id").ParentID("root_id").Field("Label", "label")
 	cols, byCol := child.ScanPlan()
 	ms := newChildManagedScan(child)
-	sql, _, _ := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "", testPGDialect{}, ms.cols)
+	sql, _, _ := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "", testPGDialect{}, ms.cols, nil)
 	if strings.Contains(sql, "LEFT JOIN") {
 		t.Errorf("a child without siblings must not join: %q", sql)
 	}

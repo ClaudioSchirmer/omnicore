@@ -19,6 +19,7 @@ func (s stubLoader) FindAllEntities(context.Context, *criteria.Query) ([]domain.
 }
 func (s stubLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
 func (s stubLoader) Schema() *core.TableSchema                                     { return s.schema }
+func (s stubLoader) JoinFields() map[string][]string                               { return nil }
 
 func relLoader(table string) stubLoader { return stubLoader{schema: rootSchema(table)} }
 

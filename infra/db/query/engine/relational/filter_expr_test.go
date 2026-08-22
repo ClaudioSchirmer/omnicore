@@ -14,7 +14,7 @@ import (
 
 func exprOf(t *testing.T, field string, v any) criteria.Expr {
 	t.Helper()
-	e, err := toExpr(guardSchema("gadgets"), map[string]any{field: v})
+	e, err := toExpr(guardSchema("gadgets"), nil, map[string]any{field: v})
 	if err != nil {
 		t.Fatalf("toExpr(%v): %v", v, err)
 	}
@@ -42,14 +42,14 @@ func TestSetOperators_TakeTheWholeValueList(t *testing.T) {
 // A scalar operator with no operand is a malformed clause — an error, not a
 // silently-dropped filter that would widen the result set.
 func TestOrdinalOperator_WithoutAValueIsAnError(t *testing.T) {
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": queries.Clause{Op: queries.FilterGt}})
+	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Name": queries.Clause{Op: queries.FilterGt}})
 	if err == nil || !strings.Contains(err.Error(), "carries no value") {
 		t.Fatalf("an operand-less comparison must error, got %v", err)
 	}
 }
 
 func TestUnknownOperator_IsAnError(t *testing.T) {
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": queries.Clause{Op: "sideways", Values: []any{1}}})
+	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Name": queries.Clause{Op: "sideways", Values: []any{1}}})
 	if err == nil || !strings.Contains(err.Error(), "unknown operator") {
 		t.Fatalf("an unknown operator must error, got %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMultiClause_AndsTheClausesOnTheSameField(t *testing.T) {
 		t.Error("an empty multi-clause must produce no predicate")
 	}
 	// A malformed member propagates its error rather than being dropped.
-	if _, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": queries.MultiClause{
+	if _, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Name": queries.MultiClause{
 		Clauses: []any{queries.Clause{Op: queries.FilterGt}},
 	}}); err == nil {
 		t.Error("a malformed clause inside a multi must surface")
@@ -116,7 +116,7 @@ func TestBareScalar_IsEquality(t *testing.T) {
 
 // Two fields AND together, visited in a deterministic order.
 func TestToExpr_MultipleFieldsAndDeterministically(t *testing.T) {
-	e, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": "a", "ID": "b"})
+	e, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Name": "a", "ID": "b"})
 	if err != nil {
 		t.Fatalf("toExpr: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestToExpr_MultipleFieldsAndDeterministically(t *testing.T) {
 }
 
 func TestToExpr_EmptyFilterIsNoPredicate(t *testing.T) {
-	e, err := toExpr(guardSchema("gadgets"), nil)
+	e, err := toExpr(guardSchema("gadgets"), nil, nil)
 	if err != nil || e != nil {
 		t.Fatalf("an empty filter = (%v, %v), want (nil, nil)", e, err)
 	}

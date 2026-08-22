@@ -85,6 +85,15 @@ func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggreg
 	return r
 }
 
+// WithJoins declares the READ-ONLY traversals this aggregate may reach across in
+// a query, threading them into the loader that owns FindOne/FindAll/Exists — the
+// same shape WithSchema uses. Declare the schema first: the joins are validated
+// against it at construction.
+func (r *BaseAggregateRepository[T]) WithJoins(bindings ...*JoinBinding) *BaseAggregateRepository[T] {
+	r.Loader.WithJoins(bindings...)
+	return r
+}
+
 // validateDeclaredChildren asserts the aggregate boundary the domain declares
 // (root.AggregateChildren()) and the children the TableSchema declares
 // (.Child(...)) name the SAME set of types. The two are independent

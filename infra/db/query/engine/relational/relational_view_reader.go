@@ -33,6 +33,24 @@ type view struct {
 	schema *core.TableSchema
 	node   *query.ViewNode
 	loader query.AggregateReader
+	// joinFields names the Go fields declared read joins add beyond the schema,
+	// keyed by the table they land on. Root entries are addressable in a criteria;
+	// every entry is served in the document.
+	joinFields map[string][]string
+}
+
+// rootJoinFields is the set of join fields addressable in a criteria — the root's
+// only. A child join is load-only.
+func (v view) rootJoinFields() map[string]bool {
+	names := v.joinFields[v.schema.Table()]
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }
 
 // ViewReader implements queries.ViewReader by reading a relational-backed view
@@ -66,9 +84,10 @@ func NewViewReader(views []*query.RelationalViewDefinition) *ViewReader {
 			continue
 		}
 		r.views[v.Name()] = view{
-			schema: v.SchemaDef(),
-			node:   v.BuildViewNode(),
-			loader: v.Loader(),
+			schema:     v.SchemaDef(),
+			node:       v.BuildViewNode(),
+			loader:     v.Loader(),
+			joinFields: v.Loader().JoinFields(),
 		}
 	}
 	return r
@@ -121,7 +140,7 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 	if crit.Search != "" {
 		return queries.Page{}, unsupported("search")
 	}
-	where, err := toExpr(v.schema, crit.Filter)
+	where, err := toExpr(v.schema, v.rootJoinFields(), crit.Filter)
 	if err != nil {
 		return queries.Page{}, err
 	}
@@ -201,7 +220,7 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 	}
 
 	q := scopedQuery(where, crit.IncludeArchived)
-	if err := applySort(v.schema, q, crit.OrderBy); err != nil {
+	if err := applySort(v.schema, v.rootJoinFields(), q, crit.OrderBy); err != nil {
 		// The buffered channel lets the in-flight count goroutine finish and
 		// be collected without blocking anyone.
 		return queries.Page{}, err
@@ -235,6 +254,7 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 			v.node.StripArchivedChildren(doc)
 		}
 		goDoc := v.node.ToGoDoc(doc)
+		applyJoinFields(goDoc, ent, v.schema, v.joinFields)
 		applyProjection(goDoc, crit.Projection)
 		page.Items = append(page.Items, goDoc)
 		cur, err := queries.EncodeCursor(offsetTuple(win.offset+int64(j), len(crit.OrderBy)), hashCtx)
@@ -378,7 +398,7 @@ func (r *ViewReader) ReadByID(ctx context.Context, name, id string, crit queries
 		return nil, false, fmt.Errorf("relational view %q is not registered", name)
 	}
 	where := criteria.Eq(idGoField, domain.NewID(id))
-	overlay, err := toExpr(v.schema, crit.Filter)
+	overlay, err := toExpr(v.schema, v.rootJoinFields(), crit.Filter)
 	if err != nil {
 		return nil, false, err
 	}
@@ -398,6 +418,7 @@ func (r *ViewReader) ReadByID(ctx context.Context, name, id string, crit queries
 		v.node.StripArchivedChildren(doc)
 	}
 	goDoc := v.node.ToGoDoc(doc)
+	applyJoinFields(goDoc, ents[0], v.schema, v.joinFields)
 	applyProjection(goDoc, crit.Projection)
 	return goDoc, true, nil
 }
