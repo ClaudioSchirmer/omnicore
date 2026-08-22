@@ -12,34 +12,17 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
-// RootScanner deserializes one row into a populated entity T. The loader passes
-// a column-keyed map — the row read BY NAME, never by position, so it is
-// order-independent and stable across an online ADD COLUMN: the scanner reads
-// m["column"], type-asserts, and returns the entity. On the criteria path it MUST
-// set the ID (SetID) — the loader reads it back via t.GetID(). The map carries the
-// schema's declared columns, values normalized per backend (uuid → string, etc.),
-// so a manual scanner runs on any engine.
-type RootScanner[T domain.Entity] func(map[string]any) (T, error)
-
-// ChildScanner deserializes one column-keyed row map into an AggregateValueObject
-// (read by name, same normalization as RootScanner).
-type ChildScanner func(map[string]any) (domain.AggregateValueObject, error)
-
 // AggregateLoader[T] loads an aggregate root + its children from the configured
 // relational backend. The
 // root and children tables/columns come from the TableSchema attached via
 // WithSchema (the same schema the write side uses) — no convention inference.
 //
-// Two scan paths coexist:
+// There is ONE scan path: the framework reads each declared schema and scans the
+// columns straight into the struct. The mapping is the TableSchema's and nobody
+// else's — a read that needs a different shape declares a different schema over a
+// different type, which is cheaper to write and impossible to get half-wired.
 //
-//  1. Auto-scan (default) — the framework reads each declared child schema and
-//     scans the columns directly into the struct. Every child declared on the
-//     schema (root.Child(...)) is auto-scanned unless a manual scanner is set.
-//
-//  2. Manual scanners — service provides RootScanner/ChildScanner via
-//     WithRootScanner/WithChildScanner. Required for non-trivial queries.
-//
-// Typical usage (auto-scan):
+// Typical usage:
 //
 //	loader := infra.NewAggregateLoader[*appdomain.User](pg, func() *appdomain.User {
 //	    return &appdomain.User{}
@@ -49,24 +32,17 @@ type ChildScanner func(map[string]any) (domain.AggregateValueObject, error)
 //	    return loader.FindOne(context.Background(), criteria.ByID(id))
 //	}
 type AggregateLoader[T domain.Entity] struct {
-	eng           RelationalEngine
-	newEntity     func() T
-	contextName   string
-	schema        *TableSchema
-	rootScanner   RootScanner[T]
-	childScanners map[string]ChildScanner
+	eng         RelationalEngine
+	newEntity   func() T
+	contextName string
+	schema      *TableSchema
 }
 
-// NewAggregateLoader initializes a loader over a RelationalEngine. Both scan
-// paths — auto-scan and manual RootScanner/ChildScanner — run through the
-// engine's neutral Querier + Dialect, so a manual scanner works on any backend
-// (the scanner receives infra.Row/infra.Rows, not pgx types).
+// NewAggregateLoader initializes a loader over a RelationalEngine. Every read
+// runs through the engine's neutral Querier + Dialect, so the loader works on any
+// backend without a driver type ever surfacing.
 func NewAggregateLoader[T domain.Entity](eng RelationalEngine, newEntity func() T) *AggregateLoader[T] {
-	return &AggregateLoader[T]{
-		eng:           eng,
-		newEntity:     newEntity,
-		childScanners: map[string]ChildScanner{},
-	}
+	return &AggregateLoader[T]{eng: eng, newEntity: newEntity}
 }
 
 // WithContextName overrides the default. When not called, contextName is
@@ -91,19 +67,6 @@ func (l *AggregateLoader[T]) effectiveContextName() string {
 // uses. Shared between write and read sides of a Repository.
 func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T] {
 	l.schema = schema
-	return l
-}
-
-// WithRootScanner registers a manual scanner for the root. Takes precedence over auto.
-func (l *AggregateLoader[T]) WithRootScanner(fn RootScanner[T]) *AggregateLoader[T] {
-	l.rootScanner = fn
-	return l
-}
-
-// WithChildScanner registers a manual scanner for the child. Takes precedence over auto.
-// typeName must match the Go type name of the AVO (e.g. "Address").
-func (l *AggregateLoader[T]) WithChildScanner(typeName string, fn ChildScanner) *AggregateLoader[T] {
-	l.childScanners[typeName] = fn
 	return l
 }
 
@@ -278,15 +241,8 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *joined
 // roots, recovering each row's id (FindOne/FindAll do not know the id a priori).
 // limitOverride > 0 replaces the Query's limit (FindOne uses 2).
 //
-// Two root-scan modes, mirroring the load contract:
-//
-//   - Auto-scan (default): the framework controls the SELECT, prepends `id` and
-//     reads it back positionally (the root struct does not expose id as a field).
-//   - Manual scanner (WithRootScanner): the developer controls the row scan via
-//     `SELECT *`. Because the framework no longer injects the id (there is no
-//     input id on the criteria path), the manual scanner MUST populate the id
-//     (scan it and call SetID); findRoots recovers it via GetID(). An empty id
-//     is a configuration error surfaced loudly.
+// The framework controls the SELECT: it prepends `id` and reads it back
+// positionally, since the root struct does not expose the id as a field.
 func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, limitOverride int64) ([]T, []string, error) {
 	sample := l.newEntity()
 	table := l.schema.Table()
@@ -338,53 +294,12 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		offset = 0
 	}
 
-	// Manual root scanner: explicit columns (never SELECT *) + dev-controlled
-	// decode BY NAME; id via GetID(). Runs through the neutral Querier's QueryMaps
-	// (column-keyed rows), so it works on any engine and the selected column set
-	// stays stable across an online ADD COLUMN.
-	if l.rootScanner != nil {
-		sql := "SELECT " + selectColumns(dialect, l.schema.ReadColumns()) + " FROM " + dialect.QuoteIdent(table) + tailClause(clause, orderSQL)
-		sql, err = applyWindow(dialect, sql, limit, offset, orderSQL)
-		if err != nil {
-			return nil, nil, err
-		}
-		rowMaps, err := l.eng.Querier().QueryMaps(ctx, sql, args...)
-		if err != nil {
-			return nil, nil, err
-		}
-		var (
-			entities []T
-			ids      []string
-		)
-		for _, m := range rowMaps {
-			root, err := l.rootScanner(m)
-			if err != nil {
-				return nil, nil, err
-			}
-			idp := root.GetID()
-			if idp == nil || idp.IsEmpty() {
-				return nil, nil, fmt.Errorf(
-					"AggregateLoader[%s]: a manual root scanner used with FindOne/FindAll must populate the id "+
-						"(read m[\"<pk>\"] and call SetID) — the framework injects no id on the criteria path",
-					l.effectiveContextName(),
-				)
-			}
-			// Parity with the auto scan: the manual scanner owns the business fields
-			// and the id, the framework fills the managed carrier (created/updated/
-			// deleted/revision) from the same row map — ReadColumns already selected them.
-			applyManagedFromMap(any(root), l.schema, m)
-			entities = append(entities, root)
-			ids = append(ids, idp.Value())
-		}
-		return entities, ids, nil
-	}
-
-	// Auto-scan: SELECT <pk>, <cols> + positional scan with the ID read back.
+	// SELECT <pk>, <cols> + positional scan with the ID read back.
 	cols, byCol := l.schema.ScanPlan()
 	if len(cols) == 0 {
 		return nil, nil, fmt.Errorf(
 			"AggregateLoader[%s]: schema declares no columns — %T exposes no persisted fields. "+
-				"Use WithRootScanner to provide a manual scanner",
+				"Declare them with TableSchema.Field(...)",
 			l.effectiveContextName(), sample,
 		)
 	}
@@ -506,15 +421,14 @@ func applyWindow(d Dialect, sql string, limit, offset int64, orderSQL string) (s
 	return sql, nil
 }
 
-// hydrateChildren loads + attaches children for the given roots. Auto-scan
-// children are loaded in one batched SELECT per type (WHERE fk IN (...)) and
-// grouped by ParentID; a manual ChildScanner falls back to one SELECT per root (it
-// cannot expose the ParentID generically). Child rows honor the scope the same way
+// hydrateChildren loads + attaches children for the given roots: one batched
+// SELECT per child type (WHERE fk IN (...)), grouped by ParentID in memory.
+// Child rows honor the scope the same way
 // the root gate does — see childScopeFilter (active → deleted_at IS NULL; any
 // archived scope → unfiltered, so the unarchive cascade sees every child via
 // AllAggregateItems()).
 func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, ids []string, scope criteria.Scope) error {
-	if len(entities) == 0 || (len(l.childScanners) == 0 && len(l.schema.ChildSchemaNames()) == 0) {
+	if len(entities) == 0 || len(l.schema.ChildSchemaNames()) == 0 {
 		return nil
 	}
 	dialect := l.eng.Dialect()
@@ -532,56 +446,14 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 
 	avosByRoot := make(map[string][]domain.AggregateValueObject, len(providersByID))
 
-	// The schema declares the aggregate children; a child with a manual scanner
-	// (WithChildScanner) uses it, every other declared child is auto-scanned
-	// from its TableSchema.
-	seen := map[string]bool{}
-	for typeName := range l.childScanners {
-		seen[typeName] = true
-	}
+	// The schema declares the aggregate children, and the schema alone: every
+	// declared child is scanned from its own TableSchema.
 	for _, typeName := range l.schema.ChildSchemaNames() {
-		seen[typeName] = true
-	}
-
-	for typeName := range seen {
+		// typeName came from ChildSchemaNames(), which reads the very map this
+		// looks up — the schema is always there.
 		child := l.schema.ChildSchema(typeName)
-		if child == nil {
-			return fmt.Errorf(
-				"AggregateLoader[%s] child %q: no TableSchema declared (root.Child(...))",
-				l.effectiveContextName(), typeName,
-			)
-		}
-		childTable := child.Table()
 		fkCol := child.ParentIDColumn()
 		childFilter := childScopeFilter(scope, child, dialect, "")
-
-		if manual, ok := l.childScanners[typeName]; ok {
-			// Manual child scanner: explicit columns (never SELECT *) + decode BY
-			// NAME via QueryMaps; the ParentID arg is dialect-encoded (text on PG,
-			// BINARY(16) bytes on MySQL) just like the auto path.
-			sql := fmt.Sprintf(
-				"SELECT %s FROM %s WHERE %s = %s %s",
-				selectColumns(dialect, child.ReadColumns()), dialect.QuoteIdent(childTable), dialect.QuoteIdent(fkCol), dialect.Placeholder(1), childFilter,
-			)
-			for _, id := range rootIDs {
-				maps, err := l.eng.Querier().QueryMaps(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
-				if err != nil {
-					return err
-				}
-				for _, m := range maps {
-					avo, err := manual(m)
-					if err != nil {
-						return err
-					}
-					// Parity with the auto scan: the manual scanner owns the business
-					// fields + the id, the framework fills the managed carrier from the
-					// same row map (ReadColumns already selected the managed columns).
-					avo = withManagedFromMap(avo, child, m)
-					avosByRoot[id] = append(avosByRoot[id], avo)
-				}
-			}
-			continue
-		}
 
 		childCols, childByCol := child.ScanPlan()
 		if len(childCols) == 0 {

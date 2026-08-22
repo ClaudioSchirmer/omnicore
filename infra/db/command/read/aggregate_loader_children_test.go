@@ -50,38 +50,9 @@ func TestHydrateChildren_FlatEntityReturnsNil(t *testing.T) {
 	}
 }
 
-// A child type with a scanner but no .Child(...) schema is a configuration bug
-// surfaced as an error.
-func TestHydrateChildren_UndeclaredChildSchemaErrors(t *testing.T) {
-	schema := NewTableSchema[*covAgg]("cov_aggs").ID("id").Revision("revision").Field("Name", "name").DeletedAt("deleted_at")
-	l := newCovAggLoader(fakeEngine(nil), schema).
-		WithChildScanner("Ghost", func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil })
-
-	root := &covAgg{Name: "a"}
-	root.SetID(domain.NewID(uuid.NewString()))
-	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, activeScope()); err == nil {
-		t.Fatal("expected undeclared-child-schema error")
-	}
-}
-
-// The manual child path reads via QueryMaps (all rows at once), so its only IO
-// failure is a QueryMaps error — the old per-row Rows.Err() case no longer exists.
-func TestHydrateChildren_ManualChildScanner_QueryMapsError(t *testing.T) {
-	manual := func(map[string]any) (domain.AggregateValueObject, error) {
-		return domain.WithID(covChild{}, domain.NewID("c1")), nil
-	}
-	mapsErr := func(string, []any) ([]map[string]any, error) { return nil, errFakeDB }
-	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsErr), covAggSchema).WithChildScanner("covChild", manual)
-	root := &covAgg{Name: "a"}
-	root.SetID(domain.NewID(uuid.NewString()))
-	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, activeScope()); err == nil {
-		t.Fatal("expected QueryMaps error to propagate")
-	}
-}
-
-func TestHydrateChildren_AutoChildScanner_RowsErr(t *testing.T) {
+func TestHydrateChildren_RowsErrPropagates(t *testing.T) {
 	query := func(string, []any) (Rows, error) { return &fakeDBRows{nextErr: errFakeDB}, nil }
-	l := newCovAggLoader(fakeEngine(query), covAggSchema) // no manual scanner → auto-scan path
+	l := newCovAggLoader(fakeEngine(query), covAggSchema)
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, activeScope()); err == nil {

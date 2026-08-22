@@ -151,7 +151,7 @@ func TestIntegration_LinkManyTopN(t *testing.T) {
 	// carries exactly the asked leaf.
 	projected, err := reader.ReadPage(ctx, "lm_full", queries.ReadCriteria{
 		OrderBy:    []queries.OrderByField{{Field: "Code"}},
-		Projection: map[string]int{"Code": 1, "Notes.Text": 1, "_id": 0},
+		Projection: queries.ProjectOnlyPaths("Code", "Notes.Text"),
 	})
 	if err != nil {
 		t.Fatalf("projected read: %v", err)

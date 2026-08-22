@@ -26,46 +26,6 @@ func TestHydrateChildren_NoEntitiesIsNoop(t *testing.T) {
 	}
 }
 
-func TestHydrateChildren_ManualScannerRowsAttach(t *testing.T) {
-	var manualSQL string
-	mapsFn := func(sql string, _ []any) ([]map[string]any, error) {
-		manualSQL = sql
-		return []map[string]any{{}, {}}, nil // 2 rows; manual scanner owns the decode, content irrelevant
-	}
-	n := 0
-	manual := func(map[string]any) (domain.AggregateValueObject, error) {
-		n++
-		return domain.WithID(covChild{Label: "L"}, domain.NewID("c"+string(rune('0'+n)))), nil
-	}
-	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsFn), covAggSchema).WithChildScanner("covChild", manual)
-
-	root := &covAgg{Name: "a"}
-	root.SetID(domain.NewID("r1"))
-	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, criteria.ScopeActive); err != nil {
-		t.Fatalf("hydrateChildren: %v", err)
-	}
-	// The manual path is one explicit-column SELECT per root, ParentID-filtered — never SELECT *.
-	if !strings.Contains(manualSQL, "FROM cov_children WHERE cov_agg_id = $1") || strings.Contains(manualSQL, "SELECT *") {
-		t.Errorf("manual child SELECT wrong (must name columns, ParentID-filtered): %q", manualSQL)
-	}
-	items := domain.GetCurrentItemsOf[covChild](&root.AggregateRoot)
-	if len(items) != 2 {
-		t.Fatalf("manual-scanned children not attached: got %d, want 2", len(items))
-	}
-}
-
-func TestHydrateChildren_ManualScannerRowErrorPropagates(t *testing.T) {
-	mapsFn := func(string, []any) ([]map[string]any, error) { return []map[string]any{{}}, nil }
-	manual := func(map[string]any) (domain.AggregateValueObject, error) { return nil, errFakeDB }
-	l := newCovAggLoader(fakeEngineWithMaps(nil, mapsFn), covAggSchema).WithChildScanner("covChild", manual)
-
-	root := &covAgg{Name: "a"}
-	root.SetID(domain.NewID("r1"))
-	if err := l.hydrateChildren(context.Background(), []*covAgg{root}, []string{"r1"}, criteria.ScopeActive); !errors.Is(err, errFakeDB) {
-		t.Fatalf("expected the manual scanner error, got %v", err)
-	}
-}
-
 func TestHydrateChildren_ChildSchemaWithoutColumnsErrors(t *testing.T) {
 	schema := NewTableSchema[*covAgg]("cov_aggs").ID("id").Revision("revision").Field("Name", "name").
 		Child(noColsChildSchema("cov_agg_id"))

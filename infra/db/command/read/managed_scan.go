@@ -2,7 +2,6 @@ package read
 
 import (
 	"database/sql"
-	"reflect"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -134,55 +133,6 @@ func (m *managedScan) apply(target any, dialect Dialect) error {
 	}
 	domain.SetManagedColumns(target, revision, created, updated, deleted)
 	return nil
-}
-
-// applyManagedFromMap stamps the framework-managed timestamps + revision onto
-// target (a POINTER embedding domain.Managed) from a column-keyed row map — the
-// manual-scanner parity path. A manual RootScanner/ChildScanner controls the
-// business-field decode and (for the root) the SetID, but the map QueryMaps
-// returns already carries the managed columns under their declared names
-// (schema.ReadColumns includes them), so the framework fills the carrier the same
-// way the auto scan does. Timestamp cells arrive as time.Time (nil when NULL),
-// the revision as an integer; the id, when a manual scanner did not set it, is
-// left to the scanner's own SetID (the root contract).
-func applyManagedFromMap(target any, schema *core.TableSchema, m map[string]any) {
-	toTimePtr := func(col string) *time.Time {
-		if col == "" {
-			return nil
-		}
-		if v, ok := m[col]; ok && v != nil {
-			return coerceManagedTime(v)
-		}
-		return nil
-	}
-	created := toTimePtr(schema.CreatedAtColumn())
-	updated := toTimePtr(schema.UpdatedAtColumn())
-	deletedCol, _ := schema.DeletedAtColumn()
-	deleted := toTimePtr(deletedCol)
-	var revision int64
-	if rc := schema.RevisionColumn(); rc != "" {
-		if v, ok := m[rc]; ok && v != nil {
-			revision = toInt64(v)
-		}
-	}
-	domain.SetManagedColumns(target, revision, created, updated, deleted)
-}
-
-// withManagedFromMap returns avo with its managed carrier filled from a row map —
-// the manual ChildScanner parity path. A manual child scanner owns the business
-// fields and the id (it calls SetID), the framework fills the managed columns.
-// AVOs are value types, so the carrier is filled on an addressable copy; a
-// pointer AVO is mutated in place.
-func withManagedFromMap(avo domain.AggregateValueObject, schema *core.TableSchema, m map[string]any) domain.AggregateValueObject {
-	rv := reflect.ValueOf(avo)
-	if rv.Kind() == reflect.Pointer {
-		applyManagedFromMap(avo, schema, m)
-		return avo
-	}
-	p := reflect.New(rv.Type())
-	p.Elem().Set(rv)
-	applyManagedFromMap(p.Interface(), schema, m)
-	return p.Elem().Interface().(domain.AggregateValueObject)
 }
 
 // managedTimeLayouts are the textual timestamp forms a driver may hand back

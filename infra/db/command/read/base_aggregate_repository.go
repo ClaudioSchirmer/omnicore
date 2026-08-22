@@ -23,9 +23,8 @@ import (
 // When to use (common case):
 //
 //   - Aggregate-aware Repository with symmetric universal cascade.
-//   - FindByID via schema-driven auto-scan or a manual scanner on the Loader.
-//   - Children declared on the TableSchema via Child(...); manual decoding via
-//     WithChildScanner when a child needs a non-trivial scan.
+//   - FindByID via the schema-driven scan.
+//   - Children declared on the TableSchema via Child(...).
 //
 // When NOT to use (keep the old pattern of direct BaseRepository[T] embed
 // + a separate *AggregateLoader[T]):

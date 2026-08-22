@@ -80,7 +80,7 @@ func TestReadByID_HonorsInclusionProjection(t *testing.T) {
 	r := NewMongoViewReader(m, testResolver).SetViews([]*query.ViewDefinition{rbpView()})
 
 	doc, found, err := r.ReadByID(context.Background(), "rbp_users", "u1",
-		queries.ReadCriteria{Filter: map[string]any{}, Projection: map[string]int{"Name": 1}})
+		queries.ReadCriteria{Filter: map[string]any{}, Projection: queries.ProjectOnlyPaths("Name")})
 	if err != nil || !found {
 		t.Fatalf("read: err=%v found=%v", err, found)
 	}

@@ -321,7 +321,7 @@ func TestReader_FieldsProjectionStripsOrderByFieldFromWire(t *testing.T) {
 	page, err := r.ReadPage(context.Background(), view, queries.ReadCriteria{
 		Limit:      2,
 		OrderBy:    []queries.OrderByField{{Field: "name"}},
-		Projection: map[string]int{"email": 1, "_id": 0},
+		Projection: queries.ProjectOnlyPaths("email"),
 	})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
