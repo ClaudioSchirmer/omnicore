@@ -1,4 +1,4 @@
-package query
+package hydrate
 
 import (
 	"reflect"
@@ -9,7 +9,7 @@ import (
 
 // readColsWithKey guarantees the join/group key is always selected, even when it
 // is a column the schema does not list among its own (a sibling's shared-ID join
-// column, owned by its parent). fetchInGrouped reads row[keyCol] to bucket
+// column, owned by its parent). FetchInGrouped reads row[keyCol] to bucket
 // results, so dropping the key silently loses the whole segment — the child
 // sibling regression this locks against.
 func TestReadColsWithKey(t *testing.T) {
@@ -30,7 +30,7 @@ func TestReadColsWithKey(t *testing.T) {
 	if got := readColsWithKey(s, "id"); !reflect.DeepEqual(got, base) {
 		t.Fatalf("readColsWithKey(id) = %v, want unchanged", got)
 	}
-	// Empty key (fetchAll) adds nothing.
+	// Empty key (FetchAll) adds nothing.
 	if got := readColsWithKey(s, ""); !reflect.DeepEqual(got, base) {
 		t.Fatalf("readColsWithKey(\"\") = %v, want unchanged", got)
 	}

@@ -3,6 +3,8 @@ package query
 import (
 	"strings"
 	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db/hydrate"
 )
 
 // The pg-internal value normalizer (normalizeSQLValue / NormalizeSQLValue) is
@@ -31,9 +33,9 @@ func TestBuildFetchSQL_IncludeArchivedOmitsFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", true)
+			got := hydrate.BuildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", true)
 			if got != c.want {
-				t.Fatalf("buildFetchSQL(fakeDialect{},%q, %q, %q, true) = %q, want %q",
+				t.Fatalf("hydrate.BuildFetchSQL(fakeDialect{},%q, %q, %q, true) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
 			}
 			if strings.Contains(got, "deleted_at") {
@@ -59,9 +61,9 @@ func TestBuildFetchSQL_DeleteOnArchiveAppliesFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := buildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", false)
+			got := hydrate.BuildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", false)
 			if got != c.want {
-				t.Fatalf("buildFetchSQL(fakeDialect{},%q, %q, %q, false) = %q, want %q",
+				t.Fatalf("hydrate.BuildFetchSQL(fakeDialect{},%q, %q, %q, false) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
 			}
 		})
@@ -80,7 +82,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 		t.Fatal("default view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	sql := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
+	sql := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if strings.Contains(sql, "deleted_at") {
 		t.Fatalf("default view must omit deleted_at filter on root SELECT, got %q", sql)
 	}
@@ -99,12 +101,12 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 		t.Fatal("default aggregate view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
+	rootSQL := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if strings.Contains(rootSQL, "deleted_at") {
 		t.Fatalf("default aggregate view must omit deleted_at on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
+		childSQL := hydrate.BuildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
 		if strings.Contains(childSQL, "deleted_at") {
 			t.Fatalf("default aggregate view must omit deleted_at on embed %q, got %q",
 				e.Field(), childSQL)
@@ -124,7 +126,7 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 		t.Fatal("DeleteOnArchive() view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	sql := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
+	sql := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if !strings.Contains(sql, "AND deleted_at IS NULL") {
 		t.Fatalf("DeleteOnArchive view must apply deleted_at filter on root, got %q", sql)
 	}
@@ -141,12 +143,12 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 		t.Fatal("DeleteOnArchive() aggregate view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := buildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
+	rootSQL := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
 	if !strings.Contains(rootSQL, "AND deleted_at IS NULL") {
 		t.Fatalf("DeleteOnArchive aggregate must apply filter on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := buildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
+		childSQL := hydrate.BuildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
 		if !strings.Contains(childSQL, "AND deleted_at IS NULL") {
 			t.Fatalf("DeleteOnArchive aggregate must apply filter on embed %q, got %q",
 				e.Field(), childSQL)

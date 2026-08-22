@@ -1,6 +1,10 @@
 package query
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db/hydrate"
+)
 
 // Revision-guarded writes for CONSULT-composed documents — the pipeline form
 // every consult writer (SyncEngine recompose, shared-base fan-out by consult,
@@ -8,7 +12,7 @@ import "encoding/json"
 //
 // A composed document already carries its watermarks: the composer remaps the
 // physical revision column of the ROOT row into _revision and of the shared
-// BASE row into _base_revision (remapRevision), and it reads the root/base row
+// BASE row into _base_revision (hydrate.RemapRevision), and it reads the root/base row
 // FIRST — every related read (siblings, children, role segments) happens
 // after. That order is load-bearing: the document's data is always AT LEAST as
 // fresh as the watermark claims (stamp-first), so applying the document behind
@@ -66,7 +70,7 @@ func consultGuardedStages(view *ViewDefinition, doc Document) []Document {
 	ownRev := watermarkOf(doc[docRevisionField])
 	baseRev := watermarkOf(doc[docBaseRevisionField])
 	embedFields := embedFieldSet(view.embeds)
-	pk := schemaPK(view.schema)
+	pk := hydrate.SchemaPK(view.schema)
 
 	baseCols := map[string]bool{}
 	ownShape := scopeShape{arraySegs: map[string]string{}, objectSegs: map[string]bool{}}

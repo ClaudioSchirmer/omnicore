@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/hydrate"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
@@ -1267,7 +1268,7 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 		if err != nil {
 			return err
 		}
-		pkCol := schemaPK(view.schema)
+		pkCol := hydrate.SchemaPK(view.schema)
 		present := make(map[string]struct{}, len(composed))
 		for _, doc := range composed {
 			id := fmt.Sprintf("%v", doc[pkCol])

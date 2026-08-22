@@ -107,7 +107,6 @@ func (s *SyncEngine) ReconcileView(ctx context.Context, view *ViewDefinition, cf
 	started := time.Now()
 	report := ReconcileReport{View: view.Name()}
 
-
 	schema := view.SchemaDef()
 	if schema == nil {
 		return report, fmt.Errorf("reconcile %q: view declares no root .Schema(...)", view.name)
