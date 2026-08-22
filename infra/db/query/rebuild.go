@@ -402,56 +402,6 @@ func (s *SyncEngine) RefreshRegistryArtifactOnly(ctx context.Context, plan Drift
 	})
 }
 
-// SyncRelationalRegistry records the current spec (version + hashes) for a
-// RelationalSource view whose declared shape changed with a version bump. Like
-// RefreshRegistryArtifactOnly it runs EndRebuild's registry UPDATE (status stays
-// 'done', previous_* captured for the audit trail) but performs NO rebuild — the
-// view is served from the SoR, so there is nothing to materialize. It is what
-// lets a +RelationalSource flip record its new shape so the next boot sees hash
-// parity (DriftNone), while a flip BACK to Mongo drifts to DriftRebuildRequired
-// and backfills the starved collection.
-//
-// It DOES drop the view's Mongo slot collections: a relational view is served
-// from the SoR and must hold NO collection. A flip FROM Mongo would otherwise
-// leave the old collection as inert residue — harmless to reads, but a trap: it
-// is populated with no bearing on the relational read, so a later manual delete
-// of the registry row (a plausible "a relational view needs no registry" edit)
-// would strand a populated-but-uncertified collection into DriftAlienData and
-// abort the boot. Dropping it here keeps the invariant "relational ⇒ no
-// collection" true, so that manual edit lands on the harmless DriftFreshInit
-// instead. Idempotent: DropCollection tolerates an already-absent collection, so
-// a flip on a view that never materialized is a clean no-op. A later flip BACK to
-// Mongo rebuilds from scratch regardless — ExecuteRebuild drops+provisions the
-// shadow slot and backfills from the SoR, never reading a prior collection.
-func (s *SyncEngine) SyncRelationalRegistry(ctx context.Context, plan DriftPlan, serviceName string) error {
-	if err := EndRebuild(ctx, s.eng.Querier(), s.eng.Dialect(), EndRebuildInput{
-		ViewName:     plan.View.Name(),
-		Version:      plan.CurrentVersion,
-		RebuildHash:  plan.CurrentRebuildHash,
-		ArtifactHash: plan.CurrentArtifactHash,
-		CombinedHash: plan.CurrentCombinedHash,
-		ServiceName:  serviceName,
-		Now:          time.Now(),
-	}); err != nil {
-		return err
-	}
-	name := plan.View.Name()
-	for _, slot := range []PhysicalCollection{s.resolver.Active(name), s.resolver.Shadow(name)} {
-		if err := s.mongo.DropCollection(ctx, slot); err != nil {
-			// Best-effort: a failed drop leaves inert residue (the same state as
-			// before this behavior existed), never a wrong read — the registry is
-			// already synced, so the flip itself succeeded. Surface it, don't fail.
-			slog.WarnContext(ctx, "relational.flip.collection_drop_failed",
-				slog.String("view", name), slog.String("collection", slot.String()),
-				slog.String("err", err.Error()))
-		}
-	}
-	if err := s.resolver.Refresh(ctx); err != nil {
-		return fmt.Errorf("sync relational registry %q: refresh resolver after collection drop: %w", name, err)
-	}
-	return nil
-}
-
 func registryCombinedOrNone(r *ViewRegistryRow) string {
 	if r == nil {
 		return "<none>"
@@ -467,17 +417,11 @@ func registryCombinedOrNone(r *ViewRegistryRow) string {
 // reconciliation in bootstrap.
 
 func (s *SyncEngine) RebuildView(ctx context.Context, view *ViewDefinition) error {
-	if view.IsRelational() {
-		return nil // no Mongo collection to rebuild — served from the SoR
-	}
 	log.Printf("rebuilding view %s from table %s", view.name, view.RootTable())
 	return s.rebuildFromTable(ctx, view, "")
 }
 
 func (s *SyncEngine) RebuildViewSince(ctx context.Context, view *ViewDefinition, since time.Time) error {
-	if view.IsRelational() {
-		return nil // no Mongo collection to rebuild — served from the SoR
-	}
 	log.Printf("rebuilding view %s since %s", view.name, since.Format(time.RFC3339))
 	return s.rebuildFromTable(ctx, view, since.Format(time.RFC3339))
 }
@@ -517,9 +461,6 @@ func (s *SyncEngine) RebuildAllViews(ctx context.Context) error {
 }
 
 func (s *SyncEngine) rebuildFromTable(ctx context.Context, view *ViewDefinition, since string) error {
-	if view.IsRelational() {
-		return nil // fundamental guard: a relational view has no collection to materialize
-	}
 	// Operator-triggered path: no RebuildConfig and no rebuild lock, so the
 	// pipeline runs at the framework defaults (0 → rebuildWorkers / rebuildBatchSize)
 	// and the scan uses the shared pool (nil scanQ).

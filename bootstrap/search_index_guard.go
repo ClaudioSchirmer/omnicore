@@ -31,16 +31,9 @@ import (
 // this boot fail over a view name the two happen to share, naming a Request
 // DTO that is not even in this app.
 //
-// Two cases are deliberately NOT failures:
-//
-//   - A view name the service does not declare. It belongs to a surface this
-//     boot did not assemble; an unknown name is simply not this boot's
-//     business.
-//   - A RelationalSource view. Free text over the SoR is a declared capability
-//     boundary, answered with a typed 400 RelationalCapabilityNotification —
-//     the endpoint's contract, not a misconfiguration. A DTO shared between a
-//     Mongo view and its relational twin is the canonical shape, and the twin
-//     must not fail the boot for it.
+// One case is deliberately NOT a failure: a view name the service does not
+// declare. It belongs to a surface this boot did not assemble; an unknown name
+// is simply not this boot's business.
 func verifySearchIndexes(features []Feature) error {
 	optIns := queryschema.SearchOptIns()
 	queryschema.ResetSearchOptIns()
@@ -72,7 +65,7 @@ func verifySearchIndexes(features []Feature) error {
 	for _, o := range optIns {
 		v, declaredHere := byName[o.View]
 		switch {
-		case !declaredHere, v.IsRelational(), hasTextIndex(v):
+		case !declaredHere, hasTextIndex(v):
 			continue
 		}
 		missing = append(missing, fmt.Sprintf("  - view %q, read by %s", o.View, o.Request))

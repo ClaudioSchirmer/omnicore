@@ -204,9 +204,6 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 		if plans := report.PlansBy(query.DriftArtifactOnly); len(plans) > 0 {
 			diags = append(diags, query.FormatArtifactOnlyDiagnostic(plans))
 		}
-		if plans := report.PlansBy(query.DriftRelationalSync); len(plans) > 0 {
-			diags = append(diags, query.FormatRelationalSyncDiagnostic(plans))
-		}
 		if plans := report.PlansBy(query.DriftRebuildRequired); len(plans) > 0 {
 			diags = append(diags, query.FormatRebuildRequiredDiagnostic(plans))
 		}
@@ -244,15 +241,6 @@ func reconcileViewDrift(ctx context.Context, cfg *Config, deps Deps, sync *query
 				return nil, rebuildCfg, fmt.Errorf("bootstrap: refresh registry artifact on view %q: %w", plan.View.Name(), err)
 			}
 			deps.Logger.Info("view registry artifact refreshed",
-				"view", plan.View.Name(),
-				"version", plan.CurrentVersion)
-		case query.DriftRelationalSync:
-			// A RelationalSource view's declared shape changed (bumped): record the
-			// new spec in the registry, NO rebuild (it is served from the SoR).
-			if err := sync.SyncRelationalRegistry(ctx, plan, cfg.Service); err != nil {
-				return nil, rebuildCfg, fmt.Errorf("bootstrap: sync relational registry on view %q: %w", plan.View.Name(), err)
-			}
-			deps.Logger.Info("relational view registry synced (no rebuild)",
 				"view", plan.View.Name(),
 				"version", plan.CurrentVersion)
 		case query.DriftMongoWiped, query.DriftRebuildRequired, query.DriftDowngrade, query.DriftFreshBackfill:

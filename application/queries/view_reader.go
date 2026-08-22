@@ -161,7 +161,7 @@ func (c *ReadCriteria) scrubField(goFieldPath string) {
 // carries no EndCursor — the pair never contradicts the flag beside it, and a
 // consumer can treat an empty edge cursor as "nothing to walk to" on either
 // side. Every reader obeys this, so flipping a view's backing (projected Mongo
-// ⇄ RelationalSource) leaves the envelope shape unchanged. Per-ROW addressing
+// ⇄ relational) leaves the envelope shape unchanged. Per-ROW addressing
 // is ItemCursors, which is populated for every returned row regardless.
 //
 // OnlyTotal=true signals that the upstream ReadCriteria asked for the

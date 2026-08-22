@@ -82,7 +82,6 @@ func (corePTBR) Translations() map[string]string {
 		"TenantMissingNotification":        "Identificador do tenant ausente no principal autenticado.",
 		"TenantMismatchNotification":       "Recurso pertence a outro tenant.",
 		"FieldAccessForbiddenNotification": "Campo não acessível.",
-		"RelationalCapabilityNotification": "Esta capacidade não é suportada por uma view lida do backend relacional; remova RelationalSource() para servi-la pelo Mongo.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Erro interno do servidor.",

@@ -19,63 +19,72 @@ func (f *fakeReader) ReadByID(_ context.Context, _, _ string, _ queries.ReadCrit
 	return map[string]any{"backing": f.tag}, true, nil
 }
 
-// TestViewReaderEngine_NilMongoUsesAbsentReader proves the infra-free posture
-// (Item 11): NewViewReaderEngine(nil) installs an absentMongoReader that returns
-// an actionable error — never a nil panic — when a Mongo-backed view is
-// dispatched to it, while relational views still route correctly.
-func TestViewReaderEngine_NilMongoUsesAbsentReader(t *testing.T) {
+// A nil fallback installs the unbackedReader: a view that reaches it gets an
+// actionable error, never a nil panic. A view WITH a registered backing is
+// unaffected — the missing fallback is not a missing seam.
+func TestViewReaderEngine_NilFallbackUsesUnbackedReader(t *testing.T) {
 	e := NewViewReaderEngine(nil)
 
-	// A view with no relational backing dispatches to the absent Mongo reader.
-	if _, err := e.ReadPage(context.Background(), "needs_mongo", queries.ReadCriteria{}); err == nil {
-		t.Error("ReadPage on a Mongo-backed view with no Mongo must error, not panic")
+	if _, err := e.ReadPage(context.Background(), "unbacked", queries.ReadCriteria{}); err == nil {
+		t.Error("ReadPage on a view with no backing must error, not panic")
 	}
-	if _, _, err := e.ReadByID(context.Background(), "needs_mongo", "id", queries.ReadCriteria{}); err == nil {
-		t.Error("ReadByID on a Mongo-backed view with no Mongo must error, not panic")
+	if _, _, err := e.ReadByID(context.Background(), "unbacked", "id", queries.ReadCriteria{}); err == nil {
+		t.Error("ReadByID on a view with no backing must error, not panic")
 	}
 
-	// A relational view still routes to the relational reader — infra-free is the
-	// relational-only posture, and those reads succeed.
-	e.SetRelational(&fakeReader{tag: "relational"}, map[string]bool{"fresh": true})
+	e.Register(&fakeReader{tag: "other"}, map[string]bool{"fresh": true})
 	page, err := e.ReadPage(context.Background(), "fresh", queries.ReadCriteria{})
 	if err != nil {
-		t.Fatalf("relational read under infra-free posture failed: %v", err)
+		t.Fatalf("a registered backing must serve even with no fallback: %v", err)
 	}
-	if page.Items[0]["backing"] != "relational" {
-		t.Errorf("relational view must route to the relational reader, got %v", page.Items[0])
+	if page.Items[0]["backing"] != "other" {
+		t.Errorf("registered view must route to its own backing, got %v", page.Items[0])
 	}
 }
 
-func TestViewReaderEngine_DispatchesByBacking(t *testing.T) {
-	e := NewViewReaderEngine(&fakeReader{tag: "mongo"})
-	e.SetRelational(&fakeReader{tag: "relational"}, map[string]bool{"fresh": true})
+func TestViewReaderEngine_DispatchesByRegisteredBacking(t *testing.T) {
+	e := NewViewReaderEngine(&fakeReader{tag: "fallback"})
+	e.Register(&fakeReader{tag: "other"}, map[string]bool{"fresh": true})
 
 	page, _ := e.ReadPage(context.Background(), "fresh", queries.ReadCriteria{})
-	if page.Items[0]["backing"] != "relational" {
-		t.Errorf("a relational-backed view must route to the relational reader, got %v", page.Items[0])
+	if page.Items[0]["backing"] != "other" {
+		t.Errorf("a registered view must route to its backing, got %v", page.Items[0])
 	}
-	other, _ := e.ReadPage(context.Background(), "other", queries.ReadCriteria{})
-	if other.Items[0]["backing"] != "mongo" {
-		t.Errorf("a Mongo-backed view must route to the Mongo reader, got %v", other.Items[0])
+	unregistered, _ := e.ReadPage(context.Background(), "other_view", queries.ReadCriteria{})
+	if unregistered.Items[0]["backing"] != "fallback" {
+		t.Errorf("an unregistered view must route to the fallback, got %v", unregistered.Items[0])
 	}
 	byID, _, _ := e.ReadByID(context.Background(), "fresh", "x", queries.ReadCriteria{})
-	if byID["backing"] != "relational" {
+	if byID["backing"] != "other" {
 		t.Errorf("ReadByID must dispatch by backing too, got %v", byID)
 	}
 }
 
-func TestViewReaderEngine_NoRelationalInstalledAllMongo(t *testing.T) {
-	e := NewViewReaderEngine(&fakeReader{tag: "mongo"})
+func TestViewReaderEngine_NoRegistrationAllFallback(t *testing.T) {
+	e := NewViewReaderEngine(&fakeReader{tag: "fallback"})
 	page, _ := e.ReadPage(context.Background(), "anything", queries.ReadCriteria{})
-	if page.Items[0]["backing"] != "mongo" {
-		t.Errorf("with no relational side installed every view routes to Mongo, got %v", page.Items[0])
+	if page.Items[0]["backing"] != "fallback" {
+		t.Errorf("with nothing registered every view routes to the fallback, got %v", page.Items[0])
 	}
 }
 
-func TestViewReaderEngine_MongoReaderExposed(t *testing.T) {
-	m := &fakeReader{tag: "mongo"}
+// Register is a no-op on a nil reader or an empty name set — a backing that
+// serves nothing must not shadow the fallback.
+func TestViewReaderEngine_RegisterIgnoresEmptyInput(t *testing.T) {
+	e := NewViewReaderEngine(&fakeReader{tag: "fallback"})
+	e.Register(nil, map[string]bool{"fresh": true})
+	e.Register(&fakeReader{tag: "other"}, nil)
+
+	page, _ := e.ReadPage(context.Background(), "fresh", queries.ReadCriteria{})
+	if page.Items[0]["backing"] != "fallback" {
+		t.Errorf("an empty registration must leave the fallback in place, got %v", page.Items[0])
+	}
+}
+
+func TestViewReaderEngine_FallbackExposed(t *testing.T) {
+	m := &fakeReader{tag: "fallback"}
 	e := NewViewReaderEngine(m)
-	if e.MongoReader() != queries.ViewReader(m) {
-		t.Error("MongoReader must return the wrapped reader for the run-phase mutations")
+	if e.Fallback() != queries.ViewReader(m) {
+		t.Error("Fallback must return the wrapped reader for the run-phase mutations")
 	}
 }

@@ -45,22 +45,6 @@ func (ReadTimeoutNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticRequestTimeout
 }
 
-// RelationalCapabilityNotification is emitted by the relational ViewReader when a
-// request uses a capability a RelationalSource view cannot serve — free-text
-// search, or a filter or sort on a child (1:N nested) field. Root, 1:1 sibling and
-// shared-base fields ARE servable (the loader reaches them with a LEFT JOIN); a
-// child field is the pushdown a single root SELECT cannot express. The escape is
-// to drop the RelationalSource marker so the view is served from the Mongo
-// projection instead. The offending capability / field rides in the
-// notification's FieldName. Carries Semantic = SemanticSchema → 400 Bad Request.
-type RelationalCapabilityNotification struct {
-	domain.ApplicationNotificationBase
-}
-
-func (RelationalCapabilityNotification) Semantic() domain.NotificationSemantic {
-	return domain.SemanticSchema
-}
-
 // MissingAuthorizationNotification is emitted by the auth middleware when the
 // Authorization header is absent or does not follow the `Bearer <token>`
 // shape — the client never presented a credential.

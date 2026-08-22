@@ -68,15 +68,6 @@ const (
 	// ABORT.
 	DriftDowngrade
 
-	// DriftRelationalSync — the view is marked RelationalSource() and its declared
-	// shape changed WITH a version bump. It is read from the SoR and never
-	// materialized to Mongo, so there is nothing to rebuild — only the registry
-	// row is recorded at the new version/hash (status stays 'done'). No Mongo
-	// work. Distinct from DriftRebuildRequired precisely so the flip to relational
-	// records the new shape without a rebuild, while the flip BACK to Mongo (now
-	// non-relational) still rebuilds to backfill the starved collection.
-	DriftRelationalSync
-
 	// DriftFreshBackfill — no registry row, empty Mongo collection, but the SoR
 	// root table already HAS rows (a Mongo view added to an aggregate that ran for
 	// a while before anyone needed the read model). DriftFreshInit's "populate
@@ -108,8 +99,6 @@ func (d DriftDecision) String() string {
 		return "rebuild_required"
 	case DriftDowngrade:
 		return "downgrade"
-	case DriftRelationalSync:
-		return "relational_sync"
 	case DriftFreshBackfill:
 		return "fresh_backfill"
 	default:
@@ -220,7 +209,7 @@ func DetectViewDrift(ctx context.Context, mongo ReadModelStore, eng core.Relatio
 			CurrentArtifactHash: v.ArtifactHash(),
 			CurrentCombinedHash: v.Hash(),
 		}
-		plan.Decision = decideDrift(registry, populated, sorPopulated, plan.CurrentVersion, plan.CurrentRebuildHash, plan.CurrentCombinedHash, v.IsRelational())
+		plan.Decision = decideDrift(registry, populated, sorPopulated, plan.CurrentVersion, plan.CurrentRebuildHash, plan.CurrentCombinedHash)
 		report.Plans = append(report.Plans, plan)
 	}
 	return report, nil
@@ -246,28 +235,22 @@ func sorHasRows(ctx context.Context, q core.Querier, d core.Dialect, table strin
 
 // decideDrift is the pure decision function — extracted so the §9.1 case
 // table is testable in isolation, without an active PG or Mongo.
-func decideDrift(registry *ViewRegistryRow, populated, sorPopulated bool, specVersion int, specRebuildHash, specCombinedHash string, relational bool) DriftDecision {
+func decideDrift(registry *ViewRegistryRow, populated, sorPopulated bool, specVersion int, specRebuildHash, specCombinedHash string) DriftDecision {
 	if registry == nil {
 		if populated {
 			return DriftAlienData
 		}
-		// Fresh view, empty Mongo collection. A relational view records its row and
-		// is served from the SoR (never materialized). A Mongo view over an EMPTY
-		// SoR has nothing to backfill — just record the row; future writes populate
-		// it. A Mongo view over a POPULATED SoR (a read model added to an aggregate
-		// that already holds history) must BACKFILL that history — future writes
-		// alone would leave the pre-existing rows unprojected.
-		if !relational && sorPopulated {
+		// Fresh view, empty Mongo collection. A view over an EMPTY SoR has nothing
+		// to backfill — just record the row; future writes populate it. A view over
+		// a POPULATED SoR (a read model added to an aggregate that already holds
+		// history) must BACKFILL that history — future writes alone would leave the
+		// pre-existing rows unprojected.
+		if sorPopulated {
 			return DriftFreshBackfill
 		}
 		return DriftFreshInit
 	}
 	if registry.CombinedHash == specCombinedHash {
-		// A relational view's Mongo collection is INTENTIONALLY empty — the
-		// steady state, never a "wiped" anomaly, so it must not rebuild.
-		if relational {
-			return DriftNone
-		}
 		// Combined hash matches → no shape drift. An empty collection is only
 		// "wiped" when the source of record actually HAS rows to mirror — a
 		// view whose aggregate holds no data yet is correctly empty on both
@@ -277,22 +260,12 @@ func decideDrift(registry *ViewRegistryRow, populated, sorPopulated bool, specVe
 		}
 		return DriftNone
 	}
-	// Combined hash differs — disambiguate by version. The version-bump discipline
-	// is UNIVERSAL: a relational flip WITHOUT a bump falls through to the
-	// forgot-to-bump branch and aborts, exactly like any other view. Only the
-	// Mongo CONSEQUENCE of a bumped change is gated by the relational bit.
+	// Combined hash differs — disambiguate by version.
 	switch {
 	case registry.Version < specVersion:
-		// Bumped upgrade. Relational: record the new shape, no rebuild. Mongo
-		// (including the flip BACK from relational): rebuild to backfill.
-		if relational {
-			return DriftRelationalSync
-		}
+		// Bumped upgrade: rebuild to backfill the new shape.
 		return DriftRebuildRequired
 	case registry.Version > specVersion:
-		if relational {
-			return DriftRelationalSync
-		}
 		return DriftDowngrade
 	default:
 		// Versions equal but hashes differ.
@@ -300,8 +273,7 @@ func decideDrift(registry *ViewRegistryRow, populated, sorPopulated bool, specVe
 			// Only artifact (index) hash differs.
 			return DriftArtifactOnly
 		}
-		// Rebuild hash differs without a version bump — developer error (a
-		// RelationalSource flip without a Version bump lands here too).
+		// Rebuild hash differs without a version bump — developer error.
 		return DriftForgotToBump
 	}
 }
@@ -522,47 +494,6 @@ func FormatArtifactOnlyDiagnostic(plans []DriftPlan) string {
 				"              applied_at = CURRENT_TIMESTAMP, applied_by = 'manual-reconcile-artifact'\n"+
 				"        WHERE view_name = '%s';\n",
 			p.CurrentArtifactHash, p.CurrentCombinedHash, p.View.Name())
-	}
-	sb.WriteString("  C. Skip the framework's check:\n")
-	sb.WriteString("       set mongo.rebuild.autoRun: false in microservice.<profile>.yaml\n")
-	return sb.String()
-}
-
-// FormatRelationalSyncDiagnostic builds the check-mode abort message for a
-// RelationalSource view whose declared shape changed with a version bump: the
-// view is served from the SoR (no rebuild, no Mongo work), only the registry row
-// needs recording at the new version/hash.
-func FormatRelationalSyncDiagnostic(plans []DriftPlan) string {
-	if len(plans) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.WriteString("[mongo] RelationalSource view shape changed (registry sync, no rebuild) on:\n")
-	for _, p := range plans {
-		regV := "<none>"
-		if p.Registry != nil {
-			regV = fmt.Sprintf("v%d", p.Registry.Version)
-		}
-		fmt.Fprintf(&sb, "  - %q  registry=%s  spec=v%d hash=%s\n",
-			p.View.Name(), regV, p.CurrentVersion, shortHash(p.CurrentCombinedHash))
-	}
-	sb.WriteString("\nmongo.rebuild.autoRun=check — the framework will NOT record the registry in check mode.\n")
-	sb.WriteString("The view is read from the relational backend (SoR); there is nothing to materialize —\n")
-	sb.WriteString("only the registry row is stale.\n\n")
-	sb.WriteString("To proceed, choose one:\n")
-	sb.WriteString("  A. Let the framework record it on next boot:\n")
-	sb.WriteString("       set mongo.rebuild.autoRun: true in microservice.<profile>.yaml\n")
-	sb.WriteString("       restart  (metadata-only UPDATE, no rebuild)\n")
-	sb.WriteString("  B. Record the registry row manually:\n")
-	for _, p := range plans {
-		fmt.Fprintf(&sb,
-			"       UPDATE omnicore_mongo_views\n"+
-				"          SET previous_version = version, previous_combined_hash = combined_hash,\n"+
-				"              previous_applied_at = applied_at,\n"+
-				"              version = %d, rebuild_hash = '%s', artifact_hash = '%s', combined_hash = '%s',\n"+
-				"              applied_at = CURRENT_TIMESTAMP, applied_by = 'manual-reconcile-relational'\n"+
-				"        WHERE view_name = '%s';\n",
-			p.CurrentVersion, p.CurrentRebuildHash, p.CurrentArtifactHash, p.CurrentCombinedHash, p.View.Name())
 	}
 	sb.WriteString("  C. Skip the framework's check:\n")
 	sb.WriteString("       set mongo.rebuild.autoRun: false in microservice.<profile>.yaml\n")

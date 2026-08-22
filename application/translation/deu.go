@@ -82,7 +82,6 @@ func (coreDE) Translations() map[string]string {
 		"TenantMissingNotification":        "Mandantenkennung fehlt im authentifizierten Principal.",
 		"TenantMismatchNotification":       "Die Ressource gehört zu einem anderen Mandanten.",
 		"FieldAccessForbiddenNotification": "Feld nicht zugänglich.",
-		"RelationalCapabilityNotification": "Diese Funktion wird von einer aus dem relationalen Backend gelesenen View nicht unterstützt; entfernen Sie RelationalSource(), um sie aus Mongo zu bedienen.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Interner Serverfehler.",

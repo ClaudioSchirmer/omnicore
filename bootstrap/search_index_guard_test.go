@@ -3,31 +3,15 @@
 package bootstrap
 
 import (
-	"context"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/gofiber/fiber/v3"
 )
-
-// searchGuardReader is a non-nil RelationalReader — RelationalSource marks the
-// view by the reader it stores, so the stub has to be a real value.
-type searchGuardReader struct{}
-
-func (searchGuardReader) FindAllEntities(context.Context, *criteria.Query) ([]domain.Entity, error) {
-	return nil, nil
-}
-func (searchGuardReader) CountEntities(context.Context, *criteria.Query) (int64, error) {
-	return 0, nil
-}
-func (searchGuardReader) BoundTable() string { return "guard_rows" }
 
 type searchGuardEntity struct {
 	ID   string
@@ -81,21 +65,6 @@ func TestVerifySearchIndexes_PassesWhenTheIndexIsDeclared(t *testing.T) {
 
 	if err := verifySearchIndexes([]Feature{feat}); err != nil {
 		t.Fatalf("a declared text index satisfies the guard: %v", err)
-	}
-}
-
-// Free text over the SoR is a declared capability boundary answered with a
-// typed 400, not a misconfiguration — and a DTO shared between a Mongo view and
-// its relational twin is the canonical shape.
-func TestVerifySearchIndexes_SkipsARelationalView(t *testing.T) {
-	withOptIn(t, "guard_rows")
-	feat := &searchGuardFeature{views: []*query.ViewDefinition{
-		query.View("guard_rows").Schema(searchGuardSchema()).
-			RelationalSource(searchGuardReader{}),
-	}}
-
-	if err := verifySearchIndexes([]Feature{feat}); err != nil {
-		t.Fatalf("a relational view must not fail the boot: %v", err)
 	}
 }
 

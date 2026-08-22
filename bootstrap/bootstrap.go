@@ -23,7 +23,6 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/mongo"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/relational"
 	"github.com/ClaudioSchirmer/omnicore/infra/events"
 	"github.com/ClaudioSchirmer/omnicore/infra/grpcclient"
 	"github.com/ClaudioSchirmer/omnicore/infra/httpclient"
@@ -187,26 +186,17 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	// framework constant 100. Custom ViewReader implementations bypass this
 	// hook by design — they own their own limit policy.
 	if engine, ok := deps.ViewReader.(*query.ViewReaderEngine); ok {
-		if mvr, ok := engine.MongoReader().(*mongo.MongoViewReader); ok {
+		if mvr, ok := engine.Fallback().(*mongo.MongoViewReader); ok {
 			mvr.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
 			// Register the views so the reader can translate criteria/documents
 			// between Go field names and physical columns via each view's
 			// TableSchema tree.
 			mvr.SetViews(views)
 		}
-		// Install the relational read backing: a view marked RelationalSource is
-		// served from the SoR through the loader it carries, dispatched by the
-		// seam by name. Mutation, not a reassignment — captured deps.ViewReader
-		// references keep dispatching correctly.
-		if rel := relational.NewRelationalViewReader(views); !rel.Empty() {
-			// Same per-view MaxLimit cascade the Mongo reader honors — one resolver,
-			// both backings — so a view's ceiling applies identically whether it is
-			// served from the SoR or the projection.
-			rel.SetMaxLimitResolver(buildViewMaxLimitResolver(views, cfg.Query.MaxLimit))
-			route := rel.RelationalViewNames()
-			engine.SetRelational(rel, route)
-			deps.Logger.Info("relational views registered", "count", len(route))
-		}
+		// No per-view backing is registered: every view is served by the fallback.
+		// A second backing plugs in at this exact seat via engine.Register(reader,
+		// views) — the seam names no store, so nothing above it changes when one
+		// arrives.
 	}
 
 	for _, f := range wiring.Features {
@@ -240,32 +230,25 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 	}
 
 	// Infra-free posture: Mongo is opt-out by its own config block (mongo.uri), so
-	// a service whose every view is a relational-source view runs with no Mongo at
-	// all. A view is Mongo-backed unless it is relational-source; that count (plus
-	// any composed view, which reads through the Mongo reader, AND any upstream
-	// subscription, which materializes a local Mongo collection) gates the
-	// Mongo-only boot block below and validates the posture: declaring Mongo-backed
-	// work with no mongo.uri aborts the boot with an actionable message rather than
-	// failing at read time (or nil-derefing when the subscribers start). (Transport
-	// is a SEPARATE opt-out — integration consumers / upstream subscriptions ALSO
-	// need a broker; the no-op transport surfaces that at the point of use. See
-	// yaml-reference.html.)
-	relationalNames := relational.NewRelationalViewReader(views).RelationalViewNames()
-	mongoBackedCount := 0
-	for _, v := range views {
-		if !relationalNames[v.Name()] {
-			mongoBackedCount++
-		}
-	}
+	// a service that declares no read side at all runs with no Mongo. Every view
+	// is Mongo-backed; that count (plus any composed view, which reads through the
+	// Mongo reader, AND any upstream subscription, which materializes a local
+	// Mongo collection) gates the Mongo-only boot block below and validates the
+	// posture: declaring Mongo-backed work with no mongo.uri aborts the boot with
+	// an actionable message rather than failing at read time (or nil-derefing when
+	// the subscribers start). (Transport is a SEPARATE opt-out — integration
+	// consumers / upstream subscriptions ALSO need a broker; the no-op transport
+	// surfaces that at the point of use. See yaml-reference.html.)
+	mongoBackedCount := len(views)
 	if (mongoBackedCount > 0 || len(composedViews) > 0 || len(upstreamSubs) > 0) && deps.Mongo == nil {
 		return fmt.Errorf(
 			"bootstrap: %d Mongo-backed view(s) + %d composed view(s) + %d upstream subscription(s) declared but "+
 				"mongo.uri is not configured — set mongo.uri, or drop them for the infra-free posture "+
-				"(every view .RelationalSource(...), no composed views, no upstream subscriptions)",
+				"(no views, no composed views, no upstream subscriptions)",
 			mongoBackedCount, len(composedViews), len(upstreamSubs))
 	}
 	if deps.Mongo == nil {
-		deps.Logger.Info("infra-free posture: Mongo skipped (relational views only)", "relationalViews", len(views))
+		deps.Logger.Info("infra-free posture: Mongo skipped (no read side declared)")
 	}
 
 	// Schema is mandatory on every view — the read membrane (Go↔column) and the
@@ -296,19 +279,18 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 					"the framework ViewReaderEngine (a custom ViewReader owns its own read policy and gets no decorator)",
 				deps.ViewReader)
 		}
-		mvr, ok := engine.MongoReader().(*mongo.MongoViewReader)
+		mvr, ok := engine.Fallback().(*mongo.MongoViewReader)
 		if !ok {
 			return fmt.Errorf(
 				"bootstrap: composed view(s) declared but the seam wraps a %T, not the framework MongoViewReader that read-time composition requires",
-				engine.MongoReader())
+				engine.Fallback())
 		}
 		mvr.SetComposedViews(composedViews, cfg.Query.MaxLinkManyLimit)
 		deps.Logger.Info("composed views registered", "count", len(composedViews))
 	}
 
-	// Gated on Mongo-backed views (NOT len(views)): a relational-only service has
-	// views but no projection to register/spec/sync, so it skips this whole block
-	// — which is also where the three deps.Mongo derefs live (CheckServiceRegistry,
+	// Gated on Mongo-backed views: a service with no read side has no projection
+	// to register/spec/sync, so it skips this whole block — which is also where the three deps.Mongo derefs live (CheckServiceRegistry,
 	// ApplyMongoSpecs, NewSyncEngine), so gating here is what keeps them off the
 	// nil in the infra-free posture. The validation above guarantees deps.Mongo is
 	// non-nil whenever mongoBackedCount > 0.
@@ -418,7 +400,7 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 			// boot, they simply never receive a row.
 			if len(cfg.Transport.Endpoints) == 0 {
 				boot.complete.Store(true) // readiness gate opens
-				effect := "Mongo-backed views will not materialize; relational views are unaffected"
+				effect := "Mongo-backed views will not materialize"
 				if cfg.Mongo.Reconcile.Enabled {
 					// Reconcile repairs revision drift between projections the
 					// consumer keeps live and the SoR — with no consumer there
@@ -518,9 +500,9 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// Mongo is CONDITIONAL on cfg.Mongo.URI (each infrastructure is opt-out by its
 	// own config block — see yaml-reference.html). An empty uri is the infra-free
 	// Mongo posture: skip the connect, leave deps.Mongo == nil, and let the view
-	// reader fall back to the absentMongoReader. A relational-only service (every
-	// view .RelationalSource) needs no Mongo; a service that DOES declare a
-	// Mongo-backed view without a uri is caught later by a boot guard, not here.
+	// reader fall back to the unbackedReader. A service that declares no read
+	// side needs no Mongo; a service that DOES declare a Mongo-backed view without
+	// a uri is caught later by a boot guard, not here.
 	var mg *mongo.MongoDB
 	if cfg.Mongo.URI != "" {
 		mg, err = mongo.NewMongoDB(ctx, cfg.Mongo.URI, cfg.Mongo.Database,
@@ -531,7 +513,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 		}
 		logger.Info("mongo connected", "uri", redact(cfg.Mongo.URI), "db", cfg.Mongo.Database)
 	} else {
-		logger.Info("mongo disabled — no mongo.uri configured (relational views only; no Mongo projections, no CDC)")
+		logger.Info("mongo disabled — no mongo.uri configured (no Mongo projections, no CDC)")
 	}
 
 	tr := translation.Default()
@@ -554,13 +536,12 @@ func buildDeps(cfg *Config) (Deps, error) {
 	// detection) so they observe one consistent pointer. eng backs Refresh (the
 	// registry read); until the first flip every view resolves to its bare name.
 	resolver := query.NewViewResolverWithLease(eng, time.Duration(cfg.Mongo.Rebuild.PointerLeaseSeconds)*time.Second)
-	// The read-side dispatch seam wraps the Mongo reader now (the default
-	// backing) and is installed as deps.ViewReader; the relational reader + the
-	// per-view route are mutated in during run-phase wiring (never a pointer
-	// swap), so a handler that captures deps.ViewReader here dispatches correctly.
-	// The read-side dispatch seam wraps the Mongo reader when Mongo is present;
-	// with Mongo disabled it wraps nil, which NewViewReaderEngine replaces with an
-	// absentMongoReader (a Mongo-backed view would error actionably, never panic).
+	// The read-side dispatch seam wraps the Mongo reader as the FALLBACK backing
+	// and is installed as deps.ViewReader. Per-view backings are mutated in during
+	// run-phase wiring (never a pointer swap), so a handler that captures
+	// deps.ViewReader here dispatches correctly. With Mongo disabled the seam
+	// wraps nil, which NewViewReaderEngine replaces with the unbackedReader (a
+	// view with no backing errors actionably, never panics).
 	var viewReader *query.ViewReaderEngine
 	if mg != nil {
 		viewReader = query.NewViewReaderEngine(mongo.NewMongoViewReader(mg, resolver))

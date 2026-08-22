@@ -80,7 +80,7 @@ func FromQueryResultFiller[TResult any](ctx *configuration.AppContext, q interfa
 
 // ResultFromDoc fills a TResult from the canonical Go-keyed view document.
 // Both storage backends (the Mongo projection and the relational
-// RelationalSource twin) normalize into the same document shape —
+// relational twin) normalize into the same document shape —
 // map[string]any keyed by Go field name — before any consumer sees it, so
 // this fill is backend-agnostic by construction.
 //
