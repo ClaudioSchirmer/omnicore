@@ -1,0 +1,131 @@
+<h2>Domain events — a fact the entity itself announces</h2>
+
+<p>
+    A <strong>domain event</strong> is a fact an entity records about itself during a write: <em>"this user's
+    password was reset"</em>, <em>"this contract was renewed under the grandfathered rate"</em>. The entity
+    registers it while the business rules run; the framework publishes it <strong>after the transaction
+    commits</strong>, through a port the service can replace.
+</p>
+
+<div class="box">
+    <strong>Three neighbouring things, three different jobs.</strong>
+    <a href="#audit">Audit</a> is <em>forensics the framework writes for you</em> — one event per write, derived from
+    the entity, never authored by hand. A domain event is <em>the entity's own sentence</em>, authored in domain code,
+    about something audit's snapshot/delta vocabulary cannot say.
+    <a href="#integration-events">Integration events</a> are the <em>cross-service</em> channel — written in-TX to
+    <code>integration_events</code>, relayed to a broker, consumed by another service. A domain event never leaves the
+    process on its own: its default transport is this service's own log stream.
+</div>
+
+<h3>Registering one</h3>
+<p>
+    <code>RegisterEvent</code> is promoted onto every entity from <code>domain.BaseEntity</code>. Call it from domain
+    code — a root method, a rule closure — while the write is still being assembled:
+</p>
+
+<pre><code>func (u *User) ResetPassword(hash string, byAdmin bool) {
+    u.PasswordHash = hash
+    u.RegisterEvent(domain.DomainEvent{
+        Type:  domain.EventWarning,
+        Class: "User",
+        Msg:   "password reset",
+        Vals:  map[string]any{"byAdmin": byAdmin},
+    })
+}</code></pre>
+
+<table>
+    <tbody><tr><th>Field</th><th>Type</th><th>Carries</th></tr>
+    <tr><td><code>Type</code></td><td><code>domain.EventType</code></td><td>the severity — see the table below. The zero value is <code>EventUnknown</code></td></tr>
+    <tr><td><code>Class</code></td><td><code>string</code></td><td>the entity type the fact is about; surfaces as <code>entityType</code>, omitted when empty</td></tr>
+    <tr><td><code>Msg</code></td><td><code>string</code></td><td>the sentence; surfaces as <code>message</code>, omitted when empty</td></tr>
+    <tr><td><code>Vals</code></td><td><code>any</code></td><td>free-form structured payload; surfaces as <code>values</code>, omitted when nil</td></tr>
+    <tr><td><code>Reason</code></td><td><code>error</code></td><td>an error the fact is about; surfaces as <code>exception</code> (its <code>Error()</code> string), omitted when nil</td></tr>
+</tbody></table>
+
+<p>
+    <code>DomainEvent</code> satisfies the <code>domain.Event</code> interface
+    (<code>EventType</code>/<code>ClassName</code>/<code>Message</code>/<code>Values</code>/<code>Err</code>), which is
+    what the publisher consumes — a service with a richer event type of its own can implement that interface instead of
+    using the struct.
+</p>
+
+<h3>The four severities</h3>
+<p>
+    <code>domain.EventType</code> is a closed set with <strong>explicit</strong> numeric values (reordering the block
+    must never change a persisted number). The severity is the only thing the framework reads from an event: the
+    default publisher maps it to the slog level.
+</p>
+<table>
+    <tbody><tr><th>Constant</th><th>Value</th><th><code>String()</code></th><th>slog level</th></tr>
+    <tr><td><code>domain.EventLog</code></td><td>1</td><td><code>"log"</code></td><td><code>Info</code></td></tr>
+    <tr><td><code>domain.EventDebug</code></td><td>2</td><td><code>"debug"</code></td><td><code>Debug</code></td></tr>
+    <tr><td><code>domain.EventError</code></td><td>3</td><td><code>"error"</code></td><td><code>Error</code></td></tr>
+    <tr><td><code>domain.EventWarning</code></td><td>4</td><td><code>"warning"</code></td><td><code>Warn</code></td></tr>
+    <tr><td><code>domain.EventUnknown</code></td><td>0</td><td><code>"unknown"</code></td><td><code>Info</code> (the fallback)</td></tr>
+</tbody></table>
+<p class="note">
+    <code>EventUnknown</code> is the zero value, so an event constructed without a <code>Type</code> still publishes —
+    at <code>Info</code>, spelled <code>"unknown"</code>. Set the severity deliberately.
+</p>
+
+<h3>When it is published — and what that costs</h3>
+<p>
+    Every write verb hands the entity's accumulated <code>Events()</code> to the write engine alongside the audit
+    event. They are published from the single <strong>post-commit</strong> position, the same one that emits the audit
+    slog echo — so a domain event is only ever announced about a write that actually landed.
+</p>
+<ul>
+    <li><strong>Independent of audit.</strong> The events ride along whether or not any
+        <a href="#audit"><code>audit.destinations</code></a> is active — turning audit off does not turn domain events
+        off.</li>
+    <li><strong>Best-effort, never load-bearing.</strong> A publisher error is logged as
+        <code>slog.Warn "event.publish.error"</code> and swallowed. The write is already committed; a failing transport
+        must not turn a successful write into a failure. Do not put anything you cannot afford to lose behind this
+        port — that is what <a href="#integration-events">integration events</a> (in-TX, at-least-once) are for.</li>
+    <li><strong>Outside the transaction.</strong> A publisher runs after COMMIT and gets no
+        <a href="#lifecycle-hooks"><code>TxHandle</code></a>. For an in-TX side effect, use a lifecycle hook.</li>
+    <li><strong>Per write, then cleared.</strong> The accumulated events are part of the entity's per-operation state
+        and are reset along with it, so a re-validated entity does not re-announce what it already announced.</li>
+</ul>
+
+<h3>The default transport — <code>SlogPublisher</code></h3>
+<p>
+    <code>bootstrap.Run</code> wires <code>events.NewSlogPublisher(logger)</code> onto the relational engine
+    automatically, so domain events work with no configuration. Each event becomes one record on the
+    <a href="#logs">always-on JSON stdout channel</a> under the message <code>"event"</code>, with a vocabulary
+    deliberately aligned with the <a href="#audit">audit echo</a> so log queries match across both:
+</p>
+<pre><code>{"level":"WARN","msg":"event","threadId":"3f2a…","eventType":"warning",
+ "actor":"auth0|42","dateTime":"2026-08-22T18:04:11Z","entityType":"User",
+ "message":"password reset","values":{"byAdmin":true}}</code></pre>
+<p>
+    <code>threadId</code>, <code>eventType</code>, <code>actor</code> and <code>dateTime</code> are always present —
+    the first three read off the <a href="#app-context"><code>AppContext</code></a>, the timestamp stamped in UTC at
+    publish time. <code>entityType</code>, <code>actorIssuer</code>, <code>message</code>, <code>values</code> and
+    <code>exception</code> appear only when the event carries them.
+</p>
+<p class="note">
+    <strong>No <code>actorClaims</code>, by design.</strong> The JWT claim allowlist
+    (<a href="#auth-middleware"><code>auth.auditClaims</code></a>) broadens what <em>audit</em> may log and nothing
+    else; a domain event carries the actor and its issuer, never the claim set.
+</p>
+
+<h3>Replacing the transport</h3>
+<p>
+    <code>events.Publisher</code> is a port: implement it to send domain events somewhere other than the log stream —
+    a metrics counter, an in-process bus, a dedicated sink — and install it on the engine at the composition root.
+    A <code>nil</code> publisher disables the feature.
+</p>
+<pre><code>type Publisher interface {
+    Publish(ctx persistence.RequestContext, event domain.Event) error
+    PublishAll(ctx persistence.RequestContext, events []domain.DomainEvent) error
+}
+
+// composition root — chainable, same seat bootstrap uses for the default
+engine.WithEventPublisher(myPublisher)</code></pre>
+<p>
+    <code>PublishAll</code> is what the write path calls; <code>SlogPublisher</code> implements it as a loop over
+    <code>Publish</code> that <strong>stops at the first error</strong>, so a custom implementation that wants every
+    event delivered regardless should not propagate one event's failure. Remember the caller swallows whatever comes
+    back: the return value only decides whether the framework logs its warning.
+</p>
