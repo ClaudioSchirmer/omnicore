@@ -220,15 +220,26 @@ func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause 
 
 // idKindResolver reports the identity typing of a criteria field across the
 // SAME resolution surface resolverRecordingJoins walks — the anchor schema, then its
-// siblings, then the shared base. The kind is derived from the Go struct
-// (TableSchema.IDKindOf — the field TYPE is the declaration), so a bare-string
-// probe on a domain.ID-typed field binds in the dialect's native id form; the
-// managed ID slot ("ID") is always IDValue via the anchor. A type-less shared
-// base derives nothing and answers IDNone for its own fields.
+// siblings, then the shared base, then the DECLARED ROOT JOINS. The kind is
+// derived from the Go struct (TableSchema.IDKindOf — the field TYPE is the
+// declaration), so a bare-string probe on a domain.ID-typed field binds in the
+// dialect's native id form; the managed ID slot ("ID") is always IDValue via the
+// anchor. A type-less shared base derives nothing and answers IDNone for its own
+// fields.
+//
+// The join leg is what keeps a traversal's fields honest in a predicate. A join
+// field is addressable in a criteria, and one that maps an IDENTITY column of the
+// target is declared on this side as a plain string (a join field carries no
+// domain type) — so nothing about the FIELD says "identity" and the probe would
+// bind as text. On mysql, sqlserver and oracle the column is BINARY(16)/RAW(16),
+// and a text probe against it matches NOTHING, silently. The typing therefore
+// comes from where it is declared: the TARGET's schema. Only root joins are
+// consulted, because a child join is load-only and never reaches a predicate.
 func (l *AggregateLoader[T]) idKindResolver() func(string) core.IDKind {
 	anchor := l.schema
 	sibs := anchor.Siblings()
 	base, _, hasBase := anchor.SharedBaseRef()
+	joins := rootJoins(l.joins)
 	return func(goField string) core.IDKind {
 		if k := anchor.IDKindOf(goField); k != core.IDNone {
 			return k
@@ -241,6 +252,13 @@ func (l *AggregateLoader[T]) idKindResolver() func(string) core.IDKind {
 		if hasBase {
 			if k := base.IDKindOf(goField); k != core.IDNone {
 				return k
+			}
+		}
+		for _, j := range joins {
+			for _, f := range j.Fields {
+				if f.GoField == goField {
+					return targetIDKindOf(j, f)
+				}
 			}
 		}
 		return core.IDNone
