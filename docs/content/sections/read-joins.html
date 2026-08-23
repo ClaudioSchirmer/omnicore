@@ -107,6 +107,42 @@
 <p>
     Call it once per column. A join that maps no field reaches nothing and is refused at construction.
 </p>
+
+<h3>What a join field may be</h3>
+<p>
+    A scalar, and only a scalar. A join field carries <strong>no domain type</strong> — no value object of any kind
+    (scalar-backed, enum, composite) and no <code>domain.ID</code>. The framework refuses the declaration at
+    construction, naming which kind it found.
+</p>
+<p>
+    The reason is not mechanical. The value belongs to <em>another</em> aggregate and arrives read-only: it is never
+    written through this entity, so this domain never validates it. Reconstructing a domain type here would hand you an
+    instance no rule ever approved — an enum converges an unknown value to <code>Unknown</code> without a word, and a
+    composite spans several columns while a join field maps exactly one. Declare the scalar the column is stored as, and
+    let the owning aggregate be the one that reconstructs its own types.
+</p>
+<pre><code>type Pedido struct {
+    domain.AggregateRoot
+    ClienteID domain.ID     // a foreign key of THIS entity — a schema field, a domain type, fine
+
+    NomeCliente  string     // a join field — the scalar the column is stored as
+    EmailCliente string     // NOT vos.Email: the join brings the COLUMN, not the value object
+}</code></pre>
+
+<div class="box">
+    <strong>An identity column is the exception the framework handles for you.</strong> A traversal often wants a
+    foreign key of the target — the aggregate one hop further out. Declare that field <code>string</code>
+    (<code>*string</code> when the target's column is nullable, or when the join is a <code>LeftJoin</code>) and the
+    framework decodes the stored id form into the canonical text. This is not a convenience: mysql and sqlserver store
+    an identity as <code>BINARY(16)</code> and oracle as <code>RAW(16)</code>, which a bare string field would receive
+    as 16 raw bytes <em>without an error</em>. The same typing governs the predicate, so a filter on that field binds in
+    the form the target stores and actually matches.
+    <pre><code>read.InnerJoin(schemas.CampusSchema()).On("campus_id").
+    Field("CampusOwnerID", "owner_id")   // owner_id is a domain.ID on the Campus schema
+
+// on the entity:
+CampusOwnerID string   // arrives as "0e5a1f6c-…", on all four engines</code></pre>
+</div>
 <div class="box">
     <strong>The predicate is always <code>fk = target.id</code>.</strong> <code>.On(...)</code> names the
     foreign key; the other side of the comparison is the <em>target schema's declared id column</em>, which the
@@ -222,6 +258,9 @@
     <li>the Go field exists on the owning struct and is exported;</li>
     <li>the Go field does not shadow a name the schema already answers — its own, a sibling's or the shared base's;</li>
     <li><code>InnerJoin</code> is over a non-nullable foreign key, and a <code>LeftJoin</code> field is nullable;</li>
+    <li>the Go field carries no domain type — no value object of any kind, and no <code>domain.ID</code>;</li>
+    <li>a field mapping an <strong>identity column</strong> of the target is <code>string</code>, or <code>*string</code>
+        when that column is nullable or the join is a <code>LeftJoin</code>;</li>
     <li>at least one <code>.Field(...)</code> is declared;</li>
     <li>a <code>...InChild</code> child is one the root's schema declares.</li>
 </ul>

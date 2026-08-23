@@ -28,11 +28,23 @@
                         <code>TableSchema</code>, so it never enters an <code>INSERT</code> or <code>UPDATE</code>, and
                         the write repository holds a schema with no loader in sight. The <code>TableSchema</code> is
                         untouched, so a projected view over the same entity is unaffected.</li>
+                    <li><strong>A join field carries no domain type.</strong> No value object of any kind
+                        (scalar-backed, enum, composite) and no <code>domain.ID</code> — the value belongs to another
+                        aggregate and arrives read-only, so this domain never validates it and a domain type here would
+                        be an instance no rule ever approved. Declare the scalar the column is stored as. The one case
+                        the framework handles for you is an <strong>identity column of the target</strong>: declare that
+                        field <code>string</code> (<code>*string</code> when the column is nullable or the join is a
+                        <code>LeftJoin</code>) and the stored id form is decoded into the canonical text —
+                        <code>BINARY(16)</code> on mysql and sqlserver, <code>RAW(16)</code> on oracle, which a bare
+                        string field would otherwise receive as 16 raw bytes with no error to show for it. The same
+                        typing governs the predicate, so a filter on that field binds in the form the target stores and
+                        actually matches.</li>
                     <li><strong>Validated at construction</strong>, never on the first request:
                         <code>InnerJoin</code> only over a non-nullable foreign key (a nullable one would silently drop
                         aggregates from every read, <code>FindByID</code> included), a <code>LeftJoin</code> field must
-                        be nullable in Go, one foreign key reaches one table, and every column, child and Go field must
-                        exist.</li>
+                        be nullable in Go, a join field carries no domain type, an identity column of the target lands
+                        in a <code>string</code>/<code>*string</code>, one foreign key reaches one table, and every
+                        column, child and Go field must exist.</li>
                     <li><strong>One alias per traversal, written bare.</strong> The alias is derived from the
                         foreign key, so two joins may reach the same table; it follows the table name with no
                         <code>AS</code>, which is optional before a table alias in standard SQL and rejected outright

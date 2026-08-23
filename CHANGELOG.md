@@ -55,11 +55,29 @@ with `1.0.0`.
   document, nil in the Response DTO's pointer field, `null` on the wire (absent
   entirely where the Response declares `,omitempty`).
 
+  A join field carries NO domain type — no value object of any kind (scalar,
+  enum, composite) and no `domain.ID`. The value belongs to another aggregate and
+  arrives read-only: it is never written through this entity and never validated
+  by this domain, so reconstructing a domain type here would produce an instance
+  no rule ever approved (an enum would converge an unknown value to `Unknown`
+  silently, a composite spans several columns and a join field maps exactly one).
+  Declare the scalar the column is stored as.
+
+  An IDENTITY column of the target is the one case that needs the framework's
+  help, and it gets it: declare the field `string` (`*string` when the column is
+  nullable or the join is a `LeftJoin`) and the stored id form is decoded into
+  the canonical text — `BINARY(16)` on mysql and sqlserver, `RAW(16)` on oracle,
+  which a bare string field would otherwise receive as 16 raw bytes with no error
+  to show for it. The same typing governs the PREDICATE: a probe on such a field
+  binds in the form the target stores, so a filter matches rather than silently
+  returning nothing.
+
   Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
   nullable one would silently drop aggregates from every read, `FindByID`
-  included), a `LeftJoin` field must be nullable in Go, one foreign key reaches
-  one table, the child of a `...InChild` must be one the root declares, and every
-  column and Go field must exist.
+  included), a `LeftJoin` field must be nullable in Go, a join field carries no
+  domain type, an identity column of the target lands in a `string`/`*string`,
+  one foreign key reaches one table, the child of a `...InChild` must be one the
+  root declares, and every column and Go field must exist.
 
 - **`query.RelationalView(name, loader)`** — the declaration for a read model
   served straight from the relational store, as its own type. Its only structural

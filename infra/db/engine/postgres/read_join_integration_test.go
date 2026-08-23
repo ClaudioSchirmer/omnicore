@@ -486,3 +486,43 @@ func TestPGReadJoin_IdentityColumnArrivesAsCanonicalText(t *testing.T) {
 		t.Errorf("CarrierOwner of B-2 = %q, want nil", *without.CarrierOwner)
 	}
 }
+
+// An identity join field is addressable in a criteria like any other, and the
+// probe must bind in the form the TARGET stores — the typing is the target's
+// schema, not the plain string this side declares. Bound as text, the predicate
+// matches nothing on a BINARY(16)/RAW(16) column and returns an empty page with
+// no error to show for it.
+func TestPGReadJoin_IdentityColumnIsAddressableInACriteria(t *testing.T) {
+	loader := rjSetup(t)
+	ctx := context.Background()
+
+	got, err := loader.FindAll(ctx, criteria.Where(criteria.Eq("CustomerOwner", rjAnaOwner)))
+	if err != nil {
+		t.Fatalf("filter by an identity join field: %v", err)
+	}
+	if len(got) != 1 || got[0].Code != "A-1" {
+		t.Fatalf("filter by an identity join field = %d rows, want the one order of ana's owner", len(got))
+	}
+	// The nullable half, through the left join.
+	byCarrier, err := loader.FindAll(ctx, criteria.Where(criteria.Eq("CarrierOwner", rjCarrierOwner)))
+	if err != nil {
+		t.Fatalf("filter by a nullable identity join field: %v", err)
+	}
+	if len(byCarrier) != 1 || byCarrier[0].Code != "A-1" {
+		t.Fatalf("filter by a nullable identity join field = %d rows, want 1", len(byCarrier))
+	}
+	// A value nobody carries must match nothing — the predicate has to be real,
+	// not accidentally true.
+	none, err := loader.FindAll(ctx, criteria.Where(criteria.Eq("CustomerOwner", rjCarrierOwner)))
+	if err != nil {
+		t.Fatalf("filter by an unmatched identity: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("an identity nobody carries matched %d rows, want 0", len(none))
+	}
+	// Exists and CountEntities ride the same predicate.
+	ok, err := loader.Exists(ctx, criteria.Where(criteria.Eq("CustomerOwner", rjBrunoOwner)))
+	if err != nil || !ok {
+		t.Errorf("Exists over an identity join field = (%v, %v), want (true, nil)", ok, err)
+	}
+}

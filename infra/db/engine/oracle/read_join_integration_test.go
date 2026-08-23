@@ -39,7 +39,21 @@ type rjOrder struct {
 	CustomerName    string // inner join — always matches
 	CustomerCredito int64
 	CarrierCode     *string // left join — nil when there is no carrier
+
+	// An IDENTITY column of the joined aggregate. A join field carries no value
+	// object — domain.ID included — so it lands in a plain string, and the
+	// framework decodes this dialect's stored id form into it.
+	CustomerOwner string  // inner join over a non-nullable identity
+	CarrierOwner  *string // left join — absent without a counterpart
 }
+
+// Deterministic owner ids, so the decoded text can be asserted exactly (the rest
+// of the fixture's ids are random and never leave rjSetup).
+const (
+	rjAnaOwner     = "9f1c0a10-0000-4000-8000-000000000001"
+	rjBrunoOwner   = "9f1c0a10-0000-4000-8000-000000000002"
+	rjCarrierOwner = "9f1c0a10-0000-4000-8000-000000000003"
+)
 
 func (e *rjOrder) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
 func (e *rjOrder) BuildRules(string, domain.Service, *domain.Rules) {}
@@ -67,6 +81,9 @@ type rjTarget struct {
 	domain.BaseEntity
 	Nome    string
 	Credito int64
+	// An ordinary column of the target that IS an identity — the target's own
+	// foreign key, which is what makes the join field an identity column.
+	OwnerID domain.ID
 }
 
 func (e *rjTarget) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
@@ -99,12 +116,14 @@ func rjOrderSchema() *core.TableSchema {
 func rjCustomerSchema() *core.TableSchema {
 	return core.NewTableSchema[*rjTarget]("rj_customers").ID("id").
 		Field("Nome", "nome").Field("Credito", "credito").
+		Field("OwnerID", "owner_id").
 		DeletedAt("deleted_at")
 }
 
 func rjCarrierSchema() *core.TableSchema {
 	return core.NewTableSchema[*rjTarget]("rj_carriers").ID("id").
 		Field("Nome", "codigo").Field("Credito", "credito").
+		Field("OwnerID", "owner_id").
 		DeletedAt("deleted_at")
 }
 
@@ -126,6 +145,7 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 			nome VARCHAR2(255 CHAR) NOT NULL,
 			code VARCHAR2(64 CHAR) NULL,
 			credito NUMBER(19) DEFAULT 0 NOT NULL,
+			owner_id RAW(16) NOT NULL,
 			deleted_at TIMESTAMP(6) NULL
 		)`,
 		`CREATE TABLE rj_carriers (
@@ -133,6 +153,7 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 			codigo VARCHAR2(255 CHAR) NOT NULL,
 			code VARCHAR2(64 CHAR) NULL,
 			credito NUMBER(19) DEFAULT 0 NOT NULL,
+			owner_id RAW(16) NOT NULL,
 			deleted_at TIMESTAMP(6) NULL
 		)`,
 		`CREATE TABLE rj_cities (
@@ -172,9 +193,12 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO rj_customers (id, nome, credito) VALUES (:1, 'ana', 10)`, []any{ana[:]}},
-		{`INSERT INTO rj_customers (id, nome, credito) VALUES (:1, 'bruno', 32)`, []any{bruno[:]}},
-		{`INSERT INTO rj_carriers (id, codigo, credito) VALUES (:1, 'DHL', 99)`, []any{carrier[:]}},
+		{`INSERT INTO rj_customers (id, nome, credito, owner_id) VALUES (:1, 'ana', 10, :2)`,
+			[]any{ana[:], rjOwnerBytes(rjAnaOwner)}},
+		{`INSERT INTO rj_customers (id, nome, credito, owner_id) VALUES (:1, 'bruno', 32, :2)`,
+			[]any{bruno[:], rjOwnerBytes(rjBrunoOwner)}},
+		{`INSERT INTO rj_carriers (id, codigo, credito, owner_id) VALUES (:1, 'DHL', 99, :2)`,
+			[]any{carrier[:], rjOwnerBytes(rjCarrierOwner)}},
 		{`INSERT INTO rj_cities (id, nome) VALUES (:1, 'Porto Alegre')`, []any{city[:]}},
 		{`INSERT INTO rj_orders (id, code, customer_id, carrier_id) VALUES (:1, 'A-1', :2, :3)`,
 			[]any{withCarrier[:], ana[:], carrier[:]}},
@@ -203,9 +227,11 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 		WithJoins(
 			read.InnerJoin(rjCustomerSchema()).On("customer_id").
 				Field("CustomerName", "nome").
-				Field("CustomerCredito", "credito"),
+				Field("CustomerCredito", "credito").
+				Field("CustomerOwner", "owner_id"),
 			read.LeftJoin(rjCarrierSchema()).On("carrier_id").
-				Field("CarrierCode", "codigo"),
+				Field("CarrierCode", "codigo").
+				Field("CarrierOwner", "owner_id"),
 			read.InnerJoinInChild(rjLineSchema()).To(rjCitySchema()).On("city_id").
 				Field("CityName", "nome"),
 		)
@@ -356,5 +382,74 @@ func TestOracleReadJoin_ServedThroughARelationalView(t *testing.T) {
 	}
 	if len(filtered.Items) != 1 || filtered.Items[0]["Code"] != "B-2" {
 		t.Fatalf("filter by a joined field = %v", filtered.Items)
+	}
+}
+
+// rjOwnerBytes is the stored form of a deterministic owner id — RAW(16) on this
+// dialect, the same 16 raw bytes the framework's own id codec writes.
+func rjOwnerBytes(id string) []byte {
+	u := uuid.MustParse(id)
+	return u[:]
+}
+
+// The id codec, on the join path. The target's owner_id is stored in this
+// dialect's native id form, so the field only reads as a uuid if the framework
+// decodes it — a bare string would take the 16 bytes without complaint. The
+// behavior is proven on Postgres; this case proves THIS dialect agrees.
+func TestOracleReadJoin_IdentityColumnDecodesTheStoredIdForm(t *testing.T) {
+	loader := rjSetup(t)
+
+	orders, err := loader.FindAll(context.Background(), criteria.Where(nil).OrderBy("Code"))
+	if err != nil {
+		t.Fatalf("FindAll with an identity join field: %v", err)
+	}
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 orders, got %d", len(orders))
+	}
+	withCarrier, without := orders[0], orders[1]
+
+	if withCarrier.CustomerOwner != rjAnaOwner {
+		t.Errorf("CustomerOwner of A-1 = %q, want the canonical text %q", withCarrier.CustomerOwner, rjAnaOwner)
+	}
+	if without.CustomerOwner != rjBrunoOwner {
+		t.Errorf("CustomerOwner of B-2 = %q, want %q", without.CustomerOwner, rjBrunoOwner)
+	}
+	if withCarrier.CarrierOwner == nil {
+		t.Fatalf("CarrierOwner of A-1 = nil, want %q", rjCarrierOwner)
+	}
+	if *withCarrier.CarrierOwner != rjCarrierOwner {
+		t.Errorf("CarrierOwner of A-1 = %q, want %q", *withCarrier.CarrierOwner, rjCarrierOwner)
+	}
+	if without.CarrierOwner != nil {
+		t.Errorf("CarrierOwner of B-2 = %q, want nil", *without.CarrierOwner)
+	}
+}
+
+// And the predicate side: the probe must bind in the form the TARGET stores, or
+// it matches nothing here and says nothing about it.
+func TestOracleReadJoin_IdentityColumnIsAddressableInACriteria(t *testing.T) {
+	loader := rjSetup(t)
+	ctx := context.Background()
+
+	got, err := loader.FindAll(ctx, criteria.Where(criteria.Eq("CustomerOwner", rjAnaOwner)))
+	if err != nil {
+		t.Fatalf("filter by an identity join field: %v", err)
+	}
+	if len(got) != 1 || got[0].Code != "A-1" {
+		t.Fatalf("filter by an identity join field = %d rows, want the one order of ana's owner", len(got))
+	}
+	byCarrier, err := loader.FindAll(ctx, criteria.Where(criteria.Eq("CarrierOwner", rjCarrierOwner)))
+	if err != nil {
+		t.Fatalf("filter by a nullable identity join field: %v", err)
+	}
+	if len(byCarrier) != 1 || byCarrier[0].Code != "A-1" {
+		t.Fatalf("filter by a nullable identity join field = %d rows, want 1", len(byCarrier))
+	}
+	none, err := loader.FindAll(ctx, criteria.Where(criteria.Eq("CustomerOwner", rjCarrierOwner)))
+	if err != nil {
+		t.Fatalf("filter by an unmatched identity: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("an identity nobody carries matched %d rows, want 0", len(none))
 	}
 }
