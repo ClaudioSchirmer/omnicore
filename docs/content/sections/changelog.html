@@ -74,6 +74,18 @@
             <li><strong>Changed</strong> — <strong>breaking</strong>:
                 <strong><code>read.AggregateLoader[T].BoundTable()</code> is replaced by <code>Schema()</code></strong>,
                 which answers with the whole <code>*core.TableSchema</code> rather than only its table name.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>a read-model name may not end in
+                <code>__0</code> or <code>__1</code>.</strong> Those are the blue-green slot suffixes the framework
+                addresses a view's two physical collections by, so a view named <code>users__0</code> would own a bare
+                collection byte-identical to view <code>users</code>'s FIRST SLOT — and every consequence is silent:
+                the DB-per-service guard whitelists all three physical names per view and reads the overlap as
+                legitimate on both sides, a rebuild of <code>users</code> provisions into <code>users__0</code> and
+                drops what is already there, and the orphan-collection diagnostic names the wrong
+                <code>omnicore_mongo_views</code> row. The name is refused at boot in EVERY read-model family
+                (<code>query.View</code>, <code>SharedBaseView</code>, <code>ComposedView</code>,
+                <code>RelationalView</code>), since the three share one namespace.
+                <em>Migration</em>: rename the view — a name that would trip this guard could never have been safely
+                deployed beside its colliding neighbour.</li>
             <li><strong>Changed</strong> — <strong>the DB-per-service guard's abort says WHY a collection is
                 orphaned, and where to drop it.</strong> It names the database, lists each unclaimed collection, and
                 leads with the cause an operator cannot see from the database itself: the read model's declaration is

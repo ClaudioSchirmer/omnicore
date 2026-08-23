@@ -68,6 +68,23 @@ with `1.0.0`.
   relational read model is declared over (`FindAllEntities` / `CountEntities` /
   `Schema` / `JoinFields`). `read.AggregateLoader[T]` satisfies it structurally.
 
+- **breaking**: **a read-model name may not end in `__0` or `__1`.** Those are the
+  blue-green slot suffixes the framework addresses a view's two physical
+  collections by, so a view named `users__0` would own a bare collection
+  byte-identical to view `users`'s FIRST SLOT — and every consequence of that is
+  silent: the DB-per-service guard whitelists all three physical names per view
+  and reads the overlap as legitimate on both sides, a rebuild of `users`
+  provisions into `users__0` and drops what is already there, and the
+  orphan-collection diagnostic names the wrong `omnicore_mongo_views` row. The
+  name is now refused at boot, in EVERY read-model family (`query.View`,
+  `SharedBaseView`, `ComposedView`, `RelationalView`), because the three share one
+  namespace. `query.ReservedNameSuffixProblem(name)` is the rule, exported for a
+  generator or a linter that wants the same answer.
+
+  *Migration*: rename the view. There is nothing to migrate in the store — a name
+  that would trip this guard could never have been safely deployed alongside its
+  colliding neighbour.
+
 - **`query.ViewNameOf(collection)`** — the inverse of `PhysicalCollectionNames`:
   the logical view a physical collection belongs to, its blue-green slot suffix
   stripped. It serves the diagnostics that have to name the `omnicore_mongo_views`
