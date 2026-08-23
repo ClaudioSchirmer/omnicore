@@ -81,13 +81,23 @@ with `1.0.0`.
   holds; a column the target's struct does not expose is left unenforced rather
   than guessed.
 
+  `WithJoins` takes the WHOLE set and may be called ONCE — a second call panics.
+  Two of the rules below are about a COLLISION BETWEEN traversals, so they can
+  only be answered against every declaration at the same time; a second call
+  would validate its own argument against a schema that says nothing about what
+  the first already claimed.
+
   Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
   nullable one would silently drop aggregates from every read, `FindByID`
   included), a `LeftJoin` field must be nullable in Go, a field receiving a
   column the target declares nullable must be a pointer, a join field carries no
   domain type, an identity column of the target lands in a `string`/`*string`,
-  one foreign key reaches one table, the child of a `...InChild` must be one the
-  root declares, and every column and Go field must exist.
+  one foreign key reaches one table (the SQL alias is derived from it), one Go
+  field of an owner receives one column (both would ride the SELECT and both
+  would scan into the same struct address, so the second would overwrite the
+  first on every row while a criteria bound to the first), the child of a
+  `...InChild` must be one the root declares, and every column and Go field must
+  exist.
 
 - **`query.RelationalView(name, loader)`** — the declaration for a read model
   served straight from the relational store, as its own type. Its only structural
@@ -141,6 +151,21 @@ with `1.0.0`.
 - **breaking**: **`read.AggregateLoader[T].BoundTable()` is replaced by
   `Schema()`**, which answers with the whole `*core.TableSchema` rather than only
   its table name.
+
+- **breaking**: **the read-side surfaces speak `queries.Projection` too.**
+  `queryschema.Read.Projection` carries it, `queryschema.ParseProjection` returns
+  it instead of a `map[string]int`, and `export.Plan.PruneToProjection` takes it.
+  They are the same rework as `ReadCriteria.Projection` seen from the wire side:
+  a surface resolves its own selection vocabulary into Go field paths and stops
+  there, with no store's include/exclude convention and no identity key to name.
+
+  *Migration*: only a hand-written surface (a custom `queryschema.Read`
+  assembler, a caller of `ParseProjection`, a custom export wrapper) touches
+  these. Build the selection with `queries.ProjectOnlyPaths(...)` and ask it
+  `Narrows()` / `IsInclusion()` / `Selects(path)` instead of reading flags out of
+  a map. The `_id: 0` entry a surface used to add when the consumer did not
+  request the id has no replacement and needs none — an unnamed path is simply
+  not selected, and each read engine settles its own identity key below the seam.
 
 - **breaking**: **a read-model name may not end in `__0` or `__1`.** Those are the
   blue-green slot suffixes the framework addresses a view's two physical

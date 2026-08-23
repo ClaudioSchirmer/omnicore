@@ -18,9 +18,9 @@ import (
 // DeletedAt column. A schema-less source falls back to id / deleted_at.
 //
 // The root document and the aggregate's internal closure (siblings, SharedBase,
-// own + base children) compose RELATIONALLY — fetchRow / fetchWhere against the
-// engine's neutral read surface (core.Querier.QueryMaps + Dialect), so they
-// compose the same way on any backend. Embeds are always EXTERNAL sources
+// own + base children) compose RELATIONALLY — hydrate.Hydrator.FetchRow /
+// FetchWhere against the engine's neutral read surface (core.Querier.QueryMaps +
+// Dialect), so they compose the same way on any backend. Embeds are always EXTERNAL sources
 // (a JoinUpstream leg over a type-less core.NewExternalSchema): MongoDB.FindManyByField
 // against the local DB. A write-anchored embed source is rejected at boot
 // (ValidateViewSchemas) — internal data projects automatically, never via an embed.
@@ -50,10 +50,13 @@ func NewComposerWithMongo(eng core.RelationalEngine, mongo ReadModelStore, resol
 	return &Composer{h: hydrate.New(eng), mongo: mongo, resolver: resolver}
 }
 
-// schemaPK / schemaDeletedAt read the source's physical ID + DeletedAt column
-// straight from its core.TableSchema. The schema is mandatory on every view (root and
-// embed), so there is no convention fallback — a view declared without a schema
-// is rejected at boot, not silently mapped to "id"/"deleted_at".
+// Compose builds the composed document for ONE root: the root row, the
+// aggregate's internal closure merged in, then each declared embed layered on
+// top. The physical ID + DeletedAt column of every source come from its own
+// core.TableSchema (hydrate.SchemaPK / hydrate.SchemaDeletedAt) — the schema is
+// mandatory on every view (root and embed), so there is no convention fallback:
+// a view declared without a schema is rejected at boot, never silently mapped to
+// "id" / "deleted_at".
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (Document, error) {
 	includeArchived := !view.deleteOnArchive
 	sd, _ := hydrate.SchemaDeletedAt(view.schema)
@@ -107,7 +110,7 @@ func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Docu
 
 // ComposeBatch composes exactly the roots named by ids — the batched companion
 // of the per-id Compose the rebuild loop drives. It fetches the whole batch of
-// root rows in one IN (...) lookup (chunked at maxInClauseSize) instead of one
+// root rows in one IN (...) lookup (chunked at hydrate.MaxInClauseSize) instead of one
 // SELECT per id, then runs the identical merge chain per row. The dominant
 // per-root round trip of a large rebuild collapses from one-per-row to
 // one-per-batch; the aggregate's inner reads (siblings, children, roles,

@@ -12,7 +12,7 @@ import (
 // related source with one query per aggregate — fine for one document, an N+1
 // storm on a rebuild of millions. The batched helpers below fetch every related
 // row for a WHOLE batch of roots in one IN (...) query per related table (chunked
-// at maxInClauseSize) and group them in memory by the join key, so composeRows —
+// at hydrate.MaxInClauseSize) and group them in memory by the join key, so composeRows —
 // the shared body of ComposeAll and ComposeBatch — pays one round trip per table
 // per batch instead of one per aggregate. This is round-trip-bound work, so the
 // win is largest on the engines with the heaviest per-query cost.

@@ -49,8 +49,16 @@
                         aggregates from every read, <code>FindByID</code> included), a <code>LeftJoin</code> field must
                         be nullable in Go, a field receiving a column the target declares nullable must be a pointer, a
                         join field carries no domain type, an identity column of the target lands in a
-                        <code>string</code>/<code>*string</code>, one foreign key reaches one table, and every column,
-                        child and Go field must exist.</li>
+                        <code>string</code>/<code>*string</code>, one foreign key reaches one table, one Go field of an
+                        owner receives one column, and every column, child and Go field must exist.</li>
+                    <li><strong>One call, the whole set.</strong> <code>WithJoins</code> may be called once; a second
+                        call panics. Two of the rules above are about a collision BETWEEN traversals — one foreign key
+                        reaches one table (the alias is derived from it), one Go field receives one column (both would
+                        ride the <code>SELECT</code> and both would scan into the same struct address) — so neither can
+                        be answered from a declaration in isolation. A second call would check its own argument against
+                        a schema that says nothing about what the first already claimed, and the collision would
+                        surface as a duplicate SQL alias on the first read, or as a field silently overwritten on every
+                        row.</li>
                     <li><strong>One alias per traversal, written bare.</strong> The alias is derived from the
                         foreign key, so two joins may reach the same table; it follows the table name with no
                         <code>AS</code>, which is optional before a table alias in standard SQL and rejected outright
@@ -102,6 +110,20 @@
             <li><strong>Changed</strong> — <strong>breaking</strong>:
                 <strong><code>read.AggregateLoader[T].BoundTable()</code> is replaced by <code>Schema()</code></strong>,
                 which answers with the whole <code>*core.TableSchema</code> rather than only its table name.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>the read-side surfaces speak
+                <code>queries.Projection</code> too.</strong> <code>queryschema.Read.Projection</code> carries it,
+                <code>queryschema.ParseProjection</code> returns it instead of a <code>map[string]int</code>, and
+                <code>export.Plan.PruneToProjection</code> takes it. It is the same rework as
+                <code>ReadCriteria.Projection</code> seen from the wire side: a surface resolves its own selection
+                vocabulary into Go field paths and stops there, naming no store's include/exclude convention and no
+                identity key.
+                <em>Migration</em>: only a hand-written surface touches these — a custom <code>queryschema.Read</code>
+                assembler, a caller of <code>ParseProjection</code>, a custom export wrapper. Build the selection with
+                <code>queries.ProjectOnlyPaths(...)</code> and ask it <code>Narrows()</code> /
+                <code>IsInclusion()</code> / <code>Selects(path)</code> instead of reading flags out of a map. The
+                <code>_id: 0</code> entry a surface used to add when the consumer did not request the id has no
+                replacement and needs none: an unnamed path is simply not selected, and each read engine settles its
+                own identity key below the seam.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>a read-model name may not end in
                 <code>__0</code> or <code>__1</code>.</strong> Those are the blue-green slot suffixes the framework
                 addresses a view's two physical collections by, so a view named <code>users__0</code> would own a bare

@@ -84,6 +84,11 @@ type joinLine struct {
 	CityID    domain.ID
 	CityName  string
 	StateName *string
+	// Deliberately the SAME Go name the root uses for one of ITS join fields: a
+	// child is a different struct, so the two are different fields and mapping
+	// both is no collision. It is the case the per-owner keying of the guard
+	// exists for.
+	TargetNick *string
 }
 
 func (l joinLine) BuildRules(string, domain.Service, *domain.Rules) {}
@@ -723,6 +728,17 @@ func TestRepositoryWithJoins_ThreadsIntoTheLoader(t *testing.T) {
 	}
 }
 
+// The repository face threads into the same loader, so it inherits the once-only
+// guard — the cross-declaration checks live on the loader, not on this seat.
+func TestRepositoryWithJoins_RefusesASecondCall(t *testing.T) {
+	r := NewBaseAggregateRepository[*joinOrder](nil, func() *joinOrder { return &joinOrder{} })
+	r.WithSchema(joinOrderSchema())
+	r.WithJoins(InnerJoin(joinTargetSchema("customers")).On("customer_id").Field("CustomerName", "nome"))
+	wantPanic(t, "called twice", func() {
+		r.WithJoins(LeftJoin(joinTargetSchema("carriers")).On("carrier_id").Field("CarrierCode", "nome"))
+	})
+}
+
 func TestJoinKind_String(t *testing.T) {
 	if JoinInner.String() != "InnerJoin" || JoinLeft.String() != "LeftJoin" {
 		t.Errorf("kinds = %q / %q", JoinInner, JoinLeft)
@@ -876,6 +892,76 @@ func TestWithJoins_RejectsTwoJoinsOnTheSameFK(t *testing.T) {
 			LeftJoin(joinTargetSchema("carriers")).On("carrier_id").Field("CarrierCode", "nome"),
 			LeftJoin(joinTargetSchema("outros")).On("carrier_id").Field("CarrierCode", "nome"),
 		)
+	})
+}
+
+// Two traversals of the same owner cannot land on the same Go field. Both
+// columns would ride the SELECT and both would scan into the one address, so the
+// later one overwrites the earlier on every row — and a criteria naming the field
+// binds to whichever join was declared first, which may be the overwritten one.
+func TestWithJoins_RejectsTwoJoinsMappingTheSameGoField(t *testing.T) {
+	wantPanic(t, "one Go field receives ONE column", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").Field("CarrierCode", "nickname"),
+			LeftJoin(joinTargetSchema("carriers")).On("carrier_id").Field("CarrierCode", "nickname"),
+		)
+	})
+}
+
+// The same collision inside ONE declaration: .Field(...) called twice for the
+// same Go field is the identical failure, and is caught by the identical rule.
+func TestWithJoins_RejectsOneJoinMappingAFieldTwice(t *testing.T) {
+	wantPanic(t, "one Go field receives ONE column", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CustomerName", "nome").
+				Field("CustomerName", "nickname"),
+		)
+	})
+}
+
+// The guard keys on the OWNER, not on the bare Go name: a root join and a child
+// join land on different structs, so the same spelling there is two different
+// fields and both are legal.
+func TestWithJoins_SameGoNameOnRootAndChildIsNotACollision(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoin(joinTargetSchema("customers")).On("customer_id").Field("TargetNick", "nickname"),
+		InnerJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+			Field("TargetNick", "nickname"),
+	)
+	if got := len(l.Joins()); got != 2 {
+		t.Fatalf("declared joins = %d, want 2", got)
+	}
+	fields := l.JoinFields()
+	if got := fields["orders"]; len(got) != 1 || got[0] != "TargetNick" {
+		t.Errorf("the root's field must be keyed under its own table, got %v", got)
+	}
+	if got := fields["order_lines"]; len(got) != 1 || got[0] != "TargetNick" {
+		t.Errorf("the child's field must be keyed under the child's table, got %v", got)
+	}
+}
+
+// A loader declares its traversals ONCE. The cross-declaration rules — one FK per
+// table, one column per Go field — can only be checked against the whole set, so
+// a second call would validate its argument against a schema that says nothing
+// about what the first already claimed: the collision would surface as a
+// duplicate SQL alias on the first read, or as a silently overwritten field.
+func TestWithJoins_RefusesASecondCall(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoin(joinTargetSchema("customers")).On("customer_id").Field("CustomerName", "nome"),
+	)
+	wantPanic(t, "called twice", func() {
+		l.WithJoins(LeftJoin(joinTargetSchema("carriers")).On("carrier_id").Field("CarrierCode", "nome"))
+	})
+}
+
+// The rule is "declare them once", not "once you declared something": a first
+// call that mapped nothing still spends the one call, so the guard cannot be
+// walked around by opening with an empty (or nil-only) declaration.
+func TestWithJoins_AnEmptyFirstCallStillSpendsIt(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(nil)
+	wantPanic(t, "called twice", func() {
+		l.WithJoins(InnerJoin(joinTargetSchema("customers")).On("customer_id").Field("CustomerName", "nome"))
 	})
 }
 

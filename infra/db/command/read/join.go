@@ -163,7 +163,9 @@ func (b *JoinBinding) On(fkColumn string) *JoinBinding {
 // The Go name is yours: the joined side's spelling never surfaces above infra.
 //
 // Call it once per column. A join that maps no field is rejected at construction:
-// it would emit a SQL JOIN reaching nothing.
+// it would emit a SQL JOIN reaching nothing. So is a Go field that two mappings
+// claim — here or across two traversals of the same owner — since both columns
+// would scan into the one field and the second would win in silence.
 func (b *JoinBinding) Field(goField, column string) *JoinBinding {
 	if goField == "" || column == "" {
 		panic(fmt.Sprintf(
@@ -193,12 +195,19 @@ func (b *JoinBinding) build() Join {
 	return b.j
 }
 
-// validateJoins asserts every declaration against the schema that owns it. It
-// runs at construction — a violation panics there, never on the first request.
+// validateJoins asserts every declaration against the schema that owns it AND
+// against the other declarations. It runs at construction — a violation panics
+// there, never on the first request.
 //
-// root is the schema the repository declared; goType is the root's Go type, used
-// to prove each mapped field exists and, for a left join, that it can hold the
-// NULL a missing counterpart produces.
+// It receives the WHOLE set, which is what WithJoins' once-only rule exists to
+// guarantee: two of these checks are about a COLLISION between traversals — one
+// foreign key reaches one table (the SQL alias is derived from it), one Go field
+// receives one column (both would scan into the same address) — and neither can
+// be answered from one declaration in isolation.
+//
+// root is the schema the repository declared; the owner's Go type is used to
+// prove each mapped field exists and, for a left join, that it can hold the NULL
+// a missing counterpart produces.
 func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 	fail := func(format string, args ...any) {
 		panic(fmt.Sprintf("read.WithJoins[%s]: ", contextName) + fmt.Sprintf(format, args...))
@@ -217,6 +226,15 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 	// would collide on that alias, and a column pointing at two tables is a
 	// modelling mistake worth naming rather than aliasing around.
 	fkSeen := map[string]string{}
+	// One Go field per owner receives ONE column. Two traversals mapping the same
+	// field is the quietest mistake in this file: the SELECT carries both columns
+	// (joinSelectExprs), the scan builds two destinations at the SAME struct
+	// address (joinScanTargetsFor), so the later column overwrites the earlier
+	// one on every row — and a criteria naming that field binds to whichever join
+	// was declared first, which may be the one whose value was overwritten. The
+	// key is the OWNER's table because a root join and a child join land on
+	// different structs: the same Go name there is two different fields.
+	goSeen := map[string]string{}
 
 	for _, j := range joins {
 		owner := root
@@ -268,6 +286,15 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 					"shadow the entity's own field, a sibling's or the shared base's",
 					j.Kind, j.Target.Table(), f.GoField, f.GoField, owner.Table())
 			}
+			goKey := owner.Table() + "." + f.GoField
+			if prev, dup := goSeen[goKey]; dup {
+				fail("%s(%q).Field(%q, %q): %s.%s is already mapped by %s — one Go field receives "+
+					"ONE column. Both would be selected and both would scan into the same field, so "+
+					"the second silently overwrites the first on every row. Give the second traversal "+
+					"its own field.",
+					j.Kind, j.Target.Table(), f.GoField, f.Column, owner.Table(), f.GoField, prev)
+			}
+			goSeen[goKey] = fmt.Sprintf("the join to %q on column %q", j.Target.Table(), f.Column)
 			validateJoinFieldType(fail, j, ownerType, f)
 		}
 	}

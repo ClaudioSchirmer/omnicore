@@ -184,7 +184,7 @@ type baseKid struct {
 }
 
 func (k baseKid) BuildRules(string, domain.Service, *domain.Rules) {}
-func (k baseKid) CollectionName() string                          { return "Kids" }
+func (k baseKid) CollectionName() string                           { return "Kids" }
 func (k baseKid) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 	x, ok := o.(baseKid)
 	return ok && x.Tag == k.Tag

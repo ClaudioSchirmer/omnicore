@@ -40,6 +40,12 @@ type AggregateLoader[T domain.Entity] struct {
 	// declared on the repository, validated against the schema at construction,
 	// and inert until a read actually uses one. See join.go.
 	joins []Join
+	// joinsDeclared records that WithJoins already ran, so a second call is
+	// refused rather than silently validated against its own argument alone. A
+	// flag rather than len(joins) > 0: the rule is "declare them once", and a
+	// first call that happened to declare nothing must not turn that into
+	// "declare them once, unless the first time was empty".
+	joinsDeclared bool
 }
 
 // NewAggregateLoader initializes a loader over a RelationalEngine. Every read
@@ -79,7 +85,25 @@ func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T]
 // the TableSchema. Every declaration is validated against the schema NOW: a join
 // naming a column, a child or a Go field that does not exist panics at
 // construction, never on the first request. Call WithSchema first.
+//
+// It takes the WHOLE set and may be called ONCE. The rules that make a set of
+// joins coherent are cross-declaration — one foreign key reaches one table, one
+// Go field receives one column — so they can only be checked against every
+// traversal at the same time. A second call would validate its own argument
+// against a schema that says nothing about what the first call already claimed,
+// and the collision would surface as a duplicate SQL alias on the first read, or
+// as two scan targets writing the same struct field in silence. Declaring all of
+// them in one call is what makes "validated at construction" true.
 func (l *AggregateLoader[T]) WithJoins(bindings ...*JoinBinding) *AggregateLoader[T] {
+	if l.joinsDeclared {
+		panic(fmt.Sprintf(
+			"read.WithJoins[%s]: called twice — a loader declares its traversals ONCE, in one call. "+
+				"The rules that keep them coherent (one foreign key reaches one table, one Go field "+
+				"receives one column) span the whole set, so a second call cannot be checked against "+
+				"the first: merge every read.InnerJoin/LeftJoin/...InChild into a single WithJoins(...).",
+			l.effectiveContextName()))
+	}
+	l.joinsDeclared = true
 	joins := make([]Join, 0, len(bindings))
 	for _, b := range bindings {
 		if b == nil {

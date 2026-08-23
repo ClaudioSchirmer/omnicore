@@ -105,7 +105,10 @@
 <pre><code>read.LeftJoin(schemas.ProfessorSchema()).On("professor_id").
     Field("Pessoa", "professor")     // criteria and DTOs speak "Pessoa"</code></pre>
 <p>
-    Call it once per column. A join that maps no field reaches nothing and is refused at construction.
+    Call it once per column. A join that maps no field reaches nothing and is refused at construction — and so is a Go
+    field two mappings claim, whether inside one declaration or across two traversals of the same owner: both columns
+    would ride the <code>SELECT</code> and both would scan into the one field, so the second would overwrite the first
+    on every row while a criteria naming it bound to the first. Give the second traversal its own field.
 </p>
 
 <div class="box warn">
@@ -257,9 +260,17 @@ CampusOwnerID string</code></pre>
 </p>
 
 <h3>Boot validation</h3>
+<div class="box warn">
+    <strong><code>WithJoins</code> takes the whole set, and is called once.</strong> A second call panics. Two of the
+    rules below are about a collision <em>between</em> traversals — one foreign key reaches one table, one Go field
+    receives one column — so neither can be answered from a declaration in isolation. A second call would validate its
+    own argument against a schema that says nothing about what the first already claimed, and the collision would
+    surface as a duplicate SQL alias on the first read, or as a field silently overwritten on every row. Declaring all
+    of them in one call is what makes “validated at construction” true.
+</div>
 <p>
-    Every declaration is checked against the schema at construction — a violation panics there, never on the first
-    request:
+    Every declaration is checked against the schema, and against the other declarations, at construction — a violation
+    panics there, never on the first request:
 </p>
 <ul>
     <li><code>WithSchema</code> was called first;</li>
@@ -268,6 +279,8 @@ CampusOwnerID string</code></pre>
     <li>the column named by <code>.Field(...)</code> is a column of the target;</li>
     <li>the Go field exists on the owning struct and is exported;</li>
     <li>the Go field does not shadow a name the schema already answers — its own, a sibling's or the shared base's;</li>
+    <li>the Go field is not already mapped by another traversal of the same owner (a root join and a child join land on
+        different structs, so the same spelling there is two different fields and both are legal);</li>
     <li><code>InnerJoin</code> is over a non-nullable foreign key, and a <code>LeftJoin</code> field is nullable;</li>
     <li>the Go field carries no domain type — no value object of any kind, and no <code>domain.ID</code>;</li>
     <li>a field mapping an <strong>identity column</strong> of the target is <code>string</code>, or <code>*string</code>
