@@ -652,6 +652,14 @@ func TestWithJoins_ANullableTargetColumnNeedsANullableField(t *testing.T) {
 			InnerJoin(joinTargetSchema("customers")).On("customer_id").
 				Field("CustomerName", "nome"))
 	}()
+
+	// The rule is about the VALUE, so it reaches a child join on the same terms —
+	// an inner one, where the left-join complaint cannot be what fires.
+	wantPanic(t, `joinLine.CityName is string and cannot hold NULL, but "nickname" is nullable`, func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+				Field("CityName", "nickname"))
+	})
 }
 
 func TestWithJoins_RejectsALeftJoinOntoANonNullableField(t *testing.T) {
