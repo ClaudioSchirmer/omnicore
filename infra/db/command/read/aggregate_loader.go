@@ -439,9 +439,9 @@ func selectColumns(d Dialect, cols []string) string {
 }
 
 // tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the root
-// SELECTs this loader builds (each part already validated). The
-// row cap is NOT part of the tail: the caller applies it over the complete
-// statement via Dialect.ApplyLimit, so each engine caps in its native position.
+// SELECTs this loader builds (each part already validated). The row cap is NOT
+// part of the tail: the caller applies it over the complete statement via
+// Dialect.ApplyLimit, so each engine caps in its native position.
 func tailClause(clause, orderSQL string) string {
 	var sb strings.Builder
 	if clause != "" {

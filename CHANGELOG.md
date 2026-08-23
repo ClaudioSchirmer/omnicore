@@ -77,7 +77,7 @@ with `1.0.0`.
   provisions into `users__0` and drops what is already there, and the
   orphan-collection diagnostic names the wrong `omnicore_mongo_views` row. The
   name is now refused at boot, in EVERY read-model family (`query.View`,
-  `SharedBaseView`, `ComposedView`, `RelationalView`), because the three share one
+  `SharedBaseView`, `ComposedView`, `RelationalView`), because all four share one
   namespace. `query.ReservedNameSuffixProblem(name)` is the rule, exported for a
   generator or a linter that wants the same answer.
 

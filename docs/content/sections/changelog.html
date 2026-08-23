@@ -83,7 +83,7 @@
                 drops what is already there, and the orphan-collection diagnostic names the wrong
                 <code>omnicore_mongo_views</code> row. The name is refused at boot in EVERY read-model family
                 (<code>query.View</code>, <code>SharedBaseView</code>, <code>ComposedView</code>,
-                <code>RelationalView</code>), since the three share one namespace.
+                <code>RelationalView</code>), since all four share one namespace.
                 <em>Migration</em>: rename the view — a name that would trip this guard could never have been safely
                 deployed beside its colliding neighbour.</li>
             <li><strong>Changed</strong> — <strong>the DB-per-service guard's abort says WHY a collection is

@@ -263,9 +263,9 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
     the framework no longer claims that collection — and, because a <code>RelationalViewDefinition</code> never reaches
     the SyncEngine at all, nothing cleans it up for you either. The DB-per-service guard then sees the collection as
     <em>foreign</em>: a <code>warn</code> under the <code>dev</code> profile, a <strong>boot abort</strong> in every
-    other. So the conversion is two steps, not one — change the declaration, then drop the collection and delete its
-    <code>omnicore_mongo_views</code> row — and the second step has to happen before the service reaches an environment
-    that aborts, not after. If it does abort, the message is the runbook: it names the database and every unclaimed
+    other. So the conversion is two steps, not one — change the declaration, then drop the collection(s) it left behind
+    (the bare name and whichever blue-green slot was active) and delete its <code>omnicore_mongo_views</code> row —
+    and the second step has to happen before the service reaches an environment that aborts, not after. If it does abort, the message is the runbook: it names the database and every unclaimed
     collection, calls out this exact conversion as the usual cause, and prints both statements to run — the
     <code>mongosh</code> drop and the <code>DELETE FROM omnicore_mongo_views WHERE view_name = '…'</code> (keyed by the
     VIEW name, not the slot collection). Leaving that registry row behind aborts the next boot for a different
