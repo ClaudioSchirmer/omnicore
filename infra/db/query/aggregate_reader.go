@@ -16,15 +16,16 @@ import (
 // the core.TableSchema it is bound to.
 //
 // read.AggregateLoader[T] satisfies it structurally (FindAllEntities /
-// CountEntities / Schema), so a read model carries its repository's ALREADY-BUILT
-// loader — repo.Loader — rather than a second SQL builder over the same schema.
-// That is the point: the criteria→SQL translation is subtle (the sibling and
-// shared-base LEFT JOINs, the id qualification once a join exists, the archived
-// scope gate, the limit/offset window) and it has exactly one implementation. A
-// read model declared over the loader inherits every future evolution of it —
-// notably whatever joins the TableSchema learns to declare — instead of needing
-// the same evolution implemented twice and drifting the first time one side is
-// forgotten.
+// CountEntities / Schema / JoinFields), so a read model carries its repository's
+// ALREADY-BUILT loader — repo.Loader — rather than a second SQL builder over the
+// same schema. That is the point: the criteria→SQL translation is subtle (the
+// sibling and shared-base LEFT JOINs, the alias-qualified declared read joins,
+// the id qualification once any join exists, the archived scope gate, the
+// limit/offset window) and it has exactly one implementation. A read model
+// declared over the loader inherits every future evolution of it — the read joins
+// the repository declares with WithJoins are already an instance of that —
+// instead of needing the same evolution implemented twice and drifting the first
+// time one side is forgotten.
 //
 // It lives in this package (not read's) so a view definition can hold it without
 // the view layer importing the load layer; criteria and core are low-level and

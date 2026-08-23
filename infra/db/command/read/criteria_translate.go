@@ -33,9 +33,6 @@ type sqlVisitor struct {
 	args        []any
 }
 
-// qualifyCol quotes col, prefixing the anchor-table qualifier when col is the
-// anchor id column under a join (idQualifier non-empty). All other columns are
-// unique across the node, so they stay unqualified.
 // qualifyCol renders a resolved field as the SQL identifier the statement needs.
 //
 // Qualification is decided by WHERE the column lives, not by which column it is.

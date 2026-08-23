@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -94,7 +95,7 @@ func CheckServiceRegistry(
 			slog.Any("other_services", otherServices))
 	}
 
-	return decideForeignResponse(ctx, serviceName, profile, foreign)
+	return decideForeignResponse(ctx, serviceName, m.db.Name(), profile, foreign)
 }
 
 // decideForeignResponse implements the warn-em-dev / abort-fora branch
@@ -102,24 +103,87 @@ func CheckServiceRegistry(
 // behavior is unit-testable without an active Mongo connection. Returns
 // nil when there is nothing to report or the profile is "dev"; returns
 // a typed error naming each foreign collection otherwise.
-func decideForeignResponse(ctx context.Context, serviceName, profile string, foreign []string) error {
+func decideForeignResponse(ctx context.Context, serviceName, database, profile string, foreign []string) error {
 	if len(foreign) == 0 {
 		return nil
 	}
 	if profile == DevProfile {
 		slog.WarnContext(ctx, "mongo.registry.foreign_collections",
 			slog.String("service", serviceName),
+			slog.String("database", database),
 			slog.String("profile", profile),
 			slog.Any("foreign", foreign),
 			slog.String("reason", "downgraded to warn under dev profile"))
 		return nil
 	}
-	return fmt.Errorf(
-		"service %q: foreign collections present in database (not declared by any view): %s — "+
-			"another service may be sharing this database, or these are residue from a prior service iteration; "+
-			"resolve by dropping the orphan collections, pointing the service at a clean database, or "+
-			"declaring them via fwinfra.View(...)",
-		serviceName, strings.Join(foreign, ", "))
+	return errors.New(foreignCollectionsDiagnostic(serviceName, database, foreign))
+}
+
+// foreignCollectionsDiagnostic writes the abort message. It is long on purpose:
+// the operator reading it is looking at a database they did not expect to be
+// wrong, and the single most common cause is invisible from where they stand —
+// THE VIEW'S DECLARATION IS GONE FROM THE BUILD. Data outlives code. A
+// query.View(...) that was deleted, renamed, or converted to
+// query.RelationalView(...) stops claiming its collection the moment the source
+// changes, while the collection itself sits there fully populated. The framework
+// will not drop it on its own: from here a collection nobody declares is
+// indistinguishable from another service's live data, and dropping the wrong one
+// is unrecoverable.
+//
+// So the message names the database, names each collection, explains the likely
+// cause, and hands over the exact two statements to run — the mongosh drop AND
+// the relational bookkeeping row, which is keyed by the VIEW name and would
+// otherwise be missed (a stale row later resolves as DriftAlienData and aborts
+// the boot a second time, for a different reason).
+func foreignCollectionsDiagnostic(serviceName, database string, foreign []string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "service %q: database %q holds %d collection(s) that no declared view claims: %s\n\n",
+		serviceName, database, len(foreign), strings.Join(foreign, ", "))
+
+	sb.WriteString("The usual cause is that the read model's DECLARATION IS NO LONGER IN THIS BUILD — its\n")
+	sb.WriteString("query.View(...) was deleted, renamed, or converted to query.RelationalView(...), which\n")
+	sb.WriteString("materializes nothing and therefore claims no collection. The data outlives the source:\n")
+	sb.WriteString("the collection stays behind, populated, and the framework will not drop it for you,\n")
+	sb.WriteString("because from here it is indistinguishable from another service sharing this database.\n\n")
+	sb.WriteString("Resolve by ONE of:\n\n")
+
+	sb.WriteString("  A. Drop the residue — it is no longer read by anything. In mongosh:\n")
+	fmt.Fprintf(&sb, "       use %s\n", database)
+	for _, c := range foreign {
+		fmt.Fprintf(&sb, "       db.getCollection(%q).drop()\n", c)
+	}
+	sb.WriteString("     then delete each one's bookkeeping row in the RELATIONAL store (keyed by the\n")
+	sb.WriteString("     VIEW name — the collection name without any __0 / __1 blue-green suffix):\n")
+	for _, view := range distinctViewNames(foreign) {
+		fmt.Fprintf(&sb, "       DELETE FROM omnicore_mongo_views WHERE view_name = '%s';\n", view)
+	}
+	sb.WriteString("     Leaving that row behind aborts the next boot for a different reason.\n\n")
+
+	sb.WriteString("  B. Give this service a database of its own — set mongo.database in\n")
+	sb.WriteString("     microservice.<profile>.yaml. Correct when another service legitimately shares\n")
+	sb.WriteString("     this one; the DB-per-service boundary is what this guard exists to hold.\n\n")
+
+	sb.WriteString("  C. Re-declare it, if the read model is still supposed to be served: contribute the\n")
+	sb.WriteString("     query.View(...) again from a ReadableFeature's Views().\n")
+	return sb.String()
+}
+
+// distinctViewNames maps the foreign collections back to the view rows they came
+// from, de-duplicated and in first-seen order: a view's two blue-green slots are
+// two collections but ONE registry row, so emitting the DELETE twice would read
+// as two different problems.
+func distinctViewNames(foreign []string) []string {
+	seen := make(map[string]struct{}, len(foreign))
+	out := make([]string, 0, len(foreign))
+	for _, c := range foreign {
+		v := query.ViewNameOf(c)
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 // upsertServiceMarker writes / refreshes the per-boot marker under the

@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,32 @@ const (
 // abort a non-dev boot — whitelists all three.
 func PhysicalCollectionNames(viewName string) []string {
 	return []string{viewName, viewName + slotSuffix0, viewName + slotSuffix1}
+}
+
+// ViewNameOf is the best-effort inverse: the logical view a physical collection
+// belongs to, which is the collection name with any blue-green slot suffix
+// stripped. The bare collection is already the view name, so it comes back
+// unchanged.
+//
+// It exists for the diagnostics that have to talk to a HUMAN about a collection
+// the framework no longer recognizes — the DB-per-service guard's abort, above
+// all. That message has to name the row to delete from omnicore_mongo_views, and
+// that row is keyed by the VIEW name; handing the operator a slot name would send
+// them to a row that does not exist.
+//
+// Best-effort is the honest word: the suffix scheme is not injective. A view
+// literally NAMED "x__0" owns a bare collection whose name is indistinguishable
+// from view "x"'s first slot, and no function can tell those apart from the
+// string. That is a property of the naming scheme, not of this lookup — and it is
+// why the answer is only ever used to WRITE A SUGGESTION into a message a human
+// reads, never to resolve a view for a read or to drive a drop.
+func ViewNameOf(collection string) string {
+	for _, suffix := range []string{slotSuffix0, slotSuffix1} {
+		if strings.HasSuffix(collection, suffix) {
+			return strings.TrimSuffix(collection, suffix)
+		}
+	}
+	return collection
 }
 
 // PhysicalCollection is the physical Mongo collection a logical view currently

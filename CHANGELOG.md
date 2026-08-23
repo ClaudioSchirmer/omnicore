@@ -33,6 +33,11 @@ with `1.0.0`.
   repository holds a schema with no loader in sight. The `TableSchema` is
   untouched, so a projected view over the same entity is unaffected.
 
+  Each traversal is rendered under an alias derived from its foreign key, written
+  BARE — the `AS` keyword is optional before a table alias in standard SQL and
+  Oracle rejects it outright, so the bare form is the one all four backends
+  accept.
+
   A root join is ALWAYS in the FROM and its columns ride the root SELECT, so the
   values cost no second round trip and the field is populated on every read — one
   that appeared only when a filter happened to mention it would be blank on the
@@ -62,6 +67,11 @@ with `1.0.0`.
 - **`query.AggregateReader`** — the type-erased face of the aggregate loader a
   relational read model is declared over (`FindAllEntities` / `CountEntities` /
   `Schema` / `JoinFields`). `read.AggregateLoader[T]` satisfies it structurally.
+
+- **`query.ViewNameOf(collection)`** — the inverse of `PhysicalCollectionNames`:
+  the logical view a physical collection belongs to, its blue-green slot suffix
+  stripped. It serves the diagnostics that have to name the `omnicore_mongo_views`
+  row an operator must delete, which is keyed by the view rather than the slot.
 
 - **`infra/db/hydrate`** — the store-neutral aggregate hydrator: a
   `core.TableSchema` plus a `core.RelationalEngine` in, a column-keyed document
@@ -106,6 +116,16 @@ with `1.0.0`.
   so the four surfaces render one refusal whatever serves the view, and adding an
   engine adds no vocabulary. Semantic and status are unchanged
   (`SemanticSchema` → 400).
+
+- **The DB-per-service guard's abort says WHY a collection is orphaned, and where
+  to drop it.** The message now names the database, lists each unclaimed
+  collection, and leads with the cause an operator cannot see from the database
+  itself: the read model's declaration is no longer in the build — its
+  `query.View(...)` was deleted, renamed, or converted to `query.RelationalView(...)`,
+  which materializes nothing and therefore claims no collection. It then hands
+  over both statements to run, the `mongosh` drop AND the `DELETE FROM
+  omnicore_mongo_views` keyed by the view name, which is the half that gets
+  forgotten and aborts the next boot for a different reason.
 
 ### Removed
 

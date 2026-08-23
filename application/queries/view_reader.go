@@ -179,15 +179,20 @@ type Page struct {
 	Projection Projection
 }
 
-// ViewReader is the read-side port of CQRS. Implementations live in infra
-// (e.g. MongoViewReader) and adapt the store's native types to the plain
-// map[string]any documents the application layer consumes.
+// ViewReader is the read-side port of CQRS. Implementations live in infra (the
+// Mongo projection reader, the relational one) and adapt the store's native
+// types to the plain map[string]any documents the application layer consumes.
+// The port names no store: a reader also owns whatever its own identity key
+// needs — the layer above knows only the Go field ID.
 //
 // Both ReadPage and ReadByID accept ReadCriteria so a Query owns its
 // persistence shape end to end. ReadByID honors criteria.Filter (security
-// overlays from AppContext, e.g. tenant id) merged with the {_id: id} +
-// deleted_at gate. The pagination knobs on ReadCriteria
-// (Limit/OrderBy/After/Before/Search/Projection) are ignored by ReadByID by
+// overlays from AppContext, e.g. tenant id) merged with the by-id predicate and
+// the archived gate, and it honors Projection — a by-id route has no wire
+// `?fields=`, so a narrowing projection there came from ToCriteria, most often
+// from Restrict, and ignoring it would mean the field-level restriction silently
+// does not apply on this route. The PAGINATION knobs
+// (Limit/OrderBy/After/Before/Backward/Search) are ignored by ReadByID by
 // design — they only make sense on a paged read.
 type ViewReader interface {
 	ReadPage(ctx context.Context, view string, criteria ReadCriteria) (Page, error)

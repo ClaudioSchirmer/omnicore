@@ -262,6 +262,10 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
     <em>foreign</em>: a <code>warn</code> under the <code>dev</code> profile, a <strong>boot abort</strong> in every
     other. So the conversion is two steps, not one — change the declaration, then drop the collection and delete its
     <code>omnicore_mongo_views</code> row — and the second step has to happen before the service reaches an environment
-    that aborts, not after. Converting the other way needs no special step: a Mongo view with no registry row over a
+    that aborts, not after. If it does abort, the message is the runbook: it names the database and every unclaimed
+    collection, calls out this exact conversion as the usual cause, and prints both statements to run — the
+    <code>mongosh</code> drop and the <code>DELETE FROM omnicore_mongo_views WHERE view_name = '…'</code> (keyed by the
+    VIEW name, not the slot collection). Leaving that registry row behind aborts the next boot for a different
+    reason. Converting the other way needs no special step: a Mongo view with no registry row over a
     populated table resolves to <code>DriftFreshBackfill</code>, which rebuilds and backfills the pre-existing history.
 </div>

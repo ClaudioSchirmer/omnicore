@@ -26,7 +26,7 @@ import (
 // the write repository holds a TableSchema with no loader in sight, so a write
 // has no path to a join at all.
 
-// JoinKind is how a declared traversal treats a root with no counterpart.
+// JoinKind is how a declared traversal treats a joining row with no counterpart.
 type JoinKind uint8
 
 const (
@@ -35,12 +35,14 @@ const (
 	// FindOne and FindAll exist to return THIS aggregate, and a missing relation is
 	// not a reason to stop returning it.
 	JoinLeft JoinKind = iota
-	// JoinInner REQUIRES the match: a root with no counterpart is not returned.
-	// Because the declaration lives on the repository, that applies to EVERY read
-	// through this loader — FindByID included, which is what the write-side Auto
-	// handlers load through. It is therefore legal only over a NON-NULLABLE foreign
-	// key, where referential integrity makes it equivalent to a left join on the
-	// root set; over a nullable one it would drop aggregates in silence.
+	// JoinInner REQUIRES the match: the row with no counterpart is not returned —
+	// the ROOT itself for a root join, and for a child join the CHILD ELEMENT
+	// (the root still comes back, minus that element). Because the declaration
+	// lives on the repository, that applies to EVERY read through this loader —
+	// FindByID included, which is what the write-side Auto handlers load through.
+	// It is therefore legal only over a NON-NULLABLE foreign key, where
+	// referential integrity makes it equivalent to a left join on the same row
+	// set; over a nullable one it would drop rows in silence.
 	JoinInner
 )
 
@@ -59,7 +61,11 @@ type JoinField struct {
 	Column  string
 }
 
-// Join is one declared traversal.
+// Join is one declared traversal. The predicate is always the joining table's
+// FKColumn against the TARGET's declared id column: a foreign key points at a
+// primary key, and the schema already names both, so nothing else has to be
+// declared — and a traversal onto a NON-id column of the target is deliberately
+// not expressible.
 //
 // A ROOT join is ALWAYS in the FROM, and its columns ride the root SELECT — so
 // its values cost no second round trip, and the field is trustworthy: one that

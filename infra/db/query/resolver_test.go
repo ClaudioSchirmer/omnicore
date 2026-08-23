@@ -165,3 +165,37 @@ func pointerRows(name string, active, shadow *string) func(string, []any) (core.
 		}}, nil
 	}
 }
+
+// ViewNameOf inverts PhysicalCollectionNames for every view name that does not
+// itself end in a slot suffix — which the naming scheme cannot disambiguate, and
+// which ViewNameOf documents as its limit. The DB-per-service abort tells an
+// operator which omnicore_mongo_views row to delete from a collection name alone,
+// and that row is keyed by the view.
+func TestViewNameOf_InvertsEveryPhysicalName(t *testing.T) {
+	for _, view := range []string{"users", "users_rel", "a__b", "users_v2"} {
+		for _, physical := range PhysicalCollectionNames(view) {
+			if got := ViewNameOf(physical); got != view {
+				t.Errorf("ViewNameOf(%q) = %q, want %q", physical, got, view)
+			}
+		}
+	}
+}
+
+// A collection the framework never named comes back unchanged — there is no
+// suffix to strip, and inventing one would send the operator to a row that does
+// not exist.
+func TestViewNameOf_LeavesAnUnslottedNameAlone(t *testing.T) {
+	if got := ViewNameOf("legacy_report"); got != "legacy_report" {
+		t.Errorf("ViewNameOf(%q) = %q, want it unchanged", "legacy_report", got)
+	}
+}
+
+// The scheme is not injective, and the helper says so rather than guessing well:
+// a view NAMED "x__0" is indistinguishable from view "x"'s first slot. Pinned so
+// the limitation is a decision on record, not a surprise — the answer only ever
+// becomes a suggestion in a message a human reads.
+func TestViewNameOf_IsNotInjectiveOnASlotShapedName(t *testing.T) {
+	if got := ViewNameOf("x__0"); got != "x" {
+		t.Errorf("ViewNameOf(%q) = %q — the documented limit is that it strips the suffix", "x__0", got)
+	}
+}

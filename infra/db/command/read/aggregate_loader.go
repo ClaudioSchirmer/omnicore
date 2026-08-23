@@ -438,8 +438,8 @@ func selectColumns(d Dialect, cols []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the
-// auto-scan and manual-scanner root SELECTs (each part already validated). The
+// tailClause renders the " WHERE … [ORDER BY …]" suffix shared by the root
+// SELECTs this loader builds (each part already validated). The
 // row cap is NOT part of the tail: the caller applies it over the complete
 // statement via Dialect.ApplyLimit, so each engine caps in its native position.
 func tailClause(clause, orderSQL string) string {
@@ -1051,13 +1051,19 @@ func (l *AggregateLoader[T]) joinClause(j *joinedTables, dialect Dialect) string
 	// Declared joins (WithJoins), each under its own alias so two traversals to
 	// the SAME table stay distinct. Emitted in declaration order, which is the
 	// order the SELECT list and the scan targets follow.
+	//
+	// The alias follows the table with NO "AS": that keyword is optional before a
+	// TABLE alias in standard SQL and Oracle rejects it outright (ORA-02000),
+	// while every other backend accepts the bare form. Column aliases are a
+	// different position with a different rule — the dialects that write one keep
+	// their AS.
 	for _, dj := range rootJoins(l.joins) {
 		verb := " LEFT JOIN "
 		if dj.Kind == JoinInner {
 			verb = " INNER JOIN "
 		}
 		qa := dialect.QuoteIdent(joinAlias(dj))
-		sb.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " AS " + qa +
+		sb.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " " + qa +
 			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
 			" = " + anchor + "." + dialect.QuoteIdent(dj.FKColumn))
 	}
@@ -1204,17 +1210,17 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 	for _, c := range trailingCols {
 		sel += ", " + ct + "." + dialect.QuoteIdent(c)
 	}
-	// Declared child joins, each under its own alias. They come LAST in the
-	// SELECT, in declaration order — the order childJoinScanTargets builds its
-	// destinations — and after the carrier columns, so the trailing target list
-	// reads carrier-then-joins on both sides.
+	// Declared child joins, each under its own alias (bare, no "AS" — see
+	// joinClause). They come LAST in the SELECT, in declaration order — the order
+	// childJoinScanTargets builds its destinations — and after the carrier
+	// columns, so the trailing target list reads carrier-then-joins on both sides.
 	for _, dj := range joins {
 		verb := " LEFT JOIN "
 		if dj.Kind == JoinInner {
 			verb = " INNER JOIN "
 		}
 		qa := dialect.QuoteIdent(joinAlias(dj))
-		join.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " AS " + qa +
+		join.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " " + qa +
 			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
 			" = " + ct + "." + dialect.QuoteIdent(dj.FKColumn))
 		for _, f := range dj.Fields {

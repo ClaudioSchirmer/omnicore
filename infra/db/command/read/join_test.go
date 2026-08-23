@@ -360,14 +360,36 @@ func joinedLoader(t *testing.T) *AggregateLoader[*joinOrder] {
 func TestDeclaredJoin_IsAlwaysInTheFromAndSelectsItsFields(t *testing.T) {
 	sql := capturedSQL(t, joinedLoader(t), criteria.Where(nil))
 
-	if !strings.Contains(sql, "INNER JOIN customers AS j_customer_id ON j_customer_id.id = orders.customer_id") {
+	if !strings.Contains(sql, "INNER JOIN customers j_customer_id ON j_customer_id.id = orders.customer_id") {
 		t.Errorf("the inner join must be emitted under its alias:\n%s", sql)
 	}
-	if !strings.Contains(sql, "LEFT JOIN carriers AS j_carrier_id ON j_carrier_id.id = orders.carrier_id") {
+	if !strings.Contains(sql, "LEFT JOIN carriers j_carrier_id ON j_carrier_id.id = orders.carrier_id") {
 		t.Errorf("the left join must be emitted under its alias:\n%s", sql)
 	}
 	if !strings.Contains(sql, "j_customer_id.nome") || !strings.Contains(sql, "j_carrier_id.nome") {
 		t.Errorf("both join columns must ride the root SELECT:\n%s", sql)
+	}
+}
+
+// A table alias is written BARE, never with "AS". The keyword is optional there
+// in standard SQL and Oracle rejects it outright (ORA-02000: missing ON or USING
+// keyword), so emitting it makes every read through a loader that declares a join
+// fail on one of the four supported backends — including FindByID, which the
+// write-side handlers load through.
+func TestDeclaredJoin_TableAliasCarriesNoASKeyword(t *testing.T) {
+	sql := capturedSQL(t, joinedLoader(t), criteria.Where(nil))
+	if strings.Contains(sql, " AS ") {
+		t.Errorf("a table alias must not be introduced with AS (Oracle rejects it):\n%s", sql)
+	}
+}
+
+func TestChildJoin_TableAliasCarriesNoASKeyword(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+			Field("CityName", "nome"),
+	)
+	if sql := childCapturedSQL(t, l); strings.Contains(sql, " AS ") {
+		t.Errorf("a child join's table alias must not be introduced with AS:\n%s", sql)
 	}
 }
 
@@ -547,7 +569,7 @@ func TestChildJoin_RidesTheChildSelect(t *testing.T) {
 		InnerJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").Field("CityName", "nome"),
 	)
 	sql := childCapturedSQL(t, l)
-	if !strings.Contains(sql, "INNER JOIN cities AS j_city_id ON j_city_id.id = order_lines.city_id") {
+	if !strings.Contains(sql, "INNER JOIN cities j_city_id ON j_city_id.id = order_lines.city_id") {
 		t.Errorf("the child join must be emitted on the child statement:\n%s", sql)
 	}
 	if !strings.Contains(sql, "j_city_id.nome") {

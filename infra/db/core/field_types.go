@@ -14,8 +14,8 @@ import (
 )
 
 // The CLOSED set of persistable field types — exactly what the framework
-// composes on EVERY supported relational engine (write bind, criteria bind,
-// auto-scan; see table-schema.html "Supported column shapes"). Declaring a
+// composes on EVERY supported relational engine (write bind, criteria bind, the
+// schema-driven scan; see table-schema.html "Supported column shapes"). Declaring a
 // Field whose Go type is outside this set is a BOOT FAIL at the declaration
 // call: with the type-driven identity contract the field's type IS its
 // storage declaration, so an unknown type would mean a silent driver

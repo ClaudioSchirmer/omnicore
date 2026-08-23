@@ -33,6 +33,12 @@
                         aggregates from every read, <code>FindByID</code> included), a <code>LeftJoin</code> field must
                         be nullable in Go, one foreign key reaches one table, and every column, child and Go field must
                         exist.</li>
+                    <li><strong>One alias per traversal, written bare.</strong> The alias is derived from the
+                        foreign key, so two joins may reach the same table; it follows the table name with no
+                        <code>AS</code>, which is optional before a table alias in standard SQL and rejected outright
+                        by Oracle. Everything resolved through a join reaches the statement alias-qualified — the
+                        <code>WHERE</code>, the <code>ORDER BY</code>, and the aggregate DSL's expressions and
+                        grouping keys alike.</li>
                     <li><strong>Always in the FROM, never archive-gated.</strong> A root join's columns ride the root
                         <code>SELECT</code>, so its values cost no second round trip and the field is populated on every
                         read — one that appeared only when a filter happened to mention it would be blank on the next
@@ -68,6 +74,15 @@
             <li><strong>Changed</strong> — <strong>breaking</strong>:
                 <strong><code>read.AggregateLoader[T].BoundTable()</code> is replaced by <code>Schema()</code></strong>,
                 which answers with the whole <code>*core.TableSchema</code> rather than only its table name.</li>
+            <li><strong>Changed</strong> — <strong>the DB-per-service guard's abort says WHY a collection is
+                orphaned, and where to drop it.</strong> It names the database, lists each unclaimed collection, and
+                leads with the cause an operator cannot see from the database itself: the read model's declaration is
+                no longer in the build — its <code>query.View(...)</code> was deleted, renamed, or converted to
+                <code>query.RelationalView(...)</code>, which materializes nothing and therefore claims no collection.
+                It then hands over both statements to run: the <code>mongosh</code> drop AND the
+                <code>DELETE FROM omnicore_mongo_views</code> keyed by the view name — the half that gets forgotten and
+                aborts the next boot for a different reason. <code>query.ViewNameOf(collection)</code> is the lookup
+                behind that second statement, and is exported for any diagnostic that needs the same answer.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>the read seam names no store.</strong>
                 <code>query.ViewReaderEngine.SetRelational</code> is now <code>Register(reader, views)</code> and
                 <code>MongoReader()</code> is now <code>Fallback()</code>: the seam holds a fallback reader and a

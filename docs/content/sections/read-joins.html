@@ -107,6 +107,14 @@
 <p>
     Call it once per column. A join that maps no field reaches nothing and is refused at construction.
 </p>
+<div class="box">
+    <strong>The predicate is always <code>fk = target.id</code>.</strong> <code>.On(...)</code> names the
+    foreign key; the other side of the comparison is the <em>target schema's declared id column</em>, which the
+    <a href="#table-schema"><code>TableSchema</code></a> already knows — so there is nothing else to declare, and
+    no way to get the two halves out of step. The corollary is a deliberate limit: a traversal onto a
+    <strong>non-id column</strong> of the target (matching a code against a natural key, say) is not expressible.
+    Model that as a real foreign key, or read it with <code>deps.DB.Querier()</code>.
+</div>
 
 <h3>Joining from an aggregate child</h3>
 <p>
@@ -126,6 +134,14 @@
     addressable in a criteria. Filtering the root by a field of a 1:N child is a pushdown a single root
     <code>SELECT</code> cannot express — the same boundary every child field has.
 </p>
+<div class="box warn">
+    <strong>Inside a child, <code>InnerJoin</code> drops the CHILD element, not the root.</strong> The join
+    rides the child's own batched <code>SELECT</code>, so the row it can eliminate is the child's: the aggregate
+    still comes back, with that element missing from its collection — a silent hole in the child array rather
+    than a missing aggregate. Over the non-nullable foreign key the framework already requires there is no such
+    row, which is exactly why the requirement is enforced; prefer <code>LeftJoinInChild</code> whenever the
+    relationship is genuinely optional.
+</div>
 <p class="note">
     <strong>Own children only.</strong> The child must be one the root's schema declares. A child of a
     <a href="#table-schema">shared base</a> belongs to the base: declare the join on the base's own repository.
@@ -154,7 +170,9 @@
 <p>
     Each traversal is rendered under its own alias derived from the foreign key, so two joins may reach the
     <strong>same table</strong> — a billing and a shipping address both to <code>customers</code> — without colliding.
-    That is also why one foreign key reaches one table: two joins sharing a key are refused at construction.
+    That is also why one foreign key reaches one table: two joins sharing a key are refused at construction. The alias
+    follows the table name <em>bare</em>, with no <code>AS</code>: the keyword is optional before a table alias in
+    standard SQL and Oracle rejects it outright, so the bare form is the one all four backends accept.
     Everything resolved through a join reaches the statement under that alias — the <code>WHERE</code>, the
     <code>ORDER BY</code>, and the aggregate DSL's expressions and grouping keys alike — because two aggregates may
     perfectly well both have a <code>name</code>, and the joined side has no uniqueness guarantee against the anchor's

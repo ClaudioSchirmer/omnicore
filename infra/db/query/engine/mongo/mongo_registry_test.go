@@ -113,21 +113,21 @@ func TestFilterForeignCollections_EmptyObserved(t *testing.T) {
 // ─── decideForeignResponse ───────────────────────────────────────────────────
 
 func TestDecideForeignResponse_NoneToReport(t *testing.T) {
-	err := decideForeignResponse(context.Background(), "svc", "prd", nil)
+	err := decideForeignResponse(context.Background(), "svc", "svcdb", "prd", nil)
 	if err != nil {
 		t.Errorf("got %v, want nil when foreign list is empty", err)
 	}
 }
 
 func TestDecideForeignResponse_DevDowngradesToWarn(t *testing.T) {
-	err := decideForeignResponse(context.Background(), "svc", DevProfile, []string{"legacy"})
+	err := decideForeignResponse(context.Background(), "svc", "svcdb", DevProfile, []string{"legacy"})
 	if err != nil {
 		t.Errorf("got %v, want nil under dev profile (warn-only)", err)
 	}
 }
 
 func TestDecideForeignResponse_NonDevAborts(t *testing.T) {
-	err := decideForeignResponse(context.Background(), "svc", "prd", []string{"legacy"})
+	err := decideForeignResponse(context.Background(), "svc", "svcdb", "prd", []string{"legacy"})
 	if err == nil {
 		t.Fatal("got nil, want abort under non-dev profile")
 	}
@@ -141,7 +141,7 @@ func TestDecideForeignResponse_NonDevAborts(t *testing.T) {
 }
 
 func TestDecideForeignResponse_AbortListsEveryForeign(t *testing.T) {
-	err := decideForeignResponse(context.Background(), "svc", "prd",
+	err := decideForeignResponse(context.Background(), "svc", "svcdb", "prd",
 		[]string{"alpha", "mike", "zeta"})
 	if err == nil {
 		t.Fatal("expected error")
@@ -158,10 +158,54 @@ func TestDecideForeignResponse_CustomProfileTreatedAsNonDev(t *testing.T) {
 	// "prd-pem", etc. The canonical posture mirrors auth.mode=disabled
 	// (only dev is loose).
 	for _, profile := range []string{"prd", "qa", "stg", "prd-pem", "prd-external"} {
-		err := decideForeignResponse(context.Background(), "svc", profile, []string{"orphan"})
+		err := decideForeignResponse(context.Background(), "svc", "svcdb", profile, []string{"orphan"})
 		if err == nil {
 			t.Errorf("profile %q: got nil, want abort", profile)
 		}
+	}
+}
+
+// The abort is the last thing an operator reads before the process exits, and
+// the cause it names is one they cannot see from the database: the view's
+// DECLARATION left the build. It has to carry the database, every collection,
+// that explanation, and both statements to run — the drop and the relational
+// bookkeeping row, which is keyed by the VIEW name and is the half that gets
+// forgotten.
+func TestDecideForeignResponse_AbortIsActionable(t *testing.T) {
+	err := decideForeignResponse(context.Background(), "svc", "svcdb", "prd", []string{"users_rel__1"})
+	if err == nil {
+		t.Fatal("expected an abort")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		`database "svcdb"`, // WHERE the collection lives
+		"use svcdb",        // the mongosh context to run in
+		`db.getCollection("users_rel__1").drop()`,                         // the exact drop
+		"DECLARATION IS NO LONGER IN THIS BUILD",                          // WHY it is orphaned
+		"query.RelationalView(...)",                                       // the conversion that causes it
+		"DELETE FROM omnicore_mongo_views WHERE view_name = 'users_rel';", // the other half
+		"mongo.database", // the give-it-its-own-DB escape
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("abort message is missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// The bookkeeping row is keyed by the VIEW, and a view owns two blue-green
+// slots. Emitting the same DELETE twice would read as two separate problems.
+func TestDecideForeignResponse_OneDeletePerView(t *testing.T) {
+	err := decideForeignResponse(context.Background(), "svc", "svcdb", "prd",
+		[]string{"users_rel", "users_rel__0", "users_rel__1"})
+	if err == nil {
+		t.Fatal("expected an abort")
+	}
+	if n := strings.Count(err.Error(), "DELETE FROM omnicore_mongo_views"); n != 1 {
+		t.Errorf("three slots of ONE view must yield one DELETE, got %d:\n%s", n, err.Error())
+	}
+	// All three collections still have to be dropped individually.
+	if n := strings.Count(err.Error(), ".drop()"); n != 3 {
+		t.Errorf("every collection must be dropped, got %d drops", n)
 	}
 }
 

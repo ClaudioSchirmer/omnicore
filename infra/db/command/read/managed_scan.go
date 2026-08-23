@@ -149,14 +149,14 @@ var managedTimeLayouts = []string{
 	"2006-01-02",
 }
 
-// coerceManagedTime turns a managed-timestamp cell from the column map into a
-// *time.Time, tolerating the driver representations that reach the MANUAL-scanner
-// parity path: a native time.Time / *time.Time (the pgx, MySQL parseTime,
-// go-mssqldb, go-ora path) and the textual string/[]byte forms SQLite (and MySQL
-// without parseTime) return. This keeps the manual scanner at parity with the
-// auto scan, which decodes these through the engine's sql.NullTime targets.
-// Returns nil for an unrecognized or unparseable value (the caller reads nil as
-// "absent"), never a misleading zero time.
+// coerceManagedTime turns a managed-timestamp cell taken from a column-keyed row
+// map into a *time.Time, tolerating every driver representation one can arrive
+// in: a native time.Time / *time.Time (the pgx, MySQL parseTime, go-mssqldb,
+// go-ora path) and the textual string/[]byte forms SQLite (and MySQL without
+// parseTime) return. The schema-driven scan itself needs none of this — it
+// decodes through the engine's sql.NullTime targets — so this is the map-shaped
+// counterpart of that decode. Returns nil for an unrecognized or unparseable
+// value (the caller reads nil as "absent"), never a misleading zero time.
 func coerceManagedTime(v any) *time.Time {
 	switch t := v.(type) {
 	case time.Time:

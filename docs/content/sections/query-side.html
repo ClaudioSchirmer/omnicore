@@ -130,11 +130,17 @@ HTTP 200 OK
         Filling the Result is the framework's job: <code>queries.ResultFromDoc[TResult](doc)</code> maps the
         Go-keyed document onto the Result <strong>by field name</strong>, recursively through nested
         structs, slices of structs and pointer fields, and applies the read-side semantic pass every
-        surface then inherits — top-level <code>ID</code> falls back to <code>_id</code>, nil slices
-        normalize to empty typed slices at every depth, and an
+        surface then inherits — nil slices normalize to empty typed slices at every depth, a
+        <strong>nil pointer in the document stays an absence</strong> (it is never allocated into a
+        zero value, so &ldquo;there is no counterpart&rdquo; and &ldquo;the empty string&rdquo; do not
+        collapse into one answer), and an
         <a href="#value-objects"><code>EnumValueObject</code></a> carrying an out-of-set value converges to
         its <code>Unknown</code> sentinel (parity with the write-side entity reconstruction, so a
         stale or tampered stored value never surfaces as a phantom member).
+        The <strong>identity is the Go field <code>ID</code>, like any other field</strong>: no store's
+        key name reaches this layer. A reader whose documents carry only the store's own id maps it
+        onto <code>ID</code> itself, below the read seam — which is part of what a hand-written
+        <code>queries.ViewReader</code> owns.
     </p>
     <p>
         <strong><code>FromQueryResult(ctx, r TResult) (TResult, error)</code> is mandatory on every Query</strong> —
