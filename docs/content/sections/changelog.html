@@ -143,6 +143,38 @@
                 a read that needs a different shape declares a different schema over a different type, which is cheaper
                 to write than a scanner and cannot be half-wired. For a query the framework does not generate at all,
                 <code>deps.DB.Querier()</code> remains the read-only raw surface.</li>
+            <li><strong>Fixed</strong> — <strong>keyset pagination no longer stalls when the selection omits
+                the id.</strong> The cursor's trailing tiebreak is the stored <code>_id</code>, but a selection that
+                did not name the identity had that key excluded from the Mongo projection, so the cursor was built
+                over a value the document no longer carried. The walk then compared against a placeholder that sorts
+                mid-alphabet: for an id starting with a digit it advanced by accident, for one starting with a letter
+                the row matched itself and the page repeated forever. It reached every surface that pages without
+                asking for the id — REST <code>?fields=</code>, a <a href="#graphql">GraphQL</a> selection without
+                <code>id</code> (the <code>pageInfo</code>-only probe included), a <a href="#grpc">gRPC</a> read mask.
+                The identity now follows the same transparent re-include / post-strip the reader already applied to
+                stripped ordering fields, so the wire shape still matches the request exactly.
+                <a href="#relational-view">Relational views</a> were never affected: they page by offset, and their
+                cursor carries a row index rather than row values.</li>
+            <li><strong>Fixed</strong> — <strong><code>ReadCriteria.Restrict</code> now removes the identity too on
+                Mongo-backed views.</strong> <a href="#authz-seams">Restrict</a> promises that the field it removes
+                reaches neither the store nor the wire, and for the id only half of that held: the exclusion did drop
+                the schema's id column from the projection, but Mongo returns its own key on every document whatever
+                the projection says, and the reader lifted that key back onto the Go field the Response DTO fills. The
+                restricted identity was served, on the listing and on the by-id route alike — while a
+                <a href="#relational-view">relational view</a> under the same criteria correctly withheld it. The two
+                backings now agree.</li>
+            <li><strong>Fixed</strong> — <strong>a field-restricted listing can be sorted again.</strong> When
+                <a href="#authz-seams">Restrict</a> scrubs a field from a request that named no fields of its own, the
+                effective projection becomes an exclusion list — and the reader's transparent re-include of ordering
+                fields was blind to that, mixing an inclusion into it. Mongo refuses such a projection outright, so any
+                caller subject to a field restriction got a <code>500</code> the moment it passed
+                <code>?orderBy=</code>. An exclusion serves the ordering field anyway; nothing needs re-including
+                there.</li>
+            <li><strong>Fixed</strong> — <strong>a <a href="#query-side">composed view</a> no longer serves an id the
+                selection did not ask for.</strong> The read-time composition forces the primary's identity into the
+                projection when a leg joins on it, and removed it afterwards under one spelling only, while the primary
+                read had already surfaced it under the other. A composed read and a plain read of the same selection
+                now agree.</li>
             <li><strong>Fixed</strong> — <strong>a <code>?fields=</code> path a
                 <a href="#relational-view">relational view</a> cannot resolve is a 400, not a silent empty
                 document.</strong> The relational engine pruned the served document to the requested selection without
