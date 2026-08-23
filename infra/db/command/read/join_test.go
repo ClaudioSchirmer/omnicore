@@ -36,6 +36,8 @@ type joinOrder struct {
 	TargetOwner    string
 	TargetAltOwner *string
 	TargetBadOwner int64
+	TargetNick     *string
+	TargetNickBad  string
 	VendorCode     joinVOCode  // scalar value object
 	VendorTier     joinVOTier  // enum value object
 	VendorAddr     joinVOAddr  // composite value object
@@ -98,6 +100,9 @@ type joinCustomer struct {
 	// the joined aggregate, which is exactly what a traversal reaches for.
 	OwnerID    domain.ID
 	AltOwnerID *domain.ID
+	// An ordinary column the target declares NULLABLE — the general case of the
+	// same rule the identity columns above are a special case of.
+	Nickname *string
 }
 
 func (e *joinCustomer) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
@@ -123,7 +128,8 @@ func joinOrderSchema() *TableSchema {
 func joinTargetSchema(table string) *TableSchema {
 	return NewTableSchema[*joinCustomer](table).ID("id").Field("Name", "nome").
 		Field("OwnerID", "owner_id").
-		Field("AltOwnerID", "alt_owner_id")
+		Field("AltOwnerID", "alt_owner_id").
+		Field("Nickname", "nickname")
 }
 
 func joinLoader(schema *TableSchema) *AggregateLoader[*joinOrder] {
@@ -559,6 +565,93 @@ func TestIdKindResolver_TypesRootJoinFieldsAndNothingElse(t *testing.T) {
 	if got := idKind("ID"); got != core.IDValue {
 		t.Errorf("the managed ID slot = %v, want IDValue", got)
 	}
+}
+
+// The value's own nullability, independent of the join kind. An inner join
+// proves the joined ROW exists — never that every column of it is filled — so a
+// column the TARGET declares nullable must land in a field that can say
+// "absent". The identity rule above is the special case; this is the general one.
+// The nullability lookup only speaks where the target's own struct can back the
+// answer. Off that surface — no target, a column the target does not declare, a
+// type-less external schema, or a managed slot that is not a struct field — it
+// reports NOT nullable rather than guess, so the rule never invents a constraint
+// it cannot point at. The managed ID slot is the one exception: the schema
+// recorded that typing itself.
+func TestTargetColumnNullability_OnlySpeaksWhereTheTargetCanBackIt(t *testing.T) {
+	target := joinTargetSchema("customers")
+
+	for _, c := range []struct {
+		name string
+		j    Join
+		f    JoinField
+		want bool
+	}{
+		{"no target", Join{}, JoinField{Column: "nickname"}, false},
+		{"column the target does not declare", Join{Target: target}, JoinField{Column: "nao_existe"}, false},
+		{"type-less external schema, column undeclared", Join{Target: NewExternalSchema("upstream")}, JoinField{Column: "nickname"}, false},
+		// Declared, but on a schema with no Go type behind it: there is no field to
+		// read a pointer off, so the rule stays silent instead of guessing.
+		{"type-less external schema, column declared",
+			Join{Target: NewExternalSchema("upstream").Field("Nick", "nickname")},
+			JoinField{Column: "nickname"}, false},
+		{"a non-nullable column", Join{Target: target}, JoinField{Column: "nome"}, false},
+		{"a nullable column", Join{Target: target}, JoinField{Column: "nickname"}, true},
+		{"a nullable identity", Join{Target: target}, JoinField{Column: "alt_owner_id"}, true},
+		// A MANAGED slot resolves as a column but is not a struct field (the
+		// carrier's slots are unexported), so there is nothing to read a pointer
+		// off — not nullable, rather than a guess from the column's meaning.
+		{"a managed slot", Join{Target: collidingTargetSchema("customers")}, JoinField{Column: "deleted_at"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, _, got := targetColumnNullability(c.j, c.f); got != c.want {
+				t.Errorf("nullable = %v, want %v", got, c.want)
+			}
+		})
+	}
+
+	// The message fragment is empty wherever the declaration cannot be rendered,
+	// so the error never trails a dangling "( . is <nil>)".
+	if got := targetDeclaration(Join{}, "X", nil); got != "" {
+		t.Errorf("targetDeclaration with no target = %q, want empty", got)
+	}
+	if got := targetDeclaration(Join{Target: NewExternalSchema("upstream")}, "X", nil); got != "" {
+		t.Errorf("targetDeclaration on a type-less schema = %q, want empty", got)
+	}
+}
+
+func TestWithJoins_ANullableTargetColumnNeedsANullableField(t *testing.T) {
+	// Accepted: the pointer can hold the absence.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("a nullable column into a pointer must be accepted, got: %v", r)
+			}
+		}()
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("TargetNick", "nickname"))
+	}()
+
+	// Refused: the message must name BOTH sides — the field that cannot hold it
+	// and the table/column that produces it, with the target's own declaration.
+	wantPanic(t, `joinOrder.TargetNickBad is string and cannot hold NULL, but "nickname" is nullable on "customers" (joinCustomer.Nickname is *string)`, func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("TargetNickBad", "nickname"))
+	})
+
+	// A NON-nullable column keeps taking a plain field: the rule adds nothing
+	// where the value cannot be absent.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("a non-nullable column into a plain field must be accepted, got: %v", r)
+			}
+		}()
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CustomerName", "nome"))
+	}()
 }
 
 func TestWithJoins_RejectsALeftJoinOntoANonNullableField(t *testing.T) {

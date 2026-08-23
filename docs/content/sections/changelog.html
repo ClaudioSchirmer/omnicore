@@ -39,12 +39,18 @@
                         string field would otherwise receive as 16 raw bytes with no error to show for it. The same
                         typing governs the predicate, so a filter on that field binds in the form the target stores and
                         actually matches.</li>
+                    <li><strong>Nullability is checked against the source.</strong> An inner join proves the
+                        joined row exists, never that every column of it is filled — so a column the TARGET declares
+                        nullable must land in a pointer on this side, whatever the join kind. Refused at construction
+                        naming both halves; the target's declaration is its Go type, read off the schema the join
+                        already holds.</li>
                     <li><strong>Validated at construction</strong>, never on the first request:
                         <code>InnerJoin</code> only over a non-nullable foreign key (a nullable one would silently drop
                         aggregates from every read, <code>FindByID</code> included), a <code>LeftJoin</code> field must
-                        be nullable in Go, a join field carries no domain type, an identity column of the target lands
-                        in a <code>string</code>/<code>*string</code>, one foreign key reaches one table, and every
-                        column, child and Go field must exist.</li>
+                        be nullable in Go, a field receiving a column the target declares nullable must be a pointer, a
+                        join field carries no domain type, an identity column of the target lands in a
+                        <code>string</code>/<code>*string</code>, one foreign key reaches one table, and every column,
+                        child and Go field must exist.</li>
                     <li><strong>One alias per traversal, written bare.</strong> The alias is derived from the
                         foreign key, so two joins may reach the same table; it follows the table name with no
                         <code>AS</code>, which is optional before a table alias in standard SQL and rejected outright

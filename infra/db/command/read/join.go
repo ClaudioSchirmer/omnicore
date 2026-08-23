@@ -308,8 +308,9 @@ func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.
 	// string the framework decodes it into. Anything else would receive the
 	// dialect's stored form — 16 raw bytes on three of the four engines — so the
 	// declaration is checked rather than trusted.
+	tgtGoField, tgtType, srcNullable := targetColumnNullability(j, f)
 	if idKind := targetIDKindOf(j, f); idKind != core.IDNone {
-		wantPtr := idKind == core.IDPointer || j.Kind == JoinLeft
+		wantPtr := srcNullable || j.Kind == JoinLeft
 		if !isJoinIDTextField(sf.Type, wantPtr) {
 			want, why := "string", "an identity column is read as its canonical text"
 			if wantPtr {
@@ -331,6 +332,27 @@ func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.
 			"produces when there is no counterpart — declare it as a pointer, or use InnerJoin",
 			j.Kind, j.Target.Table(), f.GoField, ownerType.Name(), f.GoField, sf.Type)
 	}
+	// The column may be NULL on its OWN side, independently of the join kind: an
+	// inner join proves the joined ROW exists, never that every column of it is
+	// filled. The field that receives it must be able to say "absent", or the
+	// first row carrying a NULL fails the read.
+	if srcNullable && !isNullableKind(sf.Type) {
+		fail("%s(%q).Field(%q, %q): %s.%s is %s and cannot hold NULL, but %q is nullable on %q%s "+
+			"— the field receiving a nullable column must be a pointer.",
+			j.Kind, j.Target.Table(), f.GoField, f.Column,
+			ownerType.Name(), f.GoField, sf.Type,
+			f.Column, j.Target.Table(), targetDeclaration(j, tgtGoField, tgtType))
+	}
+}
+
+// targetDeclaration renders the joined side's own declaration for an error
+// message — "(Campus.OwnerName is *string)" — or nothing when the column is not
+// a field of the target's struct.
+func targetDeclaration(j Join, goField string, typ reflect.Type) string {
+	if typ == nil || j.Target == nil || j.Target.GoType() == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (%s.%s is %s)", j.Target.GoType().Name(), goField, typ)
 }
 
 // domainTypeOfJoinField names the domain typing of a join field's Go type and
@@ -390,6 +412,38 @@ func targetIDKindOf(j Join, f JoinField) core.IDKind {
 		return core.IDNone // already reported by the column check
 	}
 	return j.Target.IDKindOf(goName)
+}
+
+// targetColumnNullability reports whether the column this field maps is declared
+// NULLABLE by the JOINED aggregate, along with that side's own Go field and type
+// for the error message. The declaration is the target's Go type — a pointer
+// field is the nullable one, the same rule the framework reads everywhere else —
+// and it is reachable because the join declaration HOLDS the target's schema,
+// which is type-anchored (`NewTableSchema[T]`). It is the aggregate's declared
+// shape, not the database catalog: a column left NULL-able in DDL while the
+// owning entity declares a non-pointer is that entity's own mis-declaration, and
+// no join can see it.
+//
+// A column the target's struct does not expose — a managed slot, or a type-less
+// external schema — answers NOT nullable except where the schema itself recorded
+// the identity typing. The framework enforces only what it can point at.
+func targetColumnNullability(j Join, f JoinField) (goField string, typ reflect.Type, nullable bool) {
+	if j.Target == nil {
+		return "", nil, false
+	}
+	goName, ok := j.Target.GoNameForRead(f.Column)
+	if !ok {
+		return "", nil, false // already reported by the column check
+	}
+	ty := j.Target.GoType()
+	if ty == nil {
+		return goName, nil, false
+	}
+	sf, ok := ty.FieldByName(goName)
+	if !ok {
+		return goName, nil, j.Target.IDKindOf(goName) == core.IDPointer
+	}
+	return goName, sf.Type, sf.Type.Kind() == reflect.Pointer
 }
 
 // isJoinIDTextField reports whether t is the string shape an identity column

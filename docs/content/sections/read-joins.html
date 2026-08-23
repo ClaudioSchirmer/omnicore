@@ -108,6 +108,16 @@
     Call it once per column. A join that maps no field reaches nothing and is refused at construction.
 </p>
 
+<div class="box warn">
+    <strong>A nullable column needs a nullable field — whatever the join kind.</strong> An
+    <code>InnerJoin</code> proves the joined <em>row</em> exists; it says nothing about whether every column of it is
+    filled. If the target declares that column nullable, the field receiving it must be a pointer, or the first row
+    carrying a <code>NULL</code> fails the read. The framework checks it at construction and names both halves — the
+    field that cannot hold it, and the table and column that produce it. What it reads is the target's own Go
+    declaration (a pointer field is the nullable one), off the schema the join already holds; a column the target's
+    struct does not expose is left unenforced rather than guessed, and the database catalog is never consulted.
+</div>
+
 <h3>What a join field may be</h3>
 <p>
     A scalar, and only a scalar. A join field carries <strong>no domain type</strong> — no value object of any kind
@@ -262,6 +272,7 @@ CampusOwnerID string</code></pre>
     <li>the Go field carries no domain type — no value object of any kind, and no <code>domain.ID</code>;</li>
     <li>a field mapping an <strong>identity column</strong> of the target is <code>string</code>, or <code>*string</code>
         when that column is nullable or the join is a <code>LeftJoin</code>;</li>
+    <li>a field receiving a column the target declares <strong>nullable</strong> is a pointer, on any join kind;</li>
     <li>at least one <code>.Field(...)</code> is declared;</li>
     <li>a <code>...InChild</code> child is one the root's schema declares.</li>
 </ul>

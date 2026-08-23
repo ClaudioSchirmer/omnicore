@@ -72,9 +72,19 @@ with `1.0.0`.
   binds in the form the target stores, so a filter matches rather than silently
   returning nothing.
 
+  Nullability is checked against the SOURCE, not only the join kind. An inner join
+  proves the joined row exists, never that every column of it is filled, so a
+  column the TARGET declares nullable must land in a pointer on this side —
+  refused at construction otherwise, naming both halves ("`Building.OwnerName` is
+  `string` and cannot hold NULL, but `owner_name` is nullable on `campi`"). The
+  target's declaration is its Go type, read off the schema the join already
+  holds; a column the target's struct does not expose is left unenforced rather
+  than guessed.
+
   Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
   nullable one would silently drop aggregates from every read, `FindByID`
-  included), a `LeftJoin` field must be nullable in Go, a join field carries no
+  included), a `LeftJoin` field must be nullable in Go, a field receiving a
+  column the target declares nullable must be a pointer, a join field carries no
   domain type, an identity column of the target lands in a `string`/`*string`,
   one foreign key reaches one table, the child of a `...InChild` must be one the
   root declares, and every column and Go field must exist.
