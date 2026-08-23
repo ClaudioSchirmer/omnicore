@@ -196,6 +196,52 @@ with `1.0.0`.
 
 ### Fixed
 
+- **Keyset pagination no longer stalls when the selection omits the id.** The
+  cursor's trailing tiebreaker is the stored `_id`, but a selection that did not
+  name the identity had that key EXCLUDED from the Mongo projection, so the
+  cursor was built over a value the document no longer carried. Stringifying it
+  produced the literal `"<nil>"`, which decodes, matches its context hash, and
+  then compares `_id > "<nil>"` — a boundary that lands mid-alphabet (`<` is
+  `0x3C`, between the digits and the hex letters of a UUID in text). For an id
+  starting with a digit the walk advanced by accident; for one starting with a
+  letter the row matched itself and the page repeated forever. It reached every
+  surface that pages without asking for the id: REST `?fields=`, a GraphQL
+  selection without `id` (including the `pageInfo`-only probe, whose projection
+  is the ordering fields alone), and a gRPC read mask. The identity now follows
+  the same auto-include / post-strip contract the reader already applied to
+  stripped sort fields, and a document that genuinely carries no identity is
+  refused instead of yielding a plausible cursor. Relational views are
+  unaffected — they page by offset, and their cursor carries a row index rather
+  than row values.
+
+- **`ReadCriteria.Restrict` now has authority over the identity on Mongo-backed
+  views.** Restrict's contract is that the field it removes reaches neither the
+  store nor the wire, and for `Restrict("ID")` only the first half held. The
+  exclusion did drop the schema's id column from the projection, but Mongo
+  returns `_id` on every document whatever the projection says, and the reader
+  then lifted that key back onto the Go field `ID` — the spelling the Response
+  DTO fills. The restricted identity was served, on the listing and on the by-id
+  route alike, while the relational engine honored the same criteria. The
+  promotion is now gated on whether the selection keeps the identity at all, and
+  the store key leaves with it.
+
+- **A field-restricted listing can be sorted again.** `Restrict` turns a request
+  that named no fields into an EXCLUSION projection, and the reader's sort-field
+  auto-include was blind to that mode: it appended `name: 1` beside the
+  restriction's `phone: 0`, and Mongo refuses a projection that mixes inclusion
+  and exclusion, so the whole read failed with `Location31253`. Any caller
+  subject to a field restriction got a 500 the moment it passed `?orderBy=`. In
+  exclusion mode the sort field is served anyway, so the correct repair is none;
+  the same mode-blindness in the segment `deleted_at` auto-include is fixed with
+  it.
+
+- **A composed view no longer serves an id the selection did not ask for.** The
+  read-time composition force-includes the primary's identity when a leg joins
+  on it, and removed it afterwards under the store's spelling only — while the
+  primary read, which comes back through the plain reader, had already promoted
+  it onto the Go field `ID`. The helper strip now removes both spellings, so a
+  composed read and a plain read of the same selection agree.
+
 - **A `?fields=` path a relational view cannot resolve is now a 400, not a
   silent empty document.** The relational read engine pruned the served document
   to the requested selection without ever checking that the paths resolved, so a

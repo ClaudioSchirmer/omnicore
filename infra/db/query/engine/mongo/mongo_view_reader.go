@@ -123,8 +123,23 @@ func translateSortFields(node *query.ViewNode, src []queries.OrderByField) ([]qu
 // alone, and no schema column maps it. Lifting it onto the Go field "ID" here is
 // what lets every layer above speak one identity vocabulary — the application
 // layer used to carry this fallback, which meant it knew a store's key name.
-func normalizeIdentity(doc map[string]any) map[string]any {
+//
+// `kept` is whether the consumer's selection keeps the identity at all, and it
+// GATES both halves. The promotion used to be unconditional, and that is how
+// ReadCriteria.Restrict("ID") — an AUTHORITY, whose contract is that the field
+// reaches neither the store nor the wire — was silently defeated on every
+// Mongo-backed view: the exclusion did remove the schema's id COLUMN from the
+// projection, but Mongo returns `_id` on every document regardless, and this
+// function then lifted it straight back onto "ID". The restricted field was
+// served, spelled exactly as the DTO fills it. The store key leaves with it:
+// nothing above this line asked for an identity, under either spelling.
+func normalizeIdentity(doc map[string]any, kept bool) map[string]any {
 	if doc == nil {
+		return doc
+	}
+	if !kept {
+		delete(doc, "_id")
+		delete(doc, idGoField)
 		return doc
 	}
 	if _, has := doc[idGoField]; has {
@@ -376,7 +391,8 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	// sort field paths so the doc carries the values we need for NextCursor /
 	// PrevCursor. Strip them from the returned doc after the cursor build so
 	// the wire shape stays exactly as the consumer asked.
-	autoIncluded := projectionAutoIncluded(colProj, colSort)
+	inclusion := c.Projection.IsInclusion()
+	autoIncluded := projectionAutoIncluded(colProj, colSort, inclusion)
 	// A consumer projection that narrows a SEGMENT's subfields
 	// (?fields=dependents.name, ?fields=product.code, a GraphQL selection set)
 	// would drop that segment's DeletedAt column from the returned entries —
@@ -388,11 +404,30 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	childSDCleanup := map[string]string{}
 	if len(colProj) > 0 && !c.IncludeArchived {
 		var extra []string
-		extra, childSDCleanup = childDeletedAtAutoIncludes(colProj, node.ChildDeletedAtPaths())
+		extra, childSDCleanup = childDeletedAtAutoIncludes(colProj, node.ChildDeletedAtPaths(), inclusion)
 		autoIncluded = append(autoIncluded, extra...)
 	}
+	// The store's identity is the cursor's ABSOLUTE tiebreaker — buildStableSortDoc
+	// appends `_id` to every sort and encodeTupleCursor reads it off the doc — so it
+	// obeys the same auto-include / post-strip contract the two blocks above apply
+	// to sort fields and segment DeletedAt columns. It was the one cursor input
+	// outside that mechanism: a selection that did not name the identity had `_id`
+	// EXCLUDED (translateProjectionKeys' `_id: 0`), which left the tiebreaker slot
+	// reading a value the doc no longer carried. Re-include it for the query and
+	// strip it after the cursors are built, so the wire shape still matches the
+	// selection exactly.
+	// A selection that does not name the identity had `_id` excluded, which would
+	// leave the cursor's tiebreaker unreadable. Force it back into the projection;
+	// normalizeIdentity takes it out of every document again below, on the broader
+	// question of whether the selection keeps the identity at all.
+	identityAutoIncluded(colProj, inclusion)
+	keepIdentity := c.Projection.Keeps(idGoField)
+	// An exclusion projection whose every entry was un-excluded above has nothing
+	// left to say: `{}` is not a projection Mongo accepts as "the whole document",
+	// so the read simply goes unprojected, and the strip below still shapes the
+	// wire.
 	if len(colProj) > 0 {
-		findOpts.SetProjection(buildProjection(colProj, autoIncluded))
+		findOpts.SetProjection(buildProjection(colProj))
 	}
 
 	cur, err := col.Find(ctx, findFilter, findOpts)
@@ -447,7 +482,11 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	if len(docs) > 0 {
 		itemCursors = make([]string, len(docs))
 		for i, d := range docs {
-			itemCursors[i] = encodeTupleCursor(d, colSort, contextHash)
+			cur, cerr := encodeTupleCursor(d, colSort, contextHash)
+			if cerr != nil {
+				return queries.Page{}, cerr
+			}
+			itemCursors[i] = cur
 		}
 		prevCursorStr = itemCursors[0]
 		nextCursorStr = itemCursors[len(itemCursors)-1]
@@ -483,7 +522,7 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 		for docField, sdCol := range childSDCleanup {
 			removeChildSDColumn(m, strings.Split(docField, "."), sdCol)
 		}
-		items = append(items, normalizeIdentity(node.ToGoDoc(m)))
+		items = append(items, normalizeIdentity(node.ToGoDoc(m), keepIdentity))
 	}
 
 	isFirstForward := c.After == "" && c.Before == ""
@@ -526,12 +565,26 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	node := r.resolveViewSchema(view)
 	sdCol, sdOn := node.DeletedAtColumn()
 	col := r.mongo.collFn(r.resolver.Active(view).String())
-	filter := bson.M{"_id": id}
+	filter := bson.M{}
 	colFilter, err := translateFilterKeys(node, c.Filter)
 	if err != nil {
 		return nil, false, err
 	}
 	applyFilter(filter, colFilter)
+	// The path id is the read's SUBJECT; a criteria filter that also constrains
+	// the identity is an overlay scoping what this caller may read. Both apply,
+	// so they AND. Seeding the filter with the path id and letting applyFilter
+	// write over it would have let the overlay REPLACE the subject — the caller
+	// would be served the row its own scope named instead of the one the route
+	// addressed. (Before the identity vocabulary was settled the two landed on
+	// different keys and never met, which is why this could not be observed.)
+	if scoped, clash := filter["_id"]; clash {
+		delete(filter, "_id")
+		and, _ := filter["$and"].(bson.A)
+		filter["$and"] = append(and, bson.M{"_id": scoped}, bson.M{"_id": id})
+	} else {
+		filter["_id"] = id
+	}
 	if !c.IncludeArchived && sdOn {
 		filter[sdCol] = nil
 	}
@@ -546,7 +599,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 		if perr != nil {
 			return nil, false, perr
 		}
-		findOpts.SetProjection(buildProjection(colProj, nil))
+		findOpts.SetProjection(buildProjection(colProj))
 	}
 	var doc bson.M
 	err = col.FindOne(ctx, filter, findOpts).Decode(&doc)
@@ -563,7 +616,9 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	if !c.IncludeArchived {
 		node.StripArchivedChildren(m)
 	}
-	return normalizeIdentity(node.ToGoDoc(m)), true, nil
+	// The by-id route answers to the same authority as the listing: a projection
+	// that does not keep the identity does not get one, under either spelling.
+	return normalizeIdentity(node.ToGoDoc(m), c.Projection.Keeps(idGoField)), true, nil
 }
 
 // normalizeBSONValues rewrites driver-specific BSON scalars into their plain
@@ -611,6 +666,7 @@ func normalizeBSONValue(v any) any {
 // reversing the returned slice.
 func buildStableSortDoc(sortFields []queries.OrderByField, reverse bool) bson.D {
 	doc := bson.D{}
+	sortsOnIdentity := false
 	for _, s := range sortFields {
 		v := 1
 		if s.Desc {
@@ -619,7 +675,17 @@ func buildStableSortDoc(sortFields []queries.OrderByField, reverse bool) bson.D 
 		if reverse {
 			v = -v
 		}
+		if s.Field == "_id" {
+			sortsOnIdentity = true
+		}
 		doc = append(doc, bson.E{Key: s.Field, Value: v})
+	}
+	// A consumer that sorts BY the identity already named the tiebreaker, and it
+	// is unique — nothing after it can order anything. Appending the automatic
+	// `_id` again would put the key in the sort document twice, in contradictory
+	// directions when that sort was DESC. Its own term stands as the tiebreaker.
+	if sortsOnIdentity {
+		return doc
 	}
 	idDir := 1
 	if reverse {
@@ -639,6 +705,18 @@ func buildStableSortDoc(sortFields []queries.OrderByField, reverse bool) bson.D 
 func buildKeysetFilter(tuple []any, sortFields []queries.OrderByField, globalDirection int) bson.M {
 	arms := bson.A{}
 	n := len(tuple)
+	// The cascade ends at the identity: it is unique, so an arm past it can only
+	// restate the same boundary. When the CONSUMER sorted by the identity, that
+	// slot — not the appended trailing one — is where the cascade stops. Emitting
+	// the trailing arm anyway wrote an equality and an inequality on `_id` into
+	// the same bson.M, where the second silently overwrote the first and turned
+	// the arm into "everything on the other side", which un-bounded the page.
+	for i, sf := range sortFields {
+		if sf.Field == "_id" {
+			n = i + 1
+			break
+		}
+	}
 	for p := 1; p <= n; p++ {
 		arm := bson.M{}
 		for i := 0; i < p-1; i++ {
@@ -702,12 +780,28 @@ func appendKeysetClause(filter bson.M, keyset bson.M) {
 	}
 }
 
-// projectionAutoIncluded returns the doc paths to add to the projection so
-// the doc carries the values needed to build cursors when ?fields= would
-// otherwise strip a sort field. Returned paths are stripped from the
-// returned doc after the cursor is encoded so the wire shape matches the
-// consumer's ?fields= request exactly.
-func projectionAutoIncluded(userProj map[string]int, sortFields []queries.OrderByField) []string {
+// projectionAutoIncluded makes the projection carry the sort values the cursor
+// builder reads off each doc, and returns the paths to remove from the doc once
+// the cursors are encoded — so the wire shape still matches the consumer's
+// request exactly. The returned list is therefore "what the doc must carry that
+// the consumer did NOT ask for", which is precisely what gets stripped again.
+//
+// The repair is mode-dependent, for the same reason identityAutoIncluded's is:
+// a Mongo projection is either an include-list or an exclude-list, and mixing
+// them fails the whole read (Location31253 "Cannot do inclusion on field X in
+// exclusion projection"). Only `_id` is exempt.
+//
+//   - INCLUSION (`?fields=email` + ?orderBy=name): a sort field the selection
+//     did not name is absent from the doc, so it is added as an inclusion.
+//   - EXCLUSION (what ReadCriteria.Restrict produces): every field is served
+//     unless the projection names it. A sort field it does NOT name is already
+//     there and needs nothing — adding `name: 1` beside `phone: 0` was what made
+//     a field-restricted listing with an ?orderBy= fail the read outright. One
+//     the projection DOES name is un-excluded instead, which is the only repair
+//     the mode allows. Restrict never produces that combination (it scrubs the
+//     field from OrderBy as it drops it from the projection), so it is reachable
+//     only from criteria assembled by hand.
+func projectionAutoIncluded(userProj map[string]int, sortFields []queries.OrderByField, inclusion bool) []string {
 	if len(userProj) == 0 || len(sortFields) == 0 {
 		return nil
 	}
@@ -716,19 +810,64 @@ func projectionAutoIncluded(userProj map[string]int, sortFields []queries.OrderB
 		if sf.Field == "_id" {
 			continue
 		}
-		if _, included := userProj[sf.Field]; included {
-			continue
+		_, named := userProj[sf.Field]
+		if inclusion {
+			if named {
+				continue
+			}
+			userProj[sf.Field] = 1
+		} else {
+			if !named {
+				continue
+			}
+			delete(userProj, sf.Field)
 		}
 		out = append(out, sf.Field)
 	}
 	return out
 }
 
-// buildProjection assembles the bson.D projection. User-declared keys come
-// in deterministic order (sorted) so the emitted projection is stable across
-// runs; auto-included paths land after, also sorted. _id auto-exclusion
-// declared by the wrapper (userProj["_id"] = 0) is preserved verbatim.
-func buildProjection(userProj map[string]int, autoIncluded []string) bson.D {
+// identityAutoIncluded re-includes the store's identity column in a projection
+// that would have dropped it, so the page's cursors can read the tiebreaker off
+// the doc. Getting it back OUT is not its business: normalizeIdentity drops the
+// identity from every document the selection does not keep, which is the broader
+// condition — a projection can drop the identity without ever naming `_id`, and
+// an exclusion of the schema's own id column does exactly that.
+//
+// Both narrowing modes can drop the identity, and they need OPPOSITE repairs
+// because `_id` is the one field Mongo lets a projection flag against its mode:
+//   - inclusion (`?fields=name` → `{name: 1, _id: 0}`): flip the wrapper's
+//     auto-exclusion to `{_id: 1}`. Legal beside the inclusions, and the only way
+//     to get the column back.
+//   - exclusion (ReadCriteria.Restrict dropping "ID" → `{_id: 0}`): DELETE the
+//     entry instead. An exclusion projection returns `_id` by default, so
+//     removing the exclusion is enough — and writing `{_id: 1}` there would be
+//     read as an inclusion projection of the identity ALONE when `_id` is the
+//     only entry, collapsing the whole document to its key.
+//
+// Anything else — a projection that keeps the identity, or one that never
+// narrowed — is left untouched and reported false.
+func identityAutoIncluded(userProj map[string]int, inclusion bool) {
+	if flag, declared := userProj["_id"]; !declared || flag != 0 {
+		return
+	}
+	if inclusion {
+		userProj["_id"] = 1
+	} else {
+		delete(userProj, "_id")
+	}
+}
+
+// buildProjection assembles the bson.D projection from the resolved column map:
+// keys sorted so the emitted document is stable across runs, values verbatim.
+//
+// It renders, it does not decide. Every auto-include — sort fields, segment
+// DeletedAt columns, the identity — has already been folded INTO the map by the
+// helper that owns that decision, each one writing the flag its projection mode
+// allows. Rendering the map is what keeps a single mode in the emitted document;
+// appending auto-included paths as a separate `: 1` tail (what this did before)
+// could not know the mode and put an inclusion into an exclusion projection.
+func buildProjection(userProj map[string]int) bson.D {
 	keys := make([]string, 0, len(userProj))
 	for k := range userProj {
 		keys = append(keys, k)
@@ -737,13 +876,6 @@ func buildProjection(userProj map[string]int, autoIncluded []string) bson.D {
 	proj := bson.D{}
 	for _, k := range keys {
 		proj = append(proj, bson.E{Key: k, Value: userProj[k]})
-	}
-	if len(autoIncluded) > 0 {
-		extra := append([]string(nil), autoIncluded...)
-		sort.Strings(extra)
-		for _, k := range extra {
-			proj = append(proj, bson.E{Key: k, Value: 1})
-		}
 	}
 	return proj
 }
@@ -756,14 +888,25 @@ func buildProjection(userProj map[string]int, autoIncluded []string) bson.D {
 // sort + search + includeArchived) so a mid-navigation context change is
 // detected and rejected; the empty string is the canonical hash for the
 // default context (no filter, no sort, no search, archived excluded).
-func encodeTupleCursor(doc map[string]any, sortFields []queries.OrderByField, contextHash string) string {
+func encodeTupleCursor(doc map[string]any, sortFields []queries.OrderByField, contextHash string) (string, error) {
 	tuple := make([]any, 0, len(sortFields)+1)
 	for _, sf := range sortFields {
 		tuple = append(tuple, lookupDocPath(doc, sf.Field))
 	}
-	tuple = append(tuple, fmt.Sprintf("%v", doc["_id"]))
-	s, _ := queries.EncodeCursor(tuple, contextHash)
-	return s
+	// A doc with no identity has no valid keyset cursor: the tiebreaker is what
+	// makes the next page start strictly AFTER this row, and there is nothing to
+	// compare against. Stringifying the absent value produced the literal
+	// "<nil>" — a cursor that decodes, matches its context hash and then compares
+	// `_id > "<nil>"`, which lands mid-alphabet and silently re-serves the same
+	// row for every id that sorts below it. Refuse instead: the read path
+	// guarantees `_id` is projected (identityAutoIncluded), so reaching here
+	// means the doc itself is malformed, and a loud failure is the honest answer.
+	id, ok := doc["_id"]
+	if !ok || id == nil {
+		return "", fmt.Errorf("cannot build a keyset cursor: document carries no _id")
+	}
+	tuple = append(tuple, fmt.Sprintf("%v", id))
+	return queries.EncodeCursor(tuple, contextHash)
 }
 
 // lookupDocPath walks a dotted doc path returning the leaf value, or nil if
@@ -995,17 +1138,33 @@ func projectionTouchesField(colProj map[string]int, docField string) bool {
 // <field>.<sub>"). The whole-field case is skipped, so it behaves exactly like
 // a no-?fields read for that segment: the strip sees the column, and
 // ToGoDoc/the Response DTO drop it on the wire.
-func childDeletedAtAutoIncludes(colProj map[string]int, childSDPaths map[string]string) ([]string, map[string]string) {
+// The mode split is the same one projectionAutoIncluded and identityAutoIncluded
+// answer: an INCLUSION that narrows into the segment has to add the column back,
+// while an EXCLUSION already serves it and must only un-exclude the case where
+// the projection named the column itself. Writing `dependents.deleted_at: 1`
+// into an exclusion projection would fail the read the way the sort-field
+// auto-include did (Location31253), and it was never needed there.
+func childDeletedAtAutoIncludes(colProj map[string]int, childSDPaths map[string]string, inclusion bool) ([]string, map[string]string) {
 	var autoIncluded []string
 	cleanup := map[string]string{}
 	for docField, sdCol := range childSDPaths {
 		if _, whole := colProj[docField]; whole {
 			continue
 		}
-		if projectionTouchesField(colProj, docField) {
-			autoIncluded = append(autoIncluded, docField+"."+sdCol)
-			cleanup[docField] = sdCol
+		if !projectionTouchesField(colProj, docField) {
+			continue
 		}
+		path := docField + "." + sdCol
+		if inclusion {
+			colProj[path] = 1
+		} else {
+			if _, named := colProj[path]; !named {
+				continue
+			}
+			delete(colProj, path)
+		}
+		autoIncluded = append(autoIncluded, path)
+		cleanup[docField] = sdCol
 	}
 	return autoIncluded, cleanup
 }

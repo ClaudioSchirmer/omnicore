@@ -578,9 +578,17 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 		t.Fatal("the requested leg must attach")
 	}
 	// The decorator needed _id to group the 1:N leg, then restored the
-	// consumer's exclusion.
+	// consumer's exclusion — under BOTH spellings of the identity. The primary
+	// read comes back through MongoViewReader.ReadPage, whose normalizeIdentity
+	// lifts `_id` onto the Go field "ID"; stripping only the store key left the
+	// spelling the Response DTO actually fills, so a composed read served an id
+	// the selection never asked for while the plain view behind the same
+	// selection did not.
 	if _, present := item["_id"]; present {
 		t.Fatal("the _id helper inclusion must be stripped from the wire shape")
+	}
+	if _, present := item[idGoField]; present {
+		t.Fatalf("the Go identity promoted from the _id helper must be stripped too: %#v", item)
 	}
 	// The leg aggregation carried the translated sparse projection; _id stays
 	// as an INCLUSION (queryable — the attach step may group by it), the

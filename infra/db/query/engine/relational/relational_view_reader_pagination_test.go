@@ -325,3 +325,48 @@ func assertTypedCursorRejection(t *testing.T, label string, err error) {
 		t.Errorf("%s: want a SchemaViolationNotification, got %+v", label, notes)
 	}
 }
+
+// TestReadPage_FieldsProjectionWithoutID_WalkAdvances is the relational half of
+// the cross-engine parity guard for a walk whose selection OMITS the identity
+// (?fields=name, a GraphQL selection without id, a gRPC read mask).
+//
+// The Mongo reader pages by KEYSET and puts the stored `_id` in the cursor's
+// trailing tiebreak slot, so a projection that dropped it once produced a
+// cursor over a missing value. This engine pages by OFFSET — the cursor carries
+// a row index, not row values, and the projection is applied in memory AFTER
+// the document is built — so nothing about the selection can reach the cursor.
+// The test pins that: flipping a view's backing between the two engines must
+// not change whether a paged read can be walked, nor the wire shape it serves.
+func TestReadPage_FieldsProjectionWithoutID_WalkAdvances(t *testing.T) {
+	r := pageReaderWith(mkRows(3))
+	ctx := context.Background()
+	crit := queries.ReadCriteria{
+		Limit:      1,
+		OrderBy:    []queries.OrderByField{{Field: "Name"}},
+		Projection: queries.ProjectOnlyPaths("Name"),
+	}
+
+	after := ""
+	for i, want := range []string{"r0", "r1", "r2"} {
+		crit.After = after
+		page, err := r.ReadPage(ctx, "v", crit)
+		if err != nil {
+			t.Fatalf("page %d: %v", i+1, err)
+		}
+		eqNames(t, names(page), want)
+		if _, leaked := page.Items[0]["ID"]; leaked {
+			t.Fatalf("page %d: the identity leaked onto the wire for a Name-only selection: %#v",
+				i+1, page.Items[0])
+		}
+		if i < 2 {
+			if !page.HasNextPage || page.EndCursor == "" {
+				t.Fatalf("page %d: want a next page and an EndCursor, got hasNext=%v cursor=%q",
+					i+1, page.HasNextPage, page.EndCursor)
+			}
+			if page.EndCursor == after {
+				t.Fatalf("page %d: EndCursor repeated the incoming cursor — the walk is stalled", i+1)
+			}
+			after = page.EndCursor
+		}
+	}
+}

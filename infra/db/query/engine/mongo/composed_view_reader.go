@@ -387,6 +387,16 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 
 // stripHelperFields removes the join-key fields ensureJoinKeys added so the
 // items match the consumer's requested projection exactly.
+//
+// The identity leaves under BOTH its spellings. The primary read comes back
+// through MongoViewReader.ReadPage, whose last act is normalizeIdentity: it
+// lifts the store's `_id` onto the Go field "ID" so every layer above speaks
+// one identity vocabulary. Deleting only `_id` therefore stripped the spelling
+// nobody serves and left the one the Response DTO fills — a composed read whose
+// selection did not ask for the id still served it, while the plain view behind
+// the same selection did not. The leg path has no equivalent gap: leg docs are
+// translated by toGoLegDoc (ToGoDoc alone, no normalizeIdentity), and
+// StripJoinKeyID already removes both the key and the mirror-promoted Go field.
 func stripHelperFields(items []map[string]any, s *composedSplit) {
 	if !s.stripID && len(s.stripKeys) == 0 && len(s.stripChildFK) == 0 {
 		return
@@ -394,6 +404,7 @@ func stripHelperFields(items []map[string]any, s *composedSplit) {
 	for _, item := range items {
 		if s.stripID {
 			delete(item, "_id")
+			delete(item, idGoField)
 		}
 		for _, k := range s.stripKeys {
 			delete(item, k)
@@ -492,7 +503,7 @@ func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (p
 		colProj["_id"] = 1
 		stripID = true
 	}
-	return buildProjection(colProj, nil), stripID, nil
+	return buildProjection(colProj), stripID, nil
 }
 
 // attachOne resolves a 1:1 leg: one find({_id: {$in: keys}}) carrying the
