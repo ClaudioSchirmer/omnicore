@@ -33,6 +33,13 @@
                         aggregates from every read, <code>FindByID</code> included), a <code>LeftJoin</code> field must
                         be nullable in Go, one foreign key reaches one table, and every column, child and Go field must
                         exist.</li>
+                    <li><strong>Always in the FROM, never archive-gated.</strong> A root join's columns ride the root
+                        <code>SELECT</code>, so its values cost no second round trip and the field is populated on every
+                        read — one that appeared only when a filter happened to mention it would be blank on the next
+                        call. The traversal is not gated on the archived state of the TARGET: the read scope governs the
+                        roots returned, never the rows reached across into. A <code>LeftJoin</code> with no counterpart
+                        is served as an ABSENCE — nil in the document, nil in the Response DTO's pointer field, omitted
+                        on the wire — never as the zero value.</li>
                 </ul>
             </li>
             <li><strong>Added</strong> — <strong><a href="#relational-view"><code>query.RelationalView(name, loader)</code></a></strong>:
@@ -48,8 +55,11 @@
                 read seam names a store's identity key or its include/exclude convention any more; each engine renders
                 the selection its own way. <em>Migration</em>: <code>Query.ToCriteria</code> and
                 <code>ReadCriteria.Restrict</code> are unaffected — <code>Restrict</code> takes a Go field path and the
-                projection is manipulated behind it. Only a hand-written <code>queries.ViewReader</code> changes,
-                because it produces a <code>queries.Page</code>.</li>
+                projection is manipulated behind it. A hand-written <code>queries.ViewReader</code> changes twice
+                over: it produces a <code>queries.Page</code>, and it now owns its own identity normalization — the
+                application layer no longer lifts a document's <code>_id</code> onto the Go field <code>ID</code>, so a
+                reader whose documents carry only <code>_id</code> must map it itself, the way
+                <code>MongoViewReader</code> does.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong>: <strong><code>core.FieldResolver</code> answers
                 with a <code>core.ResolvedField</code></strong> (column, owning schema, owner, qualifier) instead of a
                 bare column string. A column name alone cannot say whether it needs a table prefix, and a read that
@@ -74,9 +84,13 @@
                 <em>Migration</em>: replace
                 <code>query.View(name).Version(n).Schema(s).RelationalSource(repo.Loader)</code> with
                 <code>query.RelationalView(name, repo.Loader)</code>, and contribute it through
-                <code>RelationalViews()</code> instead of <code>Views()</code>. A converted view leaves its Mongo
-                collection and <code>omnicore_mongo_views</code> row behind — drop both, or the DB-per-service guard
-                reports the collection as foreign (a warning under <code>dev</code>, a boot abort otherwise).</li>
+                <code>RelationalViews()</code> instead of <code>Views()</code>. <strong>Then drop the collection by
+                hand</strong>: the marker's flip used to be a drift decision, so the framework could drop the view's
+                Mongo slots as it recorded the new shape — a <code>RelationalViewDefinition</code> never reaches the
+                SyncEngine at all, so nothing does that for you any more. A converted view leaves its collection and its
+                <code>omnicore_mongo_views</code> row behind, and the DB-per-service guard then reports the collection
+                as foreign: a warning under <code>dev</code>, <strong>a boot abort in every other profile</strong>. Drop
+                both before the service reaches an environment that aborts.</li>
             <li><strong>Removed</strong> — <strong>breaking</strong>: <code>read.RootScanner</code> /
                 <code>read.ChildScanner</code> and <code>WithRootScanner</code> / <code>WithChildScanner</code>. The
                 <a href="#table-schema"><code>TableSchema</code></a> is the single mapping between a row and an entity;

@@ -7,7 +7,7 @@ import (
 )
 
 // TestBuildDocument_SharedBaseFieldsFlattened proves the read-side doc a
-// RelationalSource view over a shared-base ROLE serves carries the BASE's business
+// relational view over a shared-base ROLE serves carries the BASE's business
 // fields flattened under their physical columns — read off the loaded role entity
 // via SharedBaseScanPlan — alongside the role's own fields. Without this the reader
 // could filter by a base field but never return it (the bug the account/user

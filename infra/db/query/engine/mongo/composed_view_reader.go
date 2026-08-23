@@ -333,6 +333,13 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 	if !needsID && len(needKeys) == 0 && len(needChild) == 0 {
 		return
 	}
+	// The split always allocates the primary's path set, and an inclusion that
+	// reaches here with an EMPTY one is meaningful (every path addressed a leg —
+	// see above). A nil one is not a state this reader produces; allocate rather
+	// than let the writes below panic on it.
+	if proj.Paths == nil {
+		proj.Paths = map[string]bool{}
+	}
 	inclusion := proj.Mode == queries.ProjectOnly
 	keeps := func(path string) bool {
 		if inclusion {

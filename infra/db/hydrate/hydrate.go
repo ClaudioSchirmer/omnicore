@@ -11,12 +11,20 @@
 // only output is a map[string]any. It knows nothing about views, projections,
 // collections or documents-at-rest: it does not import query, and it never will.
 //
-// That neutrality is the point. Two read paths need the same aggregate in the
-// same shape — the Mongo projection composer, which hydrates an aggregate and
-// then layers its external embeds on top, and a relational read, which selects
-// root ids and then hydrates them. Sharing this package is what makes the two
-// shapes identical BY CONSTRUCTION rather than by a parity test, while leaving
-// the two read engines with no knowledge of each other.
+// That neutrality is what makes it shareable. Its consumer today is the Mongo
+// projection composer, which hydrates an aggregate here and then layers its
+// external embeds on top; nothing in this package knows that, and nothing in it
+// would have to change to serve a second caller.
+//
+// The relational READ engine is deliberately not that caller. It never selects
+// rows of its own: it hands a criteria to the aggregate loader and maps the
+// LOADED TYPED ENTITY into the same shape (engine/relational.BuildDocument), so
+// the criteria→SQL translation stays in one place. The two therefore produce the
+// same document from two different starting points — a scanned row here, a
+// hydrated entity there — and their agreement is asserted, not structural: see
+// TestRelationalDocParity_RootChildrenManaged, which compares both documents as
+// canonical JSON and fails on any divergence, including a managed column added
+// to a schema later.
 package hydrate
 
 import (

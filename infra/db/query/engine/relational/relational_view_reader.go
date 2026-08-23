@@ -167,6 +167,17 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 	}
 	hashCtx := queries.HashContext(crit.Filter, crit.OrderBy, crit.Search, crit.IncludeArchived)
 
+	// The ordered query is built BEFORE anything is issued, because applySort is
+	// the second half of the capability boundary: a sort naming a 1:N child field
+	// is refused exactly like a filter naming one, and the refusal must cost no
+	// connection. Only the window (offset/limit) is left for later — it is the one
+	// part that needs the resolved cursor.
+	q := scopedQuery(where, crit.IncludeArchived)
+	if err := applySort(v.schema, v.rootJoinFields(), q, crit.OrderBy); err != nil {
+		return queries.Page{}, err
+	}
+	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
+
 	// The listing total, counted under the SAME scoped criteria the OnlyTotal
 	// branch above uses — so `?first=N` and `?onlyTotal=true` report the same
 	// number by construction, exactly as they do on the Mongo reader.
@@ -219,13 +230,6 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 		return queries.Page{TotalCount: total, HasNextPage: win.hasNext, HasPreviousPage: win.hasPrev}, nil
 	}
 
-	q := scopedQuery(where, crit.IncludeArchived)
-	if err := applySort(v.schema, v.rootJoinFields(), q, crit.OrderBy); err != nil {
-		// The buffered channel lets the in-flight count goroutine finish and
-		// be collected without blocking anyone.
-		return queries.Page{}, err
-	}
-	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
 	q.Offset(win.offset).Limit(win.fetchLimit)
 
 	ents, err := v.loader.FindAllEntities(ctx, q)

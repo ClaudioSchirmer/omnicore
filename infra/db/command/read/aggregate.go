@@ -160,12 +160,19 @@ func (a *FloatAgg) absorb(v any) error {
 	return nil
 }
 
+// aggExpr renders one aggregate call over a resolved field. The column goes
+// through qualifyCol — the same rendering the WHERE, the ORDER BY and
+// AggregateBy's grouping keys use — because a field resolved across a declared
+// read join carries a Qualifier: two joined aggregates may both have a "nome",
+// and an unqualified one is ambiguous in a FROM that holds both. The anchor id
+// needs no qualification here (an aggregate never names it: Count renders
+// COUNT(*)), so the id pair is passed empty.
 func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect) (string, error) {
 	rf, ok := resolve(goField)
 	if !ok {
 		return "", fmt.Errorf("aggregate: unknown field %q (not a persisted field of the entity)", goField)
 	}
-	return fn + "(" + dialect.QuoteIdent(rf.Column) + ")", nil
+	return fn + "(" + qualifyCol(rf, "", "", dialect) + ")", nil
 }
 
 // Aggregate executes ONE SELECT computing every requested spec over the same

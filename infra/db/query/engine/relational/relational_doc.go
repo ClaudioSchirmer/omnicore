@@ -214,11 +214,12 @@ func timeValue(t *time.Time) any {
 	return *t
 }
 
-// idColumnValue renders a domain.ID under an id/parentID column. The exact form
-// the Composer stores (raw driver value vs canonical string, per-dialect id
-// codecs like MySQL BINARY(16)) is pinned by the parity integration test across
-// all four engines; this canonical-string form is the starting point the test
-// confirms or corrects.
+// idColumnValue renders a domain.ID under an id/parentID column, in its canonical
+// string form. The Composer reaches the same value from the other side — a raw
+// driver value put through the dialect's id codec (MySQL's BINARY(16) among
+// them) — and the two are held equal by TestRelationalDocParity_RootChildrenManaged.
+// That test runs under `integration && postgres`, so the agreement is proven on
+// Postgres and taken on the codecs' word elsewhere.
 func idColumnValue(id domain.ID) any {
 	return id.String()
 }

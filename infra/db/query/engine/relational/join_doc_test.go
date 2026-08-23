@@ -253,3 +253,41 @@ func TestCopyGoFields_SkipsWhatItCannotRead(t *testing.T) {
 		t.Errorf("a readable field must be copied, got %v", doc)
 	}
 }
+
+// A LEFT JOIN with no counterpart reads back as a nil pointer on the entity. The
+// document must carry a PLAIN nil — present-with-nil, the same shape every other
+// NULL in it takes — never the typed nil the field holds. A typed nil survives
+// into the Result fill as "a value that exists", which is how "there is no
+// counterpart" turns into an empty string on the wire.
+func TestCopyGoFields_NullPointerBecomesAPlainNil(t *testing.T) {
+	doc := map[string]any{}
+	copyGoFields(doc, &joinNullable{}, []string{"CarrierCode"})
+	v, present := doc["CarrierCode"]
+	if !present {
+		t.Fatalf("a NULL join field must still be PRESENT in the document, got %v", doc)
+	}
+	if v != nil {
+		t.Fatalf("a NULL join field must be a plain nil, got %#v", v)
+	}
+}
+
+// The non-nil twin is copied as the pointer it is — the reader does not flatten
+// a value the consumer's Result may well declare as a pointer too.
+func TestCopyGoFields_NonNullPointerIsCopied(t *testing.T) {
+	code := "DHL"
+	doc := map[string]any{}
+	copyGoFields(doc, &joinNullable{CarrierCode: &code}, []string{"CarrierCode"})
+	got, ok := doc["CarrierCode"].(*string)
+	if !ok || got == nil || *got != "DHL" {
+		t.Fatalf("a present join field must be copied, got %#v", doc["CarrierCode"])
+	}
+}
+
+// joinNullable carries the pointer field a LeftJoin declaration requires.
+type joinNullable struct {
+	domain.AggregateRoot
+	CarrierCode *string
+}
+
+func (e *joinNullable) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
+func (e *joinNullable) BuildRules(string, domain.Service, *domain.Rules) {}

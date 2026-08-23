@@ -309,8 +309,9 @@ g.Get("/", func(c fiber.Ctx) error {
         "Manual" means controlling the <em>wiring</em>, not re-implementing primitives the framework already
         ships. A manual read walks the same two steps the canonical one does, in the same order:
         <code>fwqueries.ResultFromDoc</code> fills the typed Result from the canonical document
-        (name-based, <code>ID ← _id</code> fallback, nil→empty-slice normalization, enum convergence)
-        and the Query's <code>FromQueryResult</code> hook adjusts it; then
+        (name-based — the identity is the Go field <code>ID</code> like any other, no store key in sight —
+        with nil→empty-slice normalization and enum convergence) and the Query's
+        <code>FromQueryResult</code> hook adjusts it; then
         <code>Resp{}.FromResult</code> — over <code>fwresponses.Map[Resp]</code> — names the wire.
         Hand-rolling a mapper that walks <code>doc["id"]</code>, <code>doc["name"]</code>, … rewrites both
         for no gain. Write <code>FromResult</code> by hand only when the wire shape needs more than the

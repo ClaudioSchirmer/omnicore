@@ -1116,3 +1116,27 @@ func TestChildElems_NormalizesBothArrayShapes(t *testing.T) {
 }
 
 func (cvrLine) CollectionName() string { return "CvrLines" }
+
+// A Projection is a PUBLIC struct: a hand-written surface can hand this reader a
+// mode with no path set, a state the split itself never produces. The join keys
+// still have to be written, so the selection must gain a path set rather than
+// panic on a nil map.
+func TestEnsureJoinKeys_ToleratesANilPathSet(t *testing.T) {
+	rt := &composedRuntime{
+		legs: []*legRuntime{{
+			link:   query.ComposedLink{ParentKeyGoField: "_id"},
+			segKey: "Seg",
+		}},
+	}
+	s := &composedSplit{
+		primary:  queries.ReadCriteria{Projection: queries.Projection{Mode: queries.ProjectOnly}},
+		fetchLeg: map[string]bool{"Seg": true},
+	}
+	ensureJoinKeys(rt, s)
+	if !s.primary.Projection.Selects("ID") {
+		t.Fatalf("the join key must be added to the selection, got %#v", s.primary.Projection)
+	}
+	if !s.stripID {
+		t.Error("a key the consumer did not ask for must be recorded for stripping")
+	}
+}

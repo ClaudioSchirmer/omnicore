@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
@@ -300,6 +302,23 @@ func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
 	proj, wireSet, bad, ok := ParseProjection([]string{"a", "b"}, nil)
 	if !ok || bad != "" || len(proj.Paths) != 2 || !wireSet["a"] {
 		t.Fatalf("nil-schema projection = (%v,%v,%q,%v)", proj, wireSet, bad, ok)
+	}
+}
+
+// Tokens that are all blank name nothing, and "named nothing" must come back as
+// the SAME value "named no fields" does. A ProjectOnly carrying no path is a
+// state where Mode and Narrows disagree, and every reader below the seam branches
+// on one or the other.
+func TestParseProjection_AllBlankTokensIsTheWholeDocument(t *testing.T) {
+	proj, _, bad, ok := ParseProjection([]string{"  ", ""}, nil)
+	if !ok || bad != "" {
+		t.Fatalf("blank tokens must not be a violation, got bad=%q ok=%v", bad, ok)
+	}
+	if proj.Narrows() {
+		t.Errorf("a selection naming nothing must not narrow, got %v", proj)
+	}
+	if proj.Mode != queries.ProjectAll {
+		t.Errorf("mode = %v, want ProjectAll — Mode and Narrows must agree", proj.Mode)
 	}
 }
 

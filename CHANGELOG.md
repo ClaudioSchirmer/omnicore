@@ -33,6 +33,15 @@ with `1.0.0`.
   repository holds a schema with no loader in sight. The `TableSchema` is
   untouched, so a projected view over the same entity is unaffected.
 
+  A root join is ALWAYS in the FROM and its columns ride the root SELECT, so the
+  values cost no second round trip and the field is populated on every read — one
+  that appeared only when a filter happened to mention it would be blank on the
+  next call. The join is not gated on the archived state of the TARGET: it answers
+  "what is on the other side of this foreign key", and the read scope governs the
+  roots returned, never the rows reached across into. A `LeftJoin` with no
+  counterpart is served as an ABSENCE, not as the zero value — nil in the
+  document, nil in the Response DTO's pointer field, omitted on the wire.
+
   Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
   nullable one would silently drop aggregates from every read, `FindByID`
   included), a `LeftJoin` field must be nullable in Go, one foreign key reaches
@@ -70,8 +79,12 @@ with `1.0.0`.
 
   *Migration*: `Query.ToCriteria` and `ReadCriteria.Restrict` are unaffected —
   `Restrict` takes a Go field path and returns an error, and the projection is
-  manipulated behind it. Only a hand-written `queries.ViewReader` implementation
-  changes, because it produces a `queries.Page`.
+  manipulated behind it. A hand-written `queries.ViewReader` implementation
+  changes twice over: it produces a `queries.Page`, and it now owns its own
+  identity normalization. The application layer no longer lifts a document's
+  `_id` onto the Go field `ID` — a store's key name stopped being something a
+  layer above the read seam knows — so a reader whose documents carry only `_id`
+  must map it to `ID` itself, the way `MongoViewReader` does.
 
 - **breaking**: **`core.FieldResolver` now answers with a `core.ResolvedField`**
   (column, owning schema, owner, qualifier) instead of a bare column string. A
@@ -106,10 +119,16 @@ with `1.0.0`.
 
   *Migration*: replace `query.View(name).Version(n).Schema(s).RelationalSource(repo.Loader)`
   with `query.RelationalView(name, repo.Loader)`, and contribute it through
-  `RelationalViews()` instead of `Views()`. A converted view leaves its Mongo
-  collection and `omnicore_mongo_views` row behind — drop both, or the
-  DB-per-service guard reports the collection as foreign (a warning under `dev`,
-  a boot abort otherwise).
+  `RelationalViews()` instead of `Views()`.
+
+  **Then drop the collection by hand.** The marker's flip used to be a drift
+  decision, so the framework could drop the view's Mongo slots as it recorded the
+  new shape; a `RelationalViewDefinition` never reaches the SyncEngine at all, so
+  nothing does that for you any more. A converted view leaves its collection and
+  its `omnicore_mongo_views` row behind, and the DB-per-service guard then reports
+  the collection as foreign — a warning under the `dev` profile, **a boot abort in
+  every other**. Drop the collection and delete the registry row as part of the
+  conversion, before the service reaches an environment that aborts.
 
 - **breaking**: **`read.RootScanner` / `read.ChildScanner` and
   `WithRootScanner` / `WithChildScanner`.** The `TableSchema` is the single

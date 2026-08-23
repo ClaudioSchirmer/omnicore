@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -20,15 +21,21 @@ import (
 type fakeLoader struct {
 	table      string
 	findCalled bool
+	// countCalled is atomic: the listing total is counted on its own goroutine,
+	// so a plain bool would be a data race under -race.
+	countCalled atomic.Bool
 }
 
 func (f *fakeLoader) FindAllEntities(context.Context, *criteria.Query) ([]domain.Entity, error) {
 	f.findCalled = true
 	return nil, nil
 }
-func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
-func (f *fakeLoader) Schema() *core.TableSchema                                     { return guardSchema(f.table) }
-func (f *fakeLoader) JoinFields() map[string][]string                               { return nil }
+func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) {
+	f.countCalled.Store(true)
+	return 0, nil
+}
+func (f *fakeLoader) Schema() *core.TableSchema       { return guardSchema(f.table) }
+func (f *fakeLoader) JoinFields() map[string][]string { return nil }
 
 // guardEnt is a minimal entity — enough to build an AggregateLoader over a schema
 // without a database: the declaration only ever reads the loader's schema.
@@ -197,7 +204,7 @@ func managedSchema(table string) *core.TableSchema {
 //
 // `OrderBy: CreatedAt desc` written by a Query's ToCriteria is the most ordinary
 // default ordering there is; it worked on the Mongo projection and answered 400
-// on the RelationalSource twin. Which field a consumer may address is the
+// on the relational twin. Which field a consumer may address is the
 // Request DTO's business (and the dev's, through ToCriteria) — never the
 // backing's.
 func TestServableManagedColumns_Passes(t *testing.T) {
@@ -363,5 +370,53 @@ func TestReadPage_BypassMaxLimit(t *testing.T) {
 	}
 	if !fake.findCalled {
 		t.Error("BypassMaxLimit must let the load run")
+	}
+}
+
+// The capability boundary is BOTH halves of the read vocabulary, and both are
+// answered before any IO: a filter naming a 1:N child field is refused by toExpr,
+// a SORT naming one by applySort. The sort half is the one that has to be checked
+// deliberately, because the listing total is counted concurrently with the page
+// fetch — a refusal raised after that goroutine started would still have spent a
+// connection on a request the reader was always going to reject.
+func TestReadPage_UnsupportedSortRefusesBeforeAnyIO(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(0, fake)
+
+	_, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{
+		OrderBy: []queries.OrderByField{{Field: "Parts.Label"}},
+	})
+	if err == nil {
+		t.Fatal("a sort on a 1:N child field must be refused")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("the refusal must be a NotificationCarrier (→400), got %T", err)
+	}
+	msg := carrier.NotificationContexts()[0].Messages()[0]
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "UnsupportedCapabilityNotification" {
+		t.Errorf("notification = %q, want UnsupportedCapabilityNotification", got)
+	}
+	if fake.findCalled {
+		t.Error("the refusal must precede the page fetch")
+	}
+	if fake.countCalled.Load() {
+		t.Error("the refusal must precede the count — it costs no connection")
+	}
+}
+
+// The filter half of the same boundary, stated beside it.
+func TestReadPage_UnsupportedFilterRefusesBeforeAnyIO(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(0, fake)
+
+	_, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{
+		Filter: map[string]any{"Parts.Label": "x"},
+	})
+	if err == nil {
+		t.Fatal("a filter on a 1:N child field must be refused")
+	}
+	if fake.findCalled || fake.countCalled.Load() {
+		t.Error("the refusal must precede every query")
 	}
 }

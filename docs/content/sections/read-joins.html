@@ -155,6 +155,28 @@
     Each traversal is rendered under its own alias derived from the foreign key, so two joins may reach the
     <strong>same table</strong> — a billing and a shipping address both to <code>customers</code> — without colliding.
     That is also why one foreign key reaches one table: two joins sharing a key are refused at construction.
+    Everything resolved through a join reaches the statement under that alias — the <code>WHERE</code>, the
+    <code>ORDER BY</code>, and the aggregate DSL's expressions and grouping keys alike — because two aggregates may
+    perfectly well both have a <code>name</code>, and the joined side has no uniqueness guarantee against the anchor's
+    columns the way a sibling or a shared base does.
+</p>
+
+<h3>What a NULL means, and what archived means</h3>
+<p>
+    A <code>LeftJoin</code> with no counterpart is an <strong>absence</strong>, and it stays one all the way out: the
+    column reads as <code>NULL</code>, the Go field stays <code>nil</code>, the served document carries
+    <code>nil</code> under that name, and a Response DTO's pointer field stays <code>nil</code> so the wire omits it.
+    That is the whole reason the framework insists on a pointer for a left join — a non-nullable field would report a
+    blank name where the truth is "there is no counterpart", and the two are not the same answer.
+</p>
+<p>
+    A join is <strong>not gated on the archived state of the target</strong>. It answers "what is on the other side of
+    this foreign key", and a soft-deleted counterpart is still what the key points at: an archived
+    <code>Customer</code> keeps supplying <code>CustomerName</code>, and an <code>InnerJoin</code> keeps matching it.
+    The read scope (<code>?includeArchived</code>, the criteria's <code>Scope</code>) governs which <em>roots</em> a
+    read returns; it never governs the rows a declared traversal reaches across into. Where an archived counterpart
+    must disappear from the answer, the honest expression is a filter the criteria states, not a join that silently
+    drops rows.
 </p>
 
 <h3>Boot validation</h3>

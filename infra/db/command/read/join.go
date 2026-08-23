@@ -59,9 +59,21 @@ type JoinField struct {
 	Column  string
 }
 
-// Join is one declared traversal. It is INERT until a criteria names one of its
-// fields (root joins) or the aggregate is loaded (child joins): no SQL JOIN is
-// emitted for a traversal nobody used, so declaring one costs nothing per read.
+// Join is one declared traversal.
+//
+// A ROOT join is ALWAYS in the FROM, and its columns ride the root SELECT — so
+// its values cost no second round trip, and the field is trustworthy: one that
+// appeared only when some filter happened to mention it would leave the same
+// entity populated on one call and blank on the next. The cost is a real join on
+// every read through this loader, FindByID included; declare one because the
+// aggregate genuinely reads that way, not "just in case".
+//
+// A CHILD join rides the child's own batched SELECT, on the same terms.
+//
+// Neither is gated on the archived state of the TARGET. A join answers "what is
+// on the other side of this foreign key", and a soft-deleted counterpart is
+// still what the key points at — the read scope governs the roots this loader
+// returns, never the rows it reaches across into.
 type Join struct {
 	Kind JoinKind
 	// Child is the aggregate child this join hangs off, or nil when it hangs off

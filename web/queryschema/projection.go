@@ -234,6 +234,15 @@ func ParseProjection(tokens []string, projSchema *ProjectionSchema) (proj querie
 		proj.Paths[docPath] = true
 		wireSet[t] = true
 	}
+	if len(proj.Paths) == 0 {
+		// Every token was blank. "Selected nothing" and "declared no selection"
+		// must not be two different values: the whole read side reads an EMPTY
+		// selection as the whole document (Projection.Narrows), so the mode has to
+		// say so too — a ProjectOnly carrying no path is a state where Mode and
+		// Narrows disagree, and a reader branching on either one gets a different
+		// answer.
+		return queries.Projection{}, wireSet, "", true
+	}
 	return proj, wireSet, "", true
 }
 

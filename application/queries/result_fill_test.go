@@ -202,6 +202,54 @@ func TestFill_NilAndEmptyDoc(t *testing.T) {
 	}
 }
 
+// A NULL read off a LOADED ENTITY arrives as a TYPED nil pointer inside the any
+// — the shape a left join with no counterpart produces. It must land exactly as
+// an untyped nil does: the field untouched. Allocating through it would settle a
+// pointer Result field at its zero value, so "there is no counterpart" would
+// reach the wire as an empty string.
+func TestFill_TypedNilPointerIsAbsence(t *testing.T) {
+	var missing *string
+	doc := map[string]any{"Name": "ada", "Alias": missing, "Origin": missing}
+	got := ResultFromDoc[fillNilResult](doc)
+	if got.Name != "ada" {
+		t.Fatalf("the present field must still fill, got %q", got.Name)
+	}
+	if got.Alias != nil {
+		t.Errorf("a typed nil must leave a pointer field nil, got %q", *got.Alias)
+	}
+	if got.Origin != "" {
+		t.Errorf("a typed nil must leave a value field zero, got %q", got.Origin)
+	}
+}
+
+// The non-nil twin still fills, so the guard above rejects absence only.
+func TestFill_NonNilPointerValueFills(t *testing.T) {
+	v := "ali"
+	got := ResultFromDoc[fillNilResult](map[string]any{"Alias": &v, "Origin": &v})
+	if got.Alias == nil || *got.Alias != "ali" {
+		t.Errorf("a pointed-to value must fill a pointer field, got %v", got.Alias)
+	}
+	if got.Origin != "ali" {
+		t.Errorf("a pointed-to value must fill a value field, got %q", got.Origin)
+	}
+}
+
+// A typed nil fills the same way through the JSON round-trip the direct fill
+// mirrors — the parity this guard restores, stated as its own assertion.
+func TestFill_TypedNilParityWithLegacyRoundTrip(t *testing.T) {
+	var missing *string
+	doc := map[string]any{"Name": "ada", "Alias": missing, "Origin": missing}
+	if got, want := ResultFromDoc[fillNilResult](doc), legacyResultFromDoc[fillNilResult](doc); got != want {
+		t.Fatalf("direct fill diverged from the JSON round-trip:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+type fillNilResult struct {
+	Name   string
+	Alias  *string
+	Origin string
+}
+
 // The filler knows ONE identity spelling: the Go field "ID". A store's own key
 // name never reaches this layer — settling it is the read engine's job — so a
 // stray one is just another unmapped document entry.

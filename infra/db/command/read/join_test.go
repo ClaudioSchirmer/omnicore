@@ -132,7 +132,8 @@ func TestWithJoins_SkipsNilBindings(t *testing.T) {
 	}
 }
 
-// A join is INERT until used: declaring one changes nothing about the schema.
+// Declaring a join leaves the TableSchema alone — that is what keeps a join off
+// every write and out of a projected view of the same entity.
 func TestWithJoins_LeavesTheSchemaUntouched(t *testing.T) {
 	schema := joinOrderSchema()
 	before := len(schema.ReadColumns())
@@ -451,6 +452,65 @@ func TestWithJoins_RejectsTwoJoinsOnTheSameFK(t *testing.T) {
 			LeftJoin(joinTargetSchema("outros")).On("carrier_id").Field("CarrierCode", "nome"),
 		)
 	})
+}
+
+// ─── the aggregate DSL over a joined column ──────────────────────────────────
+
+// aggCapturedSQL records the single statement an Aggregate/AggregateBy call
+// issues against a fake engine.
+func aggCapturedSQL(t *testing.T, l *AggregateLoader[*joinOrder], run func(*AggregateLoader[*joinOrder]) error) string {
+	t.Helper()
+	var seen string
+	l.eng = fakeEngine(func(sql string, _ []any) (Rows, error) {
+		if seen == "" {
+			seen = sql
+		}
+		return &fakeDBRows{}, nil
+	})
+	if err := run(l); err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	return seen
+}
+
+// An aggregate OVER a joined column must be alias-qualified like every other
+// resolution. The fixture's two joins both map a column called "nome", so an
+// unqualified MAX(nome) is ambiguous in a FROM that holds both — the backend
+// rejects the statement outright.
+func TestDeclaredJoin_AggregateResolvesQualified(t *testing.T) {
+	sql := aggCapturedSQL(t, joinedLoader(t), func(l *AggregateLoader[*joinOrder]) error {
+		return l.Aggregate(context.Background(), criteria.Where(nil), MaxInt("CustomerName"))
+	})
+	if !strings.Contains(sql, "MAX(j_customer_id.nome)") {
+		t.Errorf("the aggregate expression must resolve to the alias-qualified column:\n%s", sql)
+	}
+}
+
+// The grouping key and the aggregate expression of the SAME call resolve through
+// one rule — a statement qualifying one and not the other is the drift this
+// pins.
+func TestDeclaredJoin_AggregateByResolvesBothHalvesQualified(t *testing.T) {
+	sql := aggCapturedSQL(t, joinedLoader(t), func(l *AggregateLoader[*joinOrder]) error {
+		_, err := l.AggregateBy(context.Background(), criteria.Where(nil), By("Code"), MaxInt("CarrierCode"))
+		return err
+	})
+	if !strings.Contains(sql, "MAX(j_carrier_id.nome)") {
+		t.Errorf("the aggregate expression must be alias-qualified:\n%s", sql)
+	}
+	if !strings.Contains(sql, "GROUP BY code") {
+		t.Errorf("an anchor grouping key stays unqualified:\n%s", sql)
+	}
+}
+
+// An anchor column keeps resolving unqualified — the sibling/base bijection makes
+// it unambiguous, and qualifying it would be noise.
+func TestAggregate_AnchorColumnStaysUnqualified(t *testing.T) {
+	sql := aggCapturedSQL(t, joinedLoader(t), func(l *AggregateLoader[*joinOrder]) error {
+		return l.Aggregate(context.Background(), criteria.Where(nil), MaxInt("Code"))
+	})
+	if !strings.Contains(sql, "MAX(code)") {
+		t.Errorf("an anchor column needs no qualifier:\n%s", sql)
+	}
 }
 
 // ─── the child SELECT ────────────────────────────────────────────────────────

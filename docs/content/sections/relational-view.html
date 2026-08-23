@@ -227,7 +227,10 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
     <strong>Wire-compatible by design.</strong> The offset is encoded in a cursor tuple padded to the same length the
     keyset wire layer validates (<code>len(tuple) − 1 == number of sort fields</code>), so the identical
     <code>after</code>/<code>before</code> contract round-trips on every surface — the consumer never sees the
-    difference. A <code>before</code> or bare-backward page pays one extra <code>COUNT</code>; forward pages do not.
+    difference. Every page runs a <code>COUNT</code> — the envelope carries the full match count, not the page size —
+    but a forward page runs it <strong>concurrently</strong> with the row fetch, so it costs no extra round trip in
+    wall-clock terms. A bare-backward page (<code>last:N</code> with no cursor) is the one that has to serialize: its
+    offset is anchored ON the total, so the count must land before the window is even known.
 </p>
 
 <h3>No version, no drift, no rebuild</h3>
@@ -252,11 +255,13 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
 </ul>
 
 <div class="box warn">
-    <strong>Converting an existing Mongo view leaves its collection behind.</strong> Changing a declaration from
+    <strong>Converting an existing Mongo view: drop its collection by hand.</strong> Changing a declaration from
     <code>query.View(...)</code> to <code>query.RelationalView(...)</code> removes the name from the projected set, so
-    the framework no longer claims that collection. The DB-per-service guard then sees it as <em>foreign</em> — a
-    <code>warn</code> under the <code>dev</code> profile, a <strong>boot abort</strong> in every other. Drop the
-    collection (and its <code>omnicore_mongo_views</code> row) as part of the conversion. Converting the other way needs
-    no special step: a Mongo view with no registry row over a populated table resolves to
-    <code>DriftFreshBackfill</code>, which rebuilds and backfills the pre-existing history.
+    the framework no longer claims that collection — and, because a <code>RelationalViewDefinition</code> never reaches
+    the SyncEngine at all, nothing cleans it up for you either. The DB-per-service guard then sees the collection as
+    <em>foreign</em>: a <code>warn</code> under the <code>dev</code> profile, a <strong>boot abort</strong> in every
+    other. So the conversion is two steps, not one — change the declaration, then drop the collection and delete its
+    <code>omnicore_mongo_views</code> row — and the second step has to happen before the service reaches an environment
+    that aborts, not after. Converting the other way needs no special step: a Mongo view with no registry row over a
+    populated table resolves to <code>DriftFreshBackfill</code>, which rebuilds and backfills the pre-existing history.
 </div>
