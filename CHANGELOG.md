@@ -45,7 +45,8 @@ with `1.0.0`.
   "what is on the other side of this foreign key", and the read scope governs the
   roots returned, never the rows reached across into. A `LeftJoin` with no
   counterpart is served as an ABSENCE, not as the zero value — nil in the
-  document, nil in the Response DTO's pointer field, omitted on the wire.
+  document, nil in the Response DTO's pointer field, `null` on the wire (absent
+  entirely where the Response declares `,omitempty`).
 
   Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
   nullable one would silently drop aggregates from every read, `FindByID`

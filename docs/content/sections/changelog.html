@@ -44,8 +44,9 @@
                         read — one that appeared only when a filter happened to mention it would be blank on the next
                         call. The traversal is not gated on the archived state of the TARGET: the read scope governs the
                         roots returned, never the rows reached across into. A <code>LeftJoin</code> with no counterpart
-                        is served as an ABSENCE — nil in the document, nil in the Response DTO's pointer field, omitted
-                        on the wire — never as the zero value.</li>
+                        is served as an ABSENCE — nil in the document, nil in the Response DTO's pointer field, and
+                        <code>null</code> on the wire (absent entirely where the Response declares
+                        <code>,omitempty</code>) — never the zero value.</li>
                 </ul>
             </li>
             <li><strong>Added</strong> — <strong><a href="#relational-view"><code>query.RelationalView(name, loader)</code></a></strong>:

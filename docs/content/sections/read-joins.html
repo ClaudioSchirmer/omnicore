@@ -183,7 +183,10 @@
 <p>
     A <code>LeftJoin</code> with no counterpart is an <strong>absence</strong>, and it stays one all the way out: the
     column reads as <code>NULL</code>, the Go field stays <code>nil</code>, the served document carries
-    <code>nil</code> under that name, and a Response DTO's pointer field stays <code>nil</code> so the wire omits it.
+    <code>nil</code> under that name, and a Response DTO's pointer field stays <code>nil</code> — so the wire
+    carries <code>null</code>, or nothing at all where the Response declares <code>,omitempty</code> (which the
+    <code>?fields=</code> contract <a href="#auto-query-handlers">boot-enforces on every field</a>). Either way it is
+    not the zero value, which is the distinction that matters.
     That is the whole reason the framework insists on a pointer for a left join — a non-nullable field would report a
     blank name where the truth is "there is no counterpart", and the two are not the same answer.
 </p>
