@@ -327,7 +327,16 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		// foreign collections, warns in dev / aborts otherwise. Runs
 		// before ApplyMongoSpecs so a guard failure short-circuits
 		// before any write touches the cluster.
-		if err := mongo.CheckServiceRegistry(ctx, deps.Mongo, cfg.Service, cfg.Profile, views); err != nil {
+		//
+		// The claimed set is BOTH kinds of collection this service owns: the
+		// declared views and the local mirror each resolved upstream
+		// subscription materializes. A mirror is written by the framework into
+		// this service's own database on this service's behalf — leaving it out
+		// reported a service's own data as another tenant's residue, which is a
+		// warn in dev and an ABORT in every other profile, so a service carrying
+		// an upstreamSubscriptions block could not boot outside dev.
+		if err := mongo.CheckServiceRegistry(ctx, deps.Mongo, cfg.Service, cfg.Profile, views,
+			upstreamCollectionNames(upstreamSubs)); err != nil {
 			return fmt.Errorf("bootstrap: mongo registry guard: %w", err)
 		}
 

@@ -45,8 +45,17 @@ type serviceMarker struct {
 // CheckServiceRegistry enforces the DB-per-service boundary at boot. The
 // service writes a marker document under RegistryCollectionName, then
 // lists every collection in the database and confirms the set matches
-// what the framework expects to manage: the declared views, the
-// registry itself, and the implicit `system.*` namespace Mongo owns.
+// what the framework expects to manage: the declared views, the local
+// mirrors the declared upstream subscriptions materialize, the registry
+// itself, and the implicit `system.*` namespace Mongo owns.
+//
+// upstreamCollections is that second group — one name per declared
+// upstreamSubscriptions entry. A mirror is written by the framework, on
+// this service's behalf, into this service's own database: it is claimed
+// exactly like a view's collection, and omitting it would report a
+// service's own data as another tenant's residue. It carries no
+// blue-green slots — no registry row resolves it, so the subscriber only
+// ever writes the bare name.
 //
 // Foreign collections (anything outside that set) signal that the
 // database is shared with another service OR carries residue from a
@@ -69,6 +78,7 @@ func CheckServiceRegistry(
 	serviceName string,
 	profile string,
 	views []*query.ViewDefinition,
+	upstreamCollections []string,
 ) error {
 	if serviceName == "" {
 		return fmt.Errorf("CheckServiceRegistry: serviceName must not be empty")
@@ -78,7 +88,7 @@ func CheckServiceRegistry(
 		return fmt.Errorf("upsert service marker: %w", err)
 	}
 
-	foreign, otherServices, err := scanForeignCollections(ctx, m, serviceName, views)
+	foreign, otherServices, err := scanForeignCollections(ctx, m, serviceName, views, upstreamCollections)
 	if err != nil {
 		return fmt.Errorf("scan collections: %w", err)
 	}
@@ -137,7 +147,7 @@ func decideForeignResponse(ctx context.Context, serviceName, database, profile s
 // the boot a second time, for a different reason).
 func foreignCollectionsDiagnostic(serviceName, database string, foreign []string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "service %q: database %q holds %d collection(s) that no declared view claims: %s\n\n",
+	fmt.Fprintf(&sb, "service %q: database %q holds %d collection(s) that no declaration of this service claims: %s\n\n",
 		serviceName, database, len(foreign), strings.Join(foreign, ", "))
 
 	sb.WriteString("The usual cause is that the read model's DECLARATION IS NO LONGER IN THIS BUILD — its\n")
@@ -164,7 +174,9 @@ func foreignCollectionsDiagnostic(serviceName, database string, foreign []string
 	sb.WriteString("     this one; the DB-per-service boundary is what this guard exists to hold.\n\n")
 
 	sb.WriteString("  C. Re-declare it, if the read model is still supposed to be served: contribute the\n")
-	sb.WriteString("     query.View(...) again from a ReadableFeature's Views().\n")
+	sb.WriteString("     query.View(...) again from a ReadableFeature's Views() — or, for a mirror of\n")
+	sb.WriteString("     another service's data, the upstreamSubscriptions entry whose collection: names\n")
+	sb.WriteString("     it. A subscription claims its local collection exactly like a view does.\n")
 	return sb.String()
 }
 
@@ -211,7 +223,8 @@ func upsertServiceMarker(ctx context.Context, m *MongoDB, serviceName string) er
 // returns:
 //
 //   - foreign: collections outside the "framework-managed" set (declared
-//     views + registry + system.* namespace).
+//     views + upstream-subscription mirrors + registry + system.*
+//     namespace).
 //   - otherServices: distinct _id values present in
 //     RegistryCollectionName other than this service. Logged
 //     unconditionally so operators are aware the database carries
@@ -225,12 +238,13 @@ func scanForeignCollections(
 	m *MongoDB,
 	serviceName string,
 	views []*query.ViewDefinition,
+	upstreamCollections []string,
 ) (foreign []string, otherServices []string, err error) {
 	names, err := m.db.ListCollectionNames(ctx, bson.M{})
 	if err != nil {
 		return nil, nil, err
 	}
-	foreign = filterForeignCollections(names, views)
+	foreign = filterForeignCollections(names, views, upstreamCollections)
 	otherServices, err = listOtherServices(ctx, m, serviceName)
 	if err != nil {
 		return foreign, nil, err
@@ -239,12 +253,13 @@ func scanForeignCollections(
 }
 
 // filterForeignCollections is the pure subset of scanForeignCollections:
-// given the observed collection names and the declared views, return
-// the names outside the framework-managed set (declared views +
-// framework-owned collections + `system.*` namespace). Output is sorted
-// for deterministic error / log diagnostics.
-func filterForeignCollections(observed []string, views []*query.ViewDefinition) []string {
-	declared := make(map[string]struct{}, len(views)*3+1)
+// given the observed collection names, the declared views and the local
+// mirrors the declared upstream subscriptions materialize, return the
+// names outside the framework-managed set (those two + framework-owned
+// collections + `system.*` namespace). Output is sorted for
+// deterministic error / log diagnostics.
+func filterForeignCollections(observed []string, views []*query.ViewDefinition, upstreamCollections []string) []string {
+	declared := make(map[string]struct{}, len(views)*3+len(upstreamCollections)+1)
 	for _, v := range views {
 		// A view can physically live in the bare <view> OR either blue-green slot
 		// (<view>__0 / <view>__1). Whitelist all three, or the guard flags the
@@ -252,6 +267,16 @@ func filterForeignCollections(observed []string, views []*query.ViewDefinition) 
 		for _, name := range query.PhysicalCollectionNames(v.Name()) {
 			declared[name] = struct{}{}
 		}
+	}
+	// An upstream mirror is claimed under its bare name only: it has no
+	// omnicore_mongo_views row, so the resolver never points it at a slot and the
+	// subscriber writes nowhere else. Whitelisting slots it cannot own would only
+	// hide residue.
+	for _, name := range upstreamCollections {
+		if name == "" {
+			continue
+		}
+		declared[name] = struct{}{}
 	}
 	for _, name := range frameworkOwnedCollections() {
 		declared[name] = struct{}{}

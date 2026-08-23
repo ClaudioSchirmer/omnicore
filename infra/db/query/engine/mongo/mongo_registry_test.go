@@ -22,7 +22,7 @@ func TestFilterForeignCollections_AllDeclared_Empty(t *testing.T) {
 		query.View("users"),
 		query.View("orders"),
 	}
-	got := filterForeignCollections([]string{"users", "orders"}, views)
+	got := filterForeignCollections([]string{"users", "orders"}, views, nil)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] when every observed collection is declared", got)
 	}
@@ -33,12 +33,12 @@ func TestFilterForeignCollections_AllDeclared_Empty(t *testing.T) {
 // view's own active/shadow collection.
 func TestFilterForeignCollections_SlotsAreNotForeign(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("gadgets")}
-	got := filterForeignCollections([]string{"gadgets", "gadgets__0", "gadgets__1"}, views)
+	got := filterForeignCollections([]string{"gadgets", "gadgets__0", "gadgets__1"}, views, nil)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] — a view's own slots must not be flagged foreign", got)
 	}
 	// A genuinely foreign slot (of an undeclared view) is still flagged.
-	got = filterForeignCollections([]string{"gadgets__0", "orders__0"}, views)
+	got = filterForeignCollections([]string{"gadgets__0", "orders__0"}, views, nil)
 	if len(got) != 1 || got[0] != "orders__0" {
 		t.Errorf("got %v, want [orders__0] (an undeclared view's slot is still foreign)", got)
 	}
@@ -46,7 +46,7 @@ func TestFilterForeignCollections_SlotsAreNotForeign(t *testing.T) {
 
 func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users")}
-	got := filterForeignCollections([]string{"users", RegistryCollectionName}, views)
+	got := filterForeignCollections([]string{"users", RegistryCollectionName}, views, nil)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] (registry collection must be framework-owned)", got)
 	}
@@ -58,7 +58,7 @@ func TestFilterForeignCollections_RegistryIsFrameworkOwned(t *testing.T) {
 // framework's own collection.
 func TestFilterForeignCollections_ProjectionStateIsFrameworkOwned(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users")}
-	got := filterForeignCollections([]string{"users", query.ProjectionStateCollectionName}, views)
+	got := filterForeignCollections([]string{"users", query.ProjectionStateCollectionName}, views, nil)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] (projection-state registry must be framework-owned)", got)
 	}
@@ -68,7 +68,7 @@ func TestFilterForeignCollections_SystemNamespaceIgnored(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections([]string{
 		"users", "system.profile", "system.namespaces", "system.indexes",
-	}, views)
+	}, views, nil)
 	if len(got) != 0 {
 		t.Errorf("got %v, want [] (system.* must never be flagged)", got)
 	}
@@ -76,7 +76,7 @@ func TestFilterForeignCollections_SystemNamespaceIgnored(t *testing.T) {
 
 func TestFilterForeignCollections_OneForeign(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users")}
-	got := filterForeignCollections([]string{"users", "legacy_audit"}, views)
+	got := filterForeignCollections([]string{"users", "legacy_audit"}, views, nil)
 	if len(got) != 1 || got[0] != "legacy_audit" {
 		t.Errorf("got %v, want [legacy_audit]", got)
 	}
@@ -85,7 +85,7 @@ func TestFilterForeignCollections_OneForeign(t *testing.T) {
 func TestFilterForeignCollections_MultipleForeignSortedDeterministic(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users")}
 	got := filterForeignCollections(
-		[]string{"zeta", "alpha", "users", "mike"}, views)
+		[]string{"zeta", "alpha", "users", "mike"}, views, nil)
 	want := []string{"alpha", "mike", "zeta"}
 	if !equalSlices(got, want) {
 		t.Errorf("got %v, want %v (must be deterministic / sorted)", got, want)
@@ -96,7 +96,7 @@ func TestFilterForeignCollections_NoDeclaredViews_AllObservedAreForeign(t *testi
 	// A write-only service that ships zero ViewDefinitions but somehow
 	// has Mongo collections present (residue, manual creation): every
 	// non-system / non-framework collection is foreign.
-	got := filterForeignCollections([]string{"a", "b", "system.x", RegistryCollectionName}, nil)
+	got := filterForeignCollections([]string{"a", "b", "system.x", RegistryCollectionName}, nil, nil)
 	if !equalSlices(got, []string{"a", "b"}) {
 		t.Errorf("got %v, want [a b]", got)
 	}
@@ -104,7 +104,7 @@ func TestFilterForeignCollections_NoDeclaredViews_AllObservedAreForeign(t *testi
 
 func TestFilterForeignCollections_EmptyObserved(t *testing.T) {
 	views := []*query.ViewDefinition{query.View("users")}
-	got := filterForeignCollections(nil, views)
+	got := filterForeignCollections(nil, views, nil)
 	if len(got) != 0 {
 		t.Errorf("got %v, want []", got)
 	}
@@ -245,5 +245,41 @@ func TestBulkApplyProjection_EmptyBatchIsNoOp(t *testing.T) {
 	m := &MongoDB{}
 	if err := m.BulkApplyProjection(context.Background(), query.PhysicalCollection{}, nil); err != nil {
 		t.Fatalf("empty batch must be a no-op, got %v", err)
+	}
+}
+
+// ─── upstream-subscription mirrors are claimed, not foreign ──────────────────
+
+// The local collection an upstreamSubscriptions entry materializes is written by
+// the framework into THIS service's database, on this service's behalf. Before it
+// was passed to the guard, it was reported as another tenant's residue: a warn in
+// dev and an ABORT everywhere else, so a service declaring a subscription could
+// not boot outside dev.
+func TestFilterForeignCollections_UpstreamMirrorIsClaimed(t *testing.T) {
+	views := []*query.ViewDefinition{query.View("orders")}
+	got := filterForeignCollections(
+		[]string{"orders", "upstream_gadgets"}, views, []string{"upstream_gadgets"})
+	if len(got) != 0 {
+		t.Errorf("got %v, want [] — a declared upstream mirror is this service's own collection", got)
+	}
+}
+
+// An upstream mirror has no omnicore_mongo_views row, so the resolver never points
+// it at a blue-green slot and the subscriber only ever writes the bare name.
+// Whitelisting slots it cannot own would hide real residue.
+func TestFilterForeignCollections_UpstreamMirrorClaimsNoSlots(t *testing.T) {
+	got := filterForeignCollections(
+		[]string{"upstream_gadgets", "upstream_gadgets__0"}, nil, []string{"upstream_gadgets"})
+	if len(got) != 1 || got[0] != "upstream_gadgets__0" {
+		t.Errorf("got %v, want [upstream_gadgets__0] — a mirror claims its bare name only", got)
+	}
+}
+
+// A subscription whose collection is empty claims nothing (the boot guard rejects
+// the declaration itself; this only proves the filter never whitelists "").
+func TestFilterForeignCollections_UpstreamEmptyNameClaimsNothing(t *testing.T) {
+	got := filterForeignCollections([]string{"residue"}, nil, []string{""})
+	if len(got) != 1 || got[0] != "residue" {
+		t.Errorf("got %v, want [residue]", got)
 	}
 }

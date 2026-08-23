@@ -125,6 +125,34 @@
                 a read that needs a different shape declares a different schema over a different type, which is cheaper
                 to write than a scanner and cannot be half-wired. For a query the framework does not generate at all,
                 <code>deps.DB.Querier()</code> remains the read-only raw surface.</li>
+            <li><strong>Fixed</strong> — <strong>a <code>?fields=</code> path a
+                <a href="#relational-view">relational view</a> cannot resolve is a 400, not a silent empty
+                document.</strong> The relational engine pruned the served document to the requested selection without
+                ever checking that the paths resolved, so a token naming a field the read model does not have — a
+                segment only its Mongo twin projects, or a typo the wire gate could not catch because the Response DTO
+                declares the field — came back <code>200</code> with <code>{}</code>, which a consumer cannot tell apart
+                from "I have no data". The selection is now validated at the read's <em>entry point</em>, before any IO,
+                through the same translator the filter and the sort resolve through, and an unresolvable path raises the
+                SAME error the Mongo reader raises for the same input:
+                <code>SchemaViolationNotification</code>, <a href="#status-mapping"><code>SemanticSchema</code></a> →
+                <strong>400</strong>, naming the offending dotted Go path. Both projection modes are checked, and both
+                entry points (paged read and by-id). A selection may name what the document carries: root fields, the
+                managed slots, root-level sibling and shared-base fields, a leaf inside a child collection, and the
+                fields a declared <a href="#read-joins">read join</a> adds — a root join's under its bare name, a child
+                join's under <code>&lt;segment&gt;.&lt;field&gt;</code>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>a collection materialized by an
+                <code>upstreamSubscriptions</code> entry is no longer reported as foreign by the DB-per-service
+                guard.</strong> The guard was handed the declared views only, so the local mirror the framework writes
+                on the service's OWN behalf was claimed by nobody: <code>mongo.registry.foreign_collections</code> under
+                <code>dev</code>, and a <strong>boot abort under every other profile</strong> — a service declaring an
+                upstream subscription could not start outside <code>dev</code>. <code>mongo.CheckServiceRegistry</code>
+                now takes the subscriptions' collection names alongside the views and claims them under their bare name
+                (a mirror has no <code>omnicore_mongo_views</code> row, so it is never resolved into a blue-green slot,
+                and whitelisting slots it cannot own would only hide real residue). The orphan diagnostic now offers the
+                subscription as a way to re-claim a collection, beside re-declaring the view.
+                <em>Migration</em>: only if you call <code>mongo.CheckServiceRegistry</code> yourself — it takes one
+                more argument, <code>upstreamCollections []string</code>; pass <code>nil</code> for the previous
+                behavior. <code>bootstrap.Run</code> passes the resolved subscriptions.</li>
         </ul>
     </div>
     <div class="release">

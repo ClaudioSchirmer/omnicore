@@ -63,3 +63,19 @@ func upstreamCollectionSet(subs []UpstreamSubscription) map[string]bool {
 	}
 	return out
 }
+
+// upstreamCollectionNames is the same set as a list, in declaration order — the
+// form the DB-per-service guard claims them in. Kept beside upstreamCollectionSet
+// because the two answer the same question for two different consumers: a
+// composed-view leg asks whether a collection is materialized locally, the
+// registry guard asks which collections this service owns.
+func upstreamCollectionNames(subs []UpstreamSubscription) []string {
+	out := make([]string, 0, len(subs))
+	for _, s := range subs {
+		if s.Collection == "" {
+			continue
+		}
+		out = append(out, s.Collection)
+	}
+	return out
+}

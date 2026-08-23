@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -37,6 +38,10 @@ type view struct {
 	// keyed by the table they land on. Root entries are addressable in a criteria;
 	// every entry is served in the document.
 	joinFields map[string][]string
+	// joinPaths is the same declaration read as DOC PATHS — what a `?fields=`
+	// selection may name beyond what the ViewNode resolves. Built once, at
+	// registration.
+	joinPaths map[string]bool
 }
 
 // rootJoinFields is the set of join fields addressable in a criteria — the root's
@@ -51,6 +56,77 @@ func (v view) rootJoinFields() map[string]bool {
 		out[n] = true
 	}
 	return out
+}
+
+// joinProjectionPaths is the set of dotted Go paths a declared read join ADDS to
+// the served document beyond the schema: a root join field under its bare name, a
+// child join field under `<collectionSegment>.<field>` — exactly where
+// applyJoinFields writes them.
+//
+// The ViewNode cannot answer for these, and should not: a join maps a column of
+// ANOTHER aggregate onto a Go field of this one, so there is no column of this
+// schema behind it to translate to. The field-selection gate consults this set
+// alongside the node, so `?fields=` admits precisely the document a read serves —
+// nothing less (a join field is not "unknown") and nothing more.
+func joinProjectionPaths(schema *core.TableSchema, joinFields map[string][]string) map[string]bool {
+	if len(joinFields) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, n := range joinFields[schema.Table()] {
+		out[n] = true
+	}
+	children := schema.ChildSchemas()
+	if base := schema.BaseChildSchemas(); len(base) > 0 {
+		children = append(append([]*core.TableSchema{}, children...), base...)
+	}
+	for _, child := range children {
+		for _, n := range joinFields[child.Table()] {
+			out[child.CollectionSegment()+"."+n] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// validateProjection refuses a field selection this view cannot serve, at the
+// read's ENTRY POINT, before any IO — the same seat and the same cost as the
+// search / filter / sort refusals beside it.
+//
+// A path that resolves to nothing used to be pruned in silence: the selection
+// kept only what it named, the document had none of it, and the consumer got 200
+// with an empty object. That is the one answer a caller cannot act on — "you
+// asked for something I do not have" and "I have nothing" read identically on the
+// wire. The Mongo reader has always refused the same input (translateProjectionKeys
+// fails the read), and the two backings must be indistinguishable from outside, so
+// this raises the SAME error it does: core.UnresolvedFieldPathError → the kernel
+// SchemaViolationNotification, SemanticSchema, 400 on every surface.
+//
+// Both modes are checked, exactly as the Mongo reader checks them: an EXCLUSION
+// naming a path this view has no concept of is as meaningless as an inclusion.
+// Paths are visited in sorted order so a request carrying several unknown ones
+// always names the same first offender.
+func (v view) validateProjection(proj queries.Projection) error {
+	if !proj.Narrows() {
+		return nil
+	}
+	paths := make([]string, 0, len(proj.Paths))
+	for p := range proj.Paths {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		if _, ok := v.node.ColumnPath(strings.Split(p, ".")); ok {
+			continue
+		}
+		if v.joinPaths[p] {
+			continue
+		}
+		return core.UnresolvedFieldPathError(p)
+	}
+	return nil
 }
 
 // ViewReader implements queries.ViewReader by reading a relational-backed view
@@ -88,6 +164,7 @@ func NewViewReader(views []*query.RelationalViewDefinition) *ViewReader {
 			node:       v.BuildViewNode(),
 			loader:     v.Loader(),
 			joinFields: v.Loader().JoinFields(),
+			joinPaths:  joinProjectionPaths(v.SchemaDef(), v.Loader().JoinFields()),
 		}
 	}
 	return r
@@ -139,6 +216,9 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 	}
 	if crit.Search != "" {
 		return queries.Page{}, unsupported("search")
+	}
+	if err := v.validateProjection(crit.Projection); err != nil {
+		return queries.Page{}, err
 	}
 	where, err := toExpr(v.schema, v.rootJoinFields(), crit.Filter)
 	if err != nil {
@@ -300,6 +380,11 @@ func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.Rea
 // sub-document or array (`Parts.Label` keeps each `Parts` element with only
 // `Label`). ProjectExcept deletes the listed leaves, nested ones included.
 // ProjectAll is a no-op — the whole document.
+//
+// Every path here is already known to resolve: validateProjection ran at the
+// entry point, so a selection that survives to this point names only fields the
+// served document can carry. The prune is therefore a prune, never a silent
+// refusal.
 func applyProjection(doc map[string]any, proj queries.Projection) {
 	if len(doc) == 0 || !proj.Narrows() {
 		return
@@ -400,6 +485,9 @@ func (r *ViewReader) ReadByID(ctx context.Context, name, id string, crit queries
 	v, ok := r.views[name]
 	if !ok {
 		return nil, false, fmt.Errorf("relational view %q is not registered", name)
+	}
+	if err := v.validateProjection(crit.Projection); err != nil {
+		return nil, false, err
 	}
 	where := criteria.Eq(idGoField, domain.NewID(id))
 	overlay, err := toExpr(v.schema, v.rootJoinFields(), crit.Filter)

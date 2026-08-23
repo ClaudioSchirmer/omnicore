@@ -131,6 +131,7 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
         <tr><td>Filter / sort on a <a href="#read-joins">declared read join</a> field</td><td><span class="no-mark">✗</span> — <a href="#views">Embed</a> instead</td><td><span class="yes-mark">✓</span> — LEFT / INNER JOIN</td></tr>
         <tr><td>Sort on a root field</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span> pushed down</td><td><span class="yes-mark">✓</span> pruned after the load</td></tr>
+        <tr><td><code>?fields=</code> naming a path the read model does not have</td><td><strong><span class="no-mark">✗</span> — 400</strong></td><td><strong><span class="no-mark">✗</span> — 400</strong> (same notification)</td></tr>
         <tr><td>Pagination (<code>first</code> / <code>last</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
         <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
@@ -180,6 +181,20 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
     work.
 </p>
 <p>
+    <strong>A <code>?fields=</code> path this read model does not have is the one refusal with a different
+    notification</strong>, and it is the honest one: a projection has no capability boundary to hit — a relational view
+    projects into a 1:N child perfectly well — so an unresolvable selection is never "I cannot do that", it is
+    <em>"that is not a field of mine"</em>. It is rejected at the same entry point with
+    <code>SchemaViolationNotification</code> (<code>SemanticSchema</code> → <strong>400</strong>), naming the offending
+    dotted Go path — <strong>byte-for-byte the answer the Mongo reader gives the same token</strong>, which is what
+    lets one Response DTO front both backings without the consumer having to know which one answered. The alternative
+    is worse than it looks: pruning an unknown path in silence returns <code>200</code> with an empty document, and
+    <em>"you asked for something I do not have"</em> and <em>"I have nothing"</em> are then indistinguishable on the
+    wire. What a selection may name is the served document: root fields, the managed slots, root-level sibling and
+    shared-base fields, a leaf inside a child collection, and <a href="#read-joins">read-join</a> fields at the level
+    the join lands on — a root join's under its bare name, a child join's under <code>&lt;segment&gt;.&lt;field&gt;</code>.
+</p>
+<p>
     <strong>The managed slots count as root columns.</strong> Both readers resolve a Go field name through the same
     read-path translator, so <code>CreatedAt</code>, <code>UpdatedAt</code>, <code>DeletedAt</code> and the read-only
     <code>ParentID</code> projection are filterable and sortable here exactly as they are on a Mongo view — under the
@@ -196,7 +211,8 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
     <strong><code>?fields=</code> shapes the answer here, it does not narrow the query.</strong> The Mongo reader
     pushes the projection into the find; this loader composes the aggregate as declared and prunes the served
     document afterwards. The WIRE result is identical on both — the same tokens, the same validation, the same
-    400 on an unknown one — so nothing a consumer can observe differs. What differs is the cost: a narrow
+    400 <code>SchemaViolationNotification</code> on an unknown one (see above) — so nothing a consumer can observe
+    differs. What differs is the cost: a narrow
     <code>?fields=</code> buys no I/O on this backing. Plan for it where it matters, and note the same holds for
     <code>ReadCriteria.Restrict</code>: the restricted column is read from the SoR and dropped before the
     document is served, so the field never reaches the wire (and an active reference still answers 403), but it

@@ -180,6 +180,42 @@ with `1.0.0`.
   than a scanner and cannot be half-wired. For a query the framework does not
   generate at all, `deps.DB.Querier()` remains the read-only raw surface.
 
+### Fixed
+
+- **A `?fields=` path a relational view cannot resolve is now a 400, not a
+  silent empty document.** The relational read engine pruned the served document
+  to the requested selection without ever checking that the paths resolved, so a
+  token naming a field the read model does not have (a segment only its Mongo
+  twin projects, a typo the wire gate could not catch because the Response DTO
+  declares the field) came back `200` with `{}` — indistinguishable from "I have
+  no data". The selection is now validated at the read's entry point, before any
+  IO, against the same translator the filter and the sort resolve through, and an
+  unresolvable path raises the SAME error the Mongo reader raises for the same
+  input: `SchemaViolationNotification`, `SemanticSchema` → **400**, naming the
+  offending dotted Go path. Both projection modes are checked, and both entry
+  points (paged read and by-id).
+
+  What a selection may name is exactly what the document carries: root fields,
+  the managed slots, root-level sibling and shared-base fields, a leaf inside a
+  child collection, and the fields a declared read join adds — a root join's
+  under its bare name, a child join's under `<segment>.<field>`.
+
+- **breaking**: **A collection materialized by an `upstreamSubscriptions` entry
+  is no longer reported as foreign by the DB-per-service guard.** The guard was
+  handed the declared views only, so the local mirror the framework writes on the
+  service's own behalf was claimed by nobody: `mongo.registry.foreign_collections`
+  under `dev`, and a **boot abort under every other profile** — a service with an
+  upstream subscription could not start outside `dev`. `mongo.CheckServiceRegistry`
+  now takes the subscriptions' collection names alongside the views and claims
+  them under their bare name (a mirror has no `omnicore_mongo_views` row, so it is
+  never resolved into a blue-green slot, and whitelisting slots it cannot own
+  would only hide real residue). The orphan diagnostic names the subscription as
+  a way to re-claim a collection, beside re-declaring the view.
+
+  *Migration*: only if you call `mongo.CheckServiceRegistry` yourself — it takes
+  one more argument, `upstreamCollections []string`. Pass `nil` for the previous
+  behavior. `bootstrap.Run` passes the resolved subscriptions.
+
 ## [0.56.1] - 2026-08-21
 
 ### Fixed

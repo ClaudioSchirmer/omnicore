@@ -373,7 +373,7 @@ shutdown:
     </p>
 <pre><code>upstreamSubscriptions:
   - topic: users.events                  # MANDATORY — broker topic/subject produced by the upstream service
-    collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs)
+    collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs; claimed by the DB-per-service guard like a view's)
     consumerGroup: ""                    # default "&lt;service&gt;-upstream-&lt;topic&gt;"
     workers: 2                            # default 1 (aggregate-id hashed → ordered per aggregate)
     fields: [id, name, email]            # allowlist of surviving payload fields (RAW physical names — no class exists at ingestion); nil/empty → full payload kept (KEEP the DeletedAt column if the mirror reflects archives — see note)
