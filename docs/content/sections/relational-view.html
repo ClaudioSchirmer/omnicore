@@ -249,6 +249,9 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
 </p>
 <ul>
     <li>the loader is not nil, and it has a schema bound (the repository called <code>WithSchema</code>);</li>
+    <li>the name does not end in <code>__0</code> or <code>__1</code> — the framework reserves those for the
+        blue-green slots a projected view's two physical collections are addressed by, and the rule holds in every
+        read-model family because the namespace is one;</li>
     <li>the name does not collide with <strong>any</strong> other read model — a <code>query.View</code>, a
         <code>SharedBaseView</code> or a <code>ComposedView</code>. A read-model name is unique across the service
         whatever backs it, because the name is what a surface reads by.</li>

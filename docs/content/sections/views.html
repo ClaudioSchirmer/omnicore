@@ -54,6 +54,19 @@
     these three. A <a href="#relational-view">relational view</a> takes part in none of it.
 </p>
 
+<div class="box warn">
+    <strong><code>__0</code> and <code>__1</code> are reserved — a view name may not end in either.</strong> They are
+    how the framework addresses a view's two <em>physical</em> collections during a
+    <a href="#mongo-schema-evolution">blue-green rebuild</a>: a view named <code>users</code> owns
+    <code>users</code>, <code>users__0</code> and <code>users__1</code>. Naming a view <code>users__0</code> would
+    therefore give it a collection byte-identical to <code>users</code>'s first slot, and nothing downstream could tell
+    the two apart — the DB-per-service guard would read the overlap as legitimate on both sides, and a rebuild of
+    <code>users</code> would provision straight over the other view's live data. The boot refuses the name instead, in
+    <em>every</em> read-model family (<code>View</code>, <code>SharedBaseView</code>, <code>ComposedView</code>,
+    <code>RelationalView</code>), since all four share one read-side namespace. Pick any other ending —
+    <code>users_v2</code>, <code>users_current</code>.
+</div>
+
 <h4 id="views-fanout">When each view updates — the projection fan-out</h4>
 <p>
     A materialized view is kept current by the SyncEngine, driven by writes to the schema(s) it is built on:
