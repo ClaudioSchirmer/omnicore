@@ -437,8 +437,8 @@ func TestDeclaredJoin_SchemaFieldsStillResolveToTheAnchor(t *testing.T) {
 	if strings.Contains(sql, "j_customer_id.code") || strings.Contains(sql, "j_carrier_id.code") {
 		t.Errorf("an anchor field must not resolve through a join:\n%s", sql)
 	}
-	if !strings.Contains(sql, "code = $1") {
-		t.Errorf("the anchor field must resolve on the anchor:\n%s", sql)
+	if !strings.Contains(sql, "orders.code = $1") {
+		t.Errorf("the anchor field must resolve on the anchor, qualified to it:\n%s", sql)
 	}
 }
 
@@ -519,19 +519,32 @@ func TestDeclaredJoin_AggregateByResolvesBothHalvesQualified(t *testing.T) {
 	if !strings.Contains(sql, "MAX(j_carrier_id.nome)") {
 		t.Errorf("the aggregate expression must be alias-qualified:\n%s", sql)
 	}
-	if !strings.Contains(sql, "GROUP BY code") {
-		t.Errorf("an anchor grouping key stays unqualified:\n%s", sql)
+	if !strings.Contains(sql, "GROUP BY orders.code") {
+		t.Errorf("the anchor grouping key must carry its table under a join:\n%s", sql)
 	}
 }
 
-// An anchor column keeps resolving unqualified — the sibling/base bijection makes
-// it unambiguous, and qualifying it would be noise.
-func TestAggregate_AnchorColumnStaysUnqualified(t *testing.T) {
+// An anchor column is qualified TOO once a join is in the FROM. The bijection
+// that lets a sibling column stay bare covers the anchor's own NODE and nothing
+// else: a joined aggregate is a foreign namespace, free to carry a "code" of its
+// own, and the backend rejects the ambiguous reference outright.
+func TestAggregate_AnchorColumnIsQualifiedUnderAJoin(t *testing.T) {
 	sql := aggCapturedSQL(t, joinedLoader(t), func(l *AggregateLoader[*joinOrder]) error {
 		return l.Aggregate(context.Background(), criteria.Where(nil), MaxInt("Code"))
 	})
+	if !strings.Contains(sql, "MAX(orders.code)") {
+		t.Errorf("an anchor column must carry its table under a join:\n%s", sql)
+	}
+}
+
+// …and it stays bare with no join declared: the qualification is triggered by
+// what is in the FROM, so a loader without joins emits exactly what it always did.
+func TestAggregate_AnchorColumnStaysBareWithoutAJoin(t *testing.T) {
+	sql := aggCapturedSQL(t, joinLoader(joinOrderSchema()), func(l *AggregateLoader[*joinOrder]) error {
+		return l.Aggregate(context.Background(), criteria.Where(nil), MaxInt("Code"))
+	})
 	if !strings.Contains(sql, "MAX(code)") {
-		t.Errorf("an anchor column needs no qualifier:\n%s", sql)
+		t.Errorf("with no join declared the anchor column needs no qualifier:\n%s", sql)
 	}
 }
 
@@ -653,5 +666,95 @@ func TestJoinScanTargets_EmptyWithoutRootJoins(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("a child join contributes no ROOT scan target, got %d", len(got))
+	}
+}
+
+
+// ─── a join target that looks like a real entity ─────────────────────────────
+
+// The joined aggregate the tests above use is deliberately thin. A REAL one
+// shares column names with the anchor (both have a "name") and carries the
+// framework's own managed columns (every archivable entity has deleted_at), so
+// nothing about the anchor side may be emitted bare while it is in the FROM.
+func collidingTargetSchema(table string) *TableSchema {
+	return NewTableSchema[*joinCustomer](table).ID("id").
+		Field("Name", "code"). // the SAME column the anchor has
+		DeletedAt("deleted_at")
+}
+
+func collidingOrderSchema() *TableSchema {
+	return NewTableSchema[*joinOrder]("orders").
+		ID("id").
+		Revision("revision").
+		DeletedAt("deleted_at").
+		Field("Code", "code").
+		Field("CustomerID", "customer_id").
+		Field("CarrierID", "carrier_id").
+		Child(collidingLineSchema())
+}
+
+func collidingLineSchema() *TableSchema {
+	return NewTableSchema[joinLine]("order_lines").
+		ID("id").ParentID("order_id").
+		Field("Label", "label").
+		Field("CityID", "city_id").
+		DeletedAt("deleted_at")
+}
+
+// Every anchor column in the root SELECT is qualified once a join is in the FROM
+// — not just the id and the managed columns. An anchor "code" next to the
+// target's "code" is ambiguous, and it breaks the PLAIN listing, with no filter
+// in sight.
+func TestDeclaredJoin_RootSelectQualifiesEveryAnchorColumn(t *testing.T) {
+	l := joinLoader(collidingOrderSchema()).WithJoins(
+		InnerJoin(collidingTargetSchema("customers")).On("customer_id").Field("CustomerName", "code"),
+	)
+	sql := capturedSQL(t, l, criteria.Where(nil))
+	for _, want := range []string{"orders.code", "orders.customer_id", "orders.carrier_id"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("the root SELECT must qualify %q under a join:\n%s", want, sql)
+		}
+	}
+	if strings.Contains(sql, ", code,") || strings.HasSuffix(sql, ", code") {
+		t.Errorf("no anchor column may ride the SELECT bare under a join:\n%s", sql)
+	}
+}
+
+// The anchor's soft-delete gate under a join target that also has deleted_at.
+func TestDeclaredJoin_RootScopeGateIsQualified(t *testing.T) {
+	l := joinLoader(collidingOrderSchema()).WithJoins(
+		InnerJoin(collidingTargetSchema("customers")).On("customer_id").Field("CustomerName", "code"),
+	)
+	sql := capturedSQL(t, l, criteria.Where(nil))
+	if !strings.Contains(sql, "orders.deleted_at IS NULL") {
+		t.Errorf("the scope gate must be qualified under a join:\n%s", sql)
+	}
+}
+
+// The CHILD's soft-delete gate, same story: a child join target with a
+// deleted_at of its own makes the bare gate ambiguous. This one broke every
+// read of an aggregate whose child joined an ordinary archivable entity.
+func TestChildJoin_ChildScopeGateIsQualified(t *testing.T) {
+	l := joinLoader(collidingOrderSchema()).WithJoins(
+		InnerJoinInChild(collidingLineSchema()).To(collidingTargetSchema("cities")).
+			On("city_id").Field("CityName", "code"),
+	)
+	sql := childCapturedSQL(t, l)
+	if !strings.Contains(sql, "order_lines.deleted_at IS NULL") {
+		t.Errorf("the child scope gate must be qualified under a child join:\n%s", sql)
+	}
+}
+
+// The filter and the order over an anchor column that the target also has.
+func TestDeclaredJoin_AnchorFilterAndOrderAreQualified(t *testing.T) {
+	l := joinLoader(collidingOrderSchema()).WithJoins(
+		InnerJoin(collidingTargetSchema("customers")).On("customer_id").Field("CustomerName", "code"),
+	)
+	sql := capturedSQL(t, l, criteria.Where(criteria.Eq("Code", "X")).OrderByDesc("Code"))
+	if !strings.Contains(sql, "orders.code = $1") {
+		t.Errorf("the anchor predicate must be qualified under a join:\n%s", sql)
+	}
+	if !strings.Contains(sql, "ORDER BY orders.code DESC") {
+		t.Errorf("the anchor order must be qualified under a join:\n%s", sql)
 	}
 }

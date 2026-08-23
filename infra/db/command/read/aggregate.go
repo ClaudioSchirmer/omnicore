@@ -33,8 +33,9 @@ import (
 // Min, Max) are the only implementations — each carries its typed result.
 type AggregateSpec interface {
 	// expr renders the SELECT expression, resolving the spec's Go field into
-	// its column (recording any sibling/shared-base join on the resolver).
-	expr(resolve core.FieldResolver, dialect Dialect) (string, error)
+	// its column (recording any sibling/shared-base join on the resolver) and
+	// qualifying it the way the statement's FROM demands (colQual).
+	expr(resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error)
 	// absorb receives the scalar as the driver delivered it (nil = SQL NULL,
 	// i.e. no row matched) and writes the spec's typed result.
 	absorb(v any) error
@@ -55,7 +56,7 @@ type CountAgg struct {
 // row count is the root count.
 func Count() *CountAgg { return &CountAgg{} }
 
-func (c *CountAgg) expr(core.FieldResolver, Dialect) (string, error) { return "COUNT(*)", nil }
+func (c *CountAgg) expr(core.FieldResolver, Dialect, colQual) (string, error) { return "COUNT(*)", nil }
 
 func (c *CountAgg) fresh() AggregateSpec { return &CountAgg{} }
 
@@ -96,8 +97,8 @@ func MinInt(goField string) *IntAgg { return &IntAgg{fn: "MIN", field: goField} 
 // MaxInt requests the largest value of an integer goField — MAX, exact.
 func MaxInt(goField string) *IntAgg { return &IntAgg{fn: "MAX", field: goField} }
 
-func (a *IntAgg) expr(resolve core.FieldResolver, dialect Dialect) (string, error) {
-	return aggExpr(a.fn, a.field, resolve, dialect)
+func (a *IntAgg) expr(resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
+	return aggExpr(a.fn, a.field, resolve, dialect, qual)
 }
 
 func (a *IntAgg) fresh() AggregateSpec { return &IntAgg{fn: a.fn, field: a.field} }
@@ -141,8 +142,8 @@ func Min(goField string) *FloatAgg { return &FloatAgg{fn: "MIN", field: goField}
 // Max requests the largest value of a fractional goField as float64.
 func Max(goField string) *FloatAgg { return &FloatAgg{fn: "MAX", field: goField} }
 
-func (a *FloatAgg) expr(resolve core.FieldResolver, dialect Dialect) (string, error) {
-	return aggExpr(a.fn, a.field, resolve, dialect)
+func (a *FloatAgg) expr(resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
+	return aggExpr(a.fn, a.field, resolve, dialect, qual)
 }
 
 func (a *FloatAgg) fresh() AggregateSpec { return &FloatAgg{fn: a.fn, field: a.field} }
@@ -162,17 +163,17 @@ func (a *FloatAgg) absorb(v any) error {
 
 // aggExpr renders one aggregate call over a resolved field. The column goes
 // through qualifyCol — the same rendering the WHERE, the ORDER BY and
-// AggregateBy's grouping keys use — because a field resolved across a declared
-// read join carries a Qualifier: two joined aggregates may both have a "nome",
-// and an unqualified one is ambiguous in a FROM that holds both. The anchor id
-// needs no qualification here (an aggregate never names it: Count renders
-// COUNT(*)), so the id pair is passed empty.
-func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect) (string, error) {
+// AggregateBy's grouping keys use — because a FROM holding a declared read join
+// makes BOTH sides ambiguous: two joined aggregates may both have a "nome", and
+// so may the anchor. The anchor id needs no special handling here (an aggregate
+// never names it: Count renders COUNT(*)), so the qual the caller passes carries
+// only the owner rule.
+func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
 	rf, ok := resolve(goField)
 	if !ok {
 		return "", fmt.Errorf("aggregate: unknown field %q (not a persisted field of the entity)", goField)
 	}
-	return fn + "(" + qualifyCol(rf, "", "", dialect) + ")", nil
+	return fn + "(" + qualifyCol(rf, qual, dialect) + ")", nil
 }
 
 // Aggregate executes ONE SELECT computing every requested spec over the same
@@ -190,9 +191,10 @@ func (l *AggregateLoader[T]) Aggregate(ctx context.Context, q *criteria.Query, s
 	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
+	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
 	exprs := make([]string, len(specs))
 	for i, s := range specs {
-		e, err := s.expr(resolve, dialect)
+		e, err := s.expr(resolve, dialect, qual)
 		if err != nil {
 			return err
 		}

@@ -258,7 +258,11 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *joined
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
-	where, args, err := compileWhere(q.Condition(), resolve, dialect, l.idKindResolver())
+	// A DECLARED read join is known before any resolution (it is on the loader,
+	// not discovered from the criteria), so the owner qualification is decided
+	// up front — the single pass below already emits it.
+	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
+	where, args, err := compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -267,8 +271,11 @@ func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *joined
 		rootQualifier = dialect.QuoteIdent(l.schema.Table())
 		// Qualify the anchor id under the 1:1 join so a predicate mixing the id
 		// and a sibling/base field (e.g. an exclude-self uniqueness probe) is
-		// unambiguous — see findRoots for the full rationale.
-		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), l.schema.IDColumn(), rootQualifier)
+		// unambiguous — see findRoots for the full rationale. Only a sibling/base
+		// join needs this second pass: it is discovered DURING resolution, so the
+		// first pass could not know about it.
+		qual.idCol, qual.idQualifier = l.schema.IDColumn(), rootQualifier
+		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -302,11 +309,15 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
-	where, args, err := compileWhere(q.Condition(), resolve, dialect, l.idKindResolver())
+	// The owner qualification (every anchor-side column carries its own table) is
+	// a static property of the loader — a declared join is always in the FROM —
+	// so it is decided before the first compile, not discovered from the criteria.
+	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
+	where, args, err := compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
 	if err != nil {
 		return nil, nil, err
 	}
-	orderSQL, err := compileOrder(q.OrderFields(), resolve, dialect)
+	orderSQL, err := compileOrderQualified(q.OrderFields(), resolve, dialect, qual)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -320,12 +331,12 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		// so a bare "id" in the predicate or the ORDER BY … , id tiebreak is
 		// ambiguous. Recompile WHERE/ORDER with the anchor id qualified (every
 		// other column is unique across the node, so only the id needs it).
-		idCol := l.schema.IDColumn()
-		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), idCol, rootQualifier)
+		qual.idCol, qual.idQualifier = l.schema.IDColumn(), rootQualifier
+		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
 		if err != nil {
 			return nil, nil, err
 		}
-		orderSQL, err = compileOrderQualified(q.OrderFields(), resolve, dialect, idCol, rootQualifier)
+		orderSQL, err = compileOrderQualified(q.OrderFields(), resolve, dialect, qual)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -365,17 +376,16 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// Trailing framework-managed columns (created_at/updated_at/deleted_at/
 	// revision) go into the carrier via ms.apply, not into struct fields.
 	ms := newManagedScan(l.schema)
-	selectCols := strings.Join(quoteIdentifiers(cols, dialect), ", ")
+	// Under ANY join the anchor's own columns are qualified — a joined aggregate
+	// is a foreign namespace, free to carry a "name" or a "code" of its own, and
+	// a bare one in the SELECT list is ambiguous exactly like the id is.
+	anchorQualifier := ""
+	if joinSQL != "" {
+		anchorQualifier = dialect.QuoteIdent(table)
+	}
+	selectCols := strings.Join(qualifyIdentifiers(cols, dialect, anchorQualifier), ", ")
 	if ms.has() {
-		if joinSQL != "" {
-			q := make([]string, len(ms.cols))
-			for i, c := range ms.cols {
-				q[i] = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(c)
-			}
-			selectCols += ", " + strings.Join(q, ", ")
-		} else {
-			selectCols += ", " + strings.Join(quoteIdentifiers(ms.cols, dialect), ", ")
-		}
+		selectCols += ", " + strings.Join(qualifyIdentifiers(ms.cols, dialect, anchorQualifier), ", ")
 	}
 	if exprs := joinSelectExprs(l.joins, dialect); len(exprs) > 0 {
 		selectCols += ", " + strings.Join(exprs, ", ")
@@ -512,7 +522,6 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		// looks up — the schema is always there.
 		child := l.schema.ChildSchema(typeName)
 		fkCol := child.ParentIDColumn()
-		childFilter := childScopeFilter(scope, child, dialect, "")
 
 		childCols, childByCol := child.ScanPlan()
 		if len(childCols) == 0 {
@@ -533,7 +542,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		// columns are stamped onto the carrier via ms.apply after the scan.
 		ms := newChildManagedScan(child)
 		cJoins := childJoinsOf(l.joins, child.Table())
-		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, childFilter, dialect, ms.cols, cJoins)
+		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, scope, dialect, ms.cols, cJoins)
 		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
@@ -1170,10 +1179,16 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 // SELECT after the scanned struct columns, in the same order the caller's
 // trailing scan targets expect. They are read into external destinations, not
 // struct fields, so they never enter scanCols/scanByCol.
-func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, childFilter string, dialect Dialect, trailingCols []string, joins []Join) (string, []string, map[string]core.FieldPath) {
+//
+// The soft-delete gate is rendered HERE, from the scope, rather than handed in
+// ready-made: the branch that decides whether anything else is in the FROM is
+// the only one that can decide whether the gate's column needs qualifying, and
+// a caller that guessed would guess wrong the day a join was declared.
+func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, scope criteria.Scope, dialect Dialect, trailingCols []string, joins []Join) (string, []string, map[string]core.FieldPath) {
 	ct := dialect.QuoteIdent(child.Table())
 	sibs := child.Siblings()
 	if len(sibs) == 0 && len(joins) == 0 {
+		childFilter := childScopeFilter(scope, child, dialect, "")
 		sel := dialect.QuoteIdent(fkCol) + ", " + strings.Join(quoteIdentifiers(childCols, dialect), ", ")
 		for _, c := range trailingCols {
 			sel += ", " + dialect.QuoteIdent(c)
@@ -1182,6 +1197,10 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 			" FROM " + ct + " WHERE " + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
 		return sql, childCols, childByCol
 	}
+	// Something else IS in the FROM: the child's own deleted_at is ambiguous the
+	// moment a join target carries one too (deleted_at/created_at/updated_at are
+	// the framework's OWN columns — every archivable entity has them).
+	childFilter := childScopeFilter(scope, child, dialect, ct)
 	pk := dialect.QuoteIdent(child.IDColumn())
 	sel := ct + "." + dialect.QuoteIdent(fkCol)
 	for _, c := range childCols {
@@ -1239,6 +1258,20 @@ func childJoinsOf(joins []Join, childTable string) []Join {
 	for _, j := range joins {
 		if j.Child != nil && j.Child.Table() == childTable {
 			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// qualifyIdentifiers is quoteIdentifiers with an already-quoted table prefix on
+// every name — the form every column reference takes once a join is in the FROM.
+// An empty qualifier makes it quoteIdentifiers.
+func qualifyIdentifiers(cols []string, dialect Dialect, qualifier string) []string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = dialect.QuoteIdent(c)
+		if qualifier != "" {
+			out[i] = qualifier + "." + out[i]
 		}
 	}
 	return out

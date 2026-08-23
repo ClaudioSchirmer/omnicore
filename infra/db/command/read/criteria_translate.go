@@ -22,15 +22,36 @@ type sqlVisitor struct {
 	resolve core.FieldResolver
 	dialect Dialect
 	idKind  func(goField string) core.IDKind // nil = no id lifting
-	// idCol + idQualifier qualify the anchor id column to its table under a 1:1
-	// sibling/shared-base LEFT JOIN, where the shared id column exists in BOTH
-	// tables and a bare "id" in the predicate is ambiguous. Empty idQualifier =
-	// no qualification (the single-table default): every other column is unique
-	// across the node by the schema bijection, so only the id ever needs it.
+	// qual carries how this statement must qualify the columns it renders —
+	// see colQual.
+	qual colQual
+	sb   strings.Builder
+	args []any
+}
+
+// colQual is the qualification a statement needs for the columns it renders,
+// decided by what is in its FROM.
+//
+// Two independent triggers, because two different things become ambiguous:
+//
+//   - owner: the statement holds a DECLARED read join (WithJoins). A joined
+//     aggregate is a FOREIGN namespace — nothing stops it from having a "name",
+//     a "code" or the framework's own deleted_at/created_at/updated_at/revision
+//     — so EVERY column on the anchor side must be qualified by the table it
+//     physically lives on, not just the id. Anchor, siblings and shared base are
+//     all in the FROM under their own table names (never an alias), so their
+//     table IS their qualifier.
+//   - idCol/idQualifier: the statement pulled in a 1:1 sibling/shared-base LEFT
+//     JOIN. Those share the node's schema bijection, so their business columns
+//     stay unique; only the SHARED id exists in both tables. Qualifying just the
+//     id keeps the emitted SQL of that (much older, much more common) case
+//     byte-identical.
+//
+// The zero value is the single-table default: nothing qualified.
+type colQual struct {
+	owner       bool
 	idCol       string
 	idQualifier string
-	sb          strings.Builder
-	args        []any
 }
 
 // qualifyCol renders a resolved field as the SQL identifier the statement needs.
@@ -38,19 +59,23 @@ type sqlVisitor struct {
 // Qualification is decided by WHERE the column lives, not by which column it is.
 // A joined aggregate always carries a qualifier — its columns share a namespace
 // with nobody, so an unqualified "name" could belong to either side. The anchor,
-// its siblings and its shared base stay bare: the schema's bijection makes their
-// names unique across the node. The one exception is the anchor's own id under a
-// join, which the joined table also has; idQualifier carries the anchor table
-// when the caller knows a join is in play.
-func qualifyCol(rf core.ResolvedField, idCol, idQualifier string, dialect Dialect) string {
-	q := dialect.QuoteIdent(rf.Column)
+// its siblings and its shared base carry the table they live on whenever a
+// declared join is in the FROM (colQual.owner): the schema's bijection makes
+// their names unique across the NODE, and says nothing about the foreign
+// namespace a join drags in. Without a declared join they stay bare, except the
+// anchor's own id under a 1:1 join, which the joined table also has.
+func qualifyCol(rf core.ResolvedField, q colQual, dialect Dialect) string {
+	col := dialect.QuoteIdent(rf.Column)
 	if rf.Qualifier != "" {
-		return dialect.QuoteIdent(rf.Qualifier) + "." + q
+		return dialect.QuoteIdent(rf.Qualifier) + "." + col
 	}
-	if idQualifier != "" && rf.Column == idCol {
-		return idQualifier + "." + q
+	if q.owner && rf.Schema != nil {
+		return dialect.QuoteIdent(rf.Schema.Table()) + "." + col
 	}
-	return q
+	if q.idQualifier != "" && rf.Column == q.idCol {
+		return q.idQualifier + "." + col
+	}
+	return col
 }
 
 // place binds one probe value for the (Go-named) field and returns its
@@ -94,7 +119,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 	if !ok {
 		return fmt.Errorf("criteria: unknown field %q (not a persisted field of the entity)", c.Field)
 	}
-	col := qualifyCol(rf, v.idCol, v.idQualifier, v.dialect)
+	col := qualifyCol(rf, v.qual, v.dialect)
 
 	switch c.Op {
 	case criteria.OpIsNull:
@@ -214,18 +239,18 @@ func (v *sqlVisitor) VisitNot(n criteria.Negation) error {
 // compileWhere renders the predicate into a SQL fragment + ordered args. A nil
 // predicate yields an empty fragment (no WHERE).
 func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, idKind func(string) core.IDKind) (string, []any, error) {
-	return compileWhereQualified(e, resolve, dialect, idKind, "", "")
+	return compileWhereQualified(e, resolve, dialect, idKind, colQual{})
 }
 
-// compileWhereQualified is compileWhere with the anchor id qualified to its
-// table (idCol → idQualifier.idCol) — used by the loader when the criteria
-// pulled in a 1:1 sibling/shared-base LEFT JOIN, so a predicate on the shared
-// id column is unambiguous. idQualifier "" makes it identical to compileWhere.
-func compileWhereQualified(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, idKind func(string) core.IDKind, idCol, idQualifier string) (string, []any, error) {
+// compileWhereQualified is compileWhere with the qualification the statement's
+// FROM demands — every anchor-side column under a declared read join, the anchor
+// id alone under a 1:1 sibling/shared-base LEFT JOIN. A zero colQual makes it
+// identical to compileWhere.
+func compileWhereQualified(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, idKind func(string) core.IDKind, qual colQual) (string, []any, error) {
 	if e == nil {
 		return "", nil, nil
 	}
-	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind, idCol: idCol, idQualifier: idQualifier}
+	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind, qual: qual}
 	if err := e.Accept(v); err != nil {
 		return "", nil, err
 	}
@@ -286,14 +311,14 @@ func childScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qu
 // compileOrder renders the ORDER BY clause ("" when no order). Each field is
 // resolved + validated like the predicate columns.
 func compileOrder(order []criteria.OrderField, resolve core.FieldResolver, dialect Dialect) (string, error) {
-	return compileOrderQualified(order, resolve, dialect, "", "")
+	return compileOrderQualified(order, resolve, dialect, colQual{})
 }
 
-// compileOrderQualified is compileOrder with the anchor id qualified to its
-// table under a 1:1 join (see compileWhereQualified) — so the ORDER BY … , id
-// tiebreak is unambiguous when a sibling/base filter or sort pulled in a JOIN.
-// idQualifier "" makes it identical to compileOrder.
-func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolver, dialect Dialect, idCol, idQualifier string) (string, error) {
+// compileOrderQualified is compileOrder with the qualification the statement's
+// FROM demands (see compileWhereQualified) — so an ORDER BY on a column the
+// joined aggregate also has, and the id tiebreak under a 1:1 join, are both
+// unambiguous. A zero colQual makes it identical to compileOrder.
+func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
 	if len(order) == 0 {
 		return "", nil
 	}
@@ -303,7 +328,7 @@ func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolv
 		if !ok {
 			return "", fmt.Errorf("criteria: unknown order field %q", o.Field)
 		}
-		col := qualifyCol(rf, idCol, idQualifier, dialect)
+		col := qualifyCol(rf, qual, dialect)
 		if o.Desc {
 			parts[i] = col + " DESC"
 		} else {

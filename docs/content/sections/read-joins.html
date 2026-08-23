@@ -175,8 +175,17 @@
     standard SQL and Oracle rejects it outright, so the bare form is the one all four backends accept.
     Everything resolved through a join reaches the statement under that alias — the <code>WHERE</code>, the
     <code>ORDER BY</code>, and the aggregate DSL's expressions and grouping keys alike — because two aggregates may
-    perfectly well both have a <code>name</code>, and the joined side has no uniqueness guarantee against the anchor's
-    columns the way a sibling or a shared base does.
+    perfectly well both have a <code>name</code>.
+</p>
+<p>
+    The <strong>anchor side is qualified too</strong>, and for the same reason read backwards. A sibling and a shared
+    base share the entity's own namespace, where column names are unique by construction, so they need no prefix on
+    their own; a joined aggregate is a <em>foreign</em> namespace, free to carry a <code>name</code>, a
+    <code>code</code>, or the framework's own <code>deleted_at</code>. So the moment a declared join is in the
+    <code>FROM</code>, every column the statement emits on the anchor side — the <code>SELECT</code> list, the
+    predicate, the ordering, the aggregate expressions and grouping keys, and the archive gate on the root
+    <em>and</em> on each child — carries the table it physically lives on. Without a declared join nothing changes:
+    the statement is rendered exactly as it always was.
 </p>
 
 <h3>What a NULL means, and what archived means</h3>

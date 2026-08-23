@@ -36,7 +36,12 @@ with `1.0.0`.
   Each traversal is rendered under an alias derived from its foreign key, written
   BARE — the `AS` keyword is optional before a table alias in standard SQL and
   Oracle rejects it outright, so the bare form is the one all four backends
-  accept.
+  accept. Once a join is in the FROM every column reference is qualified on BOTH
+  sides: the joined one by its alias, and the anchor's own — the SELECT list, the
+  predicate, the ordering, the aggregate expressions and grouping keys, and the
+  archive gate on the root and on each child — by the table it lives on. A joined
+  aggregate is a foreign namespace, free to carry a `name`, a `code` or the
+  framework's own `deleted_at`. With no join declared the statement is unchanged.
 
   A root join is ALWAYS in the FROM and its columns ride the root SELECT, so the
   values cost no second round trip and the field is populated on every read — one

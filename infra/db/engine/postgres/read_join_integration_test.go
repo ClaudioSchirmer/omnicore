@@ -1,6 +1,6 @@
-//go:build integration && mysql
+//go:build integration && postgres
 
-package mysql
+package postgres
 
 import (
 	"context"
@@ -17,12 +17,12 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query/engine/relational"
 )
 
-// A read join's whole product is SQL a backend must accept, and every part of it
-// is dialect-shaped: the identifier quoting around each `j_<fk>` alias, the
-// position of the row window, and — on MySQL above all — the BINARY(16) id codec,
-// which has to encode the join's ON both ways or the traversal silently matches
-// nothing. The behavior of the feature is proven once on Postgres; this file
-// proves THIS dialect agrees.
+// A read join's whole product is SQL a backend must accept. This file is where
+// the BEHAVIOR of the feature is proven against a live server — an inner join
+// fills, a left join with no counterpart keeps the root and stays an absence, a
+// child join fills every element, and the reach is addressable in a criteria and
+// through a relational view. The mysql/sqlserver/oracle twins of this file prove
+// their own dialect agrees.
 //
 // The fixture is adversarial on purpose. rj_customers and rj_carriers share a
 // column name with EACH OTHER (credito), and all three targets share one with
@@ -114,65 +114,55 @@ func rjCitySchema() *core.TableSchema {
 }
 
 // rjSetup creates the fixture tables, seeds two orders — one WITH a carrier, one
-// without — and returns the loader every case reads through.
+// without — and returns the loader every case reads through. The throw-away
+// database goes away with the test, so the tables need no teardown of their own.
 func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 	t.Helper()
-	eng, raw := setup(t)
+	pg, cleanup := newTestPG(t)
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
-	for _, stmt := range []string{
-		`DROP TABLE IF EXISTS rj_order_lines`,
-		`DROP TABLE IF EXISTS rj_orders`,
-		`DROP TABLE IF EXISTS rj_customers`,
-		`DROP TABLE IF EXISTS rj_carriers`,
-		`DROP TABLE IF EXISTS rj_cities`,
+	for _, ddl := range []string{
 		`CREATE TABLE rj_customers (
-			id BINARY(16) PRIMARY KEY,
-			nome VARCHAR(255) NOT NULL,
-			code VARCHAR(64) NULL,
+			id UUID PRIMARY KEY,
+			nome TEXT NOT NULL,
+			code VARCHAR(64),
 			credito BIGINT NOT NULL DEFAULT 0,
-			deleted_at DATETIME NULL
+			deleted_at TIMESTAMP
 		)`,
 		`CREATE TABLE rj_carriers (
-			id BINARY(16) PRIMARY KEY,
-			codigo VARCHAR(255) NOT NULL,
-			code VARCHAR(64) NULL,
+			id UUID PRIMARY KEY,
+			codigo TEXT NOT NULL,
+			code VARCHAR(64),
 			credito BIGINT NOT NULL DEFAULT 0,
-			deleted_at DATETIME NULL
+			deleted_at TIMESTAMP
 		)`,
 		`CREATE TABLE rj_cities (
-			id BINARY(16) PRIMARY KEY,
-			nome VARCHAR(255) NOT NULL,
-			code VARCHAR(64) NULL,
-			deleted_at DATETIME NULL
+			id UUID PRIMARY KEY,
+			nome TEXT NOT NULL,
+			code VARCHAR(64),
+			deleted_at TIMESTAMP
 		)`,
 		`CREATE TABLE rj_orders (
-			id BINARY(16) PRIMARY KEY,
+			id UUID PRIMARY KEY,
 			revision BIGINT NOT NULL DEFAULT 0,
 			code VARCHAR(64) NOT NULL,
-			customer_id BINARY(16) NOT NULL,
-			carrier_id BINARY(16) NULL,
-			deleted_at DATETIME NULL
+			customer_id UUID NOT NULL,
+			carrier_id UUID,
+			deleted_at TIMESTAMP
 		)`,
 		`CREATE TABLE rj_order_lines (
-			id BINARY(16) PRIMARY KEY,
-			rj_order_id BINARY(16) NOT NULL,
+			id UUID PRIMARY KEY,
+			rj_order_id UUID NOT NULL,
 			label VARCHAR(64) NOT NULL,
-			city_id BINARY(16) NOT NULL,
-			deleted_at DATETIME NULL
+			city_id UUID NOT NULL,
+			deleted_at TIMESTAMP
 		)`,
 	} {
-		if _, err := raw.ExecContext(ctx, stmt); err != nil {
-			t.Fatalf("fixture DDL: %v\nstmt: %s", err, stmt)
-		}
+		createTable(t, pg, ddl)
 	}
-	t.Cleanup(func() {
-		for _, tbl := range []string{"rj_order_lines", "rj_orders", "rj_customers", "rj_carriers", "rj_cities"} {
-			_, _ = raw.ExecContext(context.Background(), `DROP TABLE IF EXISTS `+tbl)
-		}
-	})
 
-	newID := func() uuid.UUID { return uuid.New() }
+	newID := func() string { return uuid.NewString() }
 	ana, bruno, carrier, city := newID(), newID(), newID(), newID()
 	withCarrier, without := newID(), newID()
 
@@ -180,33 +170,25 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO rj_customers (id, nome, credito) VALUES (?, 'ana', 10)`, []any{ana[:]}},
-		{`INSERT INTO rj_customers (id, nome, credito) VALUES (?, 'bruno', 32)`, []any{bruno[:]}},
-		{`INSERT INTO rj_carriers (id, codigo, credito) VALUES (?, 'DHL', 99)`, []any{carrier[:]}},
-		{`INSERT INTO rj_cities (id, nome) VALUES (?, 'Porto Alegre')`, []any{city[:]}},
-		{`INSERT INTO rj_orders (id, code, customer_id, carrier_id) VALUES (?, 'A-1', ?, ?)`,
-			[]any{withCarrier[:], ana[:], carrier[:]}},
-		{`INSERT INTO rj_orders (id, code, customer_id) VALUES (?, 'B-2', ?)`,
-			[]any{without[:], bruno[:]}},
-		{`INSERT INTO rj_order_lines (id, rj_order_id, label, city_id) VALUES (?, ?, 'l1', ?)`,
-			[]any{newID(), withCarrier[:], city[:]}},
-		{`INSERT INTO rj_order_lines (id, rj_order_id, label, city_id) VALUES (?, ?, 'l1', ?)`,
-			[]any{newID(), without[:], city[:]}},
+		{`INSERT INTO rj_customers (id, nome, credito) VALUES ($1, 'ana', 10)`, []any{ana}},
+		{`INSERT INTO rj_customers (id, nome, credito) VALUES ($1, 'bruno', 32)`, []any{bruno}},
+		{`INSERT INTO rj_carriers (id, codigo, credito) VALUES ($1, 'DHL', 99)`, []any{carrier}},
+		{`INSERT INTO rj_cities (id, nome) VALUES ($1, 'Porto Alegre')`, []any{city}},
+		{`INSERT INTO rj_orders (id, code, customer_id, carrier_id) VALUES ($1, 'A-1', $2, $3)`,
+			[]any{withCarrier, ana, carrier}},
+		{`INSERT INTO rj_orders (id, code, customer_id) VALUES ($1, 'B-2', $2)`,
+			[]any{without, bruno}},
+		{`INSERT INTO rj_order_lines (id, rj_order_id, label, city_id) VALUES ($1, $2, 'l1', $3)`,
+			[]any{newID(), withCarrier, city}},
+		{`INSERT INTO rj_order_lines (id, rj_order_id, label, city_id) VALUES ($1, $2, 'l1', $3)`,
+			[]any{newID(), without, city}},
 	} {
-		args := make([]any, len(s.args))
-		for i, a := range s.args {
-			if u, ok := a.(uuid.UUID); ok {
-				args[i] = u[:]
-				continue
-			}
-			args[i] = a
-		}
-		if _, err := raw.ExecContext(ctx, s.sql, args...); err != nil {
+		if _, err := pg.Pool().Exec(ctx, s.sql, s.args...); err != nil {
 			t.Fatalf("seed: %v\nstmt: %s", err, s.sql)
 		}
 	}
 
-	loader := read.NewAggregateLoader[*rjOrder](eng, func() *rjOrder { return &rjOrder{} }).
+	return read.NewAggregateLoader[*rjOrder](pg, func() *rjOrder { return &rjOrder{} }).
 		WithSchema(rjOrderSchema()).
 		WithJoins(
 			read.InnerJoin(rjCustomerSchema()).On("customer_id").
@@ -217,14 +199,12 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 			read.InnerJoinInChild(rjLineSchema()).To(rjCitySchema()).On("city_id").
 				Field("CityName", "nome"),
 		)
-	return loader
 }
 
-// The load: the id codec has to encode the join's ON in the dialect's stored
-// form, an inner join must fill, a left join with no counterpart must scan NULL
-// into the pointer without dropping the root, and a child join must fill every
-// loaded element off the child's own batched SELECT.
-func TestMySQLReadJoin_LoadsAcrossBothKinds(t *testing.T) {
+// The load: an inner join must fill, a left join with no counterpart must scan
+// NULL into the pointer without dropping the root, and a child join must fill
+// every loaded element off the child's own batched SELECT.
+func TestPGReadJoin_LoadsAcrossBothKinds(t *testing.T) {
 	loader := rjSetup(t)
 
 	orders, err := loader.FindAll(context.Background(), criteria.Where(nil).OrderBy("Code"))
@@ -261,7 +241,7 @@ func TestMySQLReadJoin_LoadsAcrossBothKinds(t *testing.T) {
 // Filter, sort, Exists and the aggregate DSL over a joined column — every one of
 // them has to reach the server alias-qualified, since `nome` and `credito` live
 // on more than one table in this FROM.
-func TestMySQLReadJoin_IsAddressableInACriteria(t *testing.T) {
+func TestPGReadJoin_IsAddressableInACriteria(t *testing.T) {
 	loader := rjSetup(t)
 	ctx := context.Background()
 
@@ -300,10 +280,80 @@ func TestMySQLReadJoin_IsAddressableInACriteria(t *testing.T) {
 	}
 }
 
+// The ANCHOR half of the same statement. A criteria naming a column the join
+// target also has ("code" lives on all three targets here) must reach the server
+// qualified to the anchor — and so must the columns the SELECT list carries on
+// its own, which is why the plain unfiltered listing is part of this case.
+func TestPGReadJoin_AnchorColumnsSurviveACollidingTarget(t *testing.T) {
+	loader := rjSetup(t)
+	ctx := context.Background()
+
+	all, err := loader.FindAll(ctx, criteria.Where(nil))
+	if err != nil {
+		t.Fatalf("the plain listing must not be ambiguous: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("the plain listing = %d rows, want 2", len(all))
+	}
+
+	byCode, err := loader.FindOne(ctx, criteria.Where(criteria.Eq("Code", "A-1")))
+	if err != nil {
+		t.Fatalf("filter by an anchor column the target also has: %v", err)
+	}
+	if byCode == nil || byCode.Code != "A-1" {
+		t.Fatalf("filter by the anchor's Code = %+v", byCode)
+	}
+
+	ordered, err := loader.FindAll(ctx, criteria.Where(nil).OrderByDesc("Code"))
+	if err != nil {
+		t.Fatalf("sort by an anchor column the target also has: %v", err)
+	}
+	if len(ordered) != 2 || ordered[0].Code != "B-2" {
+		t.Fatalf("sort by the anchor's Code = %v", ordered)
+	}
+
+	max := read.MaxInt("CustomerCredito")
+	if err := loader.Aggregate(ctx, criteria.Where(criteria.Eq("Code", "B-2")), max); err != nil {
+		t.Fatalf("aggregate under an anchor predicate: %v", err)
+	}
+	if !max.Found || max.Value != 32 {
+		t.Errorf("MaxInt under an anchor predicate = (%d, found=%v), want (32, true)", max.Value, max.Found)
+	}
+}
+
+// The archive gate on BOTH levels. The anchor and the child are archivable and
+// so is every join target, so a bare deleted_at in either statement is ambiguous
+// — and an archived root must still disappear from the default scope.
+func TestPGReadJoin_ScopeGatesSurviveAnArchivableTarget(t *testing.T) {
+	loader := rjSetup(t)
+	ctx := context.Background()
+
+	active, err := loader.FindAll(ctx, criteria.Where(nil))
+	if err != nil {
+		t.Fatalf("the active scope must not be ambiguous: %v", err)
+	}
+	if len(active) != 2 {
+		t.Fatalf("active scope = %d rows, want 2", len(active))
+	}
+
+	archived, err := loader.FindAll(ctx, criteria.Where(nil).IncludeArchived())
+	if err != nil {
+		t.Fatalf("the include-archived scope must not be ambiguous: %v", err)
+	}
+	if len(archived) != 2 {
+		t.Fatalf("include-archived scope = %d rows, want 2", len(archived))
+	}
+	for _, o := range archived {
+		if len(o.AllAggregateItems()["rjLine"]) != 1 {
+			t.Errorf("the child SELECT must survive its own gate under a child join: %+v", o)
+		}
+	}
+}
+
 // The same reach, served through a relational view: the row window and the
 // deterministic ORDER BY tiebreak are rendered in this dialect's native position,
 // and a NULL left join must reach the consumer as an ABSENCE.
-func TestMySQLReadJoin_ServedThroughARelationalView(t *testing.T) {
+func TestPGReadJoin_ServedThroughARelationalView(t *testing.T) {
 	loader := rjSetup(t)
 	ctx := context.Background()
 
@@ -364,5 +414,16 @@ func TestMySQLReadJoin_ServedThroughARelationalView(t *testing.T) {
 	}
 	if len(filtered.Items) != 1 || filtered.Items[0]["Code"] != "B-2" {
 		t.Fatalf("filter by a joined field = %v", filtered.Items)
+	}
+
+	// …and by an ANCHOR field the target also carries.
+	byAnchor, err := reader.ReadPage(ctx, "rj_orders", queries.ReadCriteria{
+		Filter: map[string]any{"Code": "A-1"},
+	})
+	if err != nil {
+		t.Fatalf("ReadPage filtered by an anchor field the target also has: %v", err)
+	}
+	if len(byAnchor.Items) != 1 || byAnchor.Items[0]["CustomerName"] != "ana" {
+		t.Fatalf("filter by the anchor's Code = %v", byAnchor.Items)
 	}
 }
