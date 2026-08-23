@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
@@ -273,9 +274,10 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 }
 
 // validateJoinFieldType proves the mapped Go field exists on the owning struct,
-// is exported, and — for a left join — can hold the NULL a missing counterpart
-// produces. A non-nullable field there would receive its zero value and report a
-// blank name where the truth is "there is no counterpart".
+// is exported, carries no DOMAIN type, and — for a left join — can hold the NULL
+// a missing counterpart produces. A non-nullable field there would receive its
+// zero value and report a blank name where the truth is "there is no
+// counterpart".
 func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.Type, f JoinField) {
 	if ownerType == nil {
 		return // type-less schema: nothing to prove the field against
@@ -290,11 +292,113 @@ func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.
 		fail("%s(%q).Field(%q, ...): %s.%s is unexported — the join cannot write to it",
 			j.Kind, j.Target.Table(), f.GoField, ownerType.Name(), f.GoField)
 	}
+	// A join field may carry NO domain type — not an identity, not a value object
+	// of any kind. The complaint comes before the nullability one because it is
+	// the more fundamental of the two: a domain-typed field is wrong whichever
+	// join declares it.
+	if kind, remedy, isDomain := domainTypeOfJoinField(sf.Type); isDomain {
+		fail("%s(%q).Field(%q, ...): %s.%s is %s, and a join field carries no domain type. "+
+			"The value belongs to ANOTHER aggregate and arrives read-only: it is never written "+
+			"through this entity and never validated by this domain, so a domain type here would "+
+			"be an instance no rule ever approved. %s",
+			j.Kind, j.Target.Table(), f.GoField, ownerType.Name(), f.GoField, kind, remedy)
+	}
+	// The joined aggregate declares this column as an IDENTITY. Since a join field
+	// carries no domain type, the identity has exactly one shape here: the plain
+	// string the framework decodes it into. Anything else would receive the
+	// dialect's stored form — 16 raw bytes on three of the four engines — so the
+	// declaration is checked rather than trusted.
+	if idKind := targetIDKindOf(j, f); idKind != core.IDNone {
+		wantPtr := idKind == core.IDPointer || j.Kind == JoinLeft
+		if !isJoinIDTextField(sf.Type, wantPtr) {
+			want, why := "string", "an identity column is read as its canonical text"
+			if wantPtr {
+				want = "*string"
+				why = "the column is nullable, so the absence must be representable"
+				if idKind != core.IDPointer {
+					why = "a left join produces NULL when there is no counterpart"
+				}
+			}
+			fail("%s(%q).Field(%q, %q): %q is an identity column of %q, so %s.%s must be %s — %s. "+
+				"It is %s. A join field carries no value object, domain.ID included, which is why an "+
+				"identity arrives as text rather than as its domain type.",
+				j.Kind, j.Target.Table(), f.GoField, f.Column, f.Column, j.Target.Table(),
+				ownerType.Name(), f.GoField, want, why, sf.Type)
+		}
+	}
 	if j.Kind == JoinLeft && !isNullableKind(sf.Type) {
 		fail("%s(%q).Field(%q, ...): %s.%s is %s, which cannot hold the NULL a left join "+
 			"produces when there is no counterpart — declare it as a pointer, or use InnerJoin",
 			j.Kind, j.Target.Table(), f.GoField, ownerType.Name(), f.GoField, sf.Type)
 	}
+}
+
+// domainTypeOfJoinField names the domain typing of a join field's Go type and
+// the remedy for it, or reports false for an ordinary one. The four kinds are
+// separated because the fix differs: a value object of any kind is replaced by
+// the scalar it is stored as, while an identity has no honest scalar on every
+// engine and the message must say so rather than send the developer at a string
+// that silently reads as bytes.
+//
+// domain.ID is checked FIRST because it satisfies the value-object contract
+// (Value() plus IsValid) and would otherwise be named a scalar value object —
+// the same special case core.valueObjectField makes for the same reason.
+func domainTypeOfJoinField(t reflect.Type) (kind, remedy string, isDomain bool) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == reflect.TypeOf(domain.ID{}) {
+		return "an identity (domain.ID)", idTextRemedy, true
+	}
+	zero := reflect.Zero(t).Interface()
+	if domain.IsEnumValueObject(zero) {
+		return "an enum value object", scalarRemedy, true
+	}
+	if !domain.IsValueObject(zero) {
+		return "", "", false
+	}
+	// Value() is what tells a scalar-backed value object from a composite one:
+	// a composite spans several columns and declares none.
+	if _, hasValue := domain.ValueObjectValue(zero); hasValue {
+		return "a scalar value object", scalarRemedy, true
+	}
+	return "a composite value object",
+		"A composite value object spans SEVERAL columns and a join field maps exactly one, " +
+			"so it has no form here at all. Map the parts the traversal actually needs, each as " +
+			"its own scalar field.",
+		true
+}
+
+const idTextRemedy = "Declare the field as a plain string: an identity column is read as its " +
+	"canonical text, and the framework decodes the dialect's stored form (BINARY(16) on mysql and " +
+	"sqlserver, RAW(16) on oracle) into it for you."
+
+const scalarRemedy = "Declare the field as the scalar the column is stored as (string, int64, …) — " +
+	"a join brings back the COLUMN, and the domain type is the owning aggregate's to reconstruct."
+
+// targetIDKindOf reports how the JOINED aggregate types the column this field
+// maps: IDValue for a domain.ID field of the target, IDPointer for a *domain.ID
+// one, IDNone for an ordinary column. The target's schema is the declaration —
+// the same source the mapped-field scan plan consults — so the two paths cannot
+// disagree about what an identity is.
+func targetIDKindOf(j Join, f JoinField) core.IDKind {
+	if j.Target == nil {
+		return core.IDNone
+	}
+	goName, ok := j.Target.GoNameForRead(f.Column)
+	if !ok {
+		return core.IDNone // already reported by the column check
+	}
+	return j.Target.IDKindOf(goName)
+}
+
+// isJoinIDTextField reports whether t is the string shape an identity column
+// lands in: *string when the value may be absent, string when it may not.
+func isJoinIDTextField(t reflect.Type, wantPtr bool) bool {
+	if wantPtr {
+		return t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.String && t.Elem().PkgPath() == ""
+	}
+	return t.Kind() == reflect.String && t.PkgPath() == ""
 }
 
 func isNullableKind(t reflect.Type) bool {

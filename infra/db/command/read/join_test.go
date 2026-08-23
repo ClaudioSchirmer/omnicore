@@ -2,8 +2,11 @@ package read
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
@@ -22,7 +25,48 @@ type joinOrder struct {
 	CustomerName string  // inner join: always matches, non-nullable is honest
 	CarrierCode  *string // left join: no counterpart → NULL
 	unexported   string
+
+	// One field per DOMAIN kind, so the guard can be proven to name each of them.
+	// None is declarable as a join field; they exist only as rejection material.
+	OwnerID    domain.ID  // identity, by value
+	AltOwnerID *domain.ID // identity, nullable
+	// The shapes an identity column of the TARGET is allowed to land in, plus one
+	// that is not.
+	TargetOwner    string
+	TargetAltOwner *string
+	TargetBadOwner int64
+	VendorCode     joinVOCode  // scalar value object
+	VendorTier     joinVOTier  // enum value object
+	VendorAddr     joinVOAddr  // composite value object
+	VendorNote     *joinVOCode // scalar value object, nullable
 }
+
+// The three value-object kinds the persistence seam distinguishes. Each is
+// declared by the SIGNAL the framework detects it by, nothing more.
+
+// joinVOCode is a raw (scalar-backed) value object: Value() plus IsValid.
+type joinVOCode string
+
+func (c joinVOCode) Value() string                                    { return string(c) }
+func (c joinVOCode) IsValid(string, *domain.NotificationContext) bool { return true }
+
+// joinVOTier is an enum value object: its exclusive signal is UnknownNotification.
+type joinVOTier int
+
+func (t joinVOTier) Value() int           { return int(t) }
+func (t joinVOTier) Values() []joinVOTier { return []joinVOTier{0, 1, 2} }
+func (t joinVOTier) UnknownNotification() domain.Notification {
+	return domain.RequiredFieldNotification{}
+}
+
+// joinVOAddr is a COMPOSITE value object: it owns its rule and declares no
+// Value(), because its value spans more than one column.
+type joinVOAddr struct {
+	Street string
+	City   string
+}
+
+func (a joinVOAddr) IsValid(string, *domain.NotificationContext) bool { return true }
 
 func (e *joinOrder) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
 func (e *joinOrder) BuildRules(string, domain.Service, *domain.Rules) {}
@@ -49,6 +93,10 @@ func (l joinLine) IsSameBusinessIdentity(o domain.AggregateValueObject) bool {
 type joinCustomer struct {
 	domain.BaseEntity
 	Name string
+	// Two ordinary columns of the target that ARE identities — a foreign key of
+	// the joined aggregate, which is exactly what a traversal reaches for.
+	OwnerID    domain.ID
+	AltOwnerID *domain.ID
 }
 
 func (e *joinCustomer) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeInsert} }
@@ -72,7 +120,9 @@ func joinOrderSchema() *TableSchema {
 }
 
 func joinTargetSchema(table string) *TableSchema {
-	return NewTableSchema[*joinCustomer](table).ID("id").Field("Name", "nome")
+	return NewTableSchema[*joinCustomer](table).ID("id").Field("Name", "nome").
+		Field("OwnerID", "owner_id").
+		Field("AltOwnerID", "alt_owner_id")
 }
 
 func joinLoader(schema *TableSchema) *AggregateLoader[*joinOrder] {
@@ -259,6 +309,179 @@ func TestWithJoins_AcceptsInnerJoinOverAMandatoryFK(t *testing.T) {
 
 // A LEFT join produces NULL when there is no counterpart: a non-nullable Go
 // field would take its zero value and report a blank where the truth is absence.
+// A join field carries no domain type. The value is another aggregate's, arrives
+// read-only, and is never validated by this domain — a domain type here would be
+// an instance no rule ever approved. The guard names WHICH kind it found, because
+// the remedy differs between a value object (declare the scalar) and an identity
+// (there is no honest scalar on every engine).
+func TestWithJoins_RejectsADomainTypedField(t *testing.T) {
+	for _, c := range []struct{ field, wantKind string }{
+		{"OwnerID", "an identity (domain.ID)"},
+		{"AltOwnerID", "an identity (domain.ID)"},
+		{"VendorCode", "a scalar value object"},
+		{"VendorNote", "a scalar value object"},
+		{"VendorTier", "an enum value object"},
+		{"VendorAddr", "a composite value object"},
+	} {
+		t.Run(c.field, func(t *testing.T) {
+			wantPanic(t, "joinOrder."+c.field+" is "+c.wantKind+", and a join field carries no domain type", func() {
+				joinLoader(joinOrderSchema()).WithJoins(
+					InnerJoin(joinTargetSchema("customers")).On("customer_id").
+						Field(c.field, "nome"))
+			})
+		})
+	}
+}
+
+// Each kind must also say what to do instead, and the two remedies are not
+// interchangeable: sending an identity at a string is what silently reads 16 raw
+// bytes as if they were a uuid on three of the four engines.
+func TestWithJoins_DomainTypeRejectionCarriesItsRemedy(t *testing.T) {
+	wantPanic(t, "Declare the field as the scalar the column is stored as", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("VendorCode", "nome"))
+	})
+	wantPanic(t, "Declare the field as a plain string: an identity column is read as its canonical text", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("OwnerID", "nome"))
+	})
+	wantPanic(t, "spans SEVERAL columns and a join field maps exactly one", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("VendorAddr", "nome"))
+	})
+}
+
+// The domain-type complaint outranks the nullability one: a non-pointer value
+// object on a LEFT join violates both, and the actionable answer is not "make it
+// a pointer" — a *vos.Email is just as refused.
+func TestWithJoins_DomainTypeOutranksNullability(t *testing.T) {
+	wantPanic(t, "a join field carries no domain type", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("carriers")).On("carrier_id").
+				Field("VendorCode", "nome"))
+	})
+}
+
+// The guard must not widen past domain types: an ordinary scalar, of either
+// nullability, is what a join field is FOR.
+func TestWithJoins_AcceptsOrdinaryScalarFields(t *testing.T) {
+	joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CustomerName", "nome"),
+		LeftJoin(joinTargetSchema("carriers")).On("carrier_id").
+			Field("CarrierCode", "nome"))
+}
+
+// An identity column of the JOINED aggregate has exactly one shape on this side:
+// the plain string the framework decodes it into. The declaration is checked at
+// construction rather than trusted, because the alternative is a field that
+// receives the dialect's stored form — 16 raw bytes on three of the four engines
+// — without any error to show for it.
+func TestWithJoins_IdentityColumnMustLandInAString(t *testing.T) {
+	accept := func(t *testing.T, build func()) {
+		t.Helper()
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("declaration must be accepted, got panic: %v", r)
+			}
+		}()
+		build()
+	}
+
+	// string for a non-nullable identity under an inner join…
+	accept(t, func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("TargetOwner", "owner_id"))
+	})
+	// …*string for a nullable one, and for anything under a left join.
+	accept(t, func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("TargetAltOwner", "alt_owner_id"))
+	})
+	accept(t, func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("carriers")).On("carrier_id").
+				Field("TargetAltOwner", "owner_id"))
+	})
+
+	// A non-string field is refused, naming what it must be…
+	wantPanic(t, "must be string", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("TargetBadOwner", "owner_id"))
+	})
+	// …a nullable identity refuses the non-pointer string…
+	wantPanic(t, "must be *string — the column is nullable", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("TargetOwner", "alt_owner_id"))
+	})
+	// …and so does a left join, for its own reason.
+	wantPanic(t, "must be *string — a left join produces NULL", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("carriers")).On("carrier_id").
+				Field("TargetOwner", "owner_id"))
+	})
+}
+
+// The identity column decodes on the way in: the dialect's stored form becomes
+// the canonical uuid text, and SQL NULL an absence — reusing the decode domain.ID
+// already owns and assigning what it yields.
+func TestJoinScanTargets_IdentityColumnDecodesIntoTheString(t *testing.T) {
+	const uid = "11111111-2222-3333-4444-555555555555"
+	bin := uuid.MustParse(uid)
+
+	order := &joinOrder{}
+	js := []Join{{
+		Target: joinTargetSchema("customers"),
+		Fields: []JoinField{
+			{GoField: "TargetOwner", Column: "owner_id"},
+			{GoField: "TargetAltOwner", Column: "alt_owner_id"},
+			{GoField: "CustomerName", Column: "nome"},
+		},
+	}}
+	got, err := joinScanTargetsFor(order, js)
+	if err != nil {
+		t.Fatalf("joinScanTargetsFor: %v", err)
+	}
+	// An ordinary column keeps the raw address it always had.
+	if _, ok := got[2].(*string); !ok {
+		t.Errorf("CustomerName target = %T, want the plain *string address", got[2])
+	}
+
+	// BINARY(16) (mysql/sqlserver) into the required field.
+	b := bin
+	if err := got[0].(sql.Scanner).Scan(b[:]); err != nil {
+		t.Fatalf("scanning a stored identity form: %v", err)
+	}
+	if order.TargetOwner != uid {
+		t.Errorf("TargetOwner = %q, want the canonical text %q", order.TargetOwner, uid)
+	}
+	// Text form (postgres) into the nullable one.
+	if err := got[1].(sql.Scanner).Scan(uid); err != nil {
+		t.Fatalf("scanning a text identity: %v", err)
+	}
+	if order.TargetAltOwner == nil || *order.TargetAltOwner != uid {
+		t.Errorf("TargetAltOwner = %v, want %q", order.TargetAltOwner, uid)
+	}
+	// NULL is an absence on the nullable field…
+	if err := got[1].(sql.Scanner).Scan(nil); err != nil {
+		t.Fatalf("NULL into a nullable identity join field: %v", err)
+	}
+	if order.TargetAltOwner != nil {
+		t.Errorf("TargetAltOwner = %v, want nil", order.TargetAltOwner)
+	}
+	// …and a loud error on the required one, never a blank id.
+	if err := got[0].(sql.Scanner).Scan(nil); err == nil {
+		t.Error("NULL into a non-nullable identity join field must error")
+	}
+}
+
 func TestWithJoins_RejectsALeftJoinOntoANonNullableField(t *testing.T) {
 	wantPanic(t, "cannot hold the NULL a left join", func() {
 		joinLoader(joinOrderSchema()).WithJoins(
@@ -668,7 +891,6 @@ func TestJoinScanTargets_EmptyWithoutRootJoins(t *testing.T) {
 		t.Errorf("a child join contributes no ROOT scan target, got %d", len(got))
 	}
 }
-
 
 // ─── a join target that looks like a real entity ─────────────────────────────
 

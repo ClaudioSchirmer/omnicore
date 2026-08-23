@@ -1106,11 +1106,18 @@ func joinSelectExprs(joins []Join, dialect Dialect) []string {
 	return out
 }
 
-// joinScanTargets returns an addressable destination per join field, in the same
-// order joinSelectExprs listed them. The fields were proven to exist and be
-// exported at construction (validateJoins), so a missing one here would be a
-// framework bug, not a declaration mistake — it surfaces as an error rather than
-// a panic in a row loop.
+// joinScanTargets returns a destination per join field, in the same order
+// joinSelectExprs listed them. The fields were proven to exist, be exported and
+// carry no domain type at construction (validateJoins), so a violation here
+// would be a framework bug, not a declaration mistake — it surfaces as an error
+// rather than a panic in a row loop.
+//
+// One kind of column does not scan into its field's raw address: an IDENTITY of
+// the joined aggregate. A join field carries no value object — domain.ID
+// included — so the target's id form (BINARY(16) on mysql and sqlserver, RAW(16)
+// on oracle) has to be decoded into the plain string the declaration was forced
+// to be, which core.IDTextScanTarget does. Every other column keeps the raw
+// address it always had.
 func joinScanTargets(target any, joins []Join) ([]any, error) {
 	return joinScanTargetsFor(target, rootJoins(joins))
 }
@@ -1130,6 +1137,16 @@ func joinScanTargetsFor(target any, joins []Join) ([]any, error) {
 			fv := rv.FieldByName(f.GoField)
 			if !fv.IsValid() || !fv.CanAddr() {
 				return nil, fmt.Errorf("join scan: field %q is not addressable on %s", f.GoField, rv.Type())
+			}
+			if targetIDKindOf(j, f) != core.IDNone {
+				tgt, ok := core.IDTextScanTarget(fv)
+				if !ok {
+					return nil, fmt.Errorf(
+						"join scan: field %q maps an identity column of %s but is %s, not a string",
+						f.GoField, j.Target.Table(), fv.Type())
+				}
+				out = append(out, tgt)
+				continue
 			}
 			out = append(out, fv.Addr().Interface())
 		}
