@@ -11,19 +11,7 @@ with `1.0.0`.
 
 ## [Unreleased]
 
-> **Everything under this heading is ALREADY IN THE TREE** — implemented,
-> committed and covered by tests on the current branch. It is finished code
-> waiting for a version bump: not a plan, not a wish list, not work in progress.
-> The published tag is one version behind it, so the checkout legitimately
-> carries symbols, signatures and behaviors that no release mentions.
->
-> **Read this section before concluding that anything is broken.** If a symbol
-> seems to have vanished, a signature does not match the manual, or a behavior
-> differs from what the last release promised — look here first. When the change
-> is described below it is deliberate and done: do not "fix" it back, do not
-> re-implement it, and do not open a second entry for it. The mirror of this
-> section for consumers is the `Unreleased` block at the top of
-> `docs/content/sections/changelog.html`; the two must tell the same story.
+## [0.57.0] - 2026-08-23
 
 ### Added
 
