@@ -400,6 +400,12 @@ func TestPGReadJoin_ServedThroughARelationalView(t *testing.T) {
 	if page.TotalCount != 2 {
 		t.Errorf("TotalCount = %d, want 2 (the match set, not the window)", page.TotalCount)
 	}
+	// An identity join field is served as the canonical text it was decoded into —
+	// the view is another consumer of the same load, and the value must not revert
+	// to the dialect's stored form on the way to the document.
+	if got := page.Items[0]["CustomerOwner"]; got != rjAnaOwner {
+		t.Errorf("the view served CustomerOwner = %#v, want %q", got, rjAnaOwner)
+	}
 	lines, _ := page.Items[0]["Lines"].([]any)
 	if len(lines) != 1 {
 		t.Fatalf("the child collection must be served, got %#v", page.Items[0]["Lines"])
@@ -423,6 +429,14 @@ func TestPGReadJoin_ServedThroughARelationalView(t *testing.T) {
 	carrierless := p2.Items[0]
 	if v, present := carrierless["CarrierCode"]; !present || v != nil {
 		t.Errorf("a left join with no counterpart must be served as nil, got %#v (present=%v)", v, present)
+	}
+	if got := carrierless["CustomerOwner"]; got != rjBrunoOwner {
+		t.Errorf("the view served CustomerOwner of B-2 = %#v, want %q", got, rjBrunoOwner)
+	}
+	// …and the nullable one stays an ABSENCE through the view, like every other
+	// left-join field.
+	if v, present := carrierless["CarrierOwner"]; !present || v != nil {
+		t.Errorf("a nullable identity join field with no counterpart must be served as nil, got %#v (present=%v)", v, present)
 	}
 	type orderResult struct {
 		Code        string
