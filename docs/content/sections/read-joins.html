@@ -121,12 +121,12 @@
     composite spans several columns while a join field maps exactly one. Declare the scalar the column is stored as, and
     let the owning aggregate be the one that reconstructs its own types.
 </p>
-<pre><code>type Pedido struct {
+<pre><code>type Order struct {
     domain.AggregateRoot
-    ClienteID domain.ID     // a foreign key of THIS entity — a schema field, a domain type, fine
+    CustomerID domain.ID    // a foreign key of THIS entity — a schema field, a domain type, fine
 
-    NomeCliente  string     // a join field — the scalar the column is stored as
-    EmailCliente string     // NOT vos.Email: the join brings the COLUMN, not the value object
+    CustomerName  string    // a join field — the scalar the column is stored as
+    CustomerEmail string    // NOT vos.Email: the join brings the COLUMN, not the value object
 }</code></pre>
 
 <div class="box">
@@ -137,12 +137,13 @@
     an identity as <code>BINARY(16)</code> and oracle as <code>RAW(16)</code>, which a bare string field would receive
     as 16 raw bytes <em>without an error</em>. The same typing governs the predicate, so a filter on that field binds in
     the form the target stores and actually matches.
-    <pre><code>read.InnerJoin(schemas.CampusSchema()).On("campus_id").
+</div>
+
+<pre><code>read.InnerJoin(schemas.CampusSchema()).On("campus_id").
     Field("CampusOwnerID", "owner_id")   // owner_id is a domain.ID on the Campus schema
 
-// on the entity:
-CampusOwnerID string   // arrives as "0e5a1f6c-…", on all four engines</code></pre>
-</div>
+// on the entity — arrives as "0e5a1f6c-…", on all four engines:
+CampusOwnerID string</code></pre>
 <div class="box">
     <strong>The predicate is always <code>fk = target.id</code>.</strong> <code>.On(...)</code> names the
     foreign key; the other side of the comparison is the <em>target schema's declared id column</em>, which the

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -479,6 +480,84 @@ func TestJoinScanTargets_IdentityColumnDecodesIntoTheString(t *testing.T) {
 	// …and a loud error on the required one, never a blank id.
 	if err := got[0].(sql.Scanner).Scan(nil); err == nil {
 		t.Error("NULL into a non-nullable identity join field must error")
+	}
+}
+
+// The identity lookup answers for the two shapes a caller can hand it that the
+// construction check has already ruled out — a join with no target (the child
+// filter builds one), and a column the target does not declare (reported by the
+// column check, so this must not speak for it). Both are IDNone: the field keeps
+// the plain address it always had, rather than being decoded as an identity.
+// Construction guarantees an identity column lands in a string, so the scan's
+// own refusal is unreachable through the public surface — reached here directly,
+// it must be an error naming the field rather than a panic inside a row loop.
+func TestJoinScanTargets_RefusesAnIdentityColumnOnANonStringField(t *testing.T) {
+	js := []Join{{
+		Target: joinTargetSchema("customers"),
+		Fields: []JoinField{{GoField: "TargetBadOwner", Column: "owner_id"}},
+	}}
+	_, err := joinScanTargetsFor(&joinOrder{}, js)
+	if err == nil {
+		t.Fatal("an identity column on an int64 field must error")
+	}
+	if !strings.Contains(err.Error(), "TargetBadOwner") || !strings.Contains(err.Error(), "not a string") {
+		t.Errorf("the error must name the field and the reason, got: %v", err)
+	}
+}
+
+func TestTargetIDKindOf_AnswersNoneOffTheDeclaredSurface(t *testing.T) {
+	target := joinTargetSchema("customers")
+
+	if got := targetIDKindOf(Join{}, JoinField{GoField: "X", Column: "owner_id"}); got != core.IDNone {
+		t.Errorf("a join with no target = %v, want IDNone", got)
+	}
+	if got := targetIDKindOf(Join{Target: target}, JoinField{GoField: "X", Column: "nao_existe"}); got != core.IDNone {
+		t.Errorf("a column the target does not declare = %v, want IDNone", got)
+	}
+	// …and the real answer, for both nullabilities.
+	if got := targetIDKindOf(Join{Target: target}, JoinField{Column: "owner_id"}); got != core.IDValue {
+		t.Errorf("owner_id = %v, want IDValue", got)
+	}
+	if got := targetIDKindOf(Join{Target: target}, JoinField{Column: "alt_owner_id"}); got != core.IDPointer {
+		t.Errorf("alt_owner_id = %v, want IDPointer", got)
+	}
+	if got := targetIDKindOf(Join{Target: target}, JoinField{Column: "nome"}); got != core.IDNone {
+		t.Errorf("an ordinary column = %v, want IDNone", got)
+	}
+}
+
+// A criteria field is typed across anchor, siblings, shared base and then the
+// declared ROOT joins. The join leg is what makes a probe on an identity join
+// field bind in the form the target stores; a child join is load-only and must
+// not answer, or a filter would be typed for a field no predicate can reach.
+func TestIdKindResolver_TypesRootJoinFieldsAndNothingElse(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("TargetOwner", "owner_id").
+			Field("CustomerName", "nome"),
+		LeftJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+			Field("StateName", "nome"),
+	)
+	idKind := l.idKindResolver()
+
+	if got := idKind("TargetOwner"); got != core.IDValue {
+		t.Errorf("a root join field over an identity column = %v, want IDValue", got)
+	}
+	if got := idKind("CustomerName"); got != core.IDNone {
+		t.Errorf("a root join field over an ordinary column = %v, want IDNone", got)
+	}
+	if got := idKind("StateName"); got != core.IDNone {
+		t.Errorf("a CHILD join field must not be typed by the root resolver, got %v", got)
+	}
+	if got := idKind("Nope"); got != core.IDNone {
+		t.Errorf("an unknown field = %v, want IDNone", got)
+	}
+	// The anchor still answers first, for its own fields and the managed slot.
+	if got := idKind("CustomerID"); got != core.IDValue {
+		t.Errorf("the anchor's own identity field = %v, want IDValue", got)
+	}
+	if got := idKind("ID"); got != core.IDValue {
+		t.Errorf("the managed ID slot = %v, want IDValue", got)
 	}
 }
 
