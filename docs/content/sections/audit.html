@@ -133,7 +133,7 @@ audit:
         <tr><td><code>actorClaims</code></td><td>object (omitempty)</td><td>filtered by the <code>auth.auditClaims</code> allowlist</td></tr>
         <tr><td><code>tenantId</code></td><td>string (omitempty)</td><td>multi-tenant scope of the request, read from the JWT <code>tenant_id</code> claim (the fixed key — audit does not honor the <code>auth.authorization.tenant.claim</code> override); backed by the <code>audit_events_tenant_idx</code> column</td></tr>
         <tr><td><code>dateTime</code></td><td>RFC3339Nano</td><td>captured at <code>ValidEntity</code> construction</td></tr>
-    </table>
+    </tbody></table>
     <p>A full <code>insert</code> event of an aggregate (slog echo shape — <code>database</code> stores the same payload as a row + <code>jsonb</code> blob):</p>
 <pre><code>{
   "msg":         "audit",
@@ -178,7 +178,7 @@ audit:
             <td>no <code>snapshot</code>; <code>changes: […]</code> only when the verb persisted one</td>
             <td>the verb itself is the recovery hint — a symmetric inverse — so no snapshot is emitted. Archive and unarchive write the entity's field set like any other verb, so when the domain changed business state on the way there (an <code>r.IfArchive</code> closure flipping a status, a Command's <code>ApplyTo</code>), that delta rides along in the SAME <code>changes</code> shape <code>delta</code> uses. It is ADDITIVE: a plain archive that changed nothing carries neither block, exactly as before, and <code>kind</code> stays <code>transition</code> either way — the verb IS a transition, the delta is what it carried</td>
         </tr>
-    </table>
+    </tbody></table>
     <p>
         <code>PartialUpdate</code> (PATCH) shares <code>verb: "update"</code> with PUT because the
         SQL is identical (<code>UPDATE … SET col=val, updated_at=$now</code>); the PUT-vs-PATCH
@@ -211,7 +211,7 @@ audit:
         <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>
         <tr><td><code>delete</code></td><td>every loaded child</td><td><code>deleted</code></td><td>explicit <code>DELETE FROM addresses WHERE user_id=$1</code> per child table (same TX, before the root DELETE)</td></tr>
-    </table>
+    </tbody></table>
     <p>
         For flat entities (no <code>AggregateRootProvider</code>) the <code>children</code> block is
         absent. UPDATED children pair pre/post by <code>GetID()</code> against the deep-copied prior

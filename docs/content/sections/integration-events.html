@@ -2,6 +2,13 @@
 
     <p>The cross-service async-messaging surface — the canonical write-side counterpart to the sync <code>httpclient</code> + the read-side <code>UpstreamSubscription</code> paths. Producers emit typed events into the local <code>integration_events</code> table (atomic with the data write when invoked from a <code>BeforeCommit</code> hook closure with <code>WithTx(tx)</code>); subscribers consume broker messages via the framework's <code>Receiver</code> registry, route each payload through the <strong>same</strong> <code>pipeline.Handler[TCmd, TResult]</code> HTTP routes consume, and dedup per consumer group via <code>omnicore_integration_processed</code>.</p>
 
+    <p class="note">
+        <strong>Not to be confused with a <a href="#domain-events">domain event</a>.</strong> An integration event is
+        the CROSS-SERVICE channel: written in-TX, relayed to a broker, at-least-once, load-bearing. A domain event is a
+        fact an entity authors about itself, published post-commit and best-effort through this service's own log
+        stream. If losing it would be a bug, it belongs here, not there.
+    </p>
+
     <p>The package <code>omnicore/infra/integration</code> (imported as <code>fwintegration</code>) carries the full producer + subscriber surface. Vocabulary follows the canonical pub/sub literature: <code>publishes</code> (events this service emits) + <code>subscribes</code> (events this service consumes) layered on the same <code>integration:</code> YAML block.</p>
 
     <h3>Producer — <code>fwintegration.Dispatch</code></h3>

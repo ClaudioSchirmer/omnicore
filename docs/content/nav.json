@@ -67,6 +67,10 @@
       {
         "id": "old-state",
         "label": "Old-state snapshot"
+      },
+      {
+        "id": "domain-events",
+        "label": "Domain events"
       }
     ]
   },

@@ -17,6 +17,17 @@
 
   <p><code>configuration.Identity</code> carries the standard JWT claims <code>Subject</code> (<code>sub</code>), <code>Issuer</code> (<code>iss</code>), <code>ExpiresAt</code> (<code>exp</code>), plus a raw <code>Claims map[string]any</code> for custom claims (roles, email, tenant, …) — the framework does not opine on which custom claims a service expects.</p>
 
+  <p class="note">
+    <strong>Three entry points build one, not just this middleware.</strong> The Fiber middleware above is the HTTP
+    one. The <a href="#grpc">gRPC surface</a> builds its own per-RPC <code>AppContext</code> in its interceptor chain
+    (<code>X-Request-ID</code>, then the httpclient's <code>threadId</code> key, then a fresh UUID;
+    <code>Accept-Language</code> for the language), and an
+    <a href="#integration-events">integration receiver</a> builds a fresh one per message (new UUID for the id, the
+    inbound <code>actor</code> header for the actor, the event id as the causation). Everything below the boundary —
+    the two seams described next, the translator, the audit actor — is identical whichever of the three produced it,
+    which is the point of the type.
+  </p>
+
   <h3 id="ctx-injection-seams">Where AppContext flows below the web boundary</h3>
   <p>
     <code>Identity()</code> is read in Fiber handlers, but the request <code>*AppContext</code> also travels

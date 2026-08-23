@@ -256,7 +256,15 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
     <tr><td><code>SemanticMethodNotAllowed</code></td><td>UNIMPLEMENTED</td></tr>
     <tr><td><code>SemanticPayloadTooLarge</code></td><td>RESOURCE_EXHAUSTED</td></tr>
     <tr><td><code>SemanticGatewayTimeout</code></td><td>DEADLINE_EXCEEDED</td></tr>
+    <tr><td><code>SemanticRequestTimeout</code></td><td>DEADLINE_EXCEEDED — mapped for enum completeness; in practice it is raised by the HTTP read timeout, which this transport does not have</td></tr>
 </tbody></table>
+<p>
+    The table is the whole <a href="#status-mapping"><code>Semantic</code></a> enum: every member maps, so no failure
+    can reach a client as an unmapped code. Which member decides the RPC's code follows the same rule the REST status
+    does — <strong>the first message whose semantic is not <code>SemanticValidation</code> wins</strong>, so a mixed
+    failure surfaces the more specific transport semantic; when every message is a validation one, the code is
+    <code>INVALID_ARGUMENT</code>.
+</p>
 
 <h3>Driving the surface with curl</h3>
 <p>
