@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,5 +198,40 @@ func TestViewNameOf_LeavesAnUnslottedNameAlone(t *testing.T) {
 func TestViewNameOf_IsNotInjectiveOnASlotShapedName(t *testing.T) {
 	if got := ViewNameOf("x__0"); got != "x" {
 		t.Errorf("ViewNameOf(%q) = %q — the documented limit is that it strips the suffix", "x__0", got)
+	}
+}
+
+// ─── the reserved slot suffixes ──────────────────────────────────────────────
+
+// The suffixes are how the framework ADDRESSES a view's two physical
+// collections, so a name ending in one is a collision waiting to happen: view
+// "users__0" would own a bare collection indistinguishable from view "users"'s
+// first slot. Every consequence of that is silent — the DB-per-service guard
+// whitelists both, a rebuild of "users" provisions over it, and ViewNameOf points
+// an operator at the wrong registry row — so the name is refused at declaration.
+func TestReservedNameSuffixProblem_RefusesASlotSuffix(t *testing.T) {
+	for _, name := range []string{"users__0", "users__1", "a__0", "shared_base_view__1"} {
+		why := ReservedNameSuffixProblem(name)
+		if why == "" {
+			t.Errorf("%q ends in a reserved slot suffix and must be refused", name)
+			continue
+		}
+		// The message has to teach the rule, not just deny: it names both
+		// suffixes, shows what the base name would have owned, and suggests a fix.
+		for _, want := range []string{"__0", "__1", "reserves", "Choose a name"} {
+			if !strings.Contains(why, want) {
+				t.Errorf("%q: message is missing %q — got %q", name, want, why)
+			}
+		}
+	}
+}
+
+// Everything else passes, including names that merely CONTAIN the suffix or end
+// in a single underscore-zero — the rule is about the trailing slot form only.
+func TestReservedNameSuffixProblem_AllowsEverythingElse(t *testing.T) {
+	for _, name := range []string{"users", "users_rel", "a__b", "users__0_archive", "users_0", "users__2"} {
+		if why := ReservedNameSuffixProblem(name); why != "" {
+			t.Errorf("%q is a legal name, got refused: %s", name, why)
+		}
 	}
 }

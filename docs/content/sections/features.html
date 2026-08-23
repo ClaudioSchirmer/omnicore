@@ -93,6 +93,7 @@
                 <li><a href="#lifecycle-map">One transaction</a> — data rows + a single outbox row + the audit row commit together</li>
                 <li><a href="#lifecycle-hooks">Lifecycle hooks</a> — in-TX <code>AfterBegin</code> / <code>BeforeCommit</code> side effects, once per operation</li>
                 <li><a href="#audit">Guaranteed audit</a> — one event per write; snapshot / delta / transition bodies; <code>database</code> + <code>slog</code> routing</li>
+                <li><a href="#read-joins">Read joins</a> — one repository declaration lets this aggregate's queries reach across a foreign key into another, filling declared Go fields on every load and answering filters and sorts under those names; the write model is untouched</li>
                 <li><a href="#custom-command-handler">Manual command handler</a> — same envelope, notifications and audit; full wiring control</li>
             </ul>
             <div class="cap-more"><a href="#command-handler">CommandHandler →</a></div>
@@ -103,7 +104,7 @@
                 <span class="cap-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 11h10M4 16h6"/><circle cx="17" cy="16" r="3"/><path d="m21.5 20.5-2-2"/></svg></span>
                 <span class="cap-title">Read at scale — CQRS</span>
             </div>
-            <div class="cap-lead">Eventually-consistent Mongo projections, mirrored from the write side.</div>
+            <div class="cap-lead">Eventually-consistent Mongo projections mirrored from the write side — or, by deliberate exception, straight from the SoR.</div>
             <ul class="cap-list">
                 <li><a href="#auto-query-handlers">Auto query handlers</a> — allowlisted filters, keyset pagination, sparse <code>?fields=</code>, <code>?orderBy=</code>, only-total</li>
                 <li><a href="#query-side">16 filter operators</a> — eq/ne/in/gte/startsWith/contains… plus case-insensitive variants, allowlisted per field by tag</li>
@@ -111,6 +112,7 @@
                 <li><a href="#read-lifecycle-map"><code>SyncEngine</code> + composer</a> — outbox → CDC relay → the transport (Kafka/NATS) materializes views; archived rows survive unless <code>DeleteOnArchive()</code></li>
                 <li><a href="#query-side"><code>ComposedView</code> / <code>SharedBaseView</code></a> — read-time joins and all-in-one identity, never materialized on the request path</li>
                 <li><a href="#auto-query-handlers">CSV / XLSX export</a> — the same query handler streamed to a file, hierarchical, translated headers</li>
+                <li><a href="#relational-view">Relational view</a> — the deliberate CQRS exception: a read model served straight from the SoR through the aggregate's own loader, read-your-writes with no CDC hop, for dashboards, freshest reads and MVPs</li>
                 <li><a href="#custom-query-handler">Manual query handler</a> — bespoke parsing and envelopes over the same reader</li>
             </ul>
             <div class="cap-more"><a href="#query-side">QueryHandler · CQRS →</a></div>

@@ -414,6 +414,9 @@ func ValidateComposedViews(composed []*ComposedViewDefinition, views []*ViewDefi
 			addf("composed view with empty name")
 			continue
 		}
+		if why := ReservedNameSuffixProblem(c.name); why != "" {
+			addf("composed view %q: %s", c.name, why)
+		}
 		if viewNames[c.name] {
 			addf("composed view %q: name collides with a registered view — the composed name is a read-side identity of its own", c.name)
 		}

@@ -381,6 +381,9 @@ func ValidateViewSchemas(views []*ViewDefinition) error {
 		registered[v.Name()] = true
 	}
 	for _, v := range views {
+		if why := ReservedNameSuffixProblem(v.Name()); why != "" {
+			problems = append(problems, fmt.Sprintf("view %q: %s", v.Name(), why))
+		}
 		if v.schema == nil {
 			problems = append(problems, fmt.Sprintf("view %q: no root .Schema(...) declared", v.Name()))
 		} else if !v.schema.HasPKDeclared() {

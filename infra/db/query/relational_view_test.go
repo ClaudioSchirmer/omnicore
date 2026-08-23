@@ -159,3 +159,18 @@ func TestValidateRelationalViews_SkipsNilEntries(t *testing.T) {
 		t.Fatalf("a nil entry must be skipped, got %v", err)
 	}
 }
+
+// The reserved slot suffixes are refused in EVERY read-model family, because the
+// three share one namespace and a rule that held in one of them would be the
+// harder thing to remember. This is the relational family's half of that.
+func TestValidateRelationalViews_RefusesAReservedSlotSuffix(t *testing.T) {
+	err := ValidateRelationalViews([]*RelationalViewDefinition{
+		RelationalView("gadgets__0", relLoader("gadgets")),
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("a name ending in a blue-green slot suffix must abort the boot")
+	}
+	if !strings.Contains(err.Error(), "the framework reserves") {
+		t.Errorf("the abort must explain the rule, got: %v", err)
+	}
+}

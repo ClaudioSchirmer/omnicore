@@ -143,6 +143,10 @@ func ValidateRelationalViews(views []*RelationalViewDefinition, mongoViews []*Vi
 			problems = append(problems, "relational view: declared with an empty name")
 			continue
 		}
+		if why := ReservedNameSuffixProblem(v.name); why != "" {
+			problems = append(problems, fmt.Sprintf("relational view %q: %s", v.name, why))
+			continue
+		}
 		if v.loader == nil {
 			problems = append(problems, fmt.Sprintf(
 				"relational view %q: declared with a nil loader — pass the aggregate's repo.Loader, "+

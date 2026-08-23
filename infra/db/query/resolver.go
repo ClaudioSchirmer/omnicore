@@ -37,6 +37,40 @@ func PhysicalCollectionNames(viewName string) []string {
 	return []string{viewName, viewName + slotSuffix0, viewName + slotSuffix1}
 }
 
+// ReservedNameSuffixProblem reports why a read-model name is illegal, or "" when
+// it is fine. The rule is one line long — a name may not end in a blue-green slot
+// suffix — and it exists because those suffixes are not decoration: they are how
+// the framework addresses a view's two physical collections.
+//
+// A view named "users__0" would own a bare collection whose name is byte-identical
+// to the FIRST SLOT of a view named "users", and nothing downstream can tell the
+// two apart. The DB-per-service guard whitelists all three physical names per
+// view, so it reads the overlap as legitimate on both sides; a rebuild of "users"
+// provisions into "users__0" and drops what is already there; and ViewNameOf,
+// which the orphan-collection diagnostic uses to name the omnicore_mongo_views row
+// to delete, answers "users" for both. Every one of those failures is silent.
+//
+// So the name is refused at DECLARATION, where the cost is a boot message instead
+// of another view's data. It applies to every read-model family — projected,
+// composed and relational — because the three share one namespace, and a rule
+// that held in one of them and not the others would be the harder thing to
+// remember.
+func ReservedNameSuffixProblem(name string) string {
+	for _, suffix := range []string{slotSuffix0, slotSuffix1} {
+		if strings.HasSuffix(name, suffix) {
+			return fmt.Sprintf(
+				"name ends in %q, which the framework reserves: %q and %q are the blue-green slot "+
+					"suffixes a view's two physical collections are addressed by (a view named %q owns "+
+					"%q, %q and %q). Choose a name that does not end in either — %q, say",
+				suffix, slotSuffix0, slotSuffix1,
+				strings.TrimSuffix(name, suffix), strings.TrimSuffix(name, suffix),
+				strings.TrimSuffix(name, suffix)+slotSuffix0, strings.TrimSuffix(name, suffix)+slotSuffix1,
+				strings.TrimSuffix(name, suffix)+"_v2")
+		}
+	}
+	return ""
+}
+
 // ViewNameOf is the best-effort inverse: the logical view a physical collection
 // belongs to, which is the collection name with any blue-green slot suffix
 // stripped. The bare collection is already the view name, so it comes back
