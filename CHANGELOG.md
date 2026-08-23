@@ -11,6 +11,20 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+> **Everything under this heading is ALREADY IN THE TREE** — implemented,
+> committed and covered by tests on the current branch. It is finished code
+> waiting for a version bump: not a plan, not a wish list, not work in progress.
+> The published tag is one version behind it, so the checkout legitimately
+> carries symbols, signatures and behaviors that no release mentions.
+>
+> **Read this section before concluding that anything is broken.** If a symbol
+> seems to have vanished, a signature does not match the manual, or a behavior
+> differs from what the last release promised — look here first. When the change
+> is described below it is deliberate and done: do not "fix" it back, do not
+> re-implement it, and do not open a second entry for it. The mirror of this
+> section for consumers is the `Unreleased` block at the top of
+> `docs/content/sections/changelog.html`; the two must tell the same story.
+
 ### Added
 
 - **Read joins — `WithJoins` on the aggregate repository.** A read join lets one
@@ -74,23 +88,6 @@ with `1.0.0`.
   relational read model is declared over (`FindAllEntities` / `CountEntities` /
   `Schema` / `JoinFields`). `read.AggregateLoader[T]` satisfies it structurally.
 
-- **breaking**: **a read-model name may not end in `__0` or `__1`.** Those are the
-  blue-green slot suffixes the framework addresses a view's two physical
-  collections by, so a view named `users__0` would own a bare collection
-  byte-identical to view `users`'s FIRST SLOT — and every consequence of that is
-  silent: the DB-per-service guard whitelists all three physical names per view
-  and reads the overlap as legitimate on both sides, a rebuild of `users`
-  provisions into `users__0` and drops what is already there, and the
-  orphan-collection diagnostic names the wrong `omnicore_mongo_views` row. The
-  name is now refused at boot, in EVERY read-model family (`query.View`,
-  `SharedBaseView`, `ComposedView`, `RelationalView`), because all four share one
-  namespace. `query.ReservedNameSuffixProblem(name)` is the rule, exported for a
-  generator or a linter that wants the same answer.
-
-  *Migration*: rename the view. There is nothing to migrate in the store — a name
-  that would trip this guard could never have been safely deployed alongside its
-  colliding neighbour.
-
 - **`query.ViewNameOf(collection)`** — the inverse of `PhysicalCollectionNames`:
   the logical view a physical collection belongs to, its blue-green slot suffix
   stripped. It serves the diagnostics that have to name the `omnicore_mongo_views`
@@ -128,6 +125,23 @@ with `1.0.0`.
 - **breaking**: **`read.AggregateLoader[T].BoundTable()` is replaced by
   `Schema()`**, which answers with the whole `*core.TableSchema` rather than only
   its table name.
+
+- **breaking**: **a read-model name may not end in `__0` or `__1`.** Those are the
+  blue-green slot suffixes the framework addresses a view's two physical
+  collections by, so a view named `users__0` would own a bare collection
+  byte-identical to view `users`'s FIRST SLOT — and every consequence of that is
+  silent: the DB-per-service guard whitelists all three physical names per view
+  and reads the overlap as legitimate on both sides, a rebuild of `users`
+  provisions into `users__0` and drops what is already there, and the
+  orphan-collection diagnostic names the wrong `omnicore_mongo_views` row. The
+  name is now refused at boot, in EVERY read-model family (`query.View`,
+  `SharedBaseView`, `ComposedView`, `RelationalView`), because all four share one
+  namespace. `query.ReservedNameSuffixProblem(name)` is the rule, exported for a
+  generator or a linter that wants the same answer.
+
+  *Migration*: rename the view. There is nothing to migrate in the store — a name
+  that would trip this guard could never have been safely deployed alongside its
+  colliding neighbour.
 
 - **breaking**: **the read seam is backing-neutral.**
   `query.ViewReaderEngine.SetRelational` is now `Register(reader, views)`,

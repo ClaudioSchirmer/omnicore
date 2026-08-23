@@ -8,6 +8,15 @@
 <div class="changelog">
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">in development</span></div>
+        <p class="note"><strong>Already merged, not yet tagged.</strong> These entries describe the code as it
+            stands in the repository, not the latest published release: a service pinned to the newest <code>v…</code>
+            tag does NOT have them yet, and conversely a checkout of the repository already behaves exactly as
+            described here — the symbols exist, the signatures are the new ones, and the behaviors are in effect. So a
+            symbol that seems to have vanished, a signature that does not match the manual, or a behavior that differs
+            from what the last release promised is explained here first; when it is listed below, the change is
+            deliberate and finished, not a regression to be fixed or re-implemented. The per-symbol mirror of this
+            block is <code>[Unreleased]</code> at the top of <code>CHANGELOG.md</code>, and the two tell the same
+            story.</p>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#read-joins">Read joins</a></strong>: an aggregate's queries
                 can reach across a foreign key into ANOTHER aggregate — filter and sort by the joined columns, and bring
@@ -55,6 +64,15 @@
                 <code>MaxLimit</code> and <code>MaxExportRows</code> and nothing else, has no version, no registry row,
                 no rebuild, no drift and no collection, and is contributed by a feature through
                 <code>RelationalViews()</code>, the sibling of <code>Views()</code>.</li>
+            <li><strong>Added</strong> — <strong><code>query.AggregateReader</code></strong>: the type-erased face
+                of the aggregate loader a relational read model is declared over — <code>FindAllEntities</code>,
+                <code>CountEntities</code>, <code>Schema</code>, <code>JoinFields</code>. It is what
+                <code>query.RelationalView</code> takes, and <code>read.AggregateLoader[T]</code> satisfies it
+                structurally, so a repository's loader is passed straight in with nothing to adapt.</li>
+            <li><strong>Added</strong> — <strong><code>infra/db/hydrate</code></strong>: the store-neutral aggregate
+                hydrator behind the relational read path — a <code>core.TableSchema</code> plus a
+                <code>core.RelationalEngine</code> in, a column-keyed document out (root row, siblings merged flat,
+                children nested, shared base flattened). It imports neither the view layer nor any engine.</li>
             <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>the read-side field selection is
                 store-neutral.</strong> <code>ReadCriteria.Projection</code> and <code>Page.Projection</code> are now a
                 <code>queries.Projection</code> — a mode (whole document / only these paths / all but these) plus the
@@ -140,7 +158,7 @@
                 managed slots, root-level sibling and shared-base fields, a leaf inside a child collection, and the
                 fields a declared <a href="#read-joins">read join</a> adds — a root join's under its bare name, a child
                 join's under <code>&lt;segment&gt;.&lt;field&gt;</code>.</li>
-            <li><strong>Changed</strong> — <strong>breaking</strong>: <strong>a collection materialized by an
+            <li><strong>Fixed</strong> — <strong>breaking</strong>: <strong>a collection materialized by an
                 <code>upstreamSubscriptions</code> entry is no longer reported as foreign by the DB-per-service
                 guard.</strong> The guard was handed the declared views only, so the local mirror the framework writes
                 on the service's OWN behalf was claimed by nobody: <code>mongo.registry.foreign_collections</code> under
