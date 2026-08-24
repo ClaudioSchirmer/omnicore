@@ -11,6 +11,24 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-08-24
+
+### Changed
+
+- **The guard barrier's reach is now a stated guarantee, backed by a placement
+  matrix.** `r.StopIfInvalid()` ends the pass from wherever it is written — top
+  level in the body, inside a hand-written `if`, inside a loop, inside a method
+  the rules call, inside nested anonymous functions, inside a mode closure the
+  verb dispatches — and it behaves the same in an `AggregateValueObject`'s
+  `BuildRules`, where it also cuts that child's own value objects and every
+  sibling still queued. The one thing that does not stop is a barrier the verb
+  never reaches: written inside a mode closure that does not dispatch, the whole
+  closure is skipped, barrier included. That is the mode gate, unchanged.
+  Behavior is the same as 0.58.0; what is new is that every placement is pinned
+  by a test.
+- **Internal:** the validation pass is built through `NewRules` instead of a
+  parallel constructor. No public surface change.
+
 ## [0.58.0] - 2026-08-24
 
 ### Added

@@ -7,6 +7,21 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.59.0</span><span class="release-date">August 24, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>where you may write a
+                <a href="#rules-dsl">guard barrier</a> is now a stated guarantee.</strong>
+                <code>r.StopIfInvalid()</code> ends the pass from wherever it sits: top level in the body, inside a
+                hand-written <code>if</code>, inside a loop, inside a method the rules call, inside nested anonymous
+                functions, or inside a mode closure the verb dispatches. It behaves the same inside an
+                <code>AggregateValueObject</code>'s <code>BuildRules</code>, where it additionally cuts that child's
+                own value objects and every sibling still queued. The one placement that does not stop is one the
+                verb never reaches — written inside a mode closure that does not dispatch, the whole closure is
+                skipped and the barrier with it, which is the mode gate behaving as it always has. Behavior is
+                unchanged from v0.58.0; every placement is now pinned by a test.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.58.0</span><span class="release-date">August 24, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#rules-dsl">Guard barriers</a> in <code>BuildRules</code>:

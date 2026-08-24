@@ -159,6 +159,16 @@ r.IfDisplay(func() { ... })         // see "key facts" below — inert today</co
         write rather than its values, so a rejected write still says the verb was not allowed at all.
     </p>
 
+    <h4>Where you may write it</h4>
+    <p>
+        Anywhere the line actually executes: at the top level of the body, inside a hand-written
+        <code>if</code>, inside a loop, inside a method the rules call, inside nested anonymous functions, or
+        inside a mode closure the current verb dispatches. It reads the same in an
+        <code>AggregateValueObject</code>'s <code>BuildRules</code> as in a root's. The one placement that does
+        not stop is one the verb never reaches — written inside a mode closure that does not dispatch, the whole
+        closure is skipped and the barrier with it, exactly as any other rule in that closure would be.
+    </p>
+
     <h4>It can never skip validation</h4>
     <p>
         The barrier fires <strong>only</strong> when a notification has already been emitted — that is the whole
