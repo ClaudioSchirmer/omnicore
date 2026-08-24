@@ -238,7 +238,7 @@ func TestBaseEntity_ValidateAggregateValueObjects_FansOut(t *testing.T) {
 		Tag{Name: "c", callCount: &calls},
 	})
 
-	runAggregateValidations(e, ModeInsert, "test")
+	runAggregateValidations(e, ModeInsert, "test", nil)
 	if calls != 3 {
 		t.Errorf("expected 3 AVO BuildRules calls, got %d", calls)
 	}

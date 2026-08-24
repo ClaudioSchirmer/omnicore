@@ -85,7 +85,7 @@ func TestRunAggregateValidations_AutoIteratesItems(t *testing.T) {
 	})
 	AddAggregateChild(p, Rec{Name: "b", callCount: &calls})
 
-	runAggregateValidations(p, ModeInsert, "test")
+	runAggregateValidations(p, ModeInsert, "test", nil)
 
 	if calls != 2 {
 		t.Fatalf("expected 2 auto IsValid calls, got %d", calls)
@@ -99,7 +99,7 @@ func TestRunAggregateValidations_SkipsRemovedItems(t *testing.T) {
 	p.AggregateConstructor([]AggregateValueObject{target})
 	RemoveAggregateChild(p, target)
 
-	runAggregateValidations(p, ModeUpdate, "test")
+	runAggregateValidations(p, ModeUpdate, "test", nil)
 
 	if calls != 0 {
 		t.Fatalf("expected 0 calls (removed item must be skipped), got %d", calls)
@@ -114,7 +114,7 @@ func TestRunAggregateValidations_AddedAndChangedAreValidated(t *testing.T) {
 	ChangeAggregateChild(p, original, Rec{Name: "a2", callCount: &calls})
 	AddAggregateChild(p, Rec{Name: "b", callCount: &calls})
 
-	runAggregateValidations(p, ModeUpdate, "test")
+	runAggregateValidations(p, ModeUpdate, "test", nil)
 
 	if calls != 2 {
 		t.Fatalf("expected 2 calls (changed + added), got %d", calls)
@@ -130,7 +130,7 @@ func TestRunAggregateValidations_IgnoresManualWhenTypeNameInAggregate(t *testing
 	// already lives in AggregateRoot.items.
 	p.ValidateAggregateValueObject("Rec", Rec{Name: "manual", callCount: &manualCalls})
 
-	runAggregateValidations(p, ModeInsert, "test")
+	runAggregateValidations(p, ModeInsert, "test", nil)
 
 	if autoCalls != 1 {
 		t.Fatalf("expected 1 auto call, got %d", autoCalls)
@@ -148,7 +148,7 @@ func TestRunAggregateValidations_KeepsManualForUnknownTypeName(t *testing.T) {
 	// "Tag" is NOT in the aggregate items — manual must still run.
 	p.ValidateAggregateValueObject("Tag", Tag{Name: "tag1", callCount: &manualCalls})
 
-	runAggregateValidations(p, ModeInsert, "test")
+	runAggregateValidations(p, ModeInsert, "test", nil)
 
 	if autoCalls != 1 {
 		t.Fatalf("expected 1 auto call, got %d", autoCalls)
@@ -164,7 +164,7 @@ func TestRunAggregateValidations_NoProviderUsesManualOnly(t *testing.T) {
 	ensureInit(e)
 	e.ValidateAggregateValueObject("Tag", Tag{Name: "x", callCount: &calls})
 
-	runAggregateValidations(e, ModeInsert, "test")
+	runAggregateValidations(e, ModeInsert, "test", nil)
 
 	if calls != 1 {
 		t.Fatalf("expected manual path to run for non-provider entity, got %d calls", calls)
@@ -179,7 +179,7 @@ func TestRunAggregateValidations_RunsInDeleteMode(t *testing.T) {
 		Rec{Name: "a", callCount: &calls, lastMode: &captured},
 	})
 
-	runAggregateValidations(p, ModeDelete, "test")
+	runAggregateValidations(p, ModeDelete, "test", nil)
 
 	if calls != 1 {
 		t.Fatalf("expected IsValid to run in ModeDelete (AVO decides), got %d calls", calls)
@@ -194,7 +194,7 @@ func TestRunAggregateValidations_EmptyAggregateIsSafe(t *testing.T) {
 	p := newProviderEntity()
 	p.ValidateAggregateValueObject("Tag", Tag{Name: "y", callCount: &calls})
 
-	runAggregateValidations(p, ModeInsert, "test")
+	runAggregateValidations(p, ModeInsert, "test", nil)
 
 	// Auto path validates nothing (no items in aggregate). Manual runs.
 	if calls != 1 {
@@ -387,7 +387,7 @@ func TestRunAggregateValidations_AutoComposesCollectionPathWithIndex(t *testing.
 	AddAggregateChild(p, Rec{Name: "x", emit: "Street"})
 	AddAggregateChild(p, Rec{Name: "y", emit: "ZipCode"})
 
-	runAggregateValidations(p, ModeInsert, "test")
+	runAggregateValidations(p, ModeInsert, "test", nil)
 
 	msgs := p.NotificationContext().Messages()
 	if len(msgs) != 2 {

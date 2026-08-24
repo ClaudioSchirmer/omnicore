@@ -103,3 +103,84 @@ r.IfDisplay(func() { ... })         // see "key facts" below — inert today</co
         verb, so a manual handler that loads the archived aggregate, applies its changes and calls
         <code>GetUnarchivable</code> persists both in one transaction.
     </p>
+
+    <h3>Guard barriers — <code>StopIfInvalid</code></h3>
+    <p>
+        Some rules are preconditions for the rules below them: an owner that must exist before it is
+        dereferenced, a snapshot that must have been captured, a parse that must have succeeded. When one of
+        those rejects, everything after it is validating a premise that is already false — noise in the response
+        at best, a nil dereference at worst. <code>r.StopIfInvalid()</code> ends the pass right there:
+    </p>
+    <pre><code>func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+    r.IfInsertOrUpdate(func() {
+        if u.Address == nil {
+            r.AddNotification("Address", domain.RequiredFieldNotification{})
+        }
+    })
+
+    r.StopIfInvalid()
+
+    // nothing below this line runs once a rule above it rejected the write —
+    // no closure, no hand-written if, no bare statement
+    r.IfInsertOrUpdate(func() {
+        if !validZip(u.Address.ZipCode) { ... }
+    })
+}</code></pre>
+    <p>
+        It takes nothing and returns nothing. Call it on its own line, between rules — there is no
+        <code>return</code> to write around it and no value to test.
+    </p>
+
+    <h4>What it stops</h4>
+    <p>
+        Everything the pass has not done yet, which depends on where it is called — the pass is sequential
+        (this owner's rules, then this owner's value objects, then each aggregate child in turn):
+    </p>
+    <table>
+        <thead><tr><th>Called from</th><th>Stops</th></tr></thead>
+        <tbody>
+            <tr>
+                <td>a root's <code>BuildRules</code></td>
+                <td>the rest of that <code>BuildRules</code>; the root's automatic
+                    <a href="#value-objects">value-object</a> validation; the <code>BuildRules</code> and value
+                    objects of every <a href="#aggregate-persistence">aggregate child</a></td>
+            </tr>
+            <tr>
+                <td>an <code>AggregateValueObject</code>'s <code>BuildRules</code></td>
+                <td>the rest of that child's <code>BuildRules</code>; that child's own value objects; every
+                    sibling still queued behind it (both the discovered collection and the manually registered
+                    <code>ValidateAggregateValueObject</code> queue)</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>
+        The framework's <strong>structural gates sit outside the barrier and always report</strong>:
+        <code>Modes()</code> not declaring the verb, and a missing or invalid id. Those describe the frame of the
+        write rather than its values, so a rejected write still says the verb was not allowed at all.
+    </p>
+
+    <h4>It can never skip validation</h4>
+    <p>
+        The barrier fires <strong>only</strong> when a notification has already been emitted — that is the whole
+        condition. With a clean context it does nothing and the pass runs whole. So a stop cannot turn an invalid
+        write into a valid one: it happens exclusively on a write that is already rejected, and the notification
+        that triggered it is what the caller gets back. The sealed <code>ValidEntity</code> contract is
+        untouched — the two exits are unchanged, a sealed entity or a
+        <code>domain.NotificationCarrier</code> error.
+    </p>
+    <p>
+        What changes is <em>how much</em> is in that carrier. Without a barrier the response lists the guard's
+        notification alongside every field the entity would also have failed on; with one it names the guard
+        alone. That is the point, and it is a deliberate exception to the accumulate-everything default: reporting
+        every violation at once is right when the violations are independent, and wrong when one rule already
+        invalidated the question the others are answering.
+    </p>
+
+    <div class="box warn">
+        <strong>The unwind is an ordinary Go unwind.</strong> A <code>defer</code> the rule itself registered
+        still runs on the way out — that is correct and usually what you want. The one thing that breaks the
+        barrier is a bare <code>recover()</code> inside <code>BuildRules</code>: it swallows the framework's
+        internal stop signal and the pass continues. Do not write one. (The signal is a private type recovered by
+        the framework at every <code>BuildRules</code> seat, so it never escapes the domain package, and a
+        genuine panic in a rule still propagates with its value intact.)
+    </div>

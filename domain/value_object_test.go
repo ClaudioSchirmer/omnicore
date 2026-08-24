@@ -248,7 +248,7 @@ func TestAVO_ValueObjectFields_AutoDiscovered(t *testing.T) {
 	ensureInit(root)
 	root.ValidateAggregateValueObject("VOChild", voChild{Color: colorUnknown}) // invalid enum
 
-	runAggregateValidations(root, ModeInsert, "test")
+	runAggregateValidations(root, ModeInsert, "test", nil)
 
 	found := false
 	for _, m := range root.NotificationContext().Messages() {
