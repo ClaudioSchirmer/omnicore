@@ -76,10 +76,12 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 		projSchema = queryschema.ExtractProjectionSchema(respType)
 	}
 	// Boot-time advisory when the Request DTO declares an ordering vocabulary.
-	// The framework has no way to verify, from the wrapper, that the Mongo view
-	// declares indexes covering those paths — the ViewDefinition lives in a
-	// separate construction site (ReadableFeature.Views()) — so the operator
-	// gets the declared list to compare against .Indexes(...) in the same boot.
+	// The framework has no way to verify, from the wrapper, that the read model
+	// behind the endpoint has indexes covering those paths — it cannot even see
+	// WHICH read model that is, since the declaration lives in a separate
+	// construction site (ReadableFeature.Views() /
+	// RelationalReadableFeature.RelationalViews()) — so the operator gets the
+	// declared list to compare against the index declarations in the same boot.
 	if schema.Reserved[queryschema.KeyOrderBy] {
 		warnSortableOnce(reqType, schema.Sortable)
 	}
@@ -97,15 +99,23 @@ func queryBootScan(reqType, resultType, respType reflect.Type) (*queryschema.Req
 var sortableWarned = &sync.Map{} // map[string]struct{} keyed by "<reqType>\x1f<paths>"
 
 // warnSortableOnce emits the boot-time advisory the first time a given
-// (Request type, declared ordering vocabulary) pair is observed. The framework
-// has no way to verify, from the wrapper, that the Mongo view declares indexes
-// covering those paths — the ViewDefinition lives in a separate construction
-// site (ReadableFeature.Views()).
+// (Request type, declared ordering vocabulary) pair is observed.
 //
-// The sort a view actually receives carries `_id` as its trailing tiebreak, so
-// a covering index is the COMPOUND of the declared path and `_id`
-// (query.Compound("name","_id")), not query.Index("name") — a single-field
-// index does not satisfy a two-key sort and leaves a blocking sort in place.
+// It VERIFIES NOTHING and therefore names no store: the wrapper cannot see the
+// read model behind the endpoint — the declaration lives in a separate
+// construction site (ReadableFeature.Views() /
+// RelationalReadableFeature.RelationalViews()) — so it can neither read the
+// index declarations nor tell whether the endpoint is served from a projected
+// view or straight from the SoR. The advisory is a list to check by hand, and
+// the place to check depends on the backing: query.Indexes(...) on a projected
+// view, the service's own migrations for a relational read model.
+//
+// The sort a read model actually receives carries its id as the trailing
+// tiebreak, so a covering index is the COMPOUND of the declared path and that
+// id — query.Compound("name","_id") on a projected view, an index on
+// (name, <id column>) in a migration for a relational one, never a single-key
+// index on the path alone, which does not satisfy a two-key sort and leaves a
+// blocking sort in place.
 func warnSortableOnce(reqType reflect.Type, sortable map[string]queryschema.SortSpec) {
 	paths := make([]string, 0, len(sortable))
 	for wirePath := range sortable {
@@ -116,7 +126,7 @@ func warnSortableOnce(reqType reflect.Type, sortable map[string]queryschema.Sort
 	if _, loaded := sortableWarned.LoadOrStore(request+"\x1f"+strings.Join(paths, ","), struct{}{}); loaded {
 		return
 	}
-	slog.Warn("query.sortable: endpoint declares an ordering vocabulary; verify Mongo indexes cover each path COMPOUNDED WITH _id to avoid blocking sorts on large collections",
+	slog.Warn("query.sortable: endpoint declares an ordering vocabulary; verify the read model's indexes cover each path COMPOUNDED WITH its id tiebreak to avoid blocking sorts on large data sets",
 		"request", request,
 		"sortable_wire_paths", paths)
 }
