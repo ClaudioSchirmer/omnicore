@@ -465,7 +465,7 @@ func ValidateAggregateChild(
 	scoped := rootCtx.scopedForType(reflect.TypeOf(item), NameSegment(collectionName), IndexSegment(idx))
 	before := len(scoped.Messages())
 	childRules := NewRules(mode, scoped, reflect.TypeOf(item))
-	item.BuildRules(actionName, svc, childRules)
+	buildRules(func() { item.BuildRules(actionName, svc, childRules) })
 	validateValueObjectFields(item, scoped, childRules.ignoredValueObjects(), childRules.forcedValueObjects())
 	return len(scoped.Messages()) == before
 }

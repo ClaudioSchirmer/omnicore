@@ -529,7 +529,8 @@ func validateForInsert(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeInsert, e.NotificationContext(), reflect.TypeOf(e))
+	pass := &rulesPass{}
+	rules := newPassRules(ModeInsert, e.NotificationContext(), reflect.TypeOf(e), pass)
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeInsert) {
@@ -547,8 +548,7 @@ func validateForInsert(e Entity, actionName string) error {
 			Notification: UnableToInsertWithIDNotification{},
 		})
 	}
-	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
-	runAggregateValidations(e, ModeInsert, actionName)
+	runAutomaticValidations(e, ModeInsert, actionName, rules, pass)
 	return checkAllNotifications(e)
 }
 
@@ -557,7 +557,8 @@ func validateForUpdate(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
+	pass := &rulesPass{}
+	rules := newPassRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e), pass)
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeUpdate) {
@@ -576,8 +577,7 @@ func validateForUpdate(e Entity, actionName string) error {
 	} else {
 		e.GetID().IsValid("id", e.NotificationContext())
 	}
-	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
-	runAggregateValidations(e, ModeUpdate, actionName)
+	runAutomaticValidations(e, ModeUpdate, actionName, rules, pass)
 	return checkAllNotifications(e)
 }
 
@@ -586,7 +586,8 @@ func validateForDelete(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeDelete, e.NotificationContext(), reflect.TypeOf(e))
+	pass := &rulesPass{}
+	rules := newPassRules(ModeDelete, e.NotificationContext(), reflect.TypeOf(e), pass)
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeDelete) {
@@ -605,8 +606,7 @@ func validateForDelete(e Entity, actionName string) error {
 	} else {
 		e.GetID().IsValid("id", e.NotificationContext())
 	}
-	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
-	runAggregateValidations(e, ModeDelete, actionName)
+	runAutomaticValidations(e, ModeDelete, actionName, rules, pass)
 	return checkAllNotifications(e)
 }
 
@@ -615,7 +615,8 @@ func validateForArchive(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e))
+	pass := &rulesPass{}
+	rules := newPassRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e), pass)
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeArchive) {
@@ -634,8 +635,7 @@ func validateForArchive(e Entity, actionName string) error {
 	} else {
 		e.GetID().IsValid("id", e.NotificationContext())
 	}
-	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
-	runAggregateValidations(e, ModeArchive, actionName)
+	runAutomaticValidations(e, ModeArchive, actionName, rules, pass)
 	return checkAllNotifications(e)
 }
 
@@ -644,7 +644,8 @@ func validateForUnarchive(e Entity, actionName string) error {
 	if err := checkService(e, actionName); err != nil {
 		return err
 	}
-	rules := NewRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e))
+	pass := &rulesPass{}
+	rules := newPassRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e), pass)
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeUnarchive) {
@@ -663,8 +664,7 @@ func validateForUnarchive(e Entity, actionName string) error {
 	} else {
 		e.GetID().IsValid("id", e.NotificationContext())
 	}
-	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
-	runAggregateValidations(e, ModeUnarchive, actionName)
+	runAutomaticValidations(e, ModeUnarchive, actionName, rules, pass)
 	return checkAllNotifications(e)
 }
 
@@ -688,7 +688,40 @@ func checkService(e Entity, actionName string) error {
 func buildRulesInWindow(e Entity, actionName string, rules *Rules) {
 	e.openRulesWindow()
 	defer e.closeRulesWindow()
-	e.BuildRules(actionName, e.getService(), rules)
+	buildRules(func() { e.BuildRules(actionName, e.getService(), rules) })
+}
+
+// buildRules invokes ONE BuildRules body and absorbs the signal r.StopIfInvalid
+// raises to unwind it. Every seat that calls BuildRules goes through here, so
+// the signal never escapes the domain package. Anything else re-panics with its
+// value intact: a genuine bug in a rule reaches the pipeline's recover point
+// exactly as it did before this seam existed.
+func buildRules(fn func()) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		if _, ok := rec.(stopRulesSignal); ok {
+			return
+		}
+		panic(rec)
+	}()
+	fn()
+}
+
+// runAutomaticValidations runs what the FRAMEWORK validates on its own once the
+// entity's own rules are done — this owner's value objects and its aggregate
+// children. A pass halted by StopIfInvalid skips both. The structural gates in
+// the caller (Modes(), ID validity) are deliberately outside this seam and
+// always report, so a rejected write still says everything that is wrong with
+// it at the frame level.
+func runAutomaticValidations(e Entity, mode EntityMode, actionName string, rules *Rules, pass *rulesPass) {
+	if pass != nil && pass.halted {
+		return
+	}
+	validateValueObjectFields(e, e.NotificationContext(), rules.ignoredValueObjects(), rules.forcedValueObjects())
+	runAggregateValidations(e, mode, actionName, pass)
 }
 
 func modeAllowed(e Entity, m EntityMode) bool {
@@ -774,7 +807,7 @@ func validateValueObjectFields(value any, ctx *NotificationContext, ignored []st
 //
 // AVO emits only the leaf field name (e.g. r.AddNotification("ZipCode", n))
 // and the wire format produces "addresses[0].zipCode" without the AVO knowing the hierarchy.
-func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
+func runAggregateValidations(e Entity, mode EntityMode, actionName string, pass *rulesPass) {
 	mappedTypeNames := map[string]struct{}{}
 	rootCtx := e.NotificationContext()
 
@@ -800,8 +833,11 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 						NameSegment(collectionName),
 						IndexSegment(idx),
 					)
-					childRules := NewRules(mode, scoped, reflect.TypeOf(item.Item))
-					item.Item.BuildRules(actionName, e.getService(), childRules)
+					childRules := newPassRules(mode, scoped, reflect.TypeOf(item.Item), pass)
+					buildRules(func() { item.Item.BuildRules(actionName, e.getService(), childRules) })
+					if pass != nil && pass.halted {
+						return
+					}
 					validateValueObjectFields(item.Item, scoped, childRules.ignoredValueObjects(), childRules.forcedValueObjects())
 					idx++
 				}
@@ -814,8 +850,11 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string) {
 			continue
 		}
 		scoped := rootCtx.scopedForType(reflect.TypeOf(entry.avo), NameSegment(entry.name))
-		childRules := NewRules(mode, scoped, reflect.TypeOf(entry.avo))
-		entry.avo.BuildRules(actionName, e.getService(), childRules)
+		childRules := newPassRules(mode, scoped, reflect.TypeOf(entry.avo), pass)
+		buildRules(func() { entry.avo.BuildRules(actionName, e.getService(), childRules) })
+		if pass != nil && pass.halted {
+			return
+		}
 		validateValueObjectFields(entry.avo, scoped, childRules.ignoredValueObjects(), childRules.forcedValueObjects())
 	}
 }

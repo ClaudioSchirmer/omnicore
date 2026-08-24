@@ -7,6 +7,38 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.58.0</span><span class="release-date">August 24, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#rules-dsl">Guard barriers</a> in <code>BuildRules</code>:
+                <code>r.StopIfInvalid()</code>.</strong> A rule that is a precondition for the rules below it — an
+                owner that must exist before it is dereferenced, a snapshot that must have been captured, a parse
+                that must have succeeded — can now end the validation pass where it rejects, instead of letting
+                everything after it run on a premise that is already false. Call it on its own line between rules:
+                it takes nothing, returns nothing, and there is no <code>return</code> to write around it.
+                <ul>
+                    <li><strong>It stops everything the pass has not done yet</strong>, which depends on the seat.
+                        From a root: the rest of that <code>BuildRules</code>, the root's automatic
+                        <a href="#value-objects">value-object</a> validation, and the <code>BuildRules</code> and
+                        value objects of every <a href="#aggregate-persistence">aggregate child</a>. From an
+                        <code>AggregateValueObject</code>: the rest of that child's <code>BuildRules</code>, its own
+                        value objects, and every sibling still queued — the discovered collection and the manual
+                        <code>ValidateAggregateValueObject</code> queue alike. Nothing below the call runs: no
+                        closure, no hand-written <code>if</code>, no bare statement.</li>
+                    <li><strong>It can never skip validation.</strong> The barrier fires only when a notification has
+                        ALREADY been emitted; with a clean context it does nothing and the pass runs whole. A stop
+                        therefore happens exclusively on a write that is already rejected, and the notification that
+                        triggered it is what the caller gets back — the sealed <code>ValidEntity</code> contract and
+                        both of its exits are unchanged. What changes is how much the
+                        <code>NotificationCarrier</code> carries: the guard alone, instead of the guard plus every
+                        field the entity would also have failed on. The structural gates
+                        (<code>Modes()</code> and id validity) sit outside the barrier and always report.</li>
+                    <li><strong>Additive</strong> — <code>BuildRules</code> signatures, <code>NewRules</code> and
+                        every existing entity are untouched.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.57.1</span><span class="release-date">August 24, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>the <code>query.sortable</code> boot advisory no longer names
