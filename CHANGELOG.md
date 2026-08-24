@@ -13,21 +13,44 @@ with `1.0.0`.
 
 ## [0.59.0] - 2026-08-24
 
-### Changed
+### Added
 
-- **The guard barrier's reach is now a stated guarantee, backed by a placement
-  matrix.** `r.StopIfInvalid()` ends the pass from wherever it is written — top
-  level in the body, inside a hand-written `if`, inside a loop, inside a method
-  the rules call, inside nested anonymous functions, inside a mode closure the
-  verb dispatches — and it behaves the same in an `AggregateValueObject`'s
-  `BuildRules`, where it also cuts that child's own value objects and every
-  sibling still queued. The one thing that does not stop is a barrier the verb
-  never reaches: written inside a mode closure that does not dispatch, the whole
-  closure is skipped, barrier included. That is the mode gate, unchanged.
-  Behavior is the same as 0.58.0; what is new is that every placement is pinned
-  by a test.
-- **Internal:** the validation pass is built through `NewRules` instead of a
-  parallel constructor. No public surface change.
+- **`Rules.StopIfInvalid()` — guard barriers in `BuildRules`.** A rule that is a
+  precondition for the rules below it (an owner that must exist before it is
+  dereferenced, a snapshot that must have been captured, a parse that must have
+  succeeded) can now end the validation pass where it rejects, instead of
+  letting everything after it run on a premise that is already false. Call it on
+  its own line between rules — it takes nothing, returns nothing, and there is
+  no `return` to write around it:
+
+  ```go
+  r.IfInsertOrUpdate(func() {
+      if u.Address == nil {
+          r.AddNotification("Address", domain.RequiredFieldNotification{})
+      }
+  })
+  r.StopIfInvalid()
+  // nothing below runs: no closure, no hand-written if, no bare statement
+  ```
+
+  It stops everything the pass has not done yet, which depends on the seat. From
+  a root: the rest of that `BuildRules`, the root's automatic value-object
+  validation, and the `BuildRules` and value objects of every aggregate child.
+  From an `AggregateValueObject`: the rest of that child's `BuildRules`, its own
+  value objects, and every sibling still queued (discovered collection and the
+  manual `ValidateAggregateValueObject` queue alike). The structural gates
+  (`Modes()` and id validity) sit outside the barrier and always report.
+
+  **It can never skip validation.** The barrier fires only when a notification
+  has already been emitted; with a clean context it does nothing and the pass
+  runs whole. A stop therefore happens exclusively on a write that is already
+  rejected, and the notification that triggered it is what the caller gets back —
+  the sealed `ValidEntity` contract and both exits are unchanged. What changes is
+  how much the `NotificationCarrier` carries: the guard alone, instead of the
+  guard plus every field the entity would also have failed on.
+
+  Additive: `BuildRules` signatures, `NewRules`, and every existing entity are
+  untouched.
 
 ## [0.58.0] - 2026-08-24
 
