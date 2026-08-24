@@ -7,6 +7,33 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.57.1</span><span class="release-date">August 24, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>the <code>query.sortable</code> boot advisory no longer names
+                Mongo.</strong> The line
+                <code>query.sortable: endpoint declares an ordering vocabulary; verify … indexes cover each path
+                COMPOUNDED WITH its id tiebreak …</code> is emitted whenever a Request DTO declares
+                <a href="#auto-query-handlers~qry-sort"><code>query:"orderBy"</code></a> with a vocabulary.
+                <ul>
+                    <li><strong>It verifies nothing, so it names no store.</strong> The advisory fires from the
+                        read-side route constructor, which cannot see WHICH read model serves the endpoint — the
+                        declaration lives in a separate construction site — let alone that read model's index
+                        declarations. It never checked anything on Mongo either: a view declaring
+                        <code>query.Compound("name","_id")</code> for every path got the identical line. Naming
+                        Mongo told every service reading through
+                        <a href="#relational-view"><code>query.RelationalView</code></a> to go check indexes on a
+                        store it does not read from, once per endpoint at every boot.</li>
+                    <li><strong>The reminder is unchanged</strong> — same trigger, same
+                        <code>request</code> and <code>sortable_wire_paths</code> attributes, same
+                        once-per-declared-shape dedup. Where to act on it depends on the backing:
+                        <code>query.Indexes(…)</code> on a projected view, an index on
+                        <code>(&lt;column&gt;, &lt;id column&gt;)</code> in your own
+                        <a href="#migrations">migrations</a> for a relational read model.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.57.0</span><span class="release-date">August 23, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#read-joins">Read joins</a></strong>: an aggregate's queries

@@ -699,9 +699,16 @@ type AddressFilterParams struct {
         <code>query.Compound("name","_id")</code> does. A mixed-direction multi-key sort
         (<code>?orderBy=name,-email</code> → <code>{name:1, email:-1, _id:1}</code>) cannot be covered
         at all: <code>IndexSpec.Desc()</code> flips only the trailing key. The framework emits one
-        <code>slog.Warn</code> at boot per Request DTO listing the declared paths, because the
-        wrapper cannot see the <code>ViewDefinition</code> from its construction site — compare that
-        list against the view's <code>.Indexes(…)</code> in the same boot pass.
+        <code>slog.Warn</code> at boot per Request DTO listing the declared paths — compare that list
+        against the view's <code>.Indexes(…)</code> in the same boot pass. The advisory
+        <strong>verifies nothing and names no store</strong>: the wrapper cannot see the read model
+        behind the endpoint from its construction site, so it knows neither the index declarations
+        nor whether the endpoint is served from a projected view or straight from the SoR. The
+        reminder holds for both — the rule above is the projected case, and the place to check for a
+        <a href="#relational-view">relational read model</a> is your own
+        <a href="#migrations">migrations</a>, where an index on
+        <code>(&lt;column&gt;, &lt;id column&gt;)</code> plays the part
+        <code>query.Compound("name","_id")</code> plays here.
     </div>
     <p>
         A default ordering that the consumer does not choose belongs on

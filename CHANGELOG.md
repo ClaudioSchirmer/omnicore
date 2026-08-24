@@ -11,6 +11,22 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-08-24
+
+### Fixed
+
+- **The `query.sortable` boot advisory no longer names Mongo.** It verifies
+  nothing — its only condition is that the Request DTO declared
+  `query:"orderBy"` — and from the route constructor it cannot see which read
+  model serves the endpoint, so it was in no position to name a store. A service
+  reading through `query.RelationalView` was told, once per endpoint at every
+  boot, to check indexes on a store it does not read from. The message now reads
+  "verify the read model's indexes cover each path COMPOUNDED WITH its id
+  tiebreak"; the `request` and `sortable_wire_paths` attributes and the
+  once-per-declared-shape dedup are unchanged. Where to check depends on the
+  backing: `query.Indexes(...)` on a projected view, your own migrations
+  (an index on `(<column>, <id column>)`) for a relational read model.
+
 ## [0.57.0] - 2026-08-23
 
 ### Added
