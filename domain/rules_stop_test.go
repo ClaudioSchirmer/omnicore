@@ -687,3 +687,187 @@ func TestStopIfInvalid_GenuinePanicInAChildStillPropagates(t *testing.T) {
 
 	runAggregateValidations(root, ModeInsert, "test", &rulesPass{})
 }
+
+// --- placement matrix -------------------------------------------------------
+//
+// The promise is that the barrier works WHEREVER it is written, not only in the
+// canonical spot between two mode closures. These two suites put it in every
+// position a rule author can reach — top level, inside a hand-written if, inside
+// a loop, inside a method the rules call, inside nested anonymous functions,
+// inside a mode closure — and assert the same three things each time: execution
+// stops, the automatic validation is skipped, and the returned error carries the
+// notification that triggered it.
+
+type placedRoot struct {
+	AggregateRoot
+	Color testColor
+	place string
+	after *bool
+}
+
+func (e *placedRoot) Modes() []EntityMode {
+	return []EntityMode{ModeInsert, ModeUpdate, ModeDelete, ModeArchive, ModeUnarchive}
+}
+func (e *placedRoot) GetAggregateRoot() *AggregateRoot { return &e.AggregateRoot }
+func (e *placedRoot) AggregateChildren() []AggregateValueObject {
+	return []AggregateValueObject{placedChild{}}
+}
+func (e *placedRoot) viaMethod(r *Rules) { r.StopIfInvalid() }
+
+func (e *placedRoot) BuildRules(_ string, _ Service, r *Rules) {
+	r.AddNotification("Guard", RequiredFieldNotification{})
+	placeTheBarrier(e.place, r, e.viaMethod)
+	*e.after = true // must stay false in every placement
+	r.IfInsertOrUpdate(func() { *e.after = true })
+}
+
+// placeTheBarrier writes r.StopIfInvalid() in the requested position. It is
+// shared by the root and the child suite so both prove the same list.
+func placeTheBarrier(place string, r *Rules, viaMethod func(*Rules)) {
+	switch place {
+	case "topLevel":
+		r.StopIfInvalid()
+	case "handWrittenIf":
+		if r.Mode() != ModeUnknown {
+			r.StopIfInvalid()
+		}
+	case "insideLoop":
+		for i := 0; i < 3; i++ {
+			r.StopIfInvalid()
+		}
+	case "methodTheRulesCall":
+		viaMethod(r)
+	case "nestedAnonymousFuncs":
+		func() { func() { r.StopIfInvalid() }() }()
+	case "afterOtherGates":
+		r.IfDelete(func() {})
+		r.IfArchive(func() {})
+		r.StopIfInvalid()
+	case "insideAMatchingModeClosure":
+		r.IfInsertOrUpdate(func() { r.StopIfInvalid() })
+	}
+}
+
+// everyPlacement is the list both suites walk. "insideAMatchingModeClosure" is
+// only meaningful under a verb the closure dispatches — under Delete the closure
+// itself never fires, so nothing inside it runs, barrier included. That is the
+// mode gate, not a hole in the barrier.
+var everyPlacement = []string{
+	"topLevel", "handWrittenIf", "insideLoop", "methodTheRulesCall",
+	"nestedAnonymousFuncs", "afterOtherGates", "insideAMatchingModeClosure",
+}
+
+func guardNotificationIn(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("the write was accepted — the guard notification never reached the caller")
+	}
+	var carrier NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("error is not a NotificationCarrier: %T", err)
+	}
+	found := false
+	for _, c := range carrier.NotificationContexts() {
+		for _, m := range c.Messages() {
+			if NotificationKey(m.Notification) == "RequiredFieldNotification" {
+				found = true
+			}
+			if NotificationKey(m.Notification) == "testUnknownColorNotification" {
+				t.Error("automatic value-object validation ran past the barrier")
+			}
+		}
+	}
+	if !found {
+		t.Error("the guard notification is not in the returned error")
+	}
+}
+
+func TestStopIfInvalid_AnyPlacementInARootStops(t *testing.T) {
+	verbs := []struct {
+		name string
+		run  func(Entity) error
+	}{
+		{"GetInsertable", func(e Entity) error { _, err := GetInsertable(e, nil, "a"); return err }},
+		{"GetDeletable", func(e Entity) error { _, err := GetDeletable(e, nil, "a"); return err }},
+		{"GetArchivable", func(e Entity) error { _, err := GetArchivable(e, nil, "a"); return err }},
+		{"GetUnarchivable", func(e Entity) error { _, err := GetUnarchivable(e, nil, "a"); return err }},
+	}
+	for _, place := range everyPlacement {
+		for _, v := range verbs {
+			if place == "insideAMatchingModeClosure" && v.name != "GetInsertable" {
+				continue // the closure does not dispatch under those verbs
+			}
+			t.Run(place+"/"+v.name, func(t *testing.T) {
+				after := false
+				e := &placedRoot{Color: colorUnknown, place: place, after: &after}
+				ensureInit(e)
+				if v.name != "GetInsertable" {
+					e.SetID(NewID("placed-id"))
+				}
+
+				err := v.run(e)
+
+				if after {
+					t.Error("execution continued past the barrier")
+				}
+				guardNotificationIn(t, err)
+			})
+		}
+	}
+}
+
+type placedChild struct {
+	Managed
+	Name  string
+	Color testColor
+	place string
+	after *bool
+	calls *int
+}
+
+func (c placedChild) CollectionName() string { return "PlacedChilds" }
+func (c placedChild) IsSameBusinessIdentity(o AggregateValueObject) bool {
+	x, ok := o.(placedChild)
+	return ok && c.Name == x.Name
+}
+func (c placedChild) viaMethod(r *Rules) { r.StopIfInvalid() }
+
+func (c placedChild) BuildRules(_ string, _ Service, r *Rules) {
+	if c.calls != nil {
+		*c.calls++
+	}
+	if c.place == "" {
+		return // the sibling: no barrier, it only records that it ran
+	}
+	r.AddNotification("KidGuard", RequiredFieldNotification{})
+	placeTheBarrier(c.place, r, c.viaMethod)
+	*c.after = true // must stay false in every placement
+	r.IfInsertOrUpdate(func() { *c.after = true })
+}
+
+// An aggregate child's rules are a rule body like any other, so the barrier has
+// to behave there too — and from that seat it also cuts the child's own value
+// objects and every sibling still queued.
+func TestStopIfInvalid_AnyPlacementInAnAVOStops(t *testing.T) {
+	for _, place := range everyPlacement {
+		t.Run(place, func(t *testing.T) {
+			after, calls := false, 0
+			root := &placedRoot{Color: colorRed, place: "none", after: new(bool)}
+			ensureInit(root)
+			root.AggregateConstructor([]AggregateValueObject{
+				placedChild{Name: "guarded", Color: colorUnknown, place: place, after: &after, calls: &calls},
+				placedChild{Name: "sibling", Color: colorUnknown, after: &after, calls: &calls},
+			})
+
+			_, err := GetInsertable(root, nil, "GetInsertable")
+
+			if after {
+				t.Error("execution continued past the barrier inside the child")
+			}
+			if calls != 1 {
+				t.Errorf("child BuildRules calls = %d, want 1 — the sibling must be cut", calls)
+			}
+			guardNotificationIn(t, err)
+		})
+	}
+}

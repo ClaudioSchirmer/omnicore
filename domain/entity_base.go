@@ -530,7 +530,8 @@ func validateForInsert(e Entity, actionName string) error {
 		return err
 	}
 	pass := &rulesPass{}
-	rules := newPassRules(ModeInsert, e.NotificationContext(), reflect.TypeOf(e), pass)
+	rules := NewRules(ModeInsert, e.NotificationContext(), reflect.TypeOf(e))
+	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeInsert) {
@@ -558,7 +559,8 @@ func validateForUpdate(e Entity, actionName string) error {
 		return err
 	}
 	pass := &rulesPass{}
-	rules := newPassRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e), pass)
+	rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
+	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeUpdate) {
@@ -587,7 +589,8 @@ func validateForDelete(e Entity, actionName string) error {
 		return err
 	}
 	pass := &rulesPass{}
-	rules := newPassRules(ModeDelete, e.NotificationContext(), reflect.TypeOf(e), pass)
+	rules := NewRules(ModeDelete, e.NotificationContext(), reflect.TypeOf(e))
+	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeDelete) {
@@ -616,7 +619,8 @@ func validateForArchive(e Entity, actionName string) error {
 		return err
 	}
 	pass := &rulesPass{}
-	rules := newPassRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e), pass)
+	rules := NewRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e))
+	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeArchive) {
@@ -645,7 +649,8 @@ func validateForUnarchive(e Entity, actionName string) error {
 		return err
 	}
 	pass := &rulesPass{}
-	rules := newPassRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e), pass)
+	rules := NewRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e))
+	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeUnarchive) {
@@ -833,7 +838,8 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string, pass 
 						NameSegment(collectionName),
 						IndexSegment(idx),
 					)
-					childRules := newPassRules(mode, scoped, reflect.TypeOf(item.Item), pass)
+					childRules := NewRules(mode, scoped, reflect.TypeOf(item.Item))
+					childRules.pass = pass
 					buildRules(func() { item.Item.BuildRules(actionName, e.getService(), childRules) })
 					if pass != nil && pass.halted {
 						return
@@ -850,7 +856,8 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string, pass 
 			continue
 		}
 		scoped := rootCtx.scopedForType(reflect.TypeOf(entry.avo), NameSegment(entry.name))
-		childRules := newPassRules(mode, scoped, reflect.TypeOf(entry.avo), pass)
+		childRules := NewRules(mode, scoped, reflect.TypeOf(entry.avo))
+		childRules.pass = pass
 		buildRules(func() { entry.avo.BuildRules(actionName, e.getService(), childRules) })
 		if pass != nil && pass.halted {
 			return

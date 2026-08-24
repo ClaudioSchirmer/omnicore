@@ -66,17 +66,6 @@ func NewRules(mode EntityMode, ctx *NotificationContext, entityType reflect.Type
 	return &Rules{mode: mode, ctx: ctx, entityType: entityType}
 }
 
-// newPassRules is NewRules wired into a validation pass, so a guard barrier can
-// reach the work queued behind this owner. The framework uses it at every entry
-// point; NewRules stays the constructor for a hand-built Rules (tests,
-// generated fixtures, ValidateAggregateChild), which carries no pass — there
-// StopIfInvalid still reports, it just has nothing queued to halt.
-func newPassRules(mode EntityMode, ctx *NotificationContext, entityType reflect.Type, pass *rulesPass) *Rules {
-	r := NewRules(mode, ctx, entityType)
-	r.pass = pass
-	return r
-}
-
 func (r *Rules) Mode() EntityMode {
 	return r.mode
 }
