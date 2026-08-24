@@ -31,10 +31,10 @@ func (c *countingLoader) CountEntities(_ context.Context, q *criteria.Query) (in
 	return n, nil
 }
 
-func countingReaderWith(rows []domain.Entity, archived int64) (*RelationalViewReader, *countingLoader) {
+func countingReaderWith(rows []domain.Entity, archived int64) (*ViewReader, *countingLoader) {
 	l := &countingLoader{pageLoader: pageLoader{table: "gadgets", rows: rows}, archived: archived}
-	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(l)
-	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+	vdef := query.RelationalView("v", l)
+	r := NewViewReader([]*query.RelationalViewDefinition{vdef})
 	r.SetMaxLimitResolver(func(string) int64 { return 100 })
 	return r, l
 }

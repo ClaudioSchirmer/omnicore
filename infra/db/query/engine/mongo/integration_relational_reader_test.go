@@ -15,11 +15,15 @@ import (
 
 // TestRelationalViewReader_EndToEnd drives the relational read path exactly as a
 // web surface does — through the queries.ViewReader port — proving the whole
-// chain: a view marked RelationalSource(loader) is served from the SoR, the
-// loader (a real read.AggregateLoader passed as the RelationalReader — this call
-// alone proves the loader satisfies the interface structurally) loads the
-// aggregate, BuildDocument maps it, ToGoDoc names it, and the offset-in-cursor
+// chain against a real database: a query.RelationalView is served from the SoR,
+// the loader (a real read.AggregateLoader passed as the query.AggregateReader —
+// this call alone proves the loader satisfies the interface structurally) loads
+// the aggregate, BuildDocument maps it, ToGoDoc names it, and the offset-in-cursor
 // pagination walks it under the unchanged limit/after surface.
+//
+// The unit suite covers each of those in isolation over fakes; only a live run
+// proves the SQL the loader compiles is accepted by a backend and that the
+// document assembled from the scanned entity carries what the surfaces read.
 func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
@@ -43,8 +47,9 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 
 	schema := loaderRootSchema()
 	loader := read.NewAggregateLoader[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} }).WithSchema(schema)
-	vdef := query.View("loader_roots").Schema(schema).Version(1).RelationalSource(loader)
-	var reader queries.ViewReader = relational.NewRelationalViewReader([]*query.ViewDefinition{vdef})
+	var reader queries.ViewReader = relational.NewViewReader([]*query.RelationalViewDefinition{
+		query.RelationalView("loader_roots", loader),
+	})
 
 	nameOf := func(item map[string]any) string {
 		s, _ := item["Name"].(string)
@@ -58,7 +63,7 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 		t.Fatalf("ReadPage p1: %v", err)
 	}
 	if len(p1.Items) != 2 || nameOf(p1.Items[0]) != "Ada" || nameOf(p1.Items[1]) != "Bob" {
-		t.Fatalf("p1 items = %v", names(p1.Items))
+		t.Fatalf("p1 items = %v", relNames(p1.Items))
 	}
 	if !p1.HasNextPage {
 		t.Error("p1 should have a next page")
@@ -71,9 +76,13 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	if p1.TotalCount != 3 {
 		t.Errorf("p1 Total = %d, want 3 (the full match count, page size 2)", p1.TotalCount)
 	}
-	// the doc carries the mapped root fields + the managed columns
-	if _, ok := p1.Items[0]["_id"]; !ok {
-		t.Errorf("doc missing _id: %v", p1.Items[0])
+	// The identity reaches the document under the Go field the Entity contract
+	// fixes — never under a store's own key, which stops at the read engine.
+	if _, ok := p1.Items[0]["ID"]; !ok {
+		t.Errorf("doc missing the ID Go field: %v", p1.Items[0])
+	}
+	if _, ok := p1.Items[0]["_id"]; ok {
+		t.Errorf("the relational document must carry no store key: %v", p1.Items[0])
 	}
 	if _, ok := p1.Items[0]["CreatedAt"]; !ok {
 		t.Errorf("doc missing CreatedAt (managed): %v", p1.Items[0])
@@ -85,7 +94,7 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 		t.Fatalf("ReadPage p2: %v", err)
 	}
 	if len(p2.Items) != 1 || nameOf(p2.Items[0]) != "Cy" {
-		t.Fatalf("p2 items = %v", names(p2.Items))
+		t.Fatalf("p2 items = %v", relNames(p2.Items))
 	}
 	if p2.HasNextPage {
 		t.Error("p2 (last page) must not have a next page")
@@ -109,6 +118,12 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 		t.Errorf("onlyTotal Total = %d but the listing reported %d — they must agree", tot.TotalCount, p1.TotalCount)
 	}
 
+	// ── the child collection rides the served document ──
+	tags, _ := p1.Items[0]["LoaderTagVOs"].([]any)
+	if len(tags) != 1 {
+		t.Errorf("the aggregate's child collection must be served, got %#v", p1.Items[0]["LoaderTagVOs"])
+	}
+
 	// ── ReadByID: found ──
 	doc, found, err := reader.ReadByID(ctx, "loader_roots", ids["Ada"], queries.ReadCriteria{})
 	if err != nil {
@@ -125,7 +140,7 @@ func TestRelationalViewReader_EndToEnd(t *testing.T) {
 	}
 }
 
-func names(items []map[string]any) []string {
+func relNames(items []map[string]any) []string {
 	out := make([]string, len(items))
 	for i, it := range items {
 		out[i] = fmt.Sprintf("%v", it["Name"])

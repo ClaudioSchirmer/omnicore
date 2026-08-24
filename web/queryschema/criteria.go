@@ -37,12 +37,12 @@ type Read struct {
 	OrderBy []OrderTerm
 	// Fields are the projection tokens in the Response's wire spelling.
 	Fields []string
-	// Projection is a projection the surface resolved ITSELF, for a wire whose
+	// Projection is a field selection the surface resolved ITSELF, for a wire whose
 	// selection vocabulary is its own output shape rather than the Response's
 	// tokens: a GraphQL selection set, a proto FieldMask over the item
 	// message. It is applied verbatim — the surface owns what its own shape
 	// admits — and Fields is the token path for the wires that have one.
-	Projection map[string]int
+	Projection queries.Projection
 
 	// The values behind the presence flags on Controls.
 	Search          string
@@ -126,20 +126,16 @@ func BuildCriteria(s *RequestSchema, proj *ProjectionSchema, in Read) (queries.R
 	}
 
 	var selectedWire map[string]bool
-	if len(in.Projection) > 0 {
+	if in.Projection.Narrows() {
 		crit.Projection = in.Projection
 	}
 	if len(in.Fields) > 0 {
+		// An inclusion projection selects exactly what the consumer named. The id
+		// is a path like any other: not asked for, not selected — no auto-exclusion
+		// to declare here, and no store's identity key to name.
 		projection, wireSet, bad, ok := ParseProjection(in.Fields, proj)
 		if !ok {
 			return crit, nil, SchemaViolation(FieldsField(bad)), false
-		}
-		if proj != nil && !wireSet["id"] {
-			// Mongo always returns `_id` unless explicitly excluded. The
-			// consumer did not ask for `id`, so drop it: the Response renders
-			// every field as an omitempty pointer, and an id nobody requested
-			// would still reach the wire.
-			projection["_id"] = 0
 		}
 		crit.Projection = projection
 		selectedWire = wireSet

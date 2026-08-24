@@ -71,6 +71,7 @@ func (coreES) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Servicio no disponible.",
 		"RequestTimeoutNotification":        "La solicitud superó el tiempo límite.",
 		"ReadTimeoutNotification":           "La solicitud no se recibió dentro del tiempo límite.",
+		"UnsupportedCapabilityNotification": "Esta capacidad no es compatible con el almacén desde el que se lee esta vista.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Cabecera de autorización ausente o con formato inválido.",
@@ -82,7 +83,6 @@ func (coreES) Translations() map[string]string {
 		"TenantMissingNotification":        "Identificador del tenant ausente en el principal autenticado.",
 		"TenantMismatchNotification":       "El recurso pertenece a otro tenant.",
 		"FieldAccessForbiddenNotification": "Campo no accesible.",
-		"RelationalCapabilityNotification": "Esta capacidad no es compatible con una vista leída del backend relacional; quite RelationalSource() para servirla desde Mongo.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Error interno del servidor.",

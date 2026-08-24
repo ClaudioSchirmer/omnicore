@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // A2b loader coverage: childScanSQL LEFT JOINs a child's siblings and folds their
@@ -20,13 +21,19 @@ func (c csLoadChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestChildScanSQL_WithSibling(t *testing.T) {
 	child := NewTableSchema[csLoadChild]("cs_child").ID("id").ParentID("root_id").Field("Label", "label").
+		DeletedAt("deleted_at").
 		Sibling(NewSiblingSchema[csLoadChild]("cs_child_ext").Field("Note", "note"))
 	cols, byCol := child.ScanPlan()
 	ms := newChildManagedScan(child)
-	sql, scanCols, scanByCol := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "AND deleted_at IS NULL", testPGDialect{}, ms.cols)
+	sql, scanCols, scanByCol := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, criteria.ScopeActive, testPGDialect{}, ms.cols, nil)
 
 	if !strings.Contains(sql, "LEFT JOIN") || !strings.Contains(sql, "cs_child_ext") {
 		t.Errorf("a child with a sibling must LEFT JOIN it: %q", sql)
+	}
+	// The soft-delete gate is qualified the moment anything else is in the FROM —
+	// a bare deleted_at is ambiguous against any joined table that has one.
+	if !strings.Contains(sql, "cs_child.deleted_at IS NULL") {
+		t.Errorf("the scope gate must be qualified under a join: %q", sql)
 	}
 	// The child's own id rides as a trailing column, qualified to the child table.
 	if !strings.Contains(sql, "cs_child.id") {
@@ -50,7 +57,7 @@ func TestChildScanSQL_NoSibling(t *testing.T) {
 	child := NewTableSchema[csLoadChild]("cs_child").ID("id").ParentID("root_id").Field("Label", "label")
 	cols, byCol := child.ScanPlan()
 	ms := newChildManagedScan(child)
-	sql, _, _ := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, "", testPGDialect{}, ms.cols)
+	sql, _, _ := childScanSQL(child, "root_id", cols, byCol, []string{"$1"}, criteria.ScopeActive, testPGDialect{}, ms.cols, nil)
 	if strings.Contains(sql, "LEFT JOIN") {
 		t.Errorf("a child without siblings must not join: %q", sql)
 	}

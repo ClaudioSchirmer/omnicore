@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -25,23 +26,116 @@ const idGoField = "ID"
 const defaultPageLimit int64 = 100
 
 // view is one relational-backed view's read state: the root schema (drives the
-// criteria field resolution + the doc mapping), the ViewNode (column<->Go
-// translation + the archived-child strip) and the aggregate loader the view
-// carries (repo.Loader, handed in at declaration via RelationalSource).
+// criteria field resolution and the doc mapping), the ViewNode (column<->Go
+// translation + the archived-child strip) and the aggregate loader the view was
+// declared over. All three come from the declaration; the schema is the loader's
+// own, so they cannot disagree.
 type view struct {
 	schema *core.TableSchema
 	node   *query.ViewNode
-	loader query.RelationalReader
+	loader query.AggregateReader
+	// joinFields names the Go fields declared read joins add beyond the schema,
+	// keyed by the table they land on. Root entries are addressable in a criteria;
+	// every entry is served in the document.
+	joinFields map[string][]string
+	// joinPaths is the same declaration read as DOC PATHS — what a `?fields=`
+	// selection may name beyond what the ViewNode resolves. Built once, at
+	// registration.
+	joinPaths map[string]bool
 }
 
-// RelationalViewReader implements queries.ViewReader by reading a marked view
-// directly from the relational backend (SoR) instead of the Mongo projection: it
-// loads the aggregate through the view's loader, maps it to the same column-keyed
-// document a Mongo-backed view stores (BuildDocument), then applies the same
-// ViewNode strip + Go translation, so the four web surfaces read it identically.
-// Pagination is offset-in-cursor (skip/count), not keyset — the relational
-// idiom — behind the unchanged after/before/limit surface.
-type RelationalViewReader struct {
+// rootJoinFields is the set of join fields addressable in a criteria — the root's
+// only. A child join is load-only.
+func (v view) rootJoinFields() map[string]bool {
+	names := v.joinFields[v.schema.Table()]
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
+}
+
+// joinProjectionPaths is the set of dotted Go paths a declared read join ADDS to
+// the served document beyond the schema: a root join field under its bare name, a
+// child join field under `<collectionSegment>.<field>` — exactly where
+// applyJoinFields writes them.
+//
+// The ViewNode cannot answer for these, and should not: a join maps a column of
+// ANOTHER aggregate onto a Go field of this one, so there is no column of this
+// schema behind it to translate to. The field-selection gate consults this set
+// alongside the node, so `?fields=` admits precisely the document a read serves —
+// nothing less (a join field is not "unknown") and nothing more.
+func joinProjectionPaths(schema *core.TableSchema, joinFields map[string][]string) map[string]bool {
+	if len(joinFields) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, n := range joinFields[schema.Table()] {
+		out[n] = true
+	}
+	children := schema.ChildSchemas()
+	if base := schema.BaseChildSchemas(); len(base) > 0 {
+		children = append(append([]*core.TableSchema{}, children...), base...)
+	}
+	for _, child := range children {
+		for _, n := range joinFields[child.Table()] {
+			out[child.CollectionSegment()+"."+n] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// validateProjection refuses a field selection this view cannot serve, at the
+// read's ENTRY POINT, before any IO — the same seat and the same cost as the
+// search / filter / sort refusals beside it.
+//
+// A path that resolves to nothing used to be pruned in silence: the selection
+// kept only what it named, the document had none of it, and the consumer got 200
+// with an empty object. That is the one answer a caller cannot act on — "you
+// asked for something I do not have" and "I have nothing" read identically on the
+// wire. The Mongo reader has always refused the same input (translateProjectionKeys
+// fails the read), and the two backings must be indistinguishable from outside, so
+// this raises the SAME error it does: core.UnresolvedFieldPathError → the kernel
+// SchemaViolationNotification, SemanticSchema, 400 on every surface.
+//
+// Both modes are checked, exactly as the Mongo reader checks them: an EXCLUSION
+// naming a path this view has no concept of is as meaningless as an inclusion.
+// Paths are visited in sorted order so a request carrying several unknown ones
+// always names the same first offender.
+func (v view) validateProjection(proj queries.Projection) error {
+	if !proj.Narrows() {
+		return nil
+	}
+	paths := make([]string, 0, len(proj.Paths))
+	for p := range proj.Paths {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		if _, ok := v.node.ColumnPath(strings.Split(p, ".")); ok {
+			continue
+		}
+		if v.joinPaths[p] {
+			continue
+		}
+		return core.UnresolvedFieldPathError(p)
+	}
+	return nil
+}
+
+// ViewReader implements queries.ViewReader by reading a relational-backed view
+// from the source of record: it loads the aggregate through the view's loader,
+// maps it into a column-keyed document (BuildDocument), then applies the view's
+// ViewNode strip + Go translation, so the four web surfaces read it exactly as
+// they read a projected view. Pagination is offset-in-cursor (skip/count), not
+// keyset — the relational idiom — behind the unchanged after/before/limit surface.
+type ViewReader struct {
 	views map[string]view
 	// maxLimitFn resolves the per-view page-size (`?first=`/`?last=`) ceiling, mirroring the Mongo
 	// reader's cascade EXACTLY: the same resolver the bootstrap builds from the
@@ -52,48 +146,39 @@ type RelationalViewReader struct {
 	maxLimitFn func(string) int64
 }
 
-var _ queries.ViewReader = (*RelationalViewReader)(nil)
+var _ queries.ViewReader = (*ViewReader)(nil)
 
-// NewRelationalViewReader builds the reader from the collected views, indexing
-// only the RelationalSource() ones by name. Views without the marker are served
-// by the Mongo reader and never reach here.
-func NewRelationalViewReader(views []*query.ViewDefinition) *RelationalViewReader {
-	r := &RelationalViewReader{views: make(map[string]view)}
+// NewViewReader builds the reader from the declared relational views, indexed by
+// name. The declarations are boot-validated (query.ValidateRelationalViews) before
+// they get here, so a nil loader or a schemaless one has already aborted the boot
+// — this constructor rejects nothing and cannot panic. A malformed entry that
+// somehow arrives is skipped rather than serving a broken view.
+func NewViewReader(views []*query.RelationalViewDefinition) *ViewReader {
+	r := &ViewReader{views: make(map[string]view, len(views))}
 	for _, v := range views {
-		if !v.IsRelational() {
+		if v == nil || v.Loader() == nil || v.SchemaDef() == nil {
 			continue
 		}
-		schema := v.SchemaDef()
-		if schema == nil {
-			panic(fmt.Sprintf("relational view %q: RelationalSource requires a Schema()", v.Name()))
-		}
-		reader := v.RelationalReader()
-		// The loader MUST read the same table the view projects — a view handed
-		// the wrong entity's loader (e.g. the User loader on a Gadget view) would
-		// silently serve the wrong aggregate, so fail the boot loudly here.
-		if got, want := reader.BoundTable(), schema.Table(); got != want {
-			panic(fmt.Sprintf(
-				"relational view %q: RelationalSource loader is bound to table %q but the view's schema is table %q — the view was handed the wrong entity's loader",
-				v.Name(), got, want))
-		}
 		r.views[v.Name()] = view{
-			schema: schema,
-			node:   v.BuildViewNode(),
-			loader: reader,
+			schema:     v.SchemaDef(),
+			node:       v.BuildViewNode(),
+			loader:     v.Loader(),
+			joinFields: v.Loader().JoinFields(),
+			joinPaths:  joinProjectionPaths(v.SchemaDef(), v.Loader().JoinFields()),
 		}
 	}
 	return r
 }
 
 // Empty reports whether any relational view is registered — the wiring installs
-// this reader into the dispatch seam only when there is one.
-func (r *RelationalViewReader) Empty() bool { return len(r.views) == 0 }
+// this reader into the read seam only when there is one.
+func (r *ViewReader) Empty() bool { return len(r.views) == 0 }
 
 // SetMaxLimitResolver installs the per-view page-size ceiling resolver — the SAME
 // closure the bootstrap wires into the Mongo reader — so the two backings enforce
 // an identical MaxLimit cascade. Returns the receiver for chaining at the wiring
 // site.
-func (r *RelationalViewReader) SetMaxLimitResolver(fn func(view string) int64) *RelationalViewReader {
+func (r *ViewReader) SetMaxLimitResolver(fn func(view string) int64) *ViewReader {
 	r.maxLimitFn = fn
 	return r
 }
@@ -101,7 +186,7 @@ func (r *RelationalViewReader) SetMaxLimitResolver(fn func(view string) int64) *
 // resolveMaxLimit returns the effective per-page ceiling for view. Always > 0:
 // a nil resolver or a non-positive answer falls back to the framework floor
 // (defaultPageLimit), matching MongoViewReader.resolveMaxLimit.
-func (r *RelationalViewReader) resolveMaxLimit(view string) int64 {
+func (r *ViewReader) resolveMaxLimit(view string) int64 {
 	if r.maxLimitFn != nil {
 		if n := r.maxLimitFn(view); n > 0 {
 			return n
@@ -110,10 +195,10 @@ func (r *RelationalViewReader) resolveMaxLimit(view string) int64 {
 	return defaultPageLimit
 }
 
-// RelationalViewNames is the per-view route the dispatch seam consults: the set
-// of view names this reader serves. The seam sends exactly these to the
-// relational reader and everything else to the Mongo reader.
-func (r *RelationalViewReader) RelationalViewNames() map[string]bool {
+// ViewNames is the per-view route the read seam consults: the set of view names
+// this reader serves. The seam sends exactly these here and everything else to
+// its fallback backing.
+func (r *ViewReader) ViewNames() map[string]bool {
 	out := make(map[string]bool, len(r.views))
 	for name := range r.views {
 		out[name] = true
@@ -124,7 +209,7 @@ func (r *RelationalViewReader) RelationalViewNames() map[string]bool {
 // ReadPage serves a paged read of a relational view: filter -> criteria, the
 // offset window decoded from the cursor, load -> BuildDocument -> strip ->
 // ToGoDoc, and the offset-encoded page/edge cursors.
-func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit queries.ReadCriteria) (queries.Page, error) {
+func (r *ViewReader) ReadPage(ctx context.Context, name string, crit queries.ReadCriteria) (queries.Page, error) {
 	v, ok := r.views[name]
 	if !ok {
 		return queries.Page{}, fmt.Errorf("relational view %q is not registered", name)
@@ -132,7 +217,10 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	if crit.Search != "" {
 		return queries.Page{}, unsupported("search")
 	}
-	where, err := toExpr(v.schema, crit.Filter)
+	if err := v.validateProjection(crit.Projection); err != nil {
+		return queries.Page{}, err
+	}
+	where, err := toExpr(v.schema, v.rootJoinFields(), crit.Filter)
 	if err != nil {
 		return queries.Page{}, err
 	}
@@ -158,6 +246,17 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		limit = maxLimit
 	}
 	hashCtx := queries.HashContext(crit.Filter, crit.OrderBy, crit.Search, crit.IncludeArchived)
+
+	// The ordered query is built BEFORE anything is issued, because applySort is
+	// the second half of the capability boundary: a sort naming a 1:N child field
+	// is refused exactly like a filter naming one, and the refusal must cost no
+	// connection. Only the window (offset/limit) is left for later — it is the one
+	// part that needs the resolved cursor.
+	q := scopedQuery(where, crit.IncludeArchived)
+	if err := applySort(v.schema, v.rootJoinFields(), q, crit.OrderBy); err != nil {
+		return queries.Page{}, err
+	}
+	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
 
 	// The listing total, counted under the SAME scoped criteria the OnlyTotal
 	// branch above uses — so `?first=N` and `?onlyTotal=true` report the same
@@ -211,13 +310,6 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 		return queries.Page{TotalCount: total, HasNextPage: win.hasNext, HasPreviousPage: win.hasPrev}, nil
 	}
 
-	q := scopedQuery(where, crit.IncludeArchived)
-	if err := applySort(v.schema, q, crit.OrderBy); err != nil {
-		// The buffered channel lets the in-flight count goroutine finish and
-		// be collected without blocking anyone.
-		return queries.Page{}, err
-	}
-	q.OrderBy(idGoField) // deterministic tiebreak — offset pages must be stable
 	q.Offset(win.offset).Limit(win.fetchLimit)
 
 	ents, err := v.loader.FindAllEntities(ctx, q)
@@ -242,11 +334,11 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	}
 	for j, ent := range ents {
 		doc := BuildDocument(v.schema, ent)
-		promoteID(doc, v.schema)
 		if !crit.IncludeArchived {
 			v.node.StripArchivedChildren(doc)
 		}
 		goDoc := v.node.ToGoDoc(doc)
+		applyJoinFields(goDoc, ent, v.schema, v.joinFields)
 		applyProjection(goDoc, crit.Projection)
 		page.Items = append(page.Items, goDoc)
 		cur, err := queries.EncodeCursor(offsetTuple(win.offset+int64(j), len(crit.OrderBy)), hashCtx)
@@ -281,41 +373,32 @@ func (r *RelationalViewReader) ReadPage(ctx context.Context, name string, crit q
 	return page, nil
 }
 
-// applyProjection prunes a served Go-keyed document to the ?fields= projection,
-// matching the Mongo reader's server-side projection — NESTED paths included.
-// crit.Projection is Go-field-path keyed: value 1 = include, 0 = exclude.
-// Inclusion keeps ONLY the projected paths — the root id is dropped unless
-// explicitly asked (the Mongo _id auto-exclusion the read wrapper declares) — and
-// a dotted key prunes INTO the child sub-document/array: ?fields=parts.label
-// keeps each `parts` element with only `label`, exactly as Mongo's
-// `{"parts.label":1}` does. Exclusion deletes the listed leaves, nested ones
-// included. Empty projection is a no-op (the full document).
-func applyProjection(doc map[string]any, proj map[string]int) {
-	if len(doc) == 0 || len(proj) == 0 {
+// applyProjection prunes a served Go-keyed document to the requested selection,
+// in memory — the counterpart of the Mongo reader's server-side projection, and
+// identical in outcome. ProjectOnly keeps ONLY the selected paths, so the root id
+// is absent unless the consumer named it; a dotted path prunes INTO the child
+// sub-document or array (`Parts.Label` keeps each `Parts` element with only
+// `Label`). ProjectExcept deletes the listed leaves, nested ones included.
+// ProjectAll is a no-op — the whole document.
+//
+// Every path here is already known to resolve: validateProjection ran at the
+// entry point, so a selection that survives to this point names only fields the
+// served document can carry. The prune is therefore a prune, never a silent
+// refusal.
+func applyProjection(doc map[string]any, proj queries.Projection) {
+	if len(doc) == 0 || !proj.Narrows() {
 		return
 	}
-	include := false
-	for _, v := range proj {
-		if v != 0 {
-			include = true
-			break
-		}
-	}
-	if include {
+	if proj.IsInclusion() {
 		keep := newProjTree()
-		for k, v := range proj {
-			if v == 0 {
-				continue // e.g. _id:0 — already excluded by keeping only the 1-paths
-			}
-			keep.add(k)
+		for path := range proj.Paths {
+			keep.add(path)
 		}
 		pruneInclude(doc, keep)
 		return
 	}
-	for k, v := range proj {
-		if v == 0 {
-			excludePath(doc, strings.Split(k, "."))
-		}
+	for path := range proj.Paths {
+		excludePath(doc, strings.Split(path, "."))
 	}
 }
 
@@ -398,13 +481,16 @@ func excludePath(node any, parts []string) {
 // ReadByID serves a by-id read: criteria.ByID (merged with any root-level
 // security-overlay filter) + Limit(1), then the same doc mapping. Not-found is
 // the empty slice, surfaced as (nil, false, nil) — never an error.
-func (r *RelationalViewReader) ReadByID(ctx context.Context, name, id string, crit queries.ReadCriteria) (map[string]any, bool, error) {
+func (r *ViewReader) ReadByID(ctx context.Context, name, id string, crit queries.ReadCriteria) (map[string]any, bool, error) {
 	v, ok := r.views[name]
 	if !ok {
 		return nil, false, fmt.Errorf("relational view %q is not registered", name)
 	}
+	if err := v.validateProjection(crit.Projection); err != nil {
+		return nil, false, err
+	}
 	where := criteria.Eq(idGoField, domain.NewID(id))
-	overlay, err := toExpr(v.schema, crit.Filter)
+	overlay, err := toExpr(v.schema, v.rootJoinFields(), crit.Filter)
 	if err != nil {
 		return nil, false, err
 	}
@@ -420,29 +506,13 @@ func (r *RelationalViewReader) ReadByID(ctx context.Context, name, id string, cr
 		return nil, false, nil
 	}
 	doc := BuildDocument(v.schema, ents[0])
-	promoteID(doc, v.schema)
 	if !crit.IncludeArchived {
 		v.node.StripArchivedChildren(doc)
 	}
 	goDoc := v.node.ToGoDoc(doc)
+	applyJoinFields(goDoc, ents[0], v.schema, v.joinFields)
 	applyProjection(goDoc, crit.Projection)
 	return goDoc, true, nil
-}
-
-// promoteID mirrors the Mongo storage transform onto the freshly built
-// column-keyed document: ApplyProjection stores the aggregate under {_id: id}
-// while KEEPING the physical id column, so a Mongo-read document carries both.
-// BuildDocument matches the composer's column-keyed shape (physical id only, so
-// the parity test holds), so the reader adds `_id` here — after the build, before
-// ToGoDoc — to make a relational-served document identical to a Mongo-served one
-// (ToGoDoc passes `_id` through and maps the physical id column to "ID"). Only
-// the root gets an `_id`; children stay sub-documents keyed by their physical id.
-func promoteID(doc query.Document, schema *core.TableSchema) {
-	if idCol := schema.IDColumn(); idCol != "" {
-		if v, ok := doc[idCol]; ok {
-			doc["_id"] = v
-		}
-	}
 }
 
 // window is the resolved offset page: the SoR offset, the fetch limit (limit+1
@@ -461,7 +531,7 @@ type window struct {
 // caller already holds; the default is the forward first page. Offsets are
 // absolute row indexes, encoded in the cursor as a single int — the relational
 // read carries no keyset tuple.
-func (r *RelationalViewReader) resolveWindow(crit queries.ReadCriteria, limit, total int64, hashCtx string) (window, error) {
+func (r *ViewReader) resolveWindow(crit queries.ReadCriteria, limit, total int64, hashCtx string) (window, error) {
 	switch {
 	case crit.After != "":
 		pos, err := decodeOffset(crit.After, hashCtx)

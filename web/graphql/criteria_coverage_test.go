@@ -84,28 +84,28 @@ func covNodeSelection(nodeFields ...*ast.Field) ast.SelectionSet {
 func TestProjectionFromSelection_LeafSelectionProjects(t *testing.T) {
 	proj := covPlan().projectionFromSelection(
 		covNodeSelection(&ast.Field{Name: "id"}), nil)
-	if len(proj) != 1 || proj["ID"] != 1 {
+	if len(proj.Paths) != 1 || !proj.Selects("ID") {
 		t.Errorf("node { id } must project the Go path ID, got %v", proj)
 	}
 }
 
-func TestProjectionFromSelection_EmptyNodeSelectionIsNil(t *testing.T) {
-	if proj := covPlan().projectionFromSelection(covNodeSelection(), nil); proj != nil {
-		t.Errorf("an empty node selection must drop the projection, got %v", proj)
+func TestProjectionFromSelection_EmptyNodeSelectionIsWholeDoc(t *testing.T) {
+	if proj := covPlan().projectionFromSelection(covNodeSelection(), nil); proj.Narrows() {
+		t.Errorf("an empty node selection must leave the read whole-document, got %v", proj)
 	}
 }
 
 func TestProjectionFromSelection_UnknownLeafDropsProjection(t *testing.T) {
 	proj := covPlan().projectionFromSelection(
 		covNodeSelection(&ast.Field{Name: "bogus"}), nil)
-	if proj != nil {
+	if proj.Narrows() {
 		t.Errorf("a stray leaf must drop the projection (defensive), got %v", proj)
 	}
 }
 
 func TestProjectionFromSelection_NoNodeIsNil(t *testing.T) {
 	sel := ast.SelectionSet{&ast.Field{Name: "totalCount"}}
-	if proj := covPlan().projectionFromSelection(sel, nil); proj != nil {
+	if proj := covPlan().projectionFromSelection(sel, nil); proj.Narrows() {
 		t.Errorf("no edges/node selection must yield nil, got %v", proj)
 	}
 }

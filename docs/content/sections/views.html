@@ -14,10 +14,14 @@
     inferred (mirroring the TableSchema philosophy).
 </p>
 
-<h3 id="views-constructors">The three view constructors</h3>
+<h3 id="views-constructors">The view constructors</h3>
 <p>
-    Every read model is declared through exactly one of three constructors. Two <strong>materialize</strong> (a CDC-fed
-    Mongo collection the SyncEngine keeps in sync); the third joins at <strong>read time</strong> and stores nothing:
+    A read model backed by the Mongo projection is declared through exactly one of three constructors. Two
+    <strong>materialize</strong> (a CDC-fed Mongo collection the SyncEngine keeps in sync); the third joins at
+    <strong>read time</strong> and stores nothing. A fourth read model —
+    <a href="#relational-view"><code>query.RelationalView</code></a> — is served straight from the relational store and
+    is a <strong>different type entirely</strong>: it declares no version, no index and no embed, and none of this
+    page's projection machinery applies to it.
 </p>
 <table>
     <tbody><tr><th>Constructor</th><th>Root — where it is fed from</th><th>What it projects</th><th>Materialized?</th></tr>
@@ -45,6 +49,23 @@
         <td><strong>No</strong> — read time</td>
     </tr>
 </tbody></table>
+<p class="note">
+    Everything below — the SyncEngine fan-out, versioning, rebuild, indexes, the Embed and Link families — describes
+    these three. A <a href="#relational-view">relational view</a> takes part in none of it.
+</p>
+
+<div class="box warn">
+    <strong><code>__0</code> and <code>__1</code> are reserved — a view name may not end in either.</strong> They are
+    how the framework addresses a view's two <em>physical</em> collections during a
+    <a href="#mongo-schema-evolution">blue-green rebuild</a>: a view named <code>users</code> owns
+    <code>users</code>, <code>users__0</code> and <code>users__1</code>. Naming a view <code>users__0</code> would
+    therefore give it a collection byte-identical to <code>users</code>'s first slot, and nothing downstream could tell
+    the two apart — the DB-per-service guard would read the overlap as legitimate on both sides, and a rebuild of
+    <code>users</code> would provision straight over the other view's live data. The boot refuses the name instead, in
+    <em>every</em> read-model family (<code>View</code>, <code>SharedBaseView</code>, <code>ComposedView</code>,
+    <code>RelationalView</code>), since all four share one read-side namespace. Pick any other ending —
+    <code>users_v2</code>, <code>users_current</code>.
+</div>
 
 <h4 id="views-fanout">When each view updates — the projection fan-out</h4>
 <p>
@@ -81,14 +102,14 @@
 </p>
 <p>
     The behaviour is a property of the read path, not of the backing: the
-    <a href="#relational-view">RelationalSource</a> twin does the same with its <code>COUNT(*)</code>, with one
+    <a href="#relational-view">relational</a> twin does the same with its <code>COUNT(*)</code>, with one
     deliberate exception — a bare backward window (<code>last=N</code> with no cursor) anchors its offset ON the
     total, so it must count first. Nothing about the wire changes: <code>totalCount</code> is present on every
     page, carrying the same number it always did, and a count failure fails the read.
 </p>
 <p>
     The concurrency has a resource cost the latency win pays for: each paged read holds <strong>two</strong>
-    store operations for the duration of the fetch — on the RelationalSource twin, a second pooled connection
+    store operations for the duration of the fetch — on the relational twin, a second pooled connection
     from <code>relational.pool</code>. A service running near its pool ceiling under paged-read load should size
     the pool for roughly two connections per concurrent listing, not one.
 </p>

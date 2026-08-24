@@ -107,13 +107,6 @@ func (s *SyncEngine) ReconcileView(ctx context.Context, view *ViewDefinition, cf
 	started := time.Now()
 	report := ReconcileReport{View: view.Name()}
 
-	if view.IsRelational() {
-		// A relational view is served straight from the SoR and holds no Mongo
-		// collection — there is nothing to parity-check or repair, and scanning
-		// would (mis)materialize the very collection the backing forbids.
-		return report, nil
-	}
-
 	schema := view.SchemaDef()
 	if schema == nil {
 		return report, fmt.Errorf("reconcile %q: view declares no root .Schema(...)", view.name)
@@ -326,13 +319,6 @@ func (s *SyncEngine) ReconcileAllViews(ctx context.Context, cfg ReconcileConfig)
 
 	var reports []ReconcileReport
 	for _, view := range views {
-		// A RelationalSource view is never materialized to Mongo, so the
-		// revision-parity sweep would read every SoR row as a "missing" document
-		// and RE-materialize the collection — the exact opposite of the contract.
-		// Skip it (alongside the rebuild-in-flight skip below).
-		if view.IsRelational() {
-			continue
-		}
 		if _, rebuilding := s.resolver.ShadowActive(view.name); rebuilding {
 			slog.InfoContext(ctx, "projection.reconcile.skipped",
 				slog.String("view", view.name), slog.String("reason", "rebuild in flight"))

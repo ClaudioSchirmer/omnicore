@@ -11,7 +11,7 @@ func TestBuildViewMaxLimitResolver_OverrideWinsOverYamlDefault(t *testing.T) {
 		query.View("capped").Version(1).MaxLimit(25),
 		query.View("plain").Version(1), // no per-view override
 	}
-	resolve := buildViewMaxLimitResolver(views, 200)
+	resolve := buildViewMaxLimitResolver(views, nil, 200)
 
 	if got := resolve("capped"); got != 25 {
 		t.Errorf("per-view override must win: resolve(capped) = %d, want 25", got)
@@ -30,8 +30,31 @@ func TestBuildViewMaxLimitResolver_ZeroOverrideIgnored(t *testing.T) {
 	views := []*query.ViewDefinition{
 		query.View("v").Version(1), // MaxLimit unset → 0
 	}
-	resolve := buildViewMaxLimitResolver(views, 0)
+	resolve := buildViewMaxLimitResolver(views, nil, 0)
 	if got := resolve("v"); got != 0 {
 		t.Errorf("resolve(v) = %d, want 0 (delegate to framework default)", got)
+	}
+}
+
+// Both families feed ONE resolver: a relational view's ceiling resolves through
+// the same closure a projected view's does, so the cascade cannot drift between
+// backings.
+func TestBuildViewMaxLimitResolver_CoversBothFamilies(t *testing.T) {
+	views := []*query.ViewDefinition{query.View("mongo_capped").Version(1).MaxLimit(25)}
+	rel := []*query.RelationalViewDefinition{
+		query.RelationalView("rel_capped", relStub("a")).MaxLimit(5),
+		query.RelationalView("rel_plain", relStub("b")),
+		nil, // a nil entry must be skipped, not dereferenced
+	}
+	resolve := buildViewMaxLimitResolver(views, rel, 200)
+
+	if got := resolve("mongo_capped"); got != 25 {
+		t.Errorf("resolve(mongo_capped) = %d, want 25", got)
+	}
+	if got := resolve("rel_capped"); got != 5 {
+		t.Errorf("a relational override must resolve through the same closure: got %d, want 5", got)
+	}
+	if got := resolve("rel_plain"); got != 200 {
+		t.Errorf("an undeclared relational ceiling falls back to the yaml default: got %d, want 200", got)
 	}
 }

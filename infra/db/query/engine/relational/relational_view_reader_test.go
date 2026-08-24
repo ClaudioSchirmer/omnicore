@@ -3,9 +3,8 @@ package relational
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
-	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
@@ -16,24 +15,30 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
-// fakeLoader is a no-DB query.RelationalReader: it records whether the load ran
+// fakeLoader is a no-DB query.AggregateReader: it records whether the load ran
 // and returns an empty result, so a MaxLimit test can prove the ceiling rejects
 // BEFORE any load and that BypassMaxLimit lets the load through.
 type fakeLoader struct {
 	table      string
 	findCalled bool
+	// countCalled is atomic: the listing total is counted on its own goroutine,
+	// so a plain bool would be a data race under -race.
+	countCalled atomic.Bool
 }
 
 func (f *fakeLoader) FindAllEntities(context.Context, *criteria.Query) ([]domain.Entity, error) {
 	f.findCalled = true
 	return nil, nil
 }
-func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) { return 0, nil }
-func (f *fakeLoader) BoundTable() string                                            { return f.table }
+func (f *fakeLoader) CountEntities(context.Context, *criteria.Query) (int64, error) {
+	f.countCalled.Store(true)
+	return 0, nil
+}
+func (f *fakeLoader) Schema() *core.TableSchema       { return guardSchema(f.table) }
+func (f *fakeLoader) JoinFields() map[string][]string { return nil }
 
-// guardEnt is a minimal entity — enough to build an AggregateLoader and a schema
-// so the boot guard can be exercised without a database (BoundTable reads only
-// the loader's WithSchema table).
+// guardEnt is a minimal entity — enough to build an AggregateLoader over a schema
+// without a database: the declaration only ever reads the loader's schema.
 type guardEnt struct {
 	domain.BaseEntity
 	Name string
@@ -49,55 +54,46 @@ func guardSchema(table string) *core.TableSchema {
 	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name")
 }
 
-func guardLoader(table string) query.RelationalReader {
+func guardLoader(table string) query.AggregateReader {
 	return read.NewAggregateLoader[*guardEnt](nil, func() *guardEnt { return &guardEnt{} }).WithSchema(guardSchema(table))
 }
 
-// TestNewRelationalViewReader_WrongLoaderTablePanics is the boot guard: a view
-// handed a loader bound to a different entity's table fails the boot loudly,
-// naming both tables — never silently serving the wrong aggregate.
-func TestNewRelationalViewReader_WrongLoaderTablePanics(t *testing.T) {
-	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(guardLoader("users"))
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected a boot panic for a loader bound to the wrong table")
-		}
-		msg := fmt.Sprint(r)
-		if !strings.Contains(msg, "users") || !strings.Contains(msg, "gadgets") {
-			t.Errorf("panic must name both tables, got %q", msg)
-		}
-	}()
-	NewRelationalViewReader([]*query.ViewDefinition{vdef})
-}
-
-// TestNewRelationalViewReader_MatchingLoaderRegisters confirms the happy path:
-// a loader bound to the view's own table registers the relational view.
-func TestNewRelationalViewReader_MatchingLoaderRegisters(t *testing.T) {
-	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(guardLoader("gadgets"))
-	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+// A well-formed declaration registers. There is no loader/schema cross-check to
+// run any more: the loader IS the declaration's only structural input and the
+// schema comes from it, so the mismatch the old boot guard existed for cannot be
+// expressed.
+func TestNewViewReader_RegistersADeclaredView(t *testing.T) {
+	r := NewViewReader([]*query.RelationalViewDefinition{
+		query.RelationalView("v", guardLoader("gadgets")),
+	})
 	if r.Empty() {
-		t.Fatal("a matching relational view must be registered")
+		t.Fatal("a declared relational view must be registered")
+	}
+	if names := r.ViewNames(); !names["v"] {
+		t.Errorf("ViewNames() must route the declared name, got %v", names)
 	}
 }
 
-// TestNewRelationalViewReader_MongoViewSkipped confirms a view without the marker
-// is left to the Mongo reader — the relational reader indexes nothing.
-func TestNewRelationalViewReader_MongoViewSkipped(t *testing.T) {
-	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1)
-	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+// A malformed entry is SKIPPED, never panicked on: the declarations reaching this
+// constructor are boot-validated (query.ValidateRelationalViews), so a nil loader
+// has already aborted the boot with an actionable message. Skipping is the
+// belt-and-braces posture, not the diagnostic.
+func TestNewViewReader_SkipsMalformedDeclarations(t *testing.T) {
+	r := NewViewReader([]*query.RelationalViewDefinition{
+		nil,
+		query.RelationalView("no_loader", nil),
+	})
 	if !r.Empty() {
-		t.Fatal("a Mongo-backed view must not be indexed by the relational reader")
+		t.Fatal("a malformed declaration must not be registered")
 	}
 }
 
-// assertRelationalCapability400 checks that a capability the relational reader
+// assertUnsupportedCapability400 checks that a capability the relational reader
 // cannot serve surfaces as a NotificationCarrier whose single notification is a
-// RelationalCapabilityNotification with SemanticSchema — the wire mapping turns
+// UnsupportedCapabilityNotification with SemanticSchema — the wire mapping turns
 // that into a 400 (not a generic 500), and the offending field/capability rides
 // through as the notification's field name.
-func assertRelationalCapability400(t *testing.T, err error, wantField string) {
+func assertUnsupportedCapability400(t *testing.T, err error, wantField string) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected an unsupported-capability error, got nil")
@@ -111,8 +107,8 @@ func assertRelationalCapability400(t *testing.T, err error, wantField string) {
 		t.Fatalf("expected exactly one notification, got contexts=%d", len(ctxs))
 	}
 	msg := ctxs[0].Messages()[0]
-	if got := reflect.TypeOf(msg.Notification).Name(); got != "RelationalCapabilityNotification" {
-		t.Errorf("notification = %q, want RelationalCapabilityNotification", got)
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "UnsupportedCapabilityNotification" {
+		t.Errorf("notification = %q, want UnsupportedCapabilityNotification", got)
 	}
 	if got := msg.Notification.Semantic(); got != domain.SemanticSchema {
 		t.Errorf("semantic = %v, want SemanticSchema (→400)", got)
@@ -125,15 +121,15 @@ func assertRelationalCapability400(t *testing.T, err error, wantField string) {
 // TestUnsupportedChildFilter_MapsTo400 covers a filter pushed at a child (dotted)
 // field: a root SELECT cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"Addresses.ZipCode": "12345"})
-	assertRelationalCapability400(t, err, "Addresses.ZipCode")
+	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Addresses.ZipCode": "12345"})
+	assertUnsupportedCapability400(t, err, "Addresses.ZipCode")
 }
 
 // TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
 // a root ORDER BY cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
-	err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Addresses.ZipCode"}})
-	assertRelationalCapability400(t, err, "Addresses.ZipCode")
+	err := applySort(guardSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Addresses.ZipCode"}})
+	assertUnsupportedCapability400(t, err, "Addresses.ZipCode")
 }
 
 // siblingSchema is guardSchema plus a 1:1 sibling (qa satellite) carrying
@@ -171,10 +167,10 @@ func sharedBaseSchema(table string) *core.TableSchema {
 // satellite the loader LEFT JOINs, so a filter AND a sort on it are servable —
 // no longer the 400 they once were.
 func TestServableSiblingField_Passes(t *testing.T) {
-	if _, err := toExpr(siblingSchema("gadgets"), map[string]any{"Material": "steel"}); err != nil {
+	if _, err := toExpr(siblingSchema("gadgets"), nil, map[string]any{"Material": "steel"}); err != nil {
 		t.Fatalf("a root-level sibling field must be servable (1:1 LEFT JOIN), got %v", err)
 	}
-	if err := applySort(siblingSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Material"}}); err != nil {
+	if err := applySort(siblingSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Material"}}); err != nil {
 		t.Fatalf("a sort on a root-level sibling field must be servable, got %v", err)
 	}
 }
@@ -183,10 +179,10 @@ func TestServableSiblingField_Passes(t *testing.T) {
 // relaxation: a base field (DisplayName) the loader reaches by joining the role
 // to its shared base is servable for both filter and sort.
 func TestServableSharedBaseField_Passes(t *testing.T) {
-	if _, err := toExpr(sharedBaseSchema("holders"), map[string]any{"DisplayName": "ACME"}); err != nil {
+	if _, err := toExpr(sharedBaseSchema("holders"), nil, map[string]any{"DisplayName": "ACME"}); err != nil {
 		t.Fatalf("a shared-base field must be servable (1:1 base JOIN), got %v", err)
 	}
-	if err := applySort(sharedBaseSchema("holders"), criteria.Where(nil), []queries.OrderByField{{Field: "DisplayName"}}); err != nil {
+	if err := applySort(sharedBaseSchema("holders"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "DisplayName"}}); err != nil {
 		t.Fatalf("a sort on a shared-base field must be servable, got %v", err)
 	}
 }
@@ -208,16 +204,16 @@ func managedSchema(table string) *core.TableSchema {
 //
 // `OrderBy: CreatedAt desc` written by a Query's ToCriteria is the most ordinary
 // default ordering there is; it worked on the Mongo projection and answered 400
-// on the RelationalSource twin. Which field a consumer may address is the
+// on the relational twin. Which field a consumer may address is the
 // Request DTO's business (and the dev's, through ToCriteria) — never the
 // backing's.
 func TestServableManagedColumns_Passes(t *testing.T) {
 	schema := managedSchema("gadgets")
 	for _, field := range []string{"CreatedAt", "UpdatedAt", "DeletedAt", "ParentID"} {
-		if _, err := toExpr(schema, map[string]any{field: "x"}); err != nil {
+		if _, err := toExpr(schema, nil, map[string]any{field: "x"}); err != nil {
 			t.Errorf("a filter on the managed field %q must be servable, got %v", field, err)
 		}
-		if err := applySort(schema, criteria.Where(nil), []queries.OrderByField{{Field: field, Desc: true}}); err != nil {
+		if err := applySort(schema, nil, criteria.Where(nil), []queries.OrderByField{{Field: field, Desc: true}}); err != nil {
 			t.Errorf("a sort on the managed field %q must be servable, got %v", field, err)
 		}
 	}
@@ -228,25 +224,25 @@ func TestServableManagedColumns_Passes(t *testing.T) {
 // view with no DeletedAt has no archived state to address, so the name is as
 // unknown as any other.
 func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
-	_, err := toExpr(guardSchema("gadgets"), map[string]any{"CreatedAt": "x"})
-	assertRelationalCapability400(t, err, "CreatedAt")
+	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"CreatedAt": "x"})
+	assertUnsupportedCapability400(t, err, "CreatedAt")
 }
 
 // TestUnsupportedUnknownField_MapsTo400 keeps the negative control: a flat field
 // that belongs to NO schema (not root, not a sibling, not the base) is still a
 // 400 — the relaxation admits 1:1 satellites, not arbitrary names.
 func TestUnsupportedUnknownField_MapsTo400(t *testing.T) {
-	_, err := toExpr(siblingSchema("gadgets"), map[string]any{"Nonexistent": "x"})
-	assertRelationalCapability400(t, err, "Nonexistent")
+	_, err := toExpr(siblingSchema("gadgets"), nil, map[string]any{"Nonexistent": "x"})
+	assertUnsupportedCapability400(t, err, "Nonexistent")
 }
 
 // TestServableRootField_Passes is the positive control: a bona fide root column
 // (Name) is NOT rejected — parity with the Mongo reader for root filters/sorts.
 func TestServableRootField_Passes(t *testing.T) {
-	if _, err := toExpr(guardSchema("gadgets"), map[string]any{"Name": "x"}); err != nil {
+	if _, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Name": "x"}); err != nil {
 		t.Fatalf("a root-own field must be servable, got %v", err)
 	}
-	if err := applySort(guardSchema("gadgets"), criteria.Where(nil), []queries.OrderByField{{Field: "Name"}}); err != nil {
+	if err := applySort(guardSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Name"}}); err != nil {
 		t.Fatalf("a root-own sort field must be servable, got %v", err)
 	}
 }
@@ -269,14 +265,14 @@ func TestApplyProjection(t *testing.T) {
 
 	// inclusion — only Code survives (id dropped, mirroring Mongo).
 	d := base()
-	applyProjection(d, map[string]int{"Code": 1})
+	applyProjection(d, queries.ProjectOnlyPaths("Code"))
 	if len(d) != 1 || d["Code"] != "c" {
 		t.Errorf("inclusion should keep only Code, got %v", d)
 	}
 
 	// inclusion of a bare segment keeps the whole child array untouched.
 	d = base()
-	applyProjection(d, map[string]int{"WidgetParts": 1})
+	applyProjection(d, queries.ProjectOnlyPaths("WidgetParts"))
 	if len(d) != 1 {
 		t.Fatalf("bare-segment inclusion should keep only WidgetParts, got %v", d)
 	}
@@ -286,7 +282,7 @@ func TestApplyProjection(t *testing.T) {
 
 	// inclusion of a DOTTED key prunes each element to the asked leaf (Fix #6).
 	d = base()
-	applyProjection(d, map[string]int{"WidgetParts.Label": 1})
+	applyProjection(d, queries.ProjectOnlyPaths("WidgetParts.Label"))
 	parts, ok := d["WidgetParts"].([]any)
 	if !ok || len(d) != 1 || len(parts) != 2 {
 		t.Fatalf("nested inclusion should keep the WidgetParts array, got %v", d)
@@ -300,7 +296,7 @@ func TestApplyProjection(t *testing.T) {
 
 	// exclusion drops only the listed top-level field.
 	d = base()
-	applyProjection(d, map[string]int{"Name": 0})
+	applyProjection(d, queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"Name": true}})
 	if _, ok := d["Name"]; ok {
 		t.Errorf("exclusion should drop Name, got %v", d)
 	}
@@ -310,7 +306,7 @@ func TestApplyProjection(t *testing.T) {
 
 	// nested exclusion drops the leaf from every element (Fix #6).
 	d = base()
-	applyProjection(d, map[string]int{"WidgetParts.Slot": 0})
+	applyProjection(d, queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"WidgetParts.Slot": true}})
 	for _, p := range d["WidgetParts"].([]any) {
 		el := p.(map[string]any)
 		if _, ok := el["Slot"]; ok {
@@ -323,7 +319,7 @@ func TestApplyProjection(t *testing.T) {
 
 	// empty projection is a no-op.
 	d = base()
-	applyProjection(d, nil)
+	applyProjection(d, queries.Projection{})
 	if len(d) != 5 {
 		t.Errorf("empty projection must not prune, got %v", d)
 	}
@@ -331,9 +327,9 @@ func TestApplyProjection(t *testing.T) {
 
 // relViewWith builds a one-view relational reader over a fakeLoader with the
 // given per-view ceiling, so the MaxLimit tests run without a database.
-func relViewWith(ceiling int64, fake *fakeLoader) *RelationalViewReader {
-	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(fake)
-	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+func relViewWith(ceiling int64, fake *fakeLoader) *ViewReader {
+	vdef := query.RelationalView("v", fake)
+	r := NewViewReader([]*query.RelationalViewDefinition{vdef})
 	r.SetMaxLimitResolver(func(string) int64 { return ceiling })
 	return r
 }
@@ -374,5 +370,53 @@ func TestReadPage_BypassMaxLimit(t *testing.T) {
 	}
 	if !fake.findCalled {
 		t.Error("BypassMaxLimit must let the load run")
+	}
+}
+
+// The capability boundary is BOTH halves of the read vocabulary, and both are
+// answered before any IO: a filter naming a 1:N child field is refused by toExpr,
+// a SORT naming one by applySort. The sort half is the one that has to be checked
+// deliberately, because the listing total is counted concurrently with the page
+// fetch — a refusal raised after that goroutine started would still have spent a
+// connection on a request the reader was always going to reject.
+func TestReadPage_UnsupportedSortRefusesBeforeAnyIO(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(0, fake)
+
+	_, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{
+		OrderBy: []queries.OrderByField{{Field: "Parts.Label"}},
+	})
+	if err == nil {
+		t.Fatal("a sort on a 1:N child field must be refused")
+	}
+	var carrier domain.NotificationCarrier
+	if !errors.As(err, &carrier) {
+		t.Fatalf("the refusal must be a NotificationCarrier (→400), got %T", err)
+	}
+	msg := carrier.NotificationContexts()[0].Messages()[0]
+	if got := reflect.TypeOf(msg.Notification).Name(); got != "UnsupportedCapabilityNotification" {
+		t.Errorf("notification = %q, want UnsupportedCapabilityNotification", got)
+	}
+	if fake.findCalled {
+		t.Error("the refusal must precede the page fetch")
+	}
+	if fake.countCalled.Load() {
+		t.Error("the refusal must precede the count — it costs no connection")
+	}
+}
+
+// The filter half of the same boundary, stated beside it.
+func TestReadPage_UnsupportedFilterRefusesBeforeAnyIO(t *testing.T) {
+	fake := &fakeLoader{table: "gadgets"}
+	r := relViewWith(0, fake)
+
+	_, err := r.ReadPage(context.Background(), "v", queries.ReadCriteria{
+		Filter: map[string]any{"Parts.Label": "x"},
+	})
+	if err == nil {
+		t.Fatal("a filter on a 1:N child field must be refused")
+	}
+	if fake.findCalled || fake.countCalled.Load() {
+		t.Error("the refusal must precede every query")
 	}
 }

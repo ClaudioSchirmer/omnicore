@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
@@ -294,12 +296,29 @@ func TestWalkResponseGuard_PointerAndNonStructDefensive(t *testing.T) {
 // ─── ParseProjection edge cases ─────────────────────────────────────────────
 
 func TestParseProjection_EmptyAndNilSchema(t *testing.T) {
-	if proj, _, bad, ok := ParseProjection(nil, nil); !ok || bad != "" || proj != nil {
+	if proj, _, bad, ok := ParseProjection(nil, nil); !ok || bad != "" || proj.Narrows() {
 		t.Fatalf("empty projection = (%v,%q,%v)", proj, bad, ok)
 	}
 	proj, wireSet, bad, ok := ParseProjection([]string{"a", "b"}, nil)
-	if !ok || bad != "" || len(proj) != 2 || !wireSet["a"] {
+	if !ok || bad != "" || len(proj.Paths) != 2 || !wireSet["a"] {
 		t.Fatalf("nil-schema projection = (%v,%v,%q,%v)", proj, wireSet, bad, ok)
+	}
+}
+
+// Tokens that are all blank name nothing, and "named nothing" must come back as
+// the SAME value "named no fields" does. A ProjectOnly carrying no path is a
+// state where Mode and Narrows disagree, and every reader below the seam branches
+// on one or the other.
+func TestParseProjection_AllBlankTokensIsTheWholeDocument(t *testing.T) {
+	proj, _, bad, ok := ParseProjection([]string{"  ", ""}, nil)
+	if !ok || bad != "" {
+		t.Fatalf("blank tokens must not be a violation, got bad=%q ok=%v", bad, ok)
+	}
+	if proj.Narrows() {
+		t.Errorf("a selection naming nothing must not narrow, got %v", proj)
+	}
+	if proj.Mode != queries.ProjectAll {
+		t.Errorf("mode = %v, want ProjectAll — Mode and Narrows must agree", proj.Mode)
 	}
 }
 
@@ -309,7 +328,7 @@ func TestParseProjection_SchemaTranslatesAndRejects(t *testing.T) {
 	if !ok || bad != "" {
 		t.Fatalf("expected ok, got bad=%q ok=%v", bad, ok)
 	}
-	if proj["Name"] != 1 || proj["Addresses.ZipCode"] != 1 {
+	if !proj.Selects("Name") || !proj.Selects("Addresses.ZipCode") {
 		t.Errorf("expected translated Go paths, got %v", proj)
 	}
 	if !wireSet["name"] {

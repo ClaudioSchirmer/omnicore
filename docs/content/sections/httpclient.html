@@ -1,7 +1,7 @@
 <h2>httpclient — outbound HTTP</h2>
   <p class="note"><strong>Which channel?</strong> This is the framework's <strong>edge</strong> sync channel — third parties, IdPs, partner APIs, anything that speaks HTTP. For synchronous calls <strong>between omnicore services</strong>, the default is the <a href="#grpc">gRPC plane</a> (designed contracts, internal-plane posture, µs attribution); httpclient also works service-to-service when a team needs it, but with edge semantics — strict token expiry, gates always enforced. The full decision matrix lives in <a href="#service-to-service">Service-to-service</a>.</p>
   <p><code>omnicore/infra/httpclient</code> is the framework's outbound HTTP subsystem. Upstreams known at boot are described in <a href="#bootstrap~microservice-yaml"><code>microservice.&lt;profile&gt;.yaml</code></a> under the <code>httpClient:</code> block, from which the framework constructs a singleton <code>*httpclient.HttpClient</code> registry on <code>bootstrap.Deps.HttpClient</code>; upstreams known only at runtime (customer webhooks, per-tenant targets read from the DB) are registered <strong>in code</strong> on that same client — see <a href="#httpclient">Runtime registration</a>. Either way each service gets its own <code>http.Transport</code> and <code>http.Client</code> so a misbehaving upstream cannot starve the pool of the rest. YAML and code are two ways to fill the same <code>Config</code> — the <code>Call</code> path, middleware, and per-service isolation are identical regardless of which wired the service.</p>
-  <p class="note">The runtime is feature-complete: <code>Call[Req, Resp]</code> generic, request/response binding via <code>http:"..."</code> tags, three body codecs (json/xml/form-urlencoded), middleware chain (correlation, logging, auth, idempotency, cache, retry, breaker, signing, transport), error model, slog observability with cascaded redaction, seven auth provider types, OAuth2 token cache + single-flight + revocation, per-service TLS and connection pool, <a href="#httpclient">HMAC request signing</a> (AWS SigV4-lite canonical), <a href="#httpclient">streaming surfaces</a> (download stream, upload stream, multipart upload, Server-Sent Events), the per-call <code>InvokeOption</code> family, the <a href="#httpclient"><code>NewFake</code> testing harness</a>, dynamic <a href="#httpclient">service discovery via <code>BaseURLResolver</code></a>, and <a href="#httpclient">runtime service registration</a> (wire an upstream in code after boot). All design-doc phases delivered.</p>
+  <p class="note">The runtime is feature-complete: <code>Call[Req, Resp]</code> generic, request/response binding via <code>http:"..."</code> tags, three body codecs (json/xml/form-urlencoded), middleware chain (optional tracing, correlation, logging, auth, idempotency, cache, retry, breaker, signing, transport), error model, slog observability with cascaded redaction, seven auth provider types, OAuth2 token cache + single-flight + revocation, per-service TLS and connection pool, <a href="#httpclient">HMAC request signing</a> (AWS SigV4-lite canonical), <a href="#httpclient">streaming surfaces</a> (download stream, upload stream, multipart upload, Server-Sent Events), the per-call <code>InvokeOption</code> family, the <a href="#httpclient"><code>NewFake</code> testing harness</a>, dynamic <a href="#httpclient">service discovery via <code>BaseURLResolver</code></a>, and <a href="#httpclient">runtime service registration</a> (wire an upstream in code after boot). All design-doc phases delivered.</p>
 
   <h3>At a glance — one typed call</h3>
   <p>Before the peculiarities below, the whole happy path: declare the endpoint in YAML, write a request struct and a response struct, make one typed call. The registry resolves <code>service</code> + <code>endpoint</code> from the YAML, builds the request from the <code>http:"..."</code> tags, dials, and hands back the decoded response — no client wiring, no manual URL building, no JSON plumbing at the call site.</p>
@@ -448,7 +448,8 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
   <table>
     <thead><tr><th>Position</th><th>Layer</th><th>What it does</th></tr></thead>
     <tbody>
-      <tr><td>1 (outermost)</td><td><code>correlationMiddleware</code></td><td>Injects <code>X-Thread-Id</code> and <code>X-Request-ID</code> from <code>AppContext.ID()</code>, records <code>obs.ThreadID</code> and the configured header name, threads the per-service redaction policy onto the observation</td></tr>
+      <tr><td>0 (outermost, <em>only when client tracing is on</em>)</td><td><code>tracingMiddleware</code></td><td>Opens the OTel client span named <code>&lt;service&gt;/&lt;endpoint&gt;</code> and injects the W3C <code>traceparent</code> into the outbound headers, so the downstream continues this trace. Outermost on purpose: the span therefore times the <strong>whole</strong> call, retries included. Records <code>http.response.status_code</code>, and marks the span an error on a transport failure or a <strong>5xx</strong> — a 4xx is a normal client outcome and leaves the status unset. Present only when <code>observability.tracing</code> is on AND its <code>instrument:</code> list covers <code>httpclient</code> (see <a href="#tracing">Distributed tracing</a>); with tracing off the chain is byte-identical to the rows below</td></tr>
+      <tr><td>1 (outermost with tracing off)</td><td><code>correlationMiddleware</code></td><td>Injects <code>X-Thread-Id</code> and <code>X-Request-ID</code> from <code>AppContext.ID()</code>, records <code>obs.ThreadID</code> and the configured header name, threads the per-service redaction policy onto the observation</td></tr>
       <tr><td>2</td><td><code>loggingMiddleware</code></td><td>Captures request body, times the round-trip, buffers and captures response body, emits the single slog observation record, recovers <code>downstreamThreadId</code> from the response</td></tr>
       <tr><td>3</td><td><code>authMiddleware</code></td><td>Applies the resolved auth provider; honors <code>revocationOnUnauthorized</code> by invalidating + re-applying on 401</td></tr>
       <tr><td>4</td><td><code>idempotencyMiddleware</code></td><td>Generates a UUIDv7 (source <code>ctx</code>) or attaches the supplied key (source <code>explicit</code>); the header persists across retry attempts</td></tr>
@@ -459,7 +460,7 @@ func customerAuthToInline(cfg CustomerAuthConfig) *httpclient.InlineAuth {
       <tr><td>9 (terminal)</td><td><code>transportMiddleware</code></td><td>Dials via the per-service <code>http.Client</code> (own <code>http.Transport</code>, own pool, own TLS config)</td></tr>
     </tbody>
   </table>
-  <p>Positions 1, 2, 6, 7, 8, 9 are always wired; positions 3 (auth), 4 (idempotency), 5 (cache) are added only when the endpoint declares the matching policy. Retry (6) sits <em>outside</em> the breaker (7) so each retry attempt counts as a breaker observation — see the "Circuit breaker" subsection.</p>
+  <p>Positions 1, 2, 6, 7, 8, 9 are always wired; positions 3 (auth), 4 (idempotency), 5 (cache) are added only when the endpoint declares the matching policy, and position 0 (tracing) only when the observability config asks for it. Retry (6) sits <em>outside</em> the breaker (7) so each retry attempt counts as a breaker observation — see the "Circuit breaker" subsection.</p>
   <p>A middleware that short-circuits (e.g. a cache hit) returns without calling <code>next</code>; the chain stops there. Layers form a stack: pre-work happens on the way down, post-work on the way back up.</p>
 
   <h3>Retry</h3>
@@ -957,6 +958,29 @@ func (h *FetchUserHandler) Handle(ctx *configuration.AppContext, cmd *FetchUserC
 client, err := httpclient.New(cfg, httpclient.WithResolver(myResolver))</code></pre>
 
   <p>When a resolver is registered, <strong>every call</strong> consults it before dialing — implementations are responsible for their own cache / refresh policy; the framework does not memoize.</p>
+
+  <div class="box warn">
+    <strong>A resolver can only be supplied at construction, so this builds a client of your own.</strong>
+    <code>WithResolver</code> is a <code>httpclient.Option</code> read by <code>New</code>; there is no setter for it
+    afterwards, and no <code>Wiring</code> slot that hands one to the framework. A service that needs dynamic routing
+    therefore calls <code>httpclient.New</code> itself and holds the result — the client on
+    <code>bootstrap.Deps.HttpClient</code> stays resolver-less. <strong>Pass the other three options too</strong>, or
+    that client silently loses what bootstrap wires into its own:
+    <code>WithLogger(deps.Logger)</code> (otherwise the per-call observation line goes to <code>slog.Default()</code>),
+    <code>WithCache(deps.Cache)</code> (otherwise the GET cache layer has no backend and every call reports
+    <code>bypass</code>), and <code>WithClientTracing(true)</code> when
+    <a href="#tracing">tracing</a> is on (otherwise no client span and no <code>traceparent</code> reaches the
+    upstream). Everything else — the <code>httpClient:</code> YAML, the middleware chain, per-service isolation — is
+    identical, because it all comes from the same <code>Config</code>.
+  </div>
+
+<pre><code>// the framework's own wiring, reproduced with a resolver added
+client, err := httpclient.New(cfg.HttpClient,
+    httpclient.WithResolver(myResolver),
+    httpclient.WithLogger(deps.Logger),
+    httpclient.WithCache(deps.Cache),
+    httpclient.WithClientTracing(true),
+)</code></pre>
 
   <p><strong>Cascade with the YAML:</strong></p>
   <table>

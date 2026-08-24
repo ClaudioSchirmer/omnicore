@@ -226,6 +226,59 @@ func (t *nullableIDScanTarget) Scan(src any) error {
 	return nil
 }
 
+// Identity columns reached THROUGH A JOIN. A join field carries no domain type —
+// no value object, and therefore not domain.ID either — so an identity column of
+// the joined aggregate has to land in a plain string. It cannot land there raw:
+// mysql, sqlserver and oracle store an identity as BINARY(16)/RAW(16), which a
+// string field would receive as 16 bytes rather than a uuid, silently. These two
+// proxies decode it into the canonical text, reusing the id decode domain.ID
+// already owns and assigning what it yields.
+
+// idTextScanTarget scans an identity column into a REQUIRED string field.
+type idTextScanTarget struct{ dst *string }
+
+func (t *idTextScanTarget) Scan(src any) error {
+	var id domain.ID
+	if err := (&idScanTarget{dst: &id}).Scan(src); err != nil {
+		return err
+	}
+	*t.dst = id.Value()
+	return nil
+}
+
+// nullableIDTextScanTarget scans an identity column into a NULLABLE string field
+// (*string): SQL NULL restores as nil — the left join with no counterpart, and
+// the nullable identity column alike.
+type nullableIDTextScanTarget struct{ dst **string }
+
+func (t *nullableIDTextScanTarget) Scan(src any) error {
+	var id *domain.ID
+	if err := (&nullableIDScanTarget{dst: &id}).Scan(src); err != nil {
+		return err
+	}
+	if id == nil {
+		*t.dst = nil
+		return nil
+	}
+	v := id.Value()
+	*t.dst = &v
+	return nil
+}
+
+// IDTextScanTarget returns the scan destination for a join field that maps an
+// identity column of the JOINED aggregate. The field was proven to be string or
+// *string at construction (validateJoinFieldType), so a false here would be a
+// framework bug rather than a declaration mistake.
+func IDTextScanTarget(f reflect.Value) (any, bool) {
+	switch f.Type() {
+	case reflect.TypeOf(""):
+		return &idTextScanTarget{dst: f.Addr().Interface().(*string)}, true
+	case reflect.TypeOf((*string)(nil)):
+		return &nullableIDTextScanTarget{dst: f.Addr().Interface().(**string)}, true
+	}
+	return nil, false
+}
+
 // scanRowIntoStruct fills dst (must be pointer to struct) with the values of
 // the indicated columns, in the order they appear in the SELECT. row.Scan
 // receives the addresses of the matched fields. byCol is the per-source

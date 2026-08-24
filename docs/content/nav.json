@@ -57,12 +57,20 @@
         "label": "Aggregate persistence"
       },
       {
+        "id": "read-joins",
+        "label": "Read joins"
+      },
+      {
         "id": "lifecycle-hooks",
         "label": "Lifecycle hooks"
       },
       {
         "id": "old-state",
         "label": "Old-state snapshot"
+      },
+      {
+        "id": "domain-events",
+        "label": "Domain events"
       }
     ]
   },

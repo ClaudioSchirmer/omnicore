@@ -126,7 +126,7 @@ func TestIntegration_LinkInChild(t *testing.T) {
 	// (Pruning the child's OWN fields is a general reader concern, not LinkInChild's
 	// — the child array is materialized on the primary and returns whole.)
 	pdoc, _, err := reader.ReadByID(ctx, "lic_full", "g1", queries.ReadCriteria{
-		Projection: map[string]int{"Code": 1, childSeg + ".Item.Label": 1},
+		Projection: queries.ProjectOnlyPaths("Code", childSeg+".Item.Label"),
 	})
 	if err != nil {
 		t.Fatalf("projected read: %v", err)

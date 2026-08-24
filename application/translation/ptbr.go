@@ -71,6 +71,7 @@ func (corePTBR) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Serviço indisponível.",
 		"RequestTimeoutNotification":        "A requisição excedeu o tempo limite.",
 		"ReadTimeoutNotification":           "A requisição não foi recebida dentro do tempo limite.",
+		"UnsupportedCapabilityNotification": "Esta capacidade não é suportada pelo repositório de onde esta view é lida.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Cabeçalho de autorização ausente ou em formato inválido.",
@@ -82,7 +83,6 @@ func (corePTBR) Translations() map[string]string {
 		"TenantMissingNotification":        "Identificador do tenant ausente no principal autenticado.",
 		"TenantMismatchNotification":       "Recurso pertence a outro tenant.",
 		"FieldAccessForbiddenNotification": "Campo não acessível.",
-		"RelationalCapabilityNotification": "Esta capacidade não é suportada por uma view lida do backend relacional; remova RelationalSource() para servi-la pelo Mongo.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Erro interno do servidor.",

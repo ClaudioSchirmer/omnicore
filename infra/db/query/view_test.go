@@ -102,6 +102,23 @@ func TestValidateViewSchemas_RejectsRootWithoutPK(t *testing.T) {
 	}
 }
 
+// A PROJECTED view is the family where the reserved suffixes hurt physically: a
+// view named "users__0" owns a bare collection byte-identical to view "users"'s
+// first slot, so a rebuild of "users" provisions straight over it. Refusing the
+// name at declaration is what keeps that from being discovered as data loss.
+func TestValidateViewSchemas_RefusesAReservedSlotSuffix(t *testing.T) {
+	v := View("users__0").Version(1).Schema(rootSchema("users"))
+	err := ValidateViewSchemas([]*ViewDefinition{v})
+	if err == nil {
+		t.Fatal("a name ending in a blue-green slot suffix must abort the boot")
+	}
+	for _, want := range []string{"the framework reserves", `"users__0"`, `"users__1"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the abort must explain the rule and show the collision, missing %q:\n%s", want, err.Error())
+		}
+	}
+}
+
 // TestValidateViewSchemas_RejectsEmbedSourceWithoutPK proves an embed source
 // with no explicit ID is a fatal view-validation error.
 func TestValidateViewSchemas_RejectsEmbedSourceWithoutPK(t *testing.T) {

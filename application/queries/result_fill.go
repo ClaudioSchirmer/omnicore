@@ -258,6 +258,18 @@ func setFilledValue(dst reflect.Value, v any, target *fillTarget) {
 	if v == nil {
 		return
 	}
+	// A TYPED nil pointer is the same absence an untyped nil is. A document
+	// assembled from a LOADED ENTITY rather than from a store driver carries
+	// them: a nullable column reads back as (*string)(nil) inside the any, and a
+	// left join with no counterpart is exactly that by construction. Without this
+	// the pointer loop below would ALLOCATE the destination and settle it at its
+	// zero value — turning "there is no counterpart" into an empty string on the
+	// wire, which is the confusion the LeftJoin nullability rule exists to
+	// prevent. The JSON round-trip this fill must match renders a nil pointer as
+	// null and leaves the field alone; do the same.
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return
+	}
 	for dst.Kind() == reflect.Pointer {
 		if dst.IsNil() {
 			dst.Set(reflect.New(dst.Type().Elem()))

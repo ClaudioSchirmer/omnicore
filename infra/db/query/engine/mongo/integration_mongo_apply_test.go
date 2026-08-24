@@ -126,11 +126,11 @@ func TestCheckServiceRegistry_HappyPathAndIdempotent(t *testing.T) {
 	}
 
 	// First call writes the marker.
-	if err := CheckServiceRegistry(context.Background(), m, "svc-a", "prd", []*query.ViewDefinition{v}); err != nil {
+	if err := CheckServiceRegistry(context.Background(), m, "svc-a", "prd", []*query.ViewDefinition{v}, nil); err != nil {
 		t.Fatalf("CheckServiceRegistry: %v", err)
 	}
 	// Second call refreshes in place.
-	if err := CheckServiceRegistry(context.Background(), m, "svc-a", "prd", []*query.ViewDefinition{v}); err != nil {
+	if err := CheckServiceRegistry(context.Background(), m, "svc-a", "prd", []*query.ViewDefinition{v}, nil); err != nil {
 		t.Fatalf("CheckServiceRegistry (second call): %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestCheckServiceRegistry_HappyPathAndIdempotent(t *testing.T) {
 func TestCheckServiceRegistry_EmptyServiceNameErrors(t *testing.T) {
 	m, cleanup := newTestMongo(t)
 	defer cleanup()
-	if err := CheckServiceRegistry(context.Background(), m, "", "prd", nil); err == nil {
+	if err := CheckServiceRegistry(context.Background(), m, "", "prd", nil, nil); err == nil {
 		t.Error("expected error on empty serviceName")
 	}
 }
@@ -168,7 +168,7 @@ func TestCheckServiceRegistry_DevDowngradesForeignToWarn(t *testing.T) {
 	}
 
 	// dev → warn, no error.
-	if err := CheckServiceRegistry(context.Background(), m, "svc", "dev", []*query.ViewDefinition{v}); err != nil {
+	if err := CheckServiceRegistry(context.Background(), m, "svc", "dev", []*query.ViewDefinition{v}, nil); err != nil {
 		t.Errorf("dev profile should warn, not error, got %v", err)
 	}
 }
@@ -185,7 +185,7 @@ func TestCheckServiceRegistry_NonDevAbortsOnForeign(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 
-	err := CheckServiceRegistry(context.Background(), m, "svc", "prd", []*query.ViewDefinition{v})
+	err := CheckServiceRegistry(context.Background(), m, "svc", "prd", []*query.ViewDefinition{v}, nil)
 	if err == nil {
 		t.Fatal("expected non-dev profile to abort on foreign collections")
 	}

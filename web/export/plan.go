@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+
+	"github.com/ClaudioSchirmer/omnicore/application/queries"
 )
 
 // The tabular-export column plan, derived from the wire Response DTO — the
@@ -188,11 +190,11 @@ func appendFields(node *Node, t reflect.Type, basePath []int) {
 // field has no column, so `?fields=display` pushes its SOURCES to the store and
 // the projection echo never mentions `Display`; without this the pruner would
 // drop the very column the consumer asked for and keep its sources instead.
-func (p *Plan) PruneToProjection(proj map[string]int, alsoKeep ...string) *Plan {
-	if p == nil || p.Root == nil || !projectionNarrows(proj) {
+func (p *Plan) PruneToProjection(proj queries.Projection, alsoKeep ...string) *Plan {
+	if p == nil || p.Root == nil || !proj.Narrows() {
 		return p
 	}
-	include := projectionIncludes(proj)
+	include := proj.IsInclusion()
 	keep := make(map[string]bool, len(alsoKeep))
 	for _, k := range alsoKeep {
 		keep[k] = true
@@ -204,28 +206,7 @@ func (p *Plan) PruneToProjection(proj map[string]int, alsoKeep ...string) *Plan 
 	return &Plan{Root: root}
 }
 
-// projectionNarrows reports whether proj restricts anything. A nil/empty map — or
-// one carrying only the `_id:0` auto-exclusion (no real column) — is whole-doc.
-func projectionNarrows(proj map[string]int) bool {
-	for k := range proj {
-		if k != "_id" {
-			return true
-		}
-	}
-	return false
-}
-
-// projectionIncludes reports inclusion mode: any real column flagged 1.
-func projectionIncludes(proj map[string]int) bool {
-	for k, v := range proj {
-		if v == 1 && k != "_id" {
-			return true
-		}
-	}
-	return false
-}
-
-func pruneNodeByProjection(n *Node, goPrefix string, proj map[string]int, alsoKeep map[string]bool, include, keepAll bool) (*Node, bool) {
+func pruneNodeByProjection(n *Node, goPrefix string, proj queries.Projection, alsoKeep map[string]bool, include, keepAll bool) (*Node, bool) {
 	var cols []Column
 	for _, col := range n.Columns {
 		gp := joinPath(goPrefix, col.GoField)
@@ -237,12 +218,10 @@ func pruneNodeByProjection(n *Node, goPrefix string, proj map[string]int, alsoKe
 		}
 		var keep bool
 		if include {
-			keep = keepAll || proj[gp] == 1
+			keep = keepAll || proj.Selects(gp)
 		} else {
-			// Exclusion mode: keep unless this path is EXPLICITLY flagged 0. An
-			// absent key is a zero value, not an exclusion — check presence.
-			v, present := proj[gp]
-			keep = keepAll && (!present || v != 0)
+			// Exclusion mode: keep unless this path is explicitly excluded.
+			keep = keepAll && !proj.Selects(gp)
 		}
 		if keep {
 			cols = append(cols, col)
@@ -253,10 +232,10 @@ func pruneNodeByProjection(n *Node, goPrefix string, proj map[string]int, alsoKe
 		cg := joinPath(goPrefix, child.GoSegment)
 		childKeepAll := keepAll
 		if include {
-			if proj[cg] == 1 {
+			if proj.Selects(cg) {
 				childKeepAll = true // an included segment path keeps the whole segment
 			}
-		} else if v, present := proj[cg]; present && v == 0 {
+		} else if proj.Selects(cg) {
 			childKeepAll = false // an explicitly-excluded segment path drops the whole segment
 		}
 		pc, kept := pruneNodeByProjection(child, cg, proj, alsoKeep, include, childKeepAll)

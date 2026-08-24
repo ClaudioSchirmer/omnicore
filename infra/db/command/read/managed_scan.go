@@ -2,7 +2,6 @@ package read
 
 import (
 	"database/sql"
-	"reflect"
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -136,55 +135,6 @@ func (m *managedScan) apply(target any, dialect Dialect) error {
 	return nil
 }
 
-// applyManagedFromMap stamps the framework-managed timestamps + revision onto
-// target (a POINTER embedding domain.Managed) from a column-keyed row map — the
-// manual-scanner parity path. A manual RootScanner/ChildScanner controls the
-// business-field decode and (for the root) the SetID, but the map QueryMaps
-// returns already carries the managed columns under their declared names
-// (schema.ReadColumns includes them), so the framework fills the carrier the same
-// way the auto scan does. Timestamp cells arrive as time.Time (nil when NULL),
-// the revision as an integer; the id, when a manual scanner did not set it, is
-// left to the scanner's own SetID (the root contract).
-func applyManagedFromMap(target any, schema *core.TableSchema, m map[string]any) {
-	toTimePtr := func(col string) *time.Time {
-		if col == "" {
-			return nil
-		}
-		if v, ok := m[col]; ok && v != nil {
-			return coerceManagedTime(v)
-		}
-		return nil
-	}
-	created := toTimePtr(schema.CreatedAtColumn())
-	updated := toTimePtr(schema.UpdatedAtColumn())
-	deletedCol, _ := schema.DeletedAtColumn()
-	deleted := toTimePtr(deletedCol)
-	var revision int64
-	if rc := schema.RevisionColumn(); rc != "" {
-		if v, ok := m[rc]; ok && v != nil {
-			revision = toInt64(v)
-		}
-	}
-	domain.SetManagedColumns(target, revision, created, updated, deleted)
-}
-
-// withManagedFromMap returns avo with its managed carrier filled from a row map —
-// the manual ChildScanner parity path. A manual child scanner owns the business
-// fields and the id (it calls SetID), the framework fills the managed columns.
-// AVOs are value types, so the carrier is filled on an addressable copy; a
-// pointer AVO is mutated in place.
-func withManagedFromMap(avo domain.AggregateValueObject, schema *core.TableSchema, m map[string]any) domain.AggregateValueObject {
-	rv := reflect.ValueOf(avo)
-	if rv.Kind() == reflect.Pointer {
-		applyManagedFromMap(avo, schema, m)
-		return avo
-	}
-	p := reflect.New(rv.Type())
-	p.Elem().Set(rv)
-	applyManagedFromMap(p.Interface(), schema, m)
-	return p.Elem().Interface().(domain.AggregateValueObject)
-}
-
 // managedTimeLayouts are the textual timestamp forms a driver may hand back
 // through the column map when it does NOT decode to time.Time itself: SQLite
 // stores timestamps as TEXT (RFC3339Nano for app-clock values, a
@@ -199,14 +149,14 @@ var managedTimeLayouts = []string{
 	"2006-01-02",
 }
 
-// coerceManagedTime turns a managed-timestamp cell from the column map into a
-// *time.Time, tolerating the driver representations that reach the MANUAL-scanner
-// parity path: a native time.Time / *time.Time (the pgx, MySQL parseTime,
-// go-mssqldb, go-ora path) and the textual string/[]byte forms SQLite (and MySQL
-// without parseTime) return. This keeps the manual scanner at parity with the
-// auto scan, which decodes these through the engine's sql.NullTime targets.
-// Returns nil for an unrecognized or unparseable value (the caller reads nil as
-// "absent"), never a misleading zero time.
+// coerceManagedTime turns a managed-timestamp cell taken from a column-keyed row
+// map into a *time.Time, tolerating every driver representation one can arrive
+// in: a native time.Time / *time.Time (the pgx, MySQL parseTime, go-mssqldb,
+// go-ora path) and the textual string/[]byte forms SQLite (and MySQL without
+// parseTime) return. The schema-driven scan itself needs none of this — it
+// decodes through the engine's sql.NullTime targets — so this is the map-shaped
+// counterpart of that decode. Returns nil for an unrecognized or unparseable
+// value (the caller reads nil as "absent"), never a misleading zero time.
 func coerceManagedTime(v any) *time.Time {
 	switch t := v.(type) {
 	case time.Time:

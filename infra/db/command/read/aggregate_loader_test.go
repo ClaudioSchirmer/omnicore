@@ -17,56 +17,6 @@ func (e *aggLoaderTestEntity) BuildRules(string, domain.Service, *domain.Rules) 
 
 func newAggLoaderTestEntity() *aggLoaderTestEntity { return &aggLoaderTestEntity{} }
 
-func TestAggregateLoader_FluentSettersChain(t *testing.T) {
-	rootScanner := func(map[string]any) (*aggLoaderTestEntity, error) { return nil, nil }
-	childScanner := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
-
-	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
-		WithContextName("AggLoaderTest").
-		WithRootScanner(rootScanner).
-		WithChildScanner("Address", childScanner).
-		WithChildScanner("Phone", childScanner)
-
-	if l.contextName != "AggLoaderTest" {
-		t.Errorf("expected contextName %q, got %q", "AggLoaderTest", l.contextName)
-	}
-	if l.rootScanner == nil {
-		t.Errorf("expected rootScanner to be set")
-	}
-	if got := len(l.childScanners); got != 2 {
-		t.Errorf("expected 2 child scanners registered, got %d", got)
-	}
-	if _, ok := l.childScanners["Address"]; !ok {
-		t.Errorf("expected scanner key %q", "Address")
-	}
-	if _, ok := l.childScanners["Phone"]; !ok {
-		t.Errorf("expected scanner key %q", "Phone")
-	}
-}
-
-func TestAggregateLoader_NewInitializesChildScannersMap(t *testing.T) {
-	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity)
-	if l.childScanners == nil {
-		t.Fatal("expected childScanners map to be initialized (non-nil)")
-	}
-	if len(l.childScanners) != 0 {
-		t.Errorf("expected empty childScanners map, got len=%d", len(l.childScanners))
-	}
-}
-
-func TestAggregateLoader_WithChildScannerReplacesOnSameKey(t *testing.T) {
-	first := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
-	second := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
-
-	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
-		WithChildScanner("Address", first).
-		WithChildScanner("Address", second)
-
-	if got := len(l.childScanners); got != 1 {
-		t.Fatalf("expected 1 scanner after replacement, got %d", got)
-	}
-}
-
 // ─── Auto-scan ────────────────────────────────────────────────────────────────
 
 // fakeVO is an AggregateValueObject value-type used in auto-scan tests.
@@ -96,21 +46,28 @@ func TestChildSchema_ScanPlanExcludesID(t *testing.T) {
 	}
 }
 
-// The loader auto-scans every child declared on the schema unless a manual
-// scanner overrides it by type name.
+// The schema alone drives which children are scanned: every child it declares,
+// and nothing else — there is no per-type override.
 func TestAggregateLoader_WithSchema_DrivesChildren(t *testing.T) {
-	manualScanner := func(map[string]any) (domain.AggregateValueObject, error) { return nil, nil }
 	root := NewTableSchema[*aggLoaderTestEntity]("agg").
 		Child(NewTableSchema[fakeVO]("tags").ID("id").ParentID("agg_id").Field("Label", "label"))
-	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
-		WithSchema(root).
-		WithChildScanner("Manual", manualScanner)
+	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).WithSchema(root)
 
 	if l.schema == nil || l.schema.ChildSchema("fakeVO") == nil {
 		t.Fatal("schema child fakeVO must be registered")
 	}
-	if len(l.childScanners) != 1 {
-		t.Errorf("manual scanners = %d, want 1", len(l.childScanners))
+	if names := l.schema.ChildSchemaNames(); len(names) != 1 {
+		t.Errorf("declared children = %v, want exactly one", names)
+	}
+}
+
+// The fluent setters that remain: WithContextName and WithSchema. The loader has
+// no scan-override seat any more — the TableSchema is the one mapping.
+func TestAggregateLoader_FluentSettersChain(t *testing.T) {
+	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
+		WithContextName("AggLoaderTest")
+	if l.contextName != "AggLoaderTest" {
+		t.Errorf("contextName = %q, want %q", l.contextName, "AggLoaderTest")
 	}
 }
 

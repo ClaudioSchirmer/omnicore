@@ -151,14 +151,14 @@ func TestQueryParser_Parse_FieldsTranslatesWireToDocAndAddsIDExclusion(t *testin
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=name,addresses.zipCode", nil))
 
-	if v, ok := crit.Projection["Name"]; !ok || v != 1 {
+	if !crit.Projection.Selects("Name") {
 		t.Errorf("expected name:1, got %v", crit.Projection)
 	}
-	if v, ok := crit.Projection["Addresses.ZipCode"]; !ok || v != 1 {
+	if !crit.Projection.Selects("Addresses.ZipCode") {
 		t.Errorf("expected addresses.zip_code:1 (auto PascalToSnake), got %v", crit.Projection)
 	}
-	if v, ok := crit.Projection["_id"]; !ok || v != 0 {
-		t.Errorf("expected _id:0 (id not requested), got %v", crit.Projection)
+	if crit.Projection.Selects("ID") {
+		t.Errorf("id was not requested, so it must not be selected: %v", crit.Projection)
 	}
 }
 
@@ -266,11 +266,11 @@ func TestNewQueryParser_MapResponseFallsBackToPassThrough(t *testing.T) {
 	})
 	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar&orderBy=name", nil))
 
-	if v, ok := crit.Projection["foo"]; !ok || v != 1 {
+	if !crit.Projection.Selects("foo") {
 		t.Errorf("expected foo:1 in pass-through projection, got %v", crit.Projection)
 	}
-	if _, hasIDExclusion := crit.Projection["_id"]; hasIDExclusion {
-		t.Errorf("pass-through mode should not add _id:0, got %v", crit.Projection)
+	if crit.Projection.Selects("ID") {
+		t.Errorf("pass-through mode must not select an id nobody asked for: %v", crit.Projection)
 	}
 	// `?fields=` falls back to pass-through on an untyped Response; ordering
 	// does not, because its vocabulary is the Request's either way.

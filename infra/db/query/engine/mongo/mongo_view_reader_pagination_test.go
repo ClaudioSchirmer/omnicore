@@ -200,7 +200,7 @@ func TestAppendKeysetClause_PreservesExistingAnd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProjectionAutoIncluded_NoUserProjection_ReturnsNil(t *testing.T) {
-	got := projectionAutoIncluded(nil, []queries.OrderByField{{Field: "name"}})
+	got := projectionAutoIncluded(nil, []queries.OrderByField{{Field: "name"}}, true)
 	if got != nil {
 		t.Fatalf("want nil when no user projection, got %#v", got)
 	}
@@ -208,24 +208,56 @@ func TestProjectionAutoIncluded_NoUserProjection_ReturnsNil(t *testing.T) {
 
 func TestProjectionAutoIncluded_OrderByFieldAlreadyIncluded_NoAdd(t *testing.T) {
 	userProj := map[string]int{"name": 1, "_id": 0}
-	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}})
+	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}}, true)
 	if len(got) != 0 {
 		t.Fatalf("want empty when sort field already in projection, got %#v", got)
 	}
 }
 
-func TestProjectionAutoIncluded_OrderByFieldMissing_AddedToList(t *testing.T) {
+func TestProjectionAutoIncluded_OrderByFieldMissing_AddedToProjectionAndStripList(t *testing.T) {
 	userProj := map[string]int{"email": 1, "_id": 0}
-	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}})
+	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}}, true)
 	want := []string{"name"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
+	}
+	if userProj["name"] != 1 {
+		t.Fatalf("the sort field must be folded into the projection as an inclusion: %#v", userProj)
+	}
+}
+
+// EXCLUSION mode: a sort field the projection does not name is ALREADY served,
+// so nothing is added — and nothing may be, because `{phone: 0, name: 1}` is
+// the mixed projection Mongo refuses outright (Location31253). This is the
+// shape ReadCriteria.Restrict produces, so the regression it guards is a
+// field-restricted listing with an ?orderBy= failing the whole read.
+func TestProjectionAutoIncluded_ExclusionMode_UntouchedSortFieldIsLeftAlone(t *testing.T) {
+	userProj := map[string]int{"phone": 0}
+	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}}, false)
+	if len(got) != 0 {
+		t.Fatalf("want nothing auto-included in exclusion mode, got %#v", got)
+	}
+	if !reflect.DeepEqual(userProj, map[string]int{"phone": 0}) {
+		t.Fatalf("the projection must be untouched, got %#v", userProj)
+	}
+}
+
+// EXCLUSION mode, the other half: a sort field the projection DOES name is
+// un-excluded (the only repair the mode allows) and scheduled for the strip.
+func TestProjectionAutoIncluded_ExclusionMode_ExcludedSortFieldIsUnExcluded(t *testing.T) {
+	userProj := map[string]int{"name": 0}
+	got := projectionAutoIncluded(userProj, []queries.OrderByField{{Field: "name"}}, false)
+	if !reflect.DeepEqual(got, []string{"name"}) {
+		t.Fatalf("want [name] scheduled for the post-cursor strip, got %#v", got)
+	}
+	if _, still := userProj["name"]; still {
+		t.Fatalf("the exclusion must be lifted so the doc carries the sort value: %#v", userProj)
 	}
 }
 
 func TestBuildProjection_DeterministicKeyOrder(t *testing.T) {
 	userProj := map[string]int{"zeta": 1, "alpha": 1, "_id": 0}
-	got := buildProjection(userProj, nil)
+	got := buildProjection(userProj)
 	wantKeys := []string{"_id", "alpha", "zeta"}
 	if len(got) != len(wantKeys) {
 		t.Fatalf("len mismatch: %d vs %d", len(got), len(wantKeys))
@@ -238,15 +270,19 @@ func TestBuildProjection_DeterministicKeyOrder(t *testing.T) {
 	}
 }
 
-func TestBuildProjection_AutoIncludeAppendsAfterUserKeys(t *testing.T) {
-	userProj := map[string]int{"name": 1, "_id": 0}
-	got := buildProjection(userProj, []string{"created_at"})
-	// User keys come first (sorted): _id, name. Auto-included after.
-	if len(got) != 3 {
-		t.Fatalf("want 3 keys, got %d (%#v)", len(got), got)
+// buildProjection renders the resolved map and nothing else: the auto-includes
+// are already folded in with the flag their mode allows, so an exclusion
+// projection emits ONLY exclusions.
+func TestBuildProjection_ExclusionProjectionStaysSingleMode(t *testing.T) {
+	userProj := map[string]int{"phone": 0, "secret": 0}
+	got := buildProjection(userProj)
+	if len(got) != 2 {
+		t.Fatalf("want 2 keys, got %d (%#v)", len(got), got)
 	}
-	if got[2].Key != "created_at" || got[2].Value != 1 {
-		t.Fatalf("auto-included key missing or wrong value: %#v", got[2])
+	for _, e := range got {
+		if e.Value != 0 {
+			t.Fatalf("an inclusion leaked into an exclusion projection: %#v", got)
+		}
 	}
 }
 
@@ -261,12 +297,49 @@ func TestBuildProjection_AutoIncludeAppendsAfterUserKeys(t *testing.T) {
 func TestChildDeletedAtAutoIncludes_StrictSubfield_ReIncludesColumn(t *testing.T) {
 	colProj := map[string]int{"Addresses.city": 1, "_id": 0}
 	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths)
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, true)
 	if !reflect.DeepEqual(auto, []string{"Addresses.deleted_at"}) {
 		t.Fatalf("want [Addresses.deleted_at], got %#v", auto)
 	}
 	if cleanup["Addresses"] != "deleted_at" {
 		t.Fatalf("want cleanup Addresses->deleted_at, got %#v", cleanup)
+	}
+	if colProj["Addresses.deleted_at"] != 1 {
+		t.Fatalf("the column must be folded into the projection: %#v", colProj)
+	}
+}
+
+// EXCLUSION mode: narrowing into a segment by DROPPING one of its subfields
+// still serves the segment's DeletedAt column, so the strip can already see it
+// and nothing is auto-included — `{addresses.ssn: 0, addresses.deleted_at: 1}`
+// would be the mixed projection Mongo refuses.
+func TestChildDeletedAtAutoIncludes_ExclusionMode_ColumnAlreadyServed(t *testing.T) {
+	colProj := map[string]int{"Addresses.ssn": 0}
+	sdPaths := map[string]string{"Addresses": "deleted_at"}
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, false)
+	if len(auto) != 0 || len(cleanup) != 0 {
+		t.Fatalf("exclusion mode must add nothing, got auto=%#v cleanup=%#v", auto, cleanup)
+	}
+	if !reflect.DeepEqual(colProj, map[string]int{"Addresses.ssn": 0}) {
+		t.Fatalf("the projection must be untouched, got %#v", colProj)
+	}
+}
+
+// EXCLUSION mode, the other half: an exclusion that names the DeletedAt column
+// itself would blind the strip, so the exclusion is lifted and the column is
+// scheduled for removal from the served entries.
+func TestChildDeletedAtAutoIncludes_ExclusionMode_ExcludedColumnIsUnExcluded(t *testing.T) {
+	colProj := map[string]int{"Addresses.deleted_at": 0}
+	sdPaths := map[string]string{"Addresses": "deleted_at"}
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, false)
+	if !reflect.DeepEqual(auto, []string{"Addresses.deleted_at"}) {
+		t.Fatalf("want [Addresses.deleted_at], got %#v", auto)
+	}
+	if cleanup["Addresses"] != "deleted_at" {
+		t.Fatalf("want cleanup Addresses->deleted_at, got %#v", cleanup)
+	}
+	if _, still := colProj["Addresses.deleted_at"]; still {
+		t.Fatalf("the exclusion must be lifted so the strip can see the column: %#v", colProj)
 	}
 }
 
@@ -277,7 +350,7 @@ func TestChildDeletedAtAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.
 	// added, nothing is scheduled for cleanup.
 	colProj := map[string]int{"Addresses": 1, "_id": 0}
 	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths)
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, true)
 	if len(auto) != 0 {
 		t.Fatalf("whole-field projection must add nothing, got %#v", auto)
 	}
@@ -289,7 +362,7 @@ func TestChildDeletedAtAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.
 func TestChildDeletedAtAutoIncludes_UntouchedChild_Ignored(t *testing.T) {
 	colProj := map[string]int{"name": 1, "_id": 0}
 	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths)
+	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, true)
 	if len(auto) != 0 || len(cleanup) != 0 {
 		t.Fatalf("a child the projection does not touch must be ignored, got auto=%#v cleanup=%#v", auto, cleanup)
 	}
@@ -450,5 +523,152 @@ func TestLimitExceededError_IsNotificationCarrier(t *testing.T) {
 	}
 	if len(carrier.NotificationContexts()) == 0 {
 		t.Fatalf("expected non-empty NotificationContexts")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// identityAutoIncluded — `_id` is the cursor's absolute tiebreaker, so a
+// projection that would drop it gets it back for the query and stripped after.
+// The two narrowing modes need OPPOSITE repairs, because `_id` is the one
+// field Mongo lets a projection flag against its own mode.
+// ---------------------------------------------------------------------------
+
+func TestIdentityAutoIncluded_InclusionWithoutID_FlipsExclusionToInclusion(t *testing.T) {
+	// ?fields=name → {name:1, _id:0}. The auto-exclusion has to become an
+	// inclusion, which is the only way the column comes back.
+	colProj := map[string]int{"name": 1, "_id": 0}
+	identityAutoIncluded(colProj, true)
+	if colProj["_id"] != 1 {
+		t.Fatalf("want _id:1, got %#v", colProj)
+	}
+}
+
+func TestIdentityAutoIncluded_InclusionSelectingID_NoOp(t *testing.T) {
+	colProj := map[string]int{"name": 1, "_id": 1}
+	identityAutoIncluded(colProj, true)
+	if colProj["_id"] != 1 {
+		t.Fatalf("want _id untouched at 1, got %#v", colProj)
+	}
+}
+
+func TestIdentityAutoIncluded_ExclusionDroppingID_RemovesTheEntry(t *testing.T) {
+	// ReadCriteria.Restrict("ID") → {_id:0}. Writing {_id:1} here would be read
+	// by Mongo as an inclusion projection of the key ALONE — the whole document
+	// would collapse to its id. Dropping the entry restores the default (an
+	// exclusion projection returns `_id` unless it says otherwise).
+	colProj := map[string]int{"_id": 0}
+	identityAutoIncluded(colProj, false)
+	if _, still := colProj["_id"]; still {
+		t.Fatalf("want the _id entry removed, got %#v", colProj)
+	}
+}
+
+func TestIdentityAutoIncluded_NoIDEntry_NoOp(t *testing.T) {
+	colProj := map[string]int{"phone": 0}
+	identityAutoIncluded(colProj, false)
+	if len(colProj) != 1 {
+		t.Fatalf("projection must be untouched, got %#v", colProj)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// encodeTupleCursor — the trailing slot is the identity, and a doc without one
+// has no valid keyset cursor. Stringifying the absent value produced the
+// literal "<nil>", which decodes fine and then compares `_id > "<nil>"` — a
+// boundary that sits mid-alphabet ('<' is 0x3C, between the digits and the
+// letters of a hex UUID), so the walk silently re-served the same row for every
+// id sorting below it. Refusing is the honest answer.
+// ---------------------------------------------------------------------------
+
+func TestEncodeTupleCursor_CarriesIDAsTrailingTiebreak(t *testing.T) {
+	doc := map[string]any{"_id": "a69341e6-dead-beef", "name": "Alpha"}
+	got, err := encodeTupleCursor(doc, []queries.OrderByField{{Field: "name"}}, "")
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	dec, err := queries.DecodeCursor(got)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []any{"Alpha", "a69341e6-dead-beef"}
+	if !reflect.DeepEqual(dec.K, want) {
+		t.Fatalf("tuple: got %#v, want %#v", dec.K, want)
+	}
+}
+
+func TestEncodeTupleCursor_MissingID_Refuses(t *testing.T) {
+	doc := map[string]any{"name": "Alpha"}
+	got, err := encodeTupleCursor(doc, []queries.OrderByField{{Field: "name"}}, "")
+	if err == nil {
+		t.Fatalf("want an error for a doc with no identity, got cursor %q", got)
+	}
+	if got != "" {
+		t.Fatalf("want no cursor emitted, got %q", got)
+	}
+}
+
+func TestEncodeTupleCursor_NilID_Refuses(t *testing.T) {
+	doc := map[string]any{"_id": nil, "name": "Alpha"}
+	if _, err := encodeTupleCursor(doc, []queries.OrderByField{{Field: "name"}}, ""); err == nil {
+		t.Fatal("a nil identity must not be stringified into a \"<nil>\" tiebreak")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The identity is `_id` in this store, and it appears in the sort document and
+// the keyset cascade exactly ONCE. A consumer that sorts BY the identity has
+// named the tiebreaker itself; the reader must not append its own on top.
+// ---------------------------------------------------------------------------
+
+func TestBuildStableSortDoc_ConsumerSortsOnIdentity_NoDuplicateKey(t *testing.T) {
+	got := buildStableSortDoc([]queries.OrderByField{{Field: "_id", Desc: true}}, false)
+	want := bson.D{{Key: "_id", Value: -1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v — the appended tiebreaker would contradict the consumer's own term", got, want)
+	}
+}
+
+func TestBuildStableSortDoc_IdentityAfterACustomTerm_StillAppearsOnce(t *testing.T) {
+	got := buildStableSortDoc([]queries.OrderByField{{Field: "name"}, {Field: "_id", Desc: true}}, false)
+	want := bson.D{{Key: "name", Value: 1}, {Key: "_id", Value: -1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+// The cascade stops at the identity slot the consumer declared. Emitting the
+// trailing arm too wrote an equality AND an inequality on `_id` into the same
+// bson.M — the second overwrote the first, and the arm degenerated into
+// "everything on the other side of v", which un-bounded the page.
+func TestBuildKeysetFilter_ConsumerSortsOnIdentity_CascadeStopsThere(t *testing.T) {
+	got := buildKeysetFilter([]any{"v", "v"}, []queries.OrderByField{{Field: "_id", Desc: true}}, 1)
+	arms, ok := got["$or"].(bson.A)
+	if !ok {
+		t.Fatalf("want an $or cascade, got %#v", got)
+	}
+	if len(arms) != 1 {
+		t.Fatalf("want exactly 1 arm (the identity is unique), got %d: %#v", len(arms), arms)
+	}
+	want := bson.M{"_id": bson.M{"$lt": "v"}}
+	if !reflect.DeepEqual(arms[0], want) {
+		t.Fatalf("got %#v, want %#v", arms[0], want)
+	}
+}
+
+func TestBuildKeysetFilter_IdentitySortBehindACustomTerm_TwoArms(t *testing.T) {
+	got := buildKeysetFilter(
+		[]any{"n", "v", "v"},
+		[]queries.OrderByField{{Field: "name"}, {Field: "_id", Desc: true}},
+		1,
+	)
+	arms := got["$or"].(bson.A)
+	if len(arms) != 2 {
+		t.Fatalf("want 2 arms, got %d: %#v", len(arms), arms)
+	}
+	if !reflect.DeepEqual(arms[0], bson.M{"name": bson.M{"$gt": "n"}}) {
+		t.Fatalf("arm 1: %#v", arms[0])
+	}
+	if !reflect.DeepEqual(arms[1], bson.M{"name": "n", "_id": bson.M{"$lt": "v"}}) {
+		t.Fatalf("arm 2: %#v", arms[1])
 	}
 }

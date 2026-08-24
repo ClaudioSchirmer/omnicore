@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/hydrate"
 	"github.com/ClaudioSchirmer/omnicore/infra/tracing"
 	"github.com/ClaudioSchirmer/omnicore/infra/transport"
 )
@@ -1147,13 +1148,6 @@ func (s *SyncEngine) process(ctx context.Context, event kafkaEvent) error {
 func (s *SyncEngine) projectOwnViews(ctx context.Context, event kafkaEvent, raw map[string]any, ids payloadIDs, views []*ViewDefinition) error {
 	var errs []error
 	for _, view := range views {
-		// A RelationalSource view is served fresh from the SoR and never
-		// materialized to Mongo — skip it here (per-view, so co-rooted Mongo
-		// views on the same aggregate still project). Ack-safe: this contributes
-		// no error, the event still completes.
-		if view.IsRelational() {
-			continue
-		}
 		// DELETED always removes from the read side (hard delete, no flag
 		// overrides it). ARCHIVED by default goes through the projection branch
 		// below — the document survives with deleted_at populated, so consumers
@@ -1228,14 +1222,6 @@ func (s *SyncEngine) pullSideRepair(ctx context.Context, event kafkaEvent, ids p
 	}
 	var errs []error
 	for _, view := range views {
-		// A RelationalSource view is served fresh from the SoR and never
-		// materialized to Mongo — skip it here exactly as projectOwnViews does.
-		// Without this the base-revision handshake would compose+upsert a Mongo
-		// document for a view that is supposed to have no collection (reachable
-		// when a relational view is rooted on a SharedBase role table).
-		if view.IsRelational() {
-			continue
-		}
 		doc, err := s.composer.Compose(ctx, view, event.AggregateID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("compose %q: %w", view.name, err))
@@ -1260,9 +1246,6 @@ func (s *SyncEngine) pullSideRepair(ctx context.Context, event kafkaEvent, ids p
 // A role row that has since vanished is removed from its view.
 func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
-		if view.IsRelational() {
-			continue // relational view holds no Mongo collection — never materialize one
-		}
 		_, fkCol, ok := view.schema.SharedBaseRef()
 		if !ok {
 			continue
@@ -1285,7 +1268,7 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 		if err != nil {
 			return err
 		}
-		pkCol := schemaPK(view.schema)
+		pkCol := hydrate.SchemaPK(view.schema)
 		present := make(map[string]struct{}, len(composed))
 		for _, doc := range composed {
 			id := fmt.Sprintf("%v", doc[pkCol])
@@ -1333,9 +1316,6 @@ func (s *SyncEngine) fanOutSharedBase(ctx context.Context, baseID string, baseVi
 // each view coerces its typed input over that shared map — no re-parse per view.
 func (s *SyncEngine) fanOutSharedBasePayload(ctx context.Context, raw map[string]any, baseID string, baseViews []*ViewDefinition) error {
 	for _, view := range baseViews {
-		if view.IsRelational() {
-			continue // relational view holds no Mongo collection — never materialize one
-		}
 		_, fkCol, ok := view.schema.SharedBaseRef()
 		if !ok {
 			continue

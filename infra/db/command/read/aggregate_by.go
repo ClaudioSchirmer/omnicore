@@ -114,21 +114,22 @@ func (l *AggregateLoader[T]) AggregateBy(ctx context.Context, q *criteria.Query,
 			}
 		}
 	}
-	joins := &joinedTables{siblings: map[string]*TableSchema{}}
+	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
+	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
 	keyCols := make([]string, len(by.fields))
 	for i, f := range by.fields {
-		col, ok := resolve(f)
+		rf, ok := resolve(f)
 		if !ok {
 			return nil, fmt.Errorf("AggregateBy: unknown grouping field %q (not a persisted field of the entity)", f)
 		}
-		keyCols[i] = dialect.QuoteIdent(col)
+		keyCols[i] = qualifyCol(rf, qual, dialect)
 	}
 	exprs := make([]string, len(specs))
 	for i, s := range specs {
-		e, err := s.expr(resolve, dialect)
+		e, err := s.expr(resolve, dialect, qual)
 		if err != nil {
 			return nil, err
 		}

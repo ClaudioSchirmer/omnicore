@@ -208,10 +208,10 @@ func TestFieldAccess_ByIDSelectionReachesTheReaderAsAProjection(t *testing.T) {
 	if resp := reg.Execute(ctx, `query { item(id: "i1") { name } }`, nil, ""); len(resp.Errors) != 0 {
 		t.Fatalf("admin read must resolve; got %+v", resp.Errors)
 	}
-	if h.saw.Projection["Name"] != 1 {
+	if !h.saw.Projection.Selects("Name") {
 		t.Errorf("the selected field must reach the reader as a projection; got %v", h.saw.Projection)
 	}
-	if _, asked := h.saw.Projection["Age"]; asked {
+	if h.saw.Projection.Selects("Age") {
 		t.Errorf("an unselected field must not be projected; got %v", h.saw.Projection)
 	}
 }

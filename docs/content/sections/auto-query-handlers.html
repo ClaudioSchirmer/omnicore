@@ -276,7 +276,7 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
         <tr><td>Drop archived rows from the projection (hot-tier read side)</td><td><span class="tag manual">manual</span></td><td><code>query.View(...).Schema(...).DeleteOnArchive()</code> — opt-in per view; cascade governs root + embeds. Default keeps archived rows so Mongo mirrors the relational store symmetrically.</td></tr>
         <tr><td>Create MongoDB indexes (single-field, compound, partial, sparse, TTL, text, 2dsphere, hashed)</td><td><span class="tag auto">automatic</span></td><td><code>query.View(...).Indexes(query.Index("email").Unique(), query.Compound("email","created_at"), query.TextIndex("name","email").DefaultLanguage("portuguese"), ...)</code> — declared on the same builder; <code>bootstrap.Run</code> calls <code>mongo.ApplyMongoSpecs</code> right after <code>collectViews</code> and before <code>SyncEngine.Start</code>. Idempotent on steady state; strict-on-divergence by default; <code>OMNICORE_MONGO_FORCE_REBUILD=true</code> as operator escape (drops divergent indexes and recreates from the declared spec; never auto-enabled). Boot validation: every index key must name a column the composer emits — a typo (<code>Index("emial")</code>) or a Go field name instead of the physical column (<code>addresses.zipCode</code> vs <code>addresses.zip_code</code>) aborts the boot rather than creating a dead index.</td></tr>
         <tr><td>Collection-level features ($jsonSchema validator, collation, capped, time-series)</td><td><span class="tag auto">automatic</span></td><td><code>query.View(...).JSONSchema(bson.M{...}).Collation(&amp;query.CollationSpec{Locale:"pt",Strength:1}).Capped(&amp;query.CappedSpec{SizeBytes: 1&lt;&lt;30}).TimeSeries(&amp;query.TimeSeriesSpec{TimeField:"ts"})</code> — same builder; framework forwards onto <code>createCollection</code> for fresh collections, <code>collMod</code> for validator updates on existing ones. <code>Capped</code> ⊕ <code>TimeSeries</code> (boot rejects both); collation is immutable on existing collections (divergence aborts boot, never auto-drops). Boot validation: every top-level <code>$jsonSchema.required</code> entry must name a column the composer emits — otherwise, with the default <code>validationAction: error</code>, Mongo would reject every SyncEngine upsert and silently freeze the projection.</td></tr>
-        <tr><td>DB-per-service guard (foreign-collection detection)</td><td><span class="tag auto">automatic</span></td><td><code>mongo.CheckServiceRegistry</code> runs at boot via <code>bootstrap.Run</code>. Service writes a marker doc under <code>omnicore_service_registry</code>, then lists collections and reports any outside the declared view set + the framework-owned allowlist. <code>APP_PROFILE=dev</code> → <code>slog.Warn</code> (lets hot-reload + ad-hoc mongosh work); any other profile → boot aborts with the foreign list.</td></tr>
+        <tr><td>DB-per-service guard (foreign-collection detection)</td><td><span class="tag auto">automatic</span></td><td><code>mongo.CheckServiceRegistry</code> runs at boot via <code>bootstrap.Run</code>. Service writes a marker doc under <code>omnicore_service_registry</code>, then lists collections and reports any outside the set this service owns — the declared views (each under its bare name <em>and</em> both blue-green slots), the local mirror every declared <a href="#service-to-service"><code>upstreamSubscriptions</code></a> entry materializes (bare name only: a mirror has no registry row, so it is never resolved into a slot), and the framework-owned allowlist. <code>APP_PROFILE=dev</code> → <code>slog.Warn</code> (lets hot-reload + ad-hoc mongosh work); any other profile → boot aborts. The abort is written for the operator: it names the database and every unclaimed collection, states the usual cause (the read model's declaration left the build — deleted, renamed, or converted to a <a href="#relational-view">relational view</a>, which materializes nothing), and hands over the exact remediation — the <code>mongosh</code> drop per collection <em>plus</em> the <code>DELETE FROM omnicore_mongo_views</code> keyed by the VIEW name (the collection name minus any blue-green slot suffix), which a leftover row would otherwise turn into a second abort on the next boot.</td></tr>
         <tr><td>Set up <code>SyncEngine</code> to populate the view</td><td><span class="tag manual">manual</span></td><td>service boot</td></tr>
         <tr><td>Declare the allowlist of fields + operators</td><td><span class="tag manual">manual</span></td><td>Request DTO struct tags (<code>query:"X" filter:"ops"</code>)</td></tr>
         <tr><td>Declare the application Result (what the read produces)</td><td><span class="tag manual">manual</span></td><td>a tagless Go struct in <code>application/queries/</code> whose field names are the canonical document's Go keys — see <a href="#query-side~qry-result">the Result</a>. The framework fills it (<code>queries.ResultFromDoc</code>) and hands it to the Query's <code>FromQueryResult</code>.</td></tr>
@@ -450,16 +450,10 @@ type AddressFilterParams struct {
             whole subtree.
         </li>
         <li>
-            <strong>Auto-exclusion of <code>_id</code>.</strong> Mongo always returns <code>_id</code>
-            unless excluded. When the wire <code>fields</code> list does <em>not</em> include
-            <code>id</code>, the framework adds <code>_id: 0</code> to the projection so the typed
-            Response stays clean (no phantom <code>id</code> the consumer didn't ask for). When
-            <code>id</code> is among the tokens, no <code>_id: 0</code> is added — Mongo returns
-            both <code>id</code> and <code>_id</code>, and the Result fill's
-            <code>ID ← _id</code> fallback keeps the wire output
-            stable across both cases. Mongo's projection rules allow <code>_id: 0</code> to be
-            mixed with inclusion entries — it is the only permitted exclusion in an otherwise-
-            inclusion projection.
+            <strong>The identity is a path like any other.</strong> An inclusion selection returns exactly the paths it
+            names, the root <code>id</code> included: ask for it and you get it, leave it out and the typed Response
+            stays clean — no phantom <code>id</code> the consumer did not request. What each store has to do to honor
+            that is the store's own business, decided below the read seam and invisible on the wire.
         </li>
     </ol>
     <p>
@@ -524,11 +518,11 @@ func (FindUsersByParamsResponse) FromResult(
     return fwresponses.Map[FindUsersByParamsResponse](r)
 }</code></pre>
     <table>
-        <tbody><tr><th>Wire form</th><th>Mongo projection emitted</th><th>Notes</th></tr>
-        <tr><td><code>?fields=name,email</code></td><td><code>{name:1, email:1, _id:0}</code></td><td><code>id</code> not requested → <code>_id:0</code> added; wire response omits <code>id</code></td></tr>
-        <tr><td><code>?fields=id,name</code></td><td><code>{id:1, name:1}</code></td><td><code>id</code> requested → no <code>_id:0</code>; Mongo auto-includes <code>_id</code>; the Result fill resolves <code>ID</code> from the doc</td></tr>
-        <tr><td><code>?fields=addresses</code></td><td><code>{addresses:1, _id:0}</code></td><td>Whole nested subtree returned</td></tr>
-        <tr><td><code>?fields=addresses.zipCode</code></td><td><code>{"addresses.zip_code":1, _id:0}</code></td><td>The view's <code>TableSchema</code> maps <code>ZipCode</code> → <code>zip_code</code>; only that leaf per element is populated; siblings render absent via <code>omitempty</code></td></tr>
+        <tbody><tr><th>Wire form</th><th>Paths selected</th><th>Notes</th></tr>
+        <tr><td><code>?fields=name,email</code></td><td><code>Name</code>, <code>Email</code></td><td><code>id</code> not named → not selected; the wire response omits it</td></tr>
+        <tr><td><code>?fields=id,name</code></td><td><code>ID</code>, <code>Name</code></td><td><code>id</code> named → the identity is returned</td></tr>
+        <tr><td><code>?fields=addresses</code></td><td><code>Addresses</code></td><td>Whole nested subtree returned</td></tr>
+        <tr><td><code>?fields=addresses.zipCode</code></td><td><code>Addresses.ZipCode</code></td><td>Only that leaf per element is populated; siblings render absent via <code>omitempty</code></td></tr>
         <tr><td><code>?fields=bogus</code></td><td>(none — request rejected)</td><td>400 with <code>SchemaViolationNotification</code> on field <code>fields[bogus]</code></td></tr>
     </tbody></table>
     <p>
@@ -790,7 +784,7 @@ type AddressFilterParams struct {
         are emitted exactly where those flags are true. A button is therefore driven by the flag
         and fed by the cursor on the same side — both go quiet together at the ends of the set.
         This holds on EVERY backing: flipping a view between the projected Mongo collection and
-        <code>RelationalSource</code> does not change the envelope a consumer parses.
+        the read backing does not change the envelope a consumer parses.
     </p>
     <table>
         <tbody><tr><th>Wire</th><th>Outcome</th></tr>

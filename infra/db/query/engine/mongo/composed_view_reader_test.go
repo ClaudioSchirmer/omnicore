@@ -565,11 +565,7 @@ func TestComposedReader_OnlyTotalSkipsLegs(t *testing.T) {
 
 func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 	env := newCVREnv()
-	crit := queries.ReadCriteria{Projection: map[string]int{
-		"Code":       1,
-		"Notes.Text": 1,
-		"_id":        0,
-	}}
+	crit := queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Code", "Notes.Text")}
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full", crit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -582,9 +578,17 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 		t.Fatal("the requested leg must attach")
 	}
 	// The decorator needed _id to group the 1:N leg, then restored the
-	// consumer's exclusion.
+	// consumer's exclusion — under BOTH spellings of the identity. The primary
+	// read comes back through MongoViewReader.ReadPage, whose normalizeIdentity
+	// lifts `_id` onto the Go field "ID"; stripping only the store key left the
+	// spelling the Response DTO actually fills, so a composed read served an id
+	// the selection never asked for while the plain view behind the same
+	// selection did not.
 	if _, present := item["_id"]; present {
 		t.Fatal("the _id helper inclusion must be stripped from the wire shape")
+	}
+	if _, present := item[idGoField]; present {
+		t.Fatalf("the Go identity promoted from the _id helper must be stripped too: %#v", item)
 	}
 	// The leg aggregation carried the translated sparse projection; _id stays
 	// as an INCLUSION (queryable — the attach step may group by it), the
@@ -613,7 +617,7 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 		}
 	}
 	// Projection echo carries the COMPOSED projection for export pruning.
-	if page.Projection["Notes.Text"] != 1 {
+	if !page.Projection.Selects("Notes.Text") {
 		t.Fatalf("expected the composed projection echoed, got %#v", page.Projection)
 	}
 }
@@ -621,7 +625,7 @@ func TestComposedReader_InclusionProjectionSelectsLegs(t *testing.T) {
 func TestComposedReader_ExclusionProjectionDropsLeg(t *testing.T) {
 	env := newCVREnv()
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Projection: map[string]int{"Notes": 0}})
+		queries.ReadCriteria{Projection: queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"Notes": true}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -637,7 +641,7 @@ func TestComposedReader_ExclusionProjectionDropsLeg(t *testing.T) {
 func TestComposedReader_WholeSegmentInclusion(t *testing.T) {
 	env := newCVREnv()
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Projection: map[string]int{"Notes": 1, "_id": 0}})
+		queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Notes")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -799,7 +803,7 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 	// a helper and strips it afterwards.
 	env2 := newCVREnvByMirrorID()
 	page2, err := env2.reader.ReadPage(context.Background(), "gadgets_mirrored",
-		queries.ReadCriteria{Projection: map[string]int{"Code": 1, "UpstreamMirror": 1, "_id": 0}})
+		queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Code", "UpstreamMirror")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -815,7 +819,7 @@ func TestComposedReader_NonPKParentKey(t *testing.T) {
 	// lifted for the join and restored afterwards.
 	env3 := newCVREnvByMirrorID()
 	page3, err := env3.reader.ReadPage(context.Background(), "gadgets_mirrored",
-		queries.ReadCriteria{Projection: map[string]int{"MirrorID": 0}})
+		queries.ReadCriteria{Projection: queries.Projection{Mode: queries.ProjectExcept, Paths: map[string]bool{"MirrorID": true}}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -902,11 +906,7 @@ func TestComposedReader_CursorEdgeCases(t *testing.T) {
 func TestComposedReader_PartialMirrorProjectionStillJoins(t *testing.T) {
 	env := newCVREnv()
 	page, err := env.reader.ReadPage(context.Background(), "gadgets_full",
-		queries.ReadCriteria{Projection: map[string]int{
-			"Code":                1,
-			"UpstreamMirror.Code": 1,
-			"_id":                 0,
-		}})
+		queries.ReadCriteria{Projection: queries.ProjectOnlyPaths("Code", "UpstreamMirror.Code")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1124,3 +1124,27 @@ func TestChildElems_NormalizesBothArrayShapes(t *testing.T) {
 }
 
 func (cvrLine) CollectionName() string { return "CvrLines" }
+
+// A Projection is a PUBLIC struct: a hand-written surface can hand this reader a
+// mode with no path set, a state the split itself never produces. The join keys
+// still have to be written, so the selection must gain a path set rather than
+// panic on a nil map.
+func TestEnsureJoinKeys_ToleratesANilPathSet(t *testing.T) {
+	rt := &composedRuntime{
+		legs: []*legRuntime{{
+			link:   query.ComposedLink{ParentKeyGoField: "_id"},
+			segKey: "Seg",
+		}},
+	}
+	s := &composedSplit{
+		primary:  queries.ReadCriteria{Projection: queries.Projection{Mode: queries.ProjectOnly}},
+		fetchLeg: map[string]bool{"Seg": true},
+	}
+	ensureJoinKeys(rt, s)
+	if !s.primary.Projection.Selects("ID") {
+		t.Fatalf("the join key must be added to the selection, got %#v", s.primary.Projection)
+	}
+	if !s.stripID {
+		t.Error("a key the consumer did not ask for must be recorded for stripping")
+	}
+}

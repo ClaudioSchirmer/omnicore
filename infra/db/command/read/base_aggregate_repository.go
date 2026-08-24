@@ -23,9 +23,8 @@ import (
 // When to use (common case):
 //
 //   - Aggregate-aware Repository with symmetric universal cascade.
-//   - FindByID via schema-driven auto-scan or a manual scanner on the Loader.
-//   - Children declared on the TableSchema via Child(...); manual decoding via
-//     WithChildScanner when a child needs a non-trivial scan.
+//   - FindByID via the schema-driven scan.
+//   - Children declared on the TableSchema via Child(...).
 //
 // When NOT to use (keep the old pattern of direct BaseRepository[T] embed
 // + a separate *AggregateLoader[T]):
@@ -83,6 +82,16 @@ func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggreg
 	r.BaseRepository.WithSchema(schema)
 	r.validateDeclaredChildren(schema)
 	r.Loader.WithSchema(schema)
+	return r
+}
+
+// WithJoins declares the READ-ONLY traversals this aggregate may reach across in
+// a query, threading them into the loader that owns FindOne/FindAll/Exists — the
+// same shape WithSchema uses. Declare the schema first: the joins are validated
+// against it at construction, and against EACH OTHER, which is why the whole set
+// goes in one call — a second one panics.
+func (r *BaseAggregateRepository[T]) WithJoins(bindings ...*JoinBinding) *BaseAggregateRepository[T] {
+	r.Loader.WithJoins(bindings...)
 	return r
 }
 

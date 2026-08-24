@@ -122,8 +122,8 @@ func TestGate_PageInfoProbeNarrowsProjection(t *testing.T) {
 	if len(resp.Errors) != 0 {
 		t.Fatalf("probe must pass: %+v", resp.Errors)
 	}
-	if got := h.captured.Projection; len(got) != 1 || got["_id"] != 1 {
-		t.Fatalf("bare probe must project only _id, got %v", got)
+	if got := h.captured.Projection; len(got.Paths) != 1 || !got.Selects("ID") {
+		t.Fatalf("bare probe must select the identity alone, got %v", got)
 	}
 
 	// Ordered probe → the ordering fields.
@@ -131,7 +131,7 @@ func TestGate_PageInfoProbeNarrowsProjection(t *testing.T) {
 	if len(resp.Errors) != 0 {
 		t.Fatalf("ordered probe must pass: %+v", resp.Errors)
 	}
-	if got := h.captured.Projection; len(got) != 1 || got["Name"] != 1 {
+	if got := h.captured.Projection; len(got.Paths) != 1 || !got.Selects("Name") {
 		t.Fatalf("ordered probe must project the ordering fields, got %v", got)
 	}
 
@@ -140,7 +140,7 @@ func TestGate_PageInfoProbeNarrowsProjection(t *testing.T) {
 	if len(resp.Errors) != 0 {
 		t.Fatalf("edges+pageInfo must pass: %+v", resp.Errors)
 	}
-	if got := h.captured.Projection; got["Name"] != 1 {
+	if got := h.captured.Projection; !got.Selects("Name") {
 		t.Fatalf("node selection must drive the projection, got %v", got)
 	}
 }

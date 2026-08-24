@@ -104,13 +104,13 @@ func TestFieldsParam_ProjectionIncludesAutoIDExclusionWhenIDNotRequested(t *test
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=name,email", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["Name"]; !ok || v != 1 {
+	if !got.Selects("Name") {
 		t.Errorf("expected name:1 in projection, got %v", got)
 	}
-	if v, ok := got["Email"]; !ok || v != 1 {
+	if !got.Selects("Email") {
 		t.Errorf("expected email:1 in projection, got %v", got)
 	}
-	if v, ok := got["_id"]; !ok || v != 0 {
+	if got.Selects("ID") {
 		t.Errorf("expected _id:0 in projection (id not requested), got %v", got)
 	}
 }
@@ -123,13 +123,13 @@ func TestFieldsParam_ProjectionOmitsIDExclusionWhenIDRequested(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=id,name", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["ID"]; !ok || v != 1 {
+	if !got.Selects("ID") {
 		t.Errorf("expected id:1 in projection, got %v", got)
 	}
-	if v, ok := got["Name"]; !ok || v != 1 {
+	if !got.Selects("Name") {
 		t.Errorf("expected name:1 in projection, got %v", got)
 	}
-	if _, hasIDExclusion := got["_id"]; hasIDExclusion {
+	if !got.Selects("ID") {
 		t.Errorf("expected no _id:0 entry when id was requested, got %v", got)
 	}
 }
@@ -142,10 +142,10 @@ func TestFieldsParam_NestedPathTranslatesViaAutoSnake(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses.zipCode", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["Addresses.ZipCode"]; !ok || v != 1 {
+	if !got.Selects("Addresses.ZipCode") {
 		t.Errorf("expected addresses.zip_code:1 (PascalToSnake), got %v", got)
 	}
-	if v, ok := got["_id"]; !ok || v != 0 {
+	if got.Selects("ID") {
 		t.Errorf("expected _id:0 (id not requested), got %v", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestFieldsParam_NestedPathHonorsViewOverride(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses.state", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["Addresses.State"]; !ok || v != 1 {
+	if !got.Selects("Addresses.State") {
 		t.Errorf("expected addresses.st:1 (Go field path (view: removed)), got %v", got)
 	}
 }
@@ -171,10 +171,10 @@ func TestFieldsParam_WholeAggregateProjectsSubtree(t *testing.T) {
 
 	_, _ = app.Test(httptest.NewRequest("GET", "/users?fields=addresses", nil))
 	got := h.got.Criteria.Projection
-	if v, ok := got["Addresses"]; !ok || v != 1 {
+	if !got.Selects("Addresses") {
 		t.Errorf("expected addresses:1 (whole subtree), got %v", got)
 	}
-	if v, ok := got["_id"]; !ok || v != 0 {
+	if got.Selects("ID") {
 		t.Errorf("expected _id:0, got %v", got)
 	}
 }
@@ -192,13 +192,13 @@ func TestFieldsParam_PassThroughModeOnQueryParser(t *testing.T) {
 		return c.SendStatus(fiber.StatusOK)
 	})
 	_, _ = app.Test(httptest.NewRequest("GET", "/x?fields=foo,bar", nil))
-	if v, ok := got.Projection["foo"]; !ok || v != 1 {
+	if !got.Projection.Selects("foo") {
 		t.Errorf("expected foo:1 in pass-through projection, got %v", got.Projection)
 	}
-	if v, ok := got.Projection["bar"]; !ok || v != 1 {
+	if !got.Projection.Selects("bar") {
 		t.Errorf("expected bar:1 in pass-through projection, got %v", got.Projection)
 	}
-	if _, hasIDExclusion := got.Projection["_id"]; hasIDExclusion {
-		t.Errorf("pass-through mode should not add _id:0, got %v", got.Projection)
+	if got.Projection.Selects("ID") {
+		t.Errorf("pass-through mode must not select an id nobody asked for: %v", got.Projection)
 	}
 }

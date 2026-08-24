@@ -14,13 +14,13 @@ import (
 )
 
 // The CLOSED set of persistable field types — exactly what the framework
-// composes on EVERY supported relational engine (write bind, criteria bind,
-// auto-scan; see table-schema.html "Supported column shapes"). Declaring a
-// Field whose Go type is outside this set is a BOOT FAIL at the declaration
-// call: with the type-driven identity contract the field's type IS its
-// storage declaration, so an unknown type would mean a silent driver
-// lottery on some engine — the panic converts that into a
-// deterministic construction error that teaches the fix.
+// composes on EVERY supported relational engine (write bind, criteria bind, the
+// schema-driven scan; see table-schema.html "Supported column shapes").
+// Declaring a Field whose Go type is outside this set is a BOOT FAIL at the
+// declaration call: with the type-driven identity contract the field's type IS
+// its storage declaration, so an unknown type would mean a silent driver
+// lottery on some engine — the panic converts that into a deterministic
+// construction error that teaches the fix.
 //
 // Matching is by IDENTICAL type, never by kind — drivers diverge on named
 // types, so the closed set stays literal. A named type is accepted ONLY as a

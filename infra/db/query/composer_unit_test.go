@@ -8,6 +8,8 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+
+	"github.com/ClaudioSchirmer/omnicore/infra/db/hydrate"
 )
 
 // The Composer reads through the engine's neutral surface — c.eng.Querier().
@@ -393,7 +395,7 @@ func TestComposeBatch_QueryError(t *testing.T) {
 	}
 }
 
-// A batch larger than maxInClauseSize must split into several IN lookups so no
+// A batch larger than hydrate.MaxInClauseSize must split into several IN lookups so no
 // single predicate exceeds a backend's list ceiling (Oracle's ORA-01795), and
 // every id must still be fetched across the chunks.
 func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
@@ -413,7 +415,7 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 	c := NewComposer(eng)
 	view := View("orders").Version(1).Schema(composerRootSchema())
 
-	n := maxInClauseSize + 50
+	n := hydrate.MaxInClauseSize + 50
 	ids := make([]string, n)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("o%d", i)
@@ -423,7 +425,7 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 		t.Fatalf("ComposeBatch: %v", err)
 	}
 	if calls != 2 {
-		t.Errorf("expected 2 chunked IN lookups for %d ids (cap %d), got %d", n, maxInClauseSize, calls)
+		t.Errorf("expected 2 chunked IN lookups for %d ids (cap %d), got %d", n, hydrate.MaxInClauseSize, calls)
 	}
 	if total != n || len(docs) != n {
 		t.Errorf("expected all %d ids fetched, got total=%d docs=%d", n, total, len(docs))

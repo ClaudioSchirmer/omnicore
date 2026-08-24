@@ -54,7 +54,7 @@ func TestComputedFieldMaskPushesSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !reflect.DeepEqual(crit.Projection, map[string]int{"Name": 1, "UserName": 1}) {
+	if !reflect.DeepEqual(crit.Projection, queries.ProjectOnlyPaths("Name", "UserName")) {
 		t.Fatalf("read_mask over a computed field must push its sources, got %+v", crit.Projection)
 	}
 
@@ -67,7 +67,7 @@ func TestComputedFieldMaskPushesSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if !reflect.DeepEqual(crit.Projection, map[string]int{"ID": 1, "Name": 1, "UserName": 1}) {
+	if !reflect.DeepEqual(crit.Projection, queries.ProjectOnlyPaths("ID", "Name", "UserName")) {
 		t.Fatalf("mixed mask: %+v", crit.Projection)
 	}
 }
@@ -338,7 +338,7 @@ func TestComputedAutoPath_MaskPushesSources(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("selecting a computed field must pass: %v", err)
 	}
-	if !reflect.DeepEqual(saw.Projection, map[string]int{"Name": 1, "ID": 1}) {
+	if !reflect.DeepEqual(saw.Projection, queries.ProjectOnlyPaths("Name", "ID")) {
 		t.Fatalf("read_mask over a computed field must push its sources, got %+v", saw.Projection)
 	}
 }

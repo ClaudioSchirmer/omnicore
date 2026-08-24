@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/hydrate"
 )
 
 // Direct coverage for the small seam helpers: the MySQL bool coercion and the
@@ -15,7 +16,7 @@ func TestCoerceTypes(t *testing.T) {
 
 	t.Run("int64AndIntBecomeBool", func(t *testing.T) {
 		row := Document{"active": int64(1), "verified": 0, "name": "x"}
-		coerceTypes(row, schema)
+		hydrate.CoerceTypes(row, schema)
 		if row["active"] != true || row["verified"] != false {
 			t.Errorf("coerced row = %v", row)
 		}
@@ -25,14 +26,14 @@ func TestCoerceTypes(t *testing.T) {
 	})
 	t.Run("nullAndRealBoolPassThrough", func(t *testing.T) {
 		row := Document{"active": nil, "verified": true}
-		coerceTypes(row, schema)
+		hydrate.CoerceTypes(row, schema)
 		if row["active"] != nil || row["verified"] != true {
 			t.Errorf("row = %v", row)
 		}
 	})
 	t.Run("nilRowAndNilSchemaAreNoops", func(t *testing.T) {
-		coerceTypes(nil, schema)
-		coerceTypes(Document{"active": int64(1)}, nil)
+		hydrate.CoerceTypes(nil, schema)
+		hydrate.CoerceTypes(Document{"active": int64(1)}, nil)
 	})
 }
 

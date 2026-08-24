@@ -654,7 +654,7 @@ func TestReadMaskAndSortSpeakItemWireNames(t *testing.T) {
 	if len(crit.OrderBy) != 1 || crit.OrderBy[0].Field != "Name" || !crit.OrderBy[0].Desc {
 		t.Fatalf("sort must resolve to the Go doc path: %+v", crit.OrderBy)
 	}
-	if crit.Projection["ID"] != 1 || crit.Projection["Kind"] != 1 {
+	if !crit.Projection.Selects("ID") || !crit.Projection.Selects("Kind") {
 		t.Fatalf("read_mask must resolve to Go doc paths: %+v", crit.Projection)
 	}
 

@@ -7,11 +7,12 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/query"
 )
 
-// pageLoader is a stateful, no-DB query.RelationalReader: it serves a fixed,
+// pageLoader is a stateful, no-DB query.AggregateReader: it serves a fixed,
 // id-ordered row set honoring the criteria's Offset/Limit exactly as the SoR
 // would, so the offset-in-cursor pagination (resolveWindow's after / before /
 // backward branches) can be exercised end-to-end through ReadPage without a
@@ -39,7 +40,8 @@ func (p *pageLoader) FindAllEntities(_ context.Context, q *criteria.Query) ([]do
 func (p *pageLoader) CountEntities(context.Context, *criteria.Query) (int64, error) {
 	return int64(len(p.rows)), nil
 }
-func (p *pageLoader) BoundTable() string { return p.table }
+func (p *pageLoader) Schema() *core.TableSchema       { return guardSchema(p.table) }
+func (p *pageLoader) JoinFields() map[string][]string { return nil }
 
 // mkRows builds n guardEnt roots with ids/names r0..r{n-1}, ascending — the
 // deterministic order the reader's ORDER BY ID tiebreak assumes.
@@ -55,9 +57,9 @@ func mkRows(n int) []domain.Entity {
 
 func rowName(i int) string { return "r" + string(rune('0'+i)) }
 
-func pageReaderWith(rows []domain.Entity) *RelationalViewReader {
-	vdef := query.View("v").Schema(guardSchema("gadgets")).Version(1).RelationalSource(&pageLoader{table: "gadgets", rows: rows})
-	r := NewRelationalViewReader([]*query.ViewDefinition{vdef})
+func pageReaderWith(rows []domain.Entity) *ViewReader {
+	vdef := query.RelationalView("v", &pageLoader{table: "gadgets", rows: rows})
+	r := NewViewReader([]*query.RelationalViewDefinition{vdef})
 	r.SetMaxLimitResolver(func(string) int64 { return 100 })
 	return r
 }
@@ -321,5 +323,50 @@ func assertTypedCursorRejection(t *testing.T, label string, err error) {
 	}
 	if !found {
 		t.Errorf("%s: want a SchemaViolationNotification, got %+v", label, notes)
+	}
+}
+
+// TestReadPage_FieldsProjectionWithoutID_WalkAdvances is the relational half of
+// the cross-engine parity guard for a walk whose selection OMITS the identity
+// (?fields=name, a GraphQL selection without id, a gRPC read mask).
+//
+// The Mongo reader pages by KEYSET and puts the stored `_id` in the cursor's
+// trailing tiebreak slot, so a projection that dropped it once produced a
+// cursor over a missing value. This engine pages by OFFSET — the cursor carries
+// a row index, not row values, and the projection is applied in memory AFTER
+// the document is built — so nothing about the selection can reach the cursor.
+// The test pins that: flipping a view's backing between the two engines must
+// not change whether a paged read can be walked, nor the wire shape it serves.
+func TestReadPage_FieldsProjectionWithoutID_WalkAdvances(t *testing.T) {
+	r := pageReaderWith(mkRows(3))
+	ctx := context.Background()
+	crit := queries.ReadCriteria{
+		Limit:      1,
+		OrderBy:    []queries.OrderByField{{Field: "Name"}},
+		Projection: queries.ProjectOnlyPaths("Name"),
+	}
+
+	after := ""
+	for i, want := range []string{"r0", "r1", "r2"} {
+		crit.After = after
+		page, err := r.ReadPage(ctx, "v", crit)
+		if err != nil {
+			t.Fatalf("page %d: %v", i+1, err)
+		}
+		eqNames(t, names(page), want)
+		if _, leaked := page.Items[0]["ID"]; leaked {
+			t.Fatalf("page %d: the identity leaked onto the wire for a Name-only selection: %#v",
+				i+1, page.Items[0])
+		}
+		if i < 2 {
+			if !page.HasNextPage || page.EndCursor == "" {
+				t.Fatalf("page %d: want a next page and an EndCursor, got hasNext=%v cursor=%q",
+					i+1, page.HasNextPage, page.EndCursor)
+			}
+			if page.EndCursor == after {
+				t.Fatalf("page %d: EndCursor repeated the incoming cursor — the walk is stalled", i+1)
+			}
+			after = page.EndCursor
+		}
 	}
 }

@@ -27,8 +27,8 @@ func TestReadCriteria_Restrict_PassiveWholeDocExcludesSilently(t *testing.T) {
 	if err := c.Restrict("Salary"); err != nil {
 		t.Fatalf("passive Restrict should not error, got %v", err)
 	}
-	if v, ok := c.Projection["Salary"]; !ok || v != 0 {
-		t.Errorf("expected Salary excluded ({Salary:0}), got %v ok=%v", v, ok)
+	if c.Projection.Keeps("Salary") {
+		t.Error("Salary must be excluded from a whole-document read")
 	}
 }
 
@@ -52,27 +52,28 @@ func TestReadCriteria_Restrict_ActiveFilterIs403AndScrubs(t *testing.T) {
 }
 
 func TestReadCriteria_Restrict_ActiveFieldsIs403AndDropsInclude(t *testing.T) {
-	c := ReadCriteria{Projection: map[string]int{"Salary": 1, "Name": 1}}
+	c := ReadCriteria{Projection: ProjectOnlyPaths("Salary", "Name")}
 	assertForbiddenCarrier(t, c.Restrict("Salary"))
-	if _, ok := c.Projection["Salary"]; ok {
+	if c.Projection.Selects("Salary") {
 		t.Error("Salary include must be dropped in inclusion mode")
 	}
-	if c.Projection["Name"] != 1 {
+	if !c.Projection.Selects("Name") {
 		t.Error("other includes must survive")
 	}
 }
 
 func TestReadCriteria_Restrict_PassiveInclusionModeNoExclusionLeak(t *testing.T) {
 	// ?fields=name (Salary not requested): Salary is passively absent — no 403,
-	// and no {Salary:0} is mixed into an inclusion projection (Mongo forbids it).
-	c := ReadCriteria{Projection: map[string]int{"Name": 1}}
+	// and an inclusion selection stays an inclusion, never gaining an exclusion
+	// entry the store would have to reconcile.
+	c := ReadCriteria{Projection: ProjectOnlyPaths("Name")}
 	if err := c.Restrict("Salary"); err != nil {
 		t.Fatalf("passive Restrict in inclusion mode should not error, got %v", err)
 	}
-	if _, ok := c.Projection["Salary"]; ok {
+	if c.Projection.Selects("Salary") {
 		t.Error("Salary must not appear in an inclusion projection")
 	}
-	if c.Projection["Name"] != 1 {
+	if !c.Projection.Selects("Name") {
 		t.Error("Name include must survive")
 	}
 }

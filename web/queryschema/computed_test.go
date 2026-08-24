@@ -88,10 +88,10 @@ func TestParseProjection_ComputedPushesSourcesNotItself(t *testing.T) {
 	if !ok {
 		t.Fatalf("a computed token must be accepted, got bad=%q", bad)
 	}
-	if proj["Name"] != 1 || proj["UserName"] != 1 {
+	if !proj.Selects("Name") || !proj.Selects("UserName") {
 		t.Errorf("the sources must be pushed down; proj=%v", proj)
 	}
-	if _, pushed := proj["Display"]; pushed {
+	if proj.Selects("Display") {
 		t.Errorf("the computed path itself must NOT be pushed down (no column behind it); proj=%v", proj)
 	}
 	// The wire set still records the token, so the `id` auto-exclusion and the
@@ -111,11 +111,11 @@ func TestParseProjection_ComputedCombinesWithPlainTokens(t *testing.T) {
 		t.Fatalf("unexpected rejection of %q", bad)
 	}
 	for _, want := range []string{"ID", "Name", "UserName"} {
-		if proj[want] != 1 {
+		if !proj.Selects(want) {
 			t.Errorf("proj must include %q; got %v", want, proj)
 		}
 	}
-	if _, pushed := proj["Display"]; pushed {
+	if proj.Selects("Display") {
 		t.Errorf("Display must never be pushed down; got %v", proj)
 	}
 }
@@ -129,10 +129,10 @@ func TestParseProjection_NestedComputedPushesSegmentSources(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected rejection of %q", bad)
 	}
-	if proj["Addresses.City"] != 1 || proj["Addresses.State"] != 1 {
+	if !proj.Selects("Addresses.City") || !proj.Selects("Addresses.State") {
 		t.Errorf("nested sources must be pushed under the segment; proj=%v", proj)
 	}
-	if _, pushed := proj["Addresses.Locale"]; pushed {
+	if proj.Selects("Addresses.Locale") {
 		t.Errorf("the nested computed path must NOT be pushed down; proj=%v", proj)
 	}
 }

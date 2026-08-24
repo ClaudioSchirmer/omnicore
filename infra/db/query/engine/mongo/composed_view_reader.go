@@ -168,7 +168,7 @@ func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c querie
 			return queries.Page{}, err
 		}
 	}
-	page.Projection = c.Projection // echo the composed projection for export plan pruning
+	page.Projection = c.Projection // echo the composed selection for export plan pruning
 	return page, nil
 }
 
@@ -197,7 +197,7 @@ func (r *ComposedViewReader) ReadByID(ctx context.Context, view, id string, c qu
 type composedSplit struct {
 	primary    queries.ReadCriteria
 	legFilters map[string]map[string]any
-	legProj    map[string]map[string]int
+	legProj    map[string]queries.Projection
 	fetchLeg   map[string]bool
 	stripID    bool
 	stripKeys  []string
@@ -218,7 +218,7 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 	s := &composedSplit{
 		primary:    c,
 		legFilters: map[string]map[string]any{},
-		legProj:    map[string]map[string]int{},
+		legProj:    map[string]queries.Projection{},
 		fetchLeg:   map[string]bool{},
 	}
 
@@ -249,39 +249,34 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 	legTouched := map[string]bool{}
 	legIncluded := map[string]bool{}
 	legExcluded := map[string]bool{}
-	inclusionMode := false
-	if len(c.Projection) > 0 {
-		primaryProj := make(map[string]int, len(c.Projection))
-		for k, v := range c.Projection {
+	inclusionMode := c.Projection.IsInclusion()
+	if c.Projection.Narrows() {
+		primaryProj := queries.Projection{Mode: c.Projection.Mode, Paths: map[string]bool{}}
+		for k := range c.Projection.Paths {
 			if leg, rest, ok := rt.segMatch(k); ok {
 				sk := leg.segKey
 				if rest == "" { // whole segment included/excluded
 					legTouched[sk] = true
-					if v == 1 {
+					if inclusionMode {
 						legIncluded[sk] = true
-						inclusionMode = true
 					} else {
 						legExcluded[sk] = true
 					}
 					continue
 				}
-				lp := s.legProj[sk] // a sub-path into the segment
-				if lp == nil {
-					lp = map[string]int{}
-					s.legProj[sk] = lp
+				lp, seen := s.legProj[sk] // a sub-path into the segment
+				if !seen {
+					lp = queries.Projection{Mode: c.Projection.Mode, Paths: map[string]bool{}}
 				}
-				lp[rest] = v
+				lp.Paths[rest] = true
+				s.legProj[sk] = lp
 				legTouched[sk] = true
-				if v == 1 {
+				if inclusionMode {
 					legIncluded[sk] = true
-					inclusionMode = true
 				}
 				continue
 			}
-			if v == 1 && k != "_id" {
-				inclusionMode = true
-			}
-			primaryProj[k] = v
+			primaryProj.Paths[k] = true
 		}
 		s.primary.Projection = primaryProj
 	}
@@ -289,7 +284,7 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 	for _, leg := range rt.legs {
 		seg := leg.segKey
 		switch {
-		case len(c.Projection) == 0:
+		case !c.Projection.Narrows():
 			s.fetchLeg[seg] = true
 		case legExcluded[seg]:
 			// explicitly dropped
@@ -310,8 +305,12 @@ func splitComposedCriteria(rt *composedRuntime, c queries.ReadCriteria) *compose
 // Go field of each 1:1 parent ParentID. Added or un-excluded entries are recorded so
 // stripHelperFields restores the consumer's exact wire shape afterwards.
 func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
-	proj := s.primary.Projection
-	if len(proj) == 0 {
+	proj := &s.primary.Projection
+	// Mode, not Narrows: an inclusion whose every path addressed a LEG leaves the
+	// primary's own path set empty, and that is "nothing from the primary", not
+	// "the whole primary". Reading it as whole-doc would skip adding the join key
+	// the leg lookup needs — and skip recording that it must be stripped again.
+	if proj.Mode == queries.ProjectAll {
 		return
 	}
 	needsID := false
@@ -334,48 +333,70 @@ func ensureJoinKeys(rt *composedRuntime, s *composedSplit) {
 	if !needsID && len(needKeys) == 0 && len(needChild) == 0 {
 		return
 	}
-	inclusion := false
-	for k, v := range proj {
-		if v == 1 && k != "_id" {
-			inclusion = true
-			break
-		}
+	// The split always allocates the primary's path set, and an inclusion that
+	// reaches here with an EMPTY one is meaningful (every path addressed a leg —
+	// see above). A nil one is not a state this reader produces; allocate rather
+	// than let the writes below panic on it.
+	if proj.Paths == nil {
+		proj.Paths = map[string]bool{}
 	}
-	if needsID {
-		if v, present := proj["_id"]; present && v == 0 {
-			delete(proj, "_id")
-			s.stripID = true
+	inclusion := proj.Mode == queries.ProjectOnly
+	keeps := func(path string) bool {
+		if inclusion {
+			return proj.Paths[path]
 		}
+		return !proj.Paths[path]
+	}
+	// The identity is the Go path "ID" here, like any other selection entry. Only
+	// the leg lookup below still speaks the stored `_id`, which is a document key,
+	// not a selection.
+	if needsID && !keeps(idGoField) {
+		if inclusion {
+			proj.Paths[idGoField] = true
+		} else {
+			delete(proj.Paths, idGoField)
+		}
+		s.stripID = true
 	}
 	for k := range needKeys {
-		v, present := proj[k]
-		switch {
-		case inclusion && (!present || v == 0):
-			proj[k] = 1
-			s.stripKeys = append(s.stripKeys, k)
-		case !inclusion && present && v == 0:
-			delete(proj, k)
-			s.stripKeys = append(s.stripKeys, k)
+		if keeps(k) {
+			continue
 		}
+		if inclusion {
+			proj.Paths[k] = true
+		} else {
+			delete(proj.Paths, k)
+		}
+		s.stripKeys = append(s.stripKeys, k)
 	}
 	// LinkInChild joins per child element: the child array + the element's ParentID Go
 	// field must survive a sparse projection so attachInChild can look the leg up.
 	for path := range needChild {
-		seg, field, _ := strings.Cut(path, ".")
-		v, present := proj[path]
-		switch {
-		case inclusion && (!present || v == 0):
-			proj[path] = 1
-			s.stripChildFK = append(s.stripChildFK, childFKStrip{seg, field})
-		case !inclusion && present && v == 0:
-			delete(proj, path)
-			s.stripChildFK = append(s.stripChildFK, childFKStrip{seg, field})
+		if keeps(path) {
+			continue
 		}
+		seg, field, _ := strings.Cut(path, ".")
+		if inclusion {
+			proj.Paths[path] = true
+		} else {
+			delete(proj.Paths, path)
+		}
+		s.stripChildFK = append(s.stripChildFK, childFKStrip{seg, field})
 	}
 }
 
 // stripHelperFields removes the join-key fields ensureJoinKeys added so the
 // items match the consumer's requested projection exactly.
+//
+// The identity leaves under BOTH its spellings. The primary read comes back
+// through MongoViewReader.ReadPage, whose last act is normalizeIdentity: it
+// lifts the store's `_id` onto the Go field "ID" so every layer above speaks
+// one identity vocabulary. Deleting only `_id` therefore stripped the spelling
+// nobody serves and left the one the Response DTO fills — a composed read whose
+// selection did not ask for the id still served it, while the plain view behind
+// the same selection did not. The leg path has no equivalent gap: leg docs are
+// translated by toGoLegDoc (ToGoDoc alone, no normalizeIdentity), and
+// StripJoinKeyID already removes both the key and the mirror-promoted Go field.
 func stripHelperFields(items []map[string]any, s *composedSplit) {
 	if !s.stripID && len(s.stripKeys) == 0 && len(s.stripChildFK) == 0 {
 		return
@@ -383,6 +404,7 @@ func stripHelperFields(items []map[string]any, s *composedSplit) {
 	for _, item := range items {
 		if s.stripID {
 			delete(item, "_id")
+			delete(item, idGoField)
 		}
 		for _, k := range s.stripKeys {
 			delete(item, k)
@@ -469,26 +491,19 @@ func (r *ComposedViewReader) legBaseFilter(leg *legRuntime, s *composedSplit, in
 // `_id` included, exactly like a direct read of the leg view.
 func (r *ComposedViewReader) legProjection(leg *legRuntime, s *composedSplit) (proj bson.D, stripID bool, err error) {
 	lp := s.legProj[leg.segKey]
-	if len(lp) == 0 {
+	if !lp.Narrows() {
 		return nil, false, nil
 	}
 	colProj, err := translateProjectionKeys(leg.node, lp)
 	if err != nil {
 		return nil, false, err
 	}
-	inclusion := false
-	for _, v := range colProj {
-		if v == 1 {
-			inclusion = true
-			break
-		}
-	}
-	if inclusion {
+	if lp.IsInclusion() {
 		// Keep _id queryable for the join; hide it from the wire post-attach.
 		colProj["_id"] = 1
 		stripID = true
 	}
-	return buildProjection(colProj, nil), stripID, nil
+	return buildProjection(colProj), stripID, nil
 }
 
 // attachOne resolves a 1:1 leg: one find({_id: {$in: keys}}) carrying the

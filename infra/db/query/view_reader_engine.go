@@ -9,71 +9,83 @@ import (
 
 // ViewReaderEngine is the read-side dispatch seam: it implements the neutral
 // queries.ViewReader port and routes each read to the store the view is backed
-// by — the Mongo projection reader by default, the relational reader for a view
-// marked RelationalSource. It mirrors core.RelationalEngine on the write side:
-// the upper layers depend only on the port; the backing is selected behind it,
-// here per view rather than per process.
+// by. It mirrors core.RelationalEngine on the write side — the upper layers
+// depend only on the port; the backing is selected behind it, here per view
+// rather than per process.
 //
-// It is built EARLY (wrapping the Mongo reader) and installed as deps.ViewReader,
-// so every handler captures the one seam; the relational reader and the per-view
-// route are filled in later by mutation (SetRelational) — never a pointer swap —
-// so a handler that captured deps.ViewReader before wiring finished still
-// dispatches correctly. A pure-Mongo service keeps a seam whose relational side
-// is never installed, at no cost.
+// The seam knows NOTHING about any particular store. It holds a fallback reader
+// (the backing a view uses unless it says otherwise) plus an optional per-view
+// override, both typed as the neutral port. Which store a reader speaks to, and
+// which capabilities it can serve, are that reader's own business: a backing
+// refuses what it cannot do at its own entry point, before any IO. There is no
+// capability table here and no branch naming a store.
+//
+// It is built EARLY (wrapping the fallback) and installed as deps.ViewReader, so
+// every handler captures the one seam; per-view backings are filled in later by
+// mutation (Register) — never a pointer swap — so a handler that captured
+// deps.ViewReader before wiring finished still dispatches correctly. A service
+// with a single backing keeps a seam whose override map is never populated, at
+// no cost.
 type ViewReaderEngine struct {
-	mongo        queries.ViewReader
-	relational   queries.ViewReader
-	isRelational map[string]bool
+	fallback queries.ViewReader
+	byView   map[string]queries.ViewReader
 }
 
-// NewViewReaderEngine wraps the Mongo reader — the default backing. The
-// relational side is installed later via SetRelational. A nil mongo reader is
-// tolerated: it means the service booted in the infra-free posture (no Mongo),
-// where every view is relational and the Mongo backing is never dispatched to.
-// The nil is replaced by an absentMongoReader that returns an actionable error
-// if it ever IS dispatched to — the honest safety net, never a nil panic.
-func NewViewReaderEngine(mongo queries.ViewReader) *ViewReaderEngine {
-	if mongo == nil {
-		mongo = absentMongoReader{}
+// NewViewReaderEngine wraps the fallback reader — the backing every view uses
+// unless Register overrides it per view. A nil fallback is tolerated: it means
+// the service booted with no default read store, and is replaced by
+// unbackedReader, which returns an actionable error if it ever IS dispatched to
+// — the honest safety net, never a nil panic.
+func NewViewReaderEngine(fallback queries.ViewReader) *ViewReaderEngine {
+	if fallback == nil {
+		fallback = unbackedReader{}
 	}
-	return &ViewReaderEngine{mongo: mongo}
+	return &ViewReaderEngine{fallback: fallback}
 }
 
-// absentMongoReader stands in for the Mongo reader when the service booted
-// infra-free (deps.Mongo == nil). D5's auto-detection guarantees every view is
-// relational in that posture, so backing() always takes the relational branch
-// and this is never dispatched — it exists only to satisfy the type and, as a
-// safety net, to fail with a clear message rather than panic if a Mongo-backed
-// view somehow reaches it.
-type absentMongoReader struct{}
+// unbackedReader stands in for an absent fallback reader. A boot guard rejects
+// declaring views with no store to serve them, so this is unreachable in a
+// booted service — it exists to satisfy the type and, as a safety net, to fail
+// with a clear message rather than panic if a read somehow reaches it.
+type unbackedReader struct{}
 
-func (absentMongoReader) ReadPage(_ context.Context, view string, _ queries.ReadCriteria) (queries.Page, error) {
-	return queries.Page{}, fmt.Errorf("view %q requires a Mongo projection, but the service booted infra-free (no Mongo) — declare it .RelationalSource(...) or run with Mongo", view)
+func (unbackedReader) ReadPage(_ context.Context, view string, _ queries.ReadCriteria) (queries.Page, error) {
+	return queries.Page{}, fmt.Errorf("view %q has no read backing installed", view)
 }
 
-func (absentMongoReader) ReadByID(_ context.Context, view, _ string, _ queries.ReadCriteria) (map[string]any, bool, error) {
-	return nil, false, fmt.Errorf("view %q requires a Mongo projection, but the service booted infra-free (no Mongo) — declare it .RelationalSource(...) or run with Mongo", view)
+func (unbackedReader) ReadByID(_ context.Context, view, _ string, _ queries.ReadCriteria) (map[string]any, bool, error) {
+	return nil, false, fmt.Errorf("view %q has no read backing installed", view)
 }
 
-// MongoReader returns the wrapped Mongo reader so the bootstrap's run-phase
-// mutations (SetViews / SetComposedViews / the max-limit resolver) reach it
-// through the seam without reassigning deps.ViewReader.
-func (e *ViewReaderEngine) MongoReader() queries.ViewReader { return e.mongo }
+// Fallback returns the wrapped fallback reader so the bootstrap's run-phase
+// mutations reach it through the seam without reassigning deps.ViewReader. The
+// caller type-asserts to the concrete reader it wired.
+func (e *ViewReaderEngine) Fallback() queries.ViewReader { return e.fallback }
 
-// SetRelational installs the relational reader and the set of view names it
-// serves (the per-view route). Called once during run-phase wiring, by mutation.
-func (e *ViewReaderEngine) SetRelational(reader queries.ViewReader, relationalViews map[string]bool) {
-	e.relational = reader
-	e.isRelational = relationalViews
+// Register installs a per-view backing: every named view dispatches to reader
+// instead of the fallback. Called during run-phase wiring, by mutation, once per
+// backing. A name already registered is overwritten — last registration wins, so
+// a duplicate view name is a wiring error the boot guards catch, never a silent
+// merge here.
+func (e *ViewReaderEngine) Register(reader queries.ViewReader, views map[string]bool) {
+	if reader == nil || len(views) == 0 {
+		return
+	}
+	if e.byView == nil {
+		e.byView = make(map[string]queries.ViewReader, len(views))
+	}
+	for name := range views {
+		e.byView[name] = reader
+	}
 }
 
-// backing picks the reader for a view: the relational reader when the view is
-// marked and the relational side is installed, else the Mongo reader.
+// backing picks the reader for a view: its registered override when it has one,
+// else the fallback.
 func (e *ViewReaderEngine) backing(view string) queries.ViewReader {
-	if e.relational != nil && e.isRelational[view] {
-		return e.relational
+	if r, ok := e.byView[view]; ok {
+		return r
 	}
-	return e.mongo
+	return e.fallback
 }
 
 func (e *ViewReaderEngine) ReadPage(ctx context.Context, view string, crit queries.ReadCriteria) (queries.Page, error) {

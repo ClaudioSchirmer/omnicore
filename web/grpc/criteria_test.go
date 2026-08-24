@@ -52,7 +52,7 @@ func TestCriteriaPageSortReadMask(t *testing.T) {
 	if !reflect.DeepEqual(crit.OrderBy, wantSort) {
 		t.Fatalf("sort: %+v", crit.OrderBy)
 	}
-	if !reflect.DeepEqual(crit.Projection, map[string]int{"ID": 1, "Name": 1}) {
+	if !reflect.DeepEqual(crit.Projection, queries.ProjectOnlyPaths("ID", "Name")) {
 		t.Fatalf("projection: %+v", crit.Projection)
 	}
 }
@@ -278,7 +278,7 @@ func TestCriteriaNilFiltersAreNoOps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if len(crit.Filter) != 0 || crit.Projection != nil {
+	if len(crit.Filter) != 0 || crit.Projection.Narrows() {
 		t.Fatalf("no-ops leaked: %+v", crit)
 	}
 }

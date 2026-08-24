@@ -380,7 +380,7 @@ func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
 
 	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
-		Projection: map[string]int{"email": 1},
+		Projection: queries.ProjectOnlyPaths("email"),
 	})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)

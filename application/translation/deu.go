@@ -71,6 +71,7 @@ func (coreDE) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Dienst nicht verfügbar.",
 		"RequestTimeoutNotification":        "Die Anfrage hat das Zeitlimit überschritten.",
 		"ReadTimeoutNotification":           "Die Anfrage wurde nicht innerhalb des Zeitlimits empfangen.",
+		"UnsupportedCapabilityNotification": "Diese Funktion wird von dem Speicher, aus dem diese View gelesen wird, nicht unterstützt.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization-Header fehlt oder ist fehlerhaft.",
@@ -82,7 +83,6 @@ func (coreDE) Translations() map[string]string {
 		"TenantMissingNotification":        "Mandantenkennung fehlt im authentifizierten Principal.",
 		"TenantMismatchNotification":       "Die Ressource gehört zu einem anderen Mandanten.",
 		"FieldAccessForbiddenNotification": "Feld nicht zugänglich.",
-		"RelationalCapabilityNotification": "Diese Funktion wird von einer aus dem relationalen Backend gelesenen View nicht unterstützt; entfernen Sie RelationalSource(), um sie aus Mongo zu bedienen.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Interner Serverfehler.",

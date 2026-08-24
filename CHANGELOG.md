@@ -11,6 +11,312 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-08-23
+
+### Added
+
+- **Read joins — `WithJoins` on the aggregate repository.** A read join lets one
+  aggregate's queries reach across a foreign key into another aggregate: filter
+  and sort by the joined columns, and bring a few of them back on the loaded
+  entity. `read.InnerJoin(target)` / `read.LeftJoin(target)` hang off the root;
+  `read.InnerJoinInChild(child).To(target)` / `read.LeftJoinInChild(child).To(target)`
+  hang off one of the root's own aggregate children. `.On(fkColumn)` names the
+  foreign key on the joining table; `.Field(goField, column)` maps one column of
+  the target onto a Go field of your entity, taking the same two arguments in the
+  same order as `TableSchema.Field`.
+
+  Declared on the repository, the join is threaded into the loader, so ONE
+  declaration reaches `FindOne`, `FindAll`, `Exists`, `Aggregate`,
+  `ScopedReader` — and any `query.RelationalView` over that loader, which
+  inherits the reach and declares nothing itself.
+
+  It is read-only structurally: a join field is not part of the `TableSchema`, so
+  `WriteFields` never sees it and no `INSERT`/`UPDATE` can carry it; the write
+  repository holds a schema with no loader in sight. The `TableSchema` is
+  untouched, so a projected view over the same entity is unaffected.
+
+  Each traversal is rendered under an alias derived from its foreign key, written
+  BARE — the `AS` keyword is optional before a table alias in standard SQL and
+  Oracle rejects it outright, so the bare form is the one all four backends
+  accept. Once a join is in the FROM every column reference is qualified on BOTH
+  sides: the joined one by its alias, and the anchor's own — the SELECT list, the
+  predicate, the ordering, the aggregate expressions and grouping keys, and the
+  archive gate on the root and on each child — by the table it lives on. A joined
+  aggregate is a foreign namespace, free to carry a `name`, a `code` or the
+  framework's own `deleted_at`. With no join declared the statement is unchanged.
+
+  A root join is ALWAYS in the FROM and its columns ride the root SELECT, so the
+  values cost no second round trip and the field is populated on every read — one
+  that appeared only when a filter happened to mention it would be blank on the
+  next call. The join is not gated on the archived state of the TARGET: it answers
+  "what is on the other side of this foreign key", and the read scope governs the
+  roots returned, never the rows reached across into. A `LeftJoin` with no
+  counterpart is served as an ABSENCE, not as the zero value — nil in the
+  document, nil in the Response DTO's pointer field, `null` on the wire (absent
+  entirely where the Response declares `,omitempty`).
+
+  A join field carries NO domain type — no value object of any kind (scalar,
+  enum, composite) and no `domain.ID`. The value belongs to another aggregate and
+  arrives read-only: it is never written through this entity and never validated
+  by this domain, so reconstructing a domain type here would produce an instance
+  no rule ever approved (an enum would converge an unknown value to `Unknown`
+  silently, a composite spans several columns and a join field maps exactly one).
+  Declare the scalar the column is stored as.
+
+  An IDENTITY column of the target is the one case that needs the framework's
+  help, and it gets it: declare the field `string` (`*string` when the column is
+  nullable or the join is a `LeftJoin`) and the stored id form is decoded into
+  the canonical text — `BINARY(16)` on mysql and sqlserver, `RAW(16)` on oracle,
+  which a bare string field would otherwise receive as 16 raw bytes with no error
+  to show for it. The same typing governs the PREDICATE: a probe on such a field
+  binds in the form the target stores, so a filter matches rather than silently
+  returning nothing.
+
+  Nullability is checked against the SOURCE, not only the join kind. An inner join
+  proves the joined row exists, never that every column of it is filled, so a
+  column the TARGET declares nullable must land in a pointer on this side —
+  refused at construction otherwise, naming both halves ("`Building.OwnerName` is
+  `string` and cannot hold NULL, but `owner_name` is nullable on `campi`"). The
+  target's declaration is its Go type, read off the schema the join already
+  holds; a column the target's struct does not expose is left unenforced rather
+  than guessed.
+
+  `WithJoins` takes the WHOLE set and may be called ONCE — a second call panics.
+  Two of the rules below are about a COLLISION BETWEEN traversals, so they can
+  only be answered against every declaration at the same time; a second call
+  would validate its own argument against a schema that says nothing about what
+  the first already claimed.
+
+  Validated at construction: `InnerJoin` only over a non-nullable foreign key (a
+  nullable one would silently drop aggregates from every read, `FindByID`
+  included), a `LeftJoin` field must be nullable in Go, a field receiving a
+  column the target declares nullable must be a pointer, a join field carries no
+  domain type, an identity column of the target lands in a `string`/`*string`,
+  one foreign key reaches one table (the SQL alias is derived from it), one Go
+  field of an owner receives one column (both would ride the SELECT and both
+  would scan into the same struct address, so the second would overwrite the
+  first on every row while a criteria bound to the first), the child of a
+  `...InChild` must be one the root declares, and every column and Go field must
+  exist.
+
+- **`query.RelationalView(name, loader)`** — the declaration for a read model
+  served straight from the relational store, as its own type. Its only structural
+  input is the loader, which carries the schema, so the two cannot disagree.
+  Accepts `MaxLimit` and `MaxExportRows` and nothing else. Contributed by a
+  feature through `bootstrap.RelationalReadableFeature.RelationalViews()`, the
+  sibling of `ReadableFeature`.
+
+  It has no version, no registry row, no rebuild, no drift, no collection and no
+  Mongo spec, and takes no part in schema evolution. The projection machinery
+  takes `*query.ViewDefinition` concretely, so a relational view cannot reach it.
+
+- **`query.AggregateReader`** — the type-erased face of the aggregate loader a
+  relational read model is declared over (`FindAllEntities` / `CountEntities` /
+  `Schema` / `JoinFields`). `read.AggregateLoader[T]` satisfies it structurally.
+
+- **`query.ViewNameOf(collection)`** — the inverse of `PhysicalCollectionNames`:
+  the logical view a physical collection belongs to, its blue-green slot suffix
+  stripped. It serves the diagnostics that have to name the `omnicore_mongo_views`
+  row an operator must delete, which is keyed by the view rather than the slot.
+
+- **`infra/db/hydrate`** — the store-neutral aggregate hydrator: a
+  `core.TableSchema` plus a `core.RelationalEngine` in, a column-keyed document
+  out (root row, siblings merged flat, children nested, shared base flattened).
+  It imports neither the view layer nor any engine.
+
+### Changed
+
+- **breaking**: **`ReadCriteria.Projection` and `Page.Projection` are now
+  `queries.Projection`**, a store-neutral field selection — a mode
+  (`ProjectAll` / `ProjectOnly` / `ProjectExcept`) plus the Go field paths it
+  names — instead of `map[string]int`. Nothing above the read seam names a
+  store's identity key or include/exclude convention any more; each read engine
+  renders the selection its own way.
+
+  *Migration*: `Query.ToCriteria` and `ReadCriteria.Restrict` are unaffected —
+  `Restrict` takes a Go field path and returns an error, and the projection is
+  manipulated behind it. A hand-written `queries.ViewReader` implementation
+  changes twice over: it produces a `queries.Page`, and it now owns its own
+  identity normalization. The application layer no longer lifts a document's
+  `_id` onto the Go field `ID` — a store's key name stopped being something a
+  layer above the read seam knows — so a reader whose documents carry only `_id`
+  must map it to `ID` itself, the way `MongoViewReader` does.
+
+- **breaking**: **`core.FieldResolver` now answers with a `core.ResolvedField`**
+  (column, owning schema, owner, qualifier) instead of a bare column string. A
+  column name alone cannot say whether it needs a table prefix, and a read that
+  crosses into another aggregate always does. `core.FieldOwner` gains
+  `OwnerJoin`, and `ResolvedField` gains `Qualifier`.
+
+- **breaking**: **`read.AggregateLoader[T].BoundTable()` is replaced by
+  `Schema()`**, which answers with the whole `*core.TableSchema` rather than only
+  its table name.
+
+- **breaking**: **the read-side surfaces speak `queries.Projection` too.**
+  `queryschema.Read.Projection` carries it, `queryschema.ParseProjection` returns
+  it instead of a `map[string]int`, and `export.Plan.PruneToProjection` takes it.
+  They are the same rework as `ReadCriteria.Projection` seen from the wire side:
+  a surface resolves its own selection vocabulary into Go field paths and stops
+  there, with no store's include/exclude convention and no identity key to name.
+
+  *Migration*: only a hand-written surface (a custom `queryschema.Read`
+  assembler, a caller of `ParseProjection`, a custom export wrapper) touches
+  these. Build the selection with `queries.ProjectOnlyPaths(...)` and ask it
+  `Narrows()` / `IsInclusion()` / `Selects(path)` instead of reading flags out of
+  a map. The `_id: 0` entry a surface used to add when the consumer did not
+  request the id has no replacement and needs none — an unnamed path is simply
+  not selected, and each read engine settles its own identity key below the seam.
+
+- **breaking**: **a read-model name may not end in `__0` or `__1`.** Those are the
+  blue-green slot suffixes the framework addresses a view's two physical
+  collections by, so a view named `users__0` would own a bare collection
+  byte-identical to view `users`'s FIRST SLOT — and every consequence of that is
+  silent: the DB-per-service guard whitelists all three physical names per view
+  and reads the overlap as legitimate on both sides, a rebuild of `users`
+  provisions into `users__0` and drops what is already there, and the
+  orphan-collection diagnostic names the wrong `omnicore_mongo_views` row. The
+  name is now refused at boot, in EVERY read-model family (`query.View`,
+  `SharedBaseView`, `ComposedView`, `RelationalView`), because all four share one
+  namespace. `query.ReservedNameSuffixProblem(name)` is the rule, exported for a
+  generator or a linter that wants the same answer.
+
+  *Migration*: rename the view. There is nothing to migrate in the store — a name
+  that would trip this guard could never have been safely deployed alongside its
+  colliding neighbour.
+
+- **breaking**: **the read seam is backing-neutral.**
+  `query.ViewReaderEngine.SetRelational` is now `Register(reader, views)`,
+  `MongoReader()` is now `Fallback()`. The seam names no store: it holds a
+  fallback reader and a per-view override, both typed as the neutral port.
+
+- **breaking**: **`RelationalCapabilityNotification` is replaced by
+  `UnsupportedCapabilityNotification`.** Every read engine raises this same one,
+  so the four surfaces render one refusal whatever serves the view, and adding an
+  engine adds no vocabulary. Semantic and status are unchanged
+  (`SemanticSchema` → 400).
+
+- **The DB-per-service guard's abort says WHY a collection is orphaned, and where
+  to drop it.** The message now names the database, lists each unclaimed
+  collection, and leads with the cause an operator cannot see from the database
+  itself: the read model's declaration is no longer in the build — its
+  `query.View(...)` was deleted, renamed, or converted to `query.RelationalView(...)`,
+  which materializes nothing and therefore claims no collection. It then hands
+  over both statements to run, the `mongosh` drop AND the `DELETE FROM
+  omnicore_mongo_views` keyed by the view name, which is the half that gets
+  forgotten and aborts the next boot for a different reason.
+
+### Removed
+
+- **breaking**: **`query.View(...).RelationalSource(loader)`.** A read model
+  served from the relational store is declared with `query.RelationalView`, which
+  is its own type. Removing the marker also removed everything the projection
+  machinery needed to skip a marked view: `DriftRelationalSync`,
+  `SyncEngine.SyncRelationalRegistry`, the relational branches of the drift
+  decision, and the skips in the projection, rebuild, reconcile and Mongo-spec
+  passes.
+
+  *Migration*: replace `query.View(name).Version(n).Schema(s).RelationalSource(repo.Loader)`
+  with `query.RelationalView(name, repo.Loader)`, and contribute it through
+  `RelationalViews()` instead of `Views()`.
+
+  **Then drop the collection by hand.** The marker's flip used to be a drift
+  decision, so the framework could drop the view's Mongo slots as it recorded the
+  new shape; a `RelationalViewDefinition` never reaches the SyncEngine at all, so
+  nothing does that for you any more. A converted view leaves its collection and
+  its `omnicore_mongo_views` row behind, and the DB-per-service guard then reports
+  the collection as foreign — a warning under the `dev` profile, **a boot abort in
+  every other**. Drop the collection and delete the registry row as part of the
+  conversion, before the service reaches an environment that aborts.
+
+- **breaking**: **`read.RootScanner` / `read.ChildScanner` and
+  `WithRootScanner` / `WithChildScanner`.** The `TableSchema` is the single
+  mapping between a row and an entity; a read that needs a different shape
+  declares a different schema over a different type, which is cheaper to write
+  than a scanner and cannot be half-wired. For a query the framework does not
+  generate at all, `deps.DB.Querier()` remains the read-only raw surface.
+
+### Fixed
+
+- **Keyset pagination no longer stalls when the selection omits the id.** The
+  cursor's trailing tiebreaker is the stored `_id`, but a selection that did not
+  name the identity had that key EXCLUDED from the Mongo projection, so the
+  cursor was built over a value the document no longer carried. Stringifying it
+  produced the literal `"<nil>"`, which decodes, matches its context hash, and
+  then compares `_id > "<nil>"` — a boundary that lands mid-alphabet (`<` is
+  `0x3C`, between the digits and the hex letters of a UUID in text). For an id
+  starting with a digit the walk advanced by accident; for one starting with a
+  letter the row matched itself and the page repeated forever. It reached every
+  surface that pages without asking for the id: REST `?fields=`, a GraphQL
+  selection without `id` (including the `pageInfo`-only probe, whose projection
+  is the ordering fields alone), and a gRPC read mask. The identity now follows
+  the same auto-include / post-strip contract the reader already applied to
+  stripped sort fields, and a document that genuinely carries no identity is
+  refused instead of yielding a plausible cursor. Relational views are
+  unaffected — they page by offset, and their cursor carries a row index rather
+  than row values.
+
+- **`ReadCriteria.Restrict` now has authority over the identity on Mongo-backed
+  views.** Restrict's contract is that the field it removes reaches neither the
+  store nor the wire, and for `Restrict("ID")` only the first half held. The
+  exclusion did drop the schema's id column from the projection, but Mongo
+  returns `_id` on every document whatever the projection says, and the reader
+  then lifted that key back onto the Go field `ID` — the spelling the Response
+  DTO fills. The restricted identity was served, on the listing and on the by-id
+  route alike, while the relational engine honored the same criteria. The
+  promotion is now gated on whether the selection keeps the identity at all, and
+  the store key leaves with it.
+
+- **A field-restricted listing can be sorted again.** `Restrict` turns a request
+  that named no fields into an EXCLUSION projection, and the reader's sort-field
+  auto-include was blind to that mode: it appended `name: 1` beside the
+  restriction's `phone: 0`, and Mongo refuses a projection that mixes inclusion
+  and exclusion, so the whole read failed with `Location31253`. Any caller
+  subject to a field restriction got a 500 the moment it passed `?orderBy=`. In
+  exclusion mode the sort field is served anyway, so the correct repair is none;
+  the same mode-blindness in the segment `deleted_at` auto-include is fixed with
+  it.
+
+- **A composed view no longer serves an id the selection did not ask for.** The
+  read-time composition force-includes the primary's identity when a leg joins
+  on it, and removed it afterwards under the store's spelling only — while the
+  primary read, which comes back through the plain reader, had already promoted
+  it onto the Go field `ID`. The helper strip now removes both spellings, so a
+  composed read and a plain read of the same selection agree.
+
+- **A `?fields=` path a relational view cannot resolve is now a 400, not a
+  silent empty document.** The relational read engine pruned the served document
+  to the requested selection without ever checking that the paths resolved, so a
+  token naming a field the read model does not have (a segment only its Mongo
+  twin projects, a typo the wire gate could not catch because the Response DTO
+  declares the field) came back `200` with `{}` — indistinguishable from "I have
+  no data". The selection is now validated at the read's entry point, before any
+  IO, against the same translator the filter and the sort resolve through, and an
+  unresolvable path raises the SAME error the Mongo reader raises for the same
+  input: `SchemaViolationNotification`, `SemanticSchema` → **400**, naming the
+  offending dotted Go path. Both projection modes are checked, and both entry
+  points (paged read and by-id).
+
+  What a selection may name is exactly what the document carries: root fields,
+  the managed slots, root-level sibling and shared-base fields, a leaf inside a
+  child collection, and the fields a declared read join adds — a root join's
+  under its bare name, a child join's under `<segment>.<field>`.
+
+- **breaking**: **A collection materialized by an `upstreamSubscriptions` entry
+  is no longer reported as foreign by the DB-per-service guard.** The guard was
+  handed the declared views only, so the local mirror the framework writes on the
+  service's own behalf was claimed by nobody: `mongo.registry.foreign_collections`
+  under `dev`, and a **boot abort under every other profile** — a service with an
+  upstream subscription could not start outside `dev`. `mongo.CheckServiceRegistry`
+  now takes the subscriptions' collection names alongside the views and claims
+  them under their bare name (a mirror has no `omnicore_mongo_views` row, so it is
+  never resolved into a blue-green slot, and whitelisting slots it cannot own
+  would only hide real residue). The orphan diagnostic names the subscription as
+  a way to re-claim a collection, beside re-declaring the view.
+
+  *Migration*: only if you call `mongo.CheckServiceRegistry` yourself — it takes
+  one more argument, `upstreamCollections []string`. Pass `nil` for the previous
+  behavior. `bootstrap.Run` passes the resolved subscriptions.
+
 ## [0.56.1] - 2026-08-21
 
 ### Fixed

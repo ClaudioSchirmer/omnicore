@@ -11,14 +11,17 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
-// unsupported reports a capability a relational view cannot serve (free-text
-// search, or a filter or sort on a child field). It returns a
-// RelationalCapabilityNotification carried on an *exception.ApplicationError —
-// Semantic SemanticSchema, so the web wrappers turn it into a 400 with the escape
-// hatch (drop RelationalSource) in the translated message. `what` is the offending
-// capability or field, surfaced as the notification's FieldName.
+// unsupported reports a capability this engine cannot serve (free-text search, or
+// a filter or sort on a 1:N child field). It returns the SHARED, backing-neutral
+// UnsupportedCapabilityNotification on an *exception.ApplicationError — Semantic
+// SemanticSchema, so every web wrapper turns it into the same 400 whatever engine
+// raised it. `what` is the offending capability or Go field path, surfaced as the
+// notification's FieldName — never a column, never a store's own syntax.
+//
+// It is called at the ENTRY POINT of a read, before any IO: the refusal costs no
+// connection and no partial work.
 func unsupported(what string) error {
-	return exception.SingleNotificationError("Query", what, notifications.RelationalCapabilityNotification{})
+	return exception.SingleNotificationError("Query", what, notifications.UnsupportedCapabilityNotification{})
 }
 
 // toExpr translates the wire-neutral ReadCriteria.Filter (Go-field-keyed, the
@@ -27,7 +30,7 @@ func unsupported(what string) error {
 // so the AND is deterministic. A field the root SELECT cannot express — a
 // dotted child path, or a name no schema owns — is rejected here as an
 // unsupported capability (400).
-func toExpr(schema *core.TableSchema, filter map[string]any) (criteria.Expr, error) {
+func toExpr(schema *core.TableSchema, joinFields map[string]bool, filter map[string]any) (criteria.Expr, error) {
 	if len(filter) == 0 {
 		return nil, nil
 	}
@@ -45,7 +48,7 @@ func toExpr(schema *core.TableSchema, filter map[string]any) (criteria.Expr, err
 		// (`Addresses.ZipCode`) simply does not resolve — which is the right
 		// answer here: a 1:N pushdown is a boundary of one root SELECT, not a
 		// difference in vocabulary.
-		if _, ok := schema.Resolve(field); !ok {
+		if !servable(schema, joinFields, field) {
 			return nil, unsupported(field)
 		}
 		e, err := clauseToExpr(field, filter[field])
@@ -174,12 +177,26 @@ func textListToExpr(field string, t queries.TextMatchList) criteria.Expr {
 	return e
 }
 
+// servable reports whether a Go field name can reach the SQL: the schema answers
+// it, or a declared ROOT join added it. The loader resolves both — this only has
+// to admit them, and refuse everything else BEFORE any IO.
+//
+// A dotted path resolves through neither, which is the right answer: it is a 1:N
+// child field, and filtering the root by one is a pushdown a single root SELECT
+// cannot express.
+func servable(schema *core.TableSchema, joinFields map[string]bool, field string) bool {
+	if _, ok := schema.Resolve(field); ok {
+		return true
+	}
+	return joinFields[field]
+}
+
 // applySort appends the request's sort terms to the query. A field the root
 // ORDER BY cannot express — a dotted child path, or a name no schema owns — is
 // rejected as an unsupported capability (400).
-func applySort(schema *core.TableSchema, q *criteria.Query, sorts []queries.OrderByField) error {
+func applySort(schema *core.TableSchema, joinFields map[string]bool, q *criteria.Query, sorts []queries.OrderByField) error {
 	for _, s := range sorts {
-		if _, ok := schema.Resolve(s.Field); !ok {
+		if !servable(schema, joinFields, s.Field) {
 			return unsupported(s.Field)
 		}
 		if s.Desc {

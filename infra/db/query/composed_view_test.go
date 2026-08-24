@@ -254,6 +254,16 @@ func TestValidateComposedViews_DuplicateComposedName(t *testing.T) {
 	wantProblem(t, err, "declared more than once")
 }
 
+// The blue-green slot suffixes are reserved in EVERY read-model family, this one
+// included: the three share one namespace, and a rule that held only where a
+// collection is physically owned would be the harder thing to remember.
+func TestValidateComposedViews_RefusesAReservedSlotSuffix(t *testing.T) {
+	composed := ComposedView("gadgets_full__0").Primary(cvPrimaryView()).
+		Link(JoinView(cvNotesView(), "Notes", "notes")).On("gadget_id")
+	err := validateOne(composed, cvRegistered(), cvUpstreams())
+	wantProblem(t, err, "the framework reserves")
+}
+
 func TestValidateComposedViews_SegmentCollidesWithDerivedSegment(t *testing.T) {
 	// The primary declares an external embed landing on Go segment "Mirror";
 	// a link claiming the same segment is a boot error.

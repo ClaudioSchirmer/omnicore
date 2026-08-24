@@ -845,6 +845,11 @@ const (
 	// OwnerSharedBase — the shared base of a role schema, likewise merged flat
 	// and reached by joining the role's foreign key to the base id.
 	OwnerSharedBase
+	// OwnerJoin — ANOTHER aggregate, reached across a declared read-only join.
+	// Unlike the three above, its columns carry no uniqueness guarantee against
+	// the anchor's: two aggregates may both have a "name". A field resolved here
+	// therefore MUST be qualified, and ResolvedField.Qualifier says by what.
+	OwnerJoin
 )
 
 // ResolvedField is the answer to the ONE question every read path asks about a
@@ -853,9 +858,17 @@ const (
 type ResolvedField struct {
 	Column string
 	// Schema is the schema the column physically belongs to — the anchor
-	// itself, the sibling, or the shared base.
+	// itself, a sibling, the shared base, or a joined aggregate.
 	Schema *TableSchema
 	Owner  FieldOwner
+	// Qualifier is the table or alias the column MUST be prefixed with, empty
+	// when it needs none. A schema resolves its own fields unqualified: the
+	// anchor, its siblings and its shared base form one node whose column names
+	// are unique by the schema's bijection. A joined aggregate is a different
+	// node with no such guarantee, and two joins may even reach the SAME table
+	// (bill_to and ship_to both to customers), so the resolver that admitted the
+	// field names the alias it admitted it under.
+	Qualifier string
 }
 
 // Resolve maps a logical Go field name to its physical column on the READ path,
@@ -1143,18 +1156,25 @@ func (s *TableSchema) ReadColumns() []string {
 	return cols
 }
 
-// FieldResolver maps a Go field name to its SQL column; ok=false for an unknown
-// / non-persisted field → the translator fails fast (developer bug). The type
+// FieldResolver maps a Go field name to the RESOLVED field — its column, whose
+// row it lives on, and how it must be qualified; ok=false for an unknown /
+// non-persisted field → the translator fails fast (developer bug). The type
 // lives here (the schema foundation) rather than with the translator so both
 // the schema and the translator can name it without a cycle.
 //
+// It answers with a ResolvedField rather than a bare column on purpose. A column
+// name alone cannot say whether it needs a table prefix, and a resolver that
+// returned "customers.name" as if it were a column would be rendered as ONE
+// quoted identifier by the dialect — invalid SQL. Whose row a field lives on is
+// information the translator needs, and TableSchema.Resolve already knows it.
+//
 // Each caller BUILDS its own, because the right resolution surface is the
 // caller's business: the aggregate loader resolves the anchor, then each
-// sibling and the shared base while recording the LEFT JOINs it will have to
-// emit, and only then falls back to the managed slots. A generic
-// schema-in-a-closure resolver cannot do that bookkeeping and would answer
-// with a column from a table the FROM never joined.
-type FieldResolver func(goField string) (column string, ok bool)
+// sibling, the shared base and each declared join, recording the LEFT JOINs it
+// will have to emit as it goes. A generic schema-in-a-closure resolver cannot do
+// that bookkeeping and would answer with a column from a table the FROM never
+// joined.
+type FieldResolver func(goField string) (ResolvedField, bool)
 
 // ValidateChildDepth panics when any declared aggregate child carries its own
 // Child(...) — i.e. a grandchild. Aggregate persistence is root + exactly one

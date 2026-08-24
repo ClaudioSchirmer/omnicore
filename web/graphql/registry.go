@@ -240,13 +240,13 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TResult any, R any, TQ queries.Q
 				// Selection set → projection: an explicitly selected restricted
 				// field trips ReadCriteria.Restrict's active-reference 403 (parity
 				// with the REST ?fields= path), and Mongo projects only the
-				// requested fields (pushdown). Empty node selection → nil → whole-doc.
-				if proj := plan.projectionFromSelection(sel, frags); len(proj) > 0 {
+				// requested fields (pushdown). Empty node selection → whole-doc.
+				if proj := plan.projectionFromSelection(sel, frags); proj.Narrows() {
 					crit.Projection = proj
 				} else if !crit.OnlyTotal && pageInfoOnlySelected(sel, frags) {
 					// Pagination probe: pageInfo with no edges — the consumer wants
 					// the window's boundaries, not its rows. Narrow the read to the
-					// keyset essentials (ordering values + _id); the reader still
+					// keyset essentials (the ordering values and the identity); the reader still
 					// walks the window (edges cannot exist without it) but skips
 					// materializing full documents.
 					crit.Projection = keysOnlyProjection(crit.OrderBy)
@@ -335,7 +335,7 @@ func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[T
 				// ACTIVE reference ReadCriteria.Restrict answers 403 to —
 				// without it, the same restricted field was refused on the
 				// listing and scrubbed in silence here.
-				if proj := projectionFromNode(sel, frags, byIDProjSchema); len(proj) > 0 {
+				if proj := projectionFromNode(sel, frags, byIDProjSchema); proj.Narrows() {
 					crit.Projection = proj
 				}
 				q := req.ToQuery(crit)

@@ -133,17 +133,6 @@ func (v *ViewDefinition) writeRebuildShape(w *canonicalWriter) {
 		}
 	}
 
-	// A RelationalSource() view is read from the SoR instead of the Mongo
-	// projection — the marker IS rebuild-relevant: flipping it changes whether
-	// the view materializes at all, so it must move the RebuildHash. Emitted ONLY
-	// when the view is relational, so a regular view's rebuild_v2 stream stays
-	// byte-identical and no existing view's hash moves on upgrade. Flipping the
-	// marker (either direction) therefore trips the forgot-to-bump guard unless
-	// the Version is bumped — the flip's version-bump discipline.
-	if v.IsRelational() {
-		w.writeTag("relational")
-	}
-
 	w.writeTag("schema")
 	writeJSONSchema(w, v.mongoSpec.jsonSchema)
 

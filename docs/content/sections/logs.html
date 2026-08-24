@@ -75,6 +75,8 @@
     <a href="#yaml-reference"><code>http.accessLog: false</code></a> to silence it where the ingress or
     service mesh already logs the same thing.
 </p>
+<p><strong>A <a href="#domain-events">domain event</a></strong> (a fact an entity authored about itself, published post-commit; the severity chooses the level):</p>
+<pre><code>{ "level": "WARN", "msg": "event", "threadId": "3f2a…", "eventType": "warning", "actor": "auth0|42", "entityType": "User", "message": "password reset", "values": { "byAdmin": true } }</code></pre>
 <p><strong>An internal event</strong> (each subsystem names its own <code>msg</code>):</p>
 <pre><code>{ "level": "INFO", "msg": "integration.event.emitted", "threadId": "5f25e8b0-…", "eventType": "user.created", "eventId": "…" }</code></pre>
 <p>

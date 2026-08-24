@@ -414,6 +414,9 @@ func ValidateComposedViews(composed []*ComposedViewDefinition, views []*ViewDefi
 			addf("composed view with empty name")
 			continue
 		}
+		if why := ReservedNameSuffixProblem(c.name); why != "" {
+			addf("composed view %q: %s", c.name, why)
+		}
 		if viewNames[c.name] {
 			addf("composed view %q: name collides with a registered view — the composed name is a read-side identity of its own", c.name)
 		}
@@ -433,11 +436,6 @@ func ValidateComposedViews(composed []*ComposedViewDefinition, views []*ViewDefi
 			addf("composed view %q: primary view %q declares no .Schema(...) — a composed view has no schema of "+
 				"its own; it derives its shape from the primary, so the primary must declare its root .Schema(...)",
 				c.name, c.primary.Name())
-		}
-		if c.primary.IsRelational() {
-			addf("composed view %q: primary view %q is a RelationalSource() view — a composed view reads its primary "+
-				"from the Mongo projection, but a relational view has no collection; the composition would read empty. "+
-				"Drop RelationalSource() from %q.", c.name, c.primary.Name(), c.primary.Name())
 		}
 		if len(c.links) == 0 {
 			addf("composed view %q: declares no .Link/.LinkMany — a composition without legs is the primary view itself; read it directly", c.name)
@@ -542,11 +540,6 @@ func validateComposedLinks(problems []string, c *ComposedViewDefinition, viewNam
 			if !viewNames[ln.leg.view.Name()] {
 				addf("composed view %q: %s %q joins view %q, which is not registered — an internal leg must be "+
 					"contributed by a ReadableFeature (Views())", c.name, kind, ln.docField, ln.leg.view.Name())
-			}
-			if ln.leg.view.IsRelational() {
-				addf("composed view %q: %s %q joins view %q, which is a RelationalSource() view — a leg is read from "+
-					"the Mongo projection and a relational view has no collection, so the join would read empty. "+
-					"Drop RelationalSource() from %q.", c.name, kind, ln.docField, ln.leg.view.Name(), ln.leg.view.Name())
 			}
 		} else {
 			if !upstreamCollections[schema.Table()] {

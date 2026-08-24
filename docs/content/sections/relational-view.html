@@ -1,4 +1,4 @@
-<h2>Relational View — a <code>query.View</code> read straight from the SoR</h2>
+<h2>Relational View — a read model served straight from the SoR</h2>
 
 <div class="box warn">
     <strong>OmniCore is built for fully distributed CQRS — a relational view is a deliberate exception to that
@@ -13,24 +13,35 @@
 </div>
 
 <p>
-    A <strong>relational view</strong> is an ordinary <a href="#views"><code>query.View</code></a> marked with
-    <code>.RelationalSource(loader)</code>. Instead of reading its document from the Mongo projection, the framework
-    loads the aggregate directly from the relational System of Record through the loader the view carries, maps it to
-    the <em>same</em> column-keyed document a Mongo-backed view would store, and serves it through the <em>same</em>
-    read surfaces — REST, GraphQL and gRPC, plus <strong>CSV / Excel export</strong> of the listing. Nothing above
-    infrastructure changes: the
+    A <strong>relational view</strong> is declared with <code>query.RelationalView(name, loader)</code>. Instead of
+    reading its document from the Mongo projection, the framework loads the aggregate directly from the relational
+    System of Record through the loader the view carries, and serves it through the <em>same</em> read surfaces — REST,
+    GraphQL and gRPC, plus <strong>CSV / Excel export</strong> of the listing. Nothing above infrastructure changes: the
     <a href="#query-side">QueryHandler</a>, the <a href="#auto-query-handlers">auto query handlers</a>, the
-    <code>ReadCriteria</code>/<code>Page</code> contract and the response DTOs are identical — the
-    <a href="#read-lifecycle-map">SyncEngine</a> read backing is simply selected by name behind the
-    <code>ViewReader</code> port. The view/schema mechanics themselves are unchanged and are documented under
-    <a href="#views">Views</a> and <a href="#table-schema">TableSchema</a>; this page covers only what is
-    <em>specific</em> to serving a view from the SoR.
+    <code>ReadCriteria</code>/<code>Page</code> contract and the response DTOs are identical — the read backing is
+    selected by name behind the <code>ViewReader</code> port.
 </p>
 
 <p>
     The immediate consequence is <strong>read-your-writes with no CDC lag</strong>: a row committed to the SoR is
     visible on a relational view on the very next read, before the outbox&nbsp;→&nbsp;CDC&nbsp;→&nbsp;SyncEngine hop has
     even begun. That immediacy is the whole point — and its cost is everything the warning above spells out.
+</p>
+
+<h3>Its own declaration type</h3>
+<p>
+    <code>RelationalViewDefinition</code> is a <strong>different type</strong> from
+    <a href="#views"><code>ViewDefinition</code></a>, and that separation is the design. A relational view carries
+    no version, no registry row, no rebuild, no drift, no collection and no Mongo spec — and the projection machinery
+    takes <code>*ViewDefinition</code> <em>concretely</em>, so a relational view cannot be handed to the index
+    provisioner, the SyncEngine, the drift detector, the rebuild or the reconciler. Nothing is skipped at runtime
+    because nothing can arrive.
+</p>
+<p>
+    The same holds for the declaration itself: <code>Version</code>, <code>Indexes</code>, <code>TextIndex</code>,
+    <code>Collation</code>, <code>Capped</code>, <code>JSONSchema</code>, <code>TimeSeries</code>,
+    <code>DeleteOnArchive</code>, the <code>Embed</code> family and <code>Role</code> are not methods on this type, so
+    combining them with a relational view does not compile.
 </p>
 
 <h3>When to use it — and when not to</h3>
@@ -44,31 +55,35 @@
         embed/link-shaped, stay on <strong>SQL → CDC → MongoDB</strong>.</li>
 </ul>
 
-<h3>Declaring one — pass the loader in</h3>
+<h3>Declaring one — the loader is the only input</h3>
 <p>
-    <code>.RelationalSource(reader)</code> takes a <code>query.RelationalReader</code> — the port
+    <code>query.RelationalView(name, loader)</code> takes a <code>query.AggregateReader</code> — the port
     <code>read.AggregateLoader[T]</code> already satisfies (<code>FindAllEntities</code> / <code>CountEntities</code> /
-    <code>BoundTable</code>). You do <strong>not</strong> build a loader for the view: every aggregate repository built
-    on <code>read.BaseAggregateRepository[T]</code> already holds one, schema-bound, as its public
-    <code>repo.Loader</code> field. <strong>Create the loader once</strong> — the repository owns it — and thread that
-    same instance into the view.
+    <code>Schema</code> / <code>JoinFields</code>). You do <strong>not</strong> build a loader for the view: every
+    aggregate repository built on <code>read.BaseAggregateRepository[T]</code> already holds one, schema-bound, as its
+    public <code>repo.Loader</code> field.
+</p>
+<p>
+    There is <strong>no <code>.Schema(...)</code></strong>. The view takes its schema from the loader, because the
+    loader already has it — the repository threads it in with <code>WithSchema</code>. One source means the two cannot
+    disagree, so the mismatch a separate schema argument would make possible (a view handed another aggregate's loader)
+    is not a boot guard here: it is <strong>not expressible</strong>.
 </p>
 
-<pre><code>// infra — the view is a plain query.View plus the marker; the loader arrives from the caller.
-func GadgetRelView(loader query.RelationalReader) *query.ViewDefinition {
-    return query.View("gadgets_rel").
-        Version(1).
-        Schema(GadgetSchema()).          // the SAME schema the repository declares
-        RelationalSource(loader)         // ← served from the SoR through this loader
+<pre><code>// infra — the view's only structural input is the loader.
+func GadgetRelView(loader query.AggregateReader) *query.RelationalViewDefinition {
+    return query.RelationalView("gadgets_rel", loader)
 }
 
 // bootstrap feature — build the repo ONCE, reuse repo.Loader for the view.
 func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     repo := infra.NewGadgetRepository(d.DB)     // repo.Loader is created here, schema-bound
-    return &GadgetFeature{
-        repo:    repo,
-        relView: infra.GadgetRelView(repo.Loader),   // ← one loader, shared by repo and view
-    }
+    return &amp;GadgetFeature{repo: repo}
+}
+
+// the read-side opt-in — the sibling of ReadableFeature
+func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
+    return []*query.RelationalViewDefinition{infra.GadgetRelView(f.repo.Loader)}
 }</code></pre>
 
 <p class="note">
@@ -77,20 +92,27 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     intended source. Pass <code>repo.Loader</code>; do not re-build it.
 </p>
 
-<div class="box warn">
-    <strong>Boot guard — the loader must read the view's own table.</strong> At boot the framework asserts
-    <code>loader.BoundTable() == schema.Table()</code>. A view handed a different aggregate's loader (e.g. the
-    <code>User</code> loader on a <code>Gadget</code> view) would silently serve the wrong aggregate, so the mismatch is
-    a hard boot panic naming both tables. A relational view with no <code>.Schema(...)</code> is rejected the same way.
-</div>
+<h3>The two options it accepts</h3>
+<p>
+    Beyond the name and the loader, a relational view declares exactly two things, both operational and both resolved
+    in the same cascade a Mongo view uses — the per-view override, then the yaml default
+    (<code>query.maxLimit</code> / <code>query.maxExportRows</code>), then the framework constant:
+</p>
+<pre><code>query.RelationalView("gadgets_capped_rel", loader).
+    MaxLimit(5).           // ?first= / ?last= ceiling
+    MaxExportRows(3)       // CSV / XLSX row ceiling</code></pre>
+<p>
+    Both backings are wired with the <strong>same</strong> resolver, so a view's ceiling applies identically whichever
+    engine serves it.
+</p>
 
 <h3>Feature parity — what a relational view can and cannot do</h3>
 <p>
-    A relational view serves a <strong>single plain aggregate</strong> loaded from the SoR. Anything that a single
-    aggregate load cannot express — a multi-source join, a read-time enrichment, a cross-document search — is
-    unavailable. The read-side controls that operate on the aggregate's <em>own root</em> and its <strong>1:1
-    satellites</strong> (a sibling, the shared base) reach full parity — those the loader reaches with a LEFT JOIN.
-    Only a <em>1:N child</em> field is out of reach (a root <code>SELECT</code> cannot filter or sort by it).
+    A relational view serves a <strong>single aggregate</strong> loaded from the SoR. The read-side controls that
+    operate on the aggregate's <em>own root</em> and its <strong>1:1 satellites</strong> (a sibling, the shared base)
+    reach full parity — those the loader reaches with a LEFT JOIN — plus any field a
+    <a href="#read-joins">declared read join</a> added. Only a <em>1:N child</em> field is out of reach: a root
+    <code>SELECT</code> cannot filter or sort by it.
 </p>
 
 <table>
@@ -98,16 +120,18 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
         <tr><th>Capability</th><th>Mongo view</th><th>Relational view</th></tr>
     </thead>
     <tbody>
-        <tr><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code> (materialized join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — boot fail</strong></td></tr>
-        <tr><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> (read-time join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — not expressible</strong></td></tr>
-        <tr><td><code>ComposedView</code> (read-time composition)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — not expressible</strong></td></tr>
-        <tr><td><code>SharedBaseView</code> (identity + role sub-documents)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — boot fail</strong></td></tr>
+        <tr><td><code>Embed</code> / <code>EmbedMany</code> / <code>EmbedInChild</code> (materialized join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — does not compile</strong></td></tr>
+        <tr><td><code>Link</code> / <code>LinkMany</code> / <code>LinkInChild</code> (read-time join)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — different type</strong></td></tr>
+        <tr><td><code>ComposedView</code> (read-time composition)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — different type</strong></td></tr>
+        <tr><td><code>SharedBaseView</code> (identity + role sub-documents)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — different type</strong></td></tr>
         <tr><td>Free-text search (<code>?search=</code>)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — 400</strong></td></tr>
         <tr><td>Filter / sort on a <em>child</em> (1:N) field, or a child-level sibling (e.g. <code>parts.label</code>)</td><td><span class="yes-mark">✓</span></td><td><strong><span class="no-mark">✗</span> — 400</strong></td></tr>
         <tr><td>Root-field filter — the full 16-operator vocabulary</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>Filter / sort on a root-level <em>sibling</em> or <em>shared-base</em> field (1:1)</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span> — LEFT JOIN</td></tr>
+        <tr><td>Filter / sort on a <a href="#read-joins">declared read join</a> field</td><td><span class="no-mark">✗</span> — <a href="#views">Embed</a> instead</td><td><span class="yes-mark">✓</span> — LEFT / INNER JOIN</td></tr>
         <tr><td>Sort on a root field</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td><code>?fields=</code> projection (root <em>and</em> nested leaf)</td><td><span class="yes-mark">✓</span> pushed down</td><td><span class="yes-mark">✓</span> pruned after the load</td></tr>
+        <tr><td><code>?fields=</code> naming a path the read model does not have</td><td><strong><span class="no-mark">✗</span> — 400</strong></td><td><strong><span class="no-mark">✗</span> — 400</strong> (same notification)</td></tr>
         <tr><td>Pagination (<code>first</code> / <code>last</code> / <code>after</code> / <code>before</code>)</td><td><span class="yes-mark">✓</span> keyset (insertion-stable)</td><td><span class="yes-mark">✓</span> offset-in-cursor (static-set stable)</td></tr>
         <tr><td><code>?onlyTotal</code> · <code>?includeArchived</code> · by-id</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
         <tr><td>CSV / XLSX export · <code>MaxLimit</code> · <code>MaxExportRows</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
@@ -117,45 +141,58 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
 </table>
 
 <p>
-    The <strong>structural</strong> unsupported shapes — the <a href="#views">Embed family</a> and
-    <a href="#views">SharedBaseView</a> — fail at boot when combined with the marker (a multi-source / read-time-join
-    shape a single relational load cannot serve). <code>ComposedView</code> and the <code>Link</code> family are a
-    different declaration type entirely (<code>ComposedViewDefinition</code>) and carry no <code>RelationalSource()</code>
-    method, so the combination cannot even be written. The escape hatch, in every case, is to <strong>drop the marker
-    and serve the view from Mongo</strong>.
+    A subtlety worth calling out: it is only the <code>SharedBaseView</code> <strong>view kind</strong> that is out of
+    reach. A relational view over a shared-base <strong>role</strong> (an aggregate whose schema declares a
+    <code>SharedBase</code>) is perfectly valid. Its served document carries the <strong>full aggregate</strong> — the
+    role's own fields, the shared base's fields flattened, root- and child-level siblings, the role's own children AND
+    the base's native children — because the loader reaches all of them in one aggregate load (the 1:1 base and
+    siblings by <code>LEFT JOIN</code>, the children by their own keyed reads). So a base field is both
+    <em>filterable/sortable</em> and <em>projected back</em>.
 </p>
 
+<h3>Read joins come from the loader, not from the view</h3>
 <p>
-    The restriction runs in the <strong>other direction</strong> too: a relational view cannot be the <strong>source</strong>
-    of another view. A relational view has no Mongo collection, so embedding it (<code>Embed</code> / <code>EmbedMany</code> /
-    <code>EmbedInChild</code>) or using it as a <code>ComposedView</code> primary or leg would silently read empty — the
-    framework rejects the combination at boot, naming the offending source and the same escape hatch (drop
-    <code>RelationalSource()</code> from that source so it materializes). A materialized view may of course still embed or
-    compose ordinary Mongo-backed views; only a relational source is refused.
+    A relational view declares <strong>no join of its own</strong>. It carries a loader, and the loader carries whatever
+    <a href="#read-joins">read joins</a> the repository declared with <code>WithJoins</code> — so the view inherits
+    them. A field a root join added is filterable, sortable and served in the document exactly like a schema field; a
+    field a <em>child</em> join added is served in that child's elements but is not addressable at the root, which is
+    the same 1:N boundary every child field has.
 </p>
-
 <p>
-    A subtlety worth calling out: it is only the <code>SharedBaseView</code> <strong>view kind</strong> that is refused
-    at boot. A plain <code>query.View</code> rooted at a shared-base <strong>role</strong> (an aggregate whose schema
-    declares a <code>SharedBase</code>) IS a valid relational source. Its served document carries the <strong>full
-    aggregate</strong> — the role's own fields, the shared base's fields flattened, root- and child-level siblings, the
-    role's own children AND the base's native children — because the loader reaches all of them in one aggregate load
-    (the 1:1 base and siblings by <code>LEFT JOIN</code>, the children by their own keyed reads). So a base field is both
-    <em>filterable/sortable</em> and <em>projected back</em>, and the read surface matches the flat shape a Mongo view of
-    the same role would carry.
+    This is deliberate: the view is not the source of truth for <code>FindOne</code>/<code>FindAll</code> — the loader
+    is. Declaring the traversal on the repository means a service calling
+    <code>repo.Loader.FindAll(ctx, criteria)</code> with no view in sight gets the same reach, and the view is simply
+    one more consumer of it.
 </p>
 
 <h3>Unsupported capabilities return 400, not 500</h3>
 <p>
-    The <em>runtime</em> unsupported cases — <code>?search=</code>, and a filter or sort on a <strong>1:N child</strong>
-    field (a dotted child path, or a child-level sibling like <code>parts.tag</code>), or an unknown field — are rejected
-    with a typed <code>RelationalCapabilityNotification</code>. It carries
+    The unsupported cases — <code>?search=</code>, and a filter or sort on a <strong>1:N child</strong> field (a dotted
+    child path, or a child-level sibling like <code>parts.tag</code>), or an unknown field — are rejected with a typed
+    <code>UnsupportedCapabilityNotification</code>. It carries
     <a href="#status-mapping"><code>SemanticSchema</code></a>, so the web wrappers turn it into a
-    <strong>400 Bad Request</strong> (never a generic 500) on every surface, with the offending field named and the
-    escape hatch — remove <code>RelationalSource()</code> to serve the view from Mongo — in the translated message. The
-    rule is precise: a relational view serves a filter or sort on any field the aggregate reaches with a <strong>1:1
-    load</strong> — a root column, a sibling, or a shared-base field (the last two joined in) — and rejects only what
-    would need a 1:N pushdown a single root <code>SELECT</code> cannot express.
+    <strong>400 Bad Request</strong> (never a generic 500) on every surface, with the offending capability or Go field
+    path named.
+</p>
+<p>
+    The notification names <strong>no backing</strong> on purpose: every read engine raises this same one, so the four
+    surfaces render one refusal whatever serves the view, and adding an engine adds no vocabulary. The refusal is also
+    raised at the engine's <em>entry point</em>, before any IO — a rejected request costs no connection and no partial
+    work.
+</p>
+<p>
+    <strong>A <code>?fields=</code> path this read model does not have is the one refusal with a different
+    notification</strong>, and it is the honest one: a projection has no capability boundary to hit — a relational view
+    projects into a 1:N child perfectly well — so an unresolvable selection is never "I cannot do that", it is
+    <em>"that is not a field of mine"</em>. It is rejected at the same entry point with
+    <code>SchemaViolationNotification</code> (<code>SemanticSchema</code> → <strong>400</strong>), naming the offending
+    dotted Go path — <strong>byte-for-byte the answer the Mongo reader gives the same token</strong>, which is what
+    lets one Response DTO front both backings without the consumer having to know which one answered. The alternative
+    is worse than it looks: pruning an unknown path in silence returns <code>200</code> with an empty document, and
+    <em>"you asked for something I do not have"</em> and <em>"I have nothing"</em> are then indistinguishable on the
+    wire. What a selection may name is the served document: root fields, the managed slots, root-level sibling and
+    shared-base fields, a leaf inside a child collection, and <a href="#read-joins">read-join</a> fields at the level
+    the join lands on — a root join's under its bare name, a child join's under <code>&lt;segment&gt;.&lt;field&gt;</code>.
 </p>
 <p>
     <strong>The managed slots count as root columns.</strong> Both readers resolve a Go field name through the same
@@ -174,7 +211,8 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     <strong><code>?fields=</code> shapes the answer here, it does not narrow the query.</strong> The Mongo reader
     pushes the projection into the find; this loader composes the aggregate as declared and prunes the served
     document afterwards. The WIRE result is identical on both — the same tokens, the same validation, the same
-    400 on an unknown one — so nothing a consumer can observe differs. What differs is the cost: a narrow
+    400 <code>SchemaViolationNotification</code> on an unknown one (see above) — so nothing a consumer can observe
+    differs. What differs is the cost: a narrow
     <code>?fields=</code> buys no I/O on this backing. Plan for it where it matters, and note the same holds for
     <code>ReadCriteria.Restrict</code>: the restricted column is read from the SoR and dropped before the
     document is served, so the field never reaches the wire (and an active reference still answers 403), but it
@@ -188,59 +226,65 @@ func NewGadgetFeature(d bootstrap.Deps) *GadgetFeature {
     the returned <code>endCursor</code> / <code>startCursor</code> — but the mechanics underneath are the relational
     idiom, <strong>offset (skip/count), not keyset</strong>. The envelope RULE is identical too: an edge cursor is
     emitted only where its neighbour exists (<code>endCursor</code> iff <code>hasNextPage</code>,
-    <code>startCursor</code> iff <code>hasPreviousPage</code>), so flipping a view's backing does not change the shape
-    a consumer parses — and a cursor the reader refuses (undecodable, or issued under a different
-    filter/sort/archived context) is the same <strong>400 <code>SchemaViolationNotification</code></strong> the Mongo
-    backing raises, never a 500. Each cursor carries an absolute row index rather than a
-    sort-key tuple: <code>after</code> walks forward from that index, <code>before</code> walks back from it, and a bare
-    backward page (GraphQL <code>last:N</code> with no cursor) anchors at the end via a single <code>COUNT</code>. A
-    deterministic <code>ORDER BY … , id</code> tiebreak makes the <em>ordering</em> total, so paging a <strong>static</strong>
-    result set visits every row exactly once. Absolute-offset paging is <strong>not insertion-stable</strong>, though: a
-    row inserted or removed <em>ahead</em> of the window shifts every later page by one, so a concurrent write during a
-    walk can make a row skip or repeat — the price of offset over keyset. The Mongo view's keyset cursors do not have this
-    exposure. For the freshest-read / dashboard / MVP use cases this backing targets, it is the right trade; a
-    walk that must be stable under heavy concurrent writes wants the Mongo projection.
+    <code>startCursor</code> iff <code>hasPreviousPage</code>), so a consumer parses the same shape on either backing —
+    and a cursor the reader refuses (undecodable, or issued under a different filter/sort/archived context) is the same
+    <strong>400 <code>SchemaViolationNotification</code></strong> the Mongo backing raises, never a 500. Each cursor
+    carries an absolute row index rather than a sort-key tuple: <code>after</code> walks forward from that index,
+    <code>before</code> walks back from it, and a bare backward page (GraphQL <code>last:N</code> with no cursor)
+    anchors at the end via a single <code>COUNT</code>. A deterministic <code>ORDER BY … , id</code> tiebreak makes the
+    <em>ordering</em> total, so paging a <strong>static</strong> result set visits every row exactly once.
+    Absolute-offset paging is <strong>not insertion-stable</strong>, though: a row inserted or removed <em>ahead</em> of
+    the window shifts every later page by one, so a concurrent write during a walk can make a row skip or repeat — the
+    price of offset over keyset. The Mongo view's keyset cursors do not have this exposure. For the freshest-read /
+    dashboard / MVP use cases this backing targets, it is the right trade; a walk that must be stable under heavy
+    concurrent writes wants the Mongo projection.
 </p>
 <p class="note">
     <strong>Wire-compatible by design.</strong> The offset is encoded in a cursor tuple padded to the same length the
     keyset wire layer validates (<code>len(tuple) − 1 == number of sort fields</code>), so the identical
     <code>after</code>/<code>before</code> contract round-trips on every surface — the consumer never sees the
-    difference. A <code>before</code> or bare-backward page pays one extra <code>COUNT</code>; forward pages do not.
+    difference. Every page runs a <code>COUNT</code> — the envelope carries the full match count, not the page size —
+    but a forward page runs it <strong>concurrently</strong> with the row fetch, so it costs no extra round trip in
+    wall-clock terms. A bare-backward page (<code>last:N</code> with no cursor) is the one that has to serialize: its
+    offset is anchored ON the total, so the count must land before the window is even known.
 </p>
 
-<h3>Evolution — flipping the backing is a shape change</h3>
+<h3>No version, no drift, no rebuild</h3>
 <p>
-    A relational view participates in <a href="#mongo-schema-evolution">Mongo schema evolution</a> like any other view,
-    with one rule that follows from how drift is detected: <strong>adding or removing <code>RelationalSource()</code>
-    changes the view's rebuild hash</strong> (the backing is part of the shape), so — exactly like any shape change — it
-    <strong>must be accompanied by a <code>Version(N)</code> bump</strong>. On the next boot the drift engine decides:
+    A relational view materializes nothing, so there is nothing to keep in step and nothing to version. It has no row in
+    <code>omnicore_mongo_views</code>, takes no part in
+    <a href="#mongo-schema-evolution">Mongo schema evolution</a>, and raises no projection work when its SoR table
+    changes. Changing what it serves — a new column on the schema, a new read join — needs <strong>no
+    <code>Version</code> bump and no rebuild</strong>: the next read simply reads the new shape.
 </p>
-<table>
-    <thead><tr><th>Transition</th><th>Drift decision</th><th>Effect</th></tr></thead>
-    <tbody>
-        <tr><td>Mongo view → gains <code>RelationalSource()</code> (bumped)</td><td><code>DriftRelationalSync</code></td><td>Registry synced to the new spec, <strong>no rebuild</strong> — the view is now served from the SoR, and the old Mongo collection is <strong>dropped</strong> (a relational view holds none), so <em>relational ⇒ no collection</em> stays true.</td></tr>
-        <tr><td>Relational view → loses the marker (bumped)</td><td><code>DriftRebuildRequired</code></td><td>A full <strong>online blue-green rebuild</strong> materializes the Mongo projection <strong>from scratch off the current SoR</strong> (zero-downtime) — there is no prior collection to resume; the shadow slot is provisioned fresh.</td></tr>
-        <tr><td>New relational view over an aggregate that already holds data</td><td><code>DriftFreshInit</code></td><td>Registry row only, <strong>no rebuild, no collection</strong> — reads come from the SoR immediately.</td></tr>
-        <tr><td>New Mongo view over an aggregate that already holds data</td><td><code>DriftFreshBackfill</code></td><td>A rebuild <strong>backfills</strong> the pre-existing rows (a fresh Mongo view never comes up empty over populated history).</td></tr>
-    </tbody>
-</table>
+
+<h3>Boot validation</h3>
+<p>
+    Everything a Mongo view needs a boot guard for is enforced by the type system here. What remains is checked at boot
+    and aborts with an actionable message:
+</p>
+<ul>
+    <li>the loader is not nil, and it has a schema bound (the repository called <code>WithSchema</code>);</li>
+    <li>the name does not end in <code>__0</code> or <code>__1</code> — the framework reserves those for the
+        blue-green slots a projected view's two physical collections are addressed by, and the rule holds in every
+        read-model family because the namespace is one;</li>
+    <li>the name does not collide with <strong>any</strong> other read model — a <code>query.View</code>, a
+        <code>SharedBaseView</code> or a <code>ComposedView</code>. A read-model name is unique across the service
+        whatever backs it, because the name is what a surface reads by.</li>
+</ul>
 
 <div class="box warn">
-    <strong>The round-trip Mongo → SoR → Mongo rebuilds from scratch — there is no stale collection to resume.</strong>
-    Flipping a view to relational <strong>drops its Mongo collection</strong>: the view is served from the SoR and holds
-    none, so the invariant <em>relational ⇒ no collection</em> holds. When the marker is later dropped and the view
-    returns to Mongo, <code>DriftRebuildRequired</code> drives a full <a href="#mongo-schema-evolution">online blue-green
-    rebuild</a> — a shadow slot is materialized from the <em>current</em> SoR, verified, and the active pointer flips
-    atomically (zero-downtime) — so <strong>every write made during the relational phase</strong> is captured. The
-    projection is always rebuilt whole from the source of record, never reconciled from stale documents.
+    <strong>Converting an existing Mongo view: drop its collection by hand.</strong> Changing a declaration from
+    <code>query.View(...)</code> to <code>query.RelationalView(...)</code> removes the name from the projected set, so
+    the framework no longer claims that collection — and, because a <code>RelationalViewDefinition</code> never reaches
+    the SyncEngine at all, nothing cleans it up for you either. The DB-per-service guard then sees the collection as
+    <em>foreign</em>: a <code>warn</code> under the <code>dev</code> profile, a <strong>boot abort</strong> in every
+    other. So the conversion is two steps, not one — change the declaration, then drop the collection(s) it left behind
+    (the bare name and whichever blue-green slot was active) and delete its <code>omnicore_mongo_views</code> row —
+    and the second step has to happen before the service reaches an environment that aborts, not after. If it does abort, the message is the runbook: it names the database and every unclaimed
+    collection, calls out this exact conversion as the usual cause, and prints both statements to run — the
+    <code>mongosh</code> drop and the <code>DELETE FROM omnicore_mongo_views WHERE view_name = '…'</code> (keyed by the
+    VIEW name, not the slot collection). Leaving that registry row behind aborts the next boot for a different
+    reason. Converting the other way needs no special step: a Mongo view with no registry row over a
+    populated table resolves to <code>DriftFreshBackfill</code>, which rebuilds and backfills the pre-existing history.
 </div>
-
-<p>
-    A relational view has no live Mongo collection of its own: the <a href="#read-lifecycle-map">SyncEngine</a>
-    projection pass, the Mongo spec (index) pass and the reconciliation sweep all skip it by name, a change to its SoR
-    table raises no projection work, and the flip that made it relational dropped any collection it used to have. Its
-    registry row exists purely to certify the declared shape so the drift engine can reason about the transitions above.
-    Keeping <em>relational ⇒ no collection</em> true is also what makes a manual registry-row delete safe: with no
-    collection, a subsequent boot resolves to <code>DriftFreshInit</code> (record the row again, no work), never
-    <code>DriftAlienData</code> — the abort a populated collection with no registry row would trigger.
-</p>

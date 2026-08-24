@@ -13,7 +13,7 @@ import (
 // the reference implementation the direct fill must match field for field.
 func legacyResultFromDoc[TResult any](doc map[string]any) TResult {
 	var out TResult
-	if raw, err := json.Marshal(applyIDFallback(doc)); err == nil {
+	if raw, err := json.Marshal(doc); err == nil {
 		_ = json.Unmarshal(raw, &out)
 	}
 	plan := resultPlanFor(reflect.TypeOf(out))
@@ -84,7 +84,7 @@ type fillEnumNote struct{ domain.DomainNotificationBase }
 
 func fillDoc() map[string]any {
 	return map[string]any{
-		"_id":     "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51",
+		"ID":      "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51",
 		"Origin":  "embedded-src",
 		"Name":    "Alice",
 		"Alias":   "ali",
@@ -122,7 +122,7 @@ func TestFill_ParityWithLegacyRoundTrip(t *testing.T) {
 		t.Fatalf("direct fill diverged from the JSON round-trip:\n got: %#v\nwant: %#v", got, want)
 	}
 	if got.ID.Value() != "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51" {
-		t.Fatalf("expected the _id fallback onto ID, got %q", got.ID.Value())
+		t.Fatalf("expected the identity filled onto ID, got %q", got.ID.Value())
 	}
 	if got.Origin != "embedded-src" {
 		t.Fatalf("expected the promoted embedded field filled, got %q", got.Origin)
@@ -202,14 +202,65 @@ func TestFill_NilAndEmptyDoc(t *testing.T) {
 	}
 }
 
-func TestFill_IDFallbackOnlyWhenIDAbsent(t *testing.T) {
+// A NULL read off a LOADED ENTITY arrives as a TYPED nil pointer inside the any
+// — the shape a left join with no counterpart produces. It must land exactly as
+// an untyped nil does: the field untouched. Allocating through it would settle a
+// pointer Result field at its zero value, so "there is no counterpart" would
+// reach the wire as an empty string.
+func TestFill_TypedNilPointerIsAbsence(t *testing.T) {
+	var missing *string
+	doc := map[string]any{"Name": "ada", "Alias": missing, "Origin": missing}
+	got := ResultFromDoc[fillNilResult](doc)
+	if got.Name != "ada" {
+		t.Fatalf("the present field must still fill, got %q", got.Name)
+	}
+	if got.Alias != nil {
+		t.Errorf("a typed nil must leave a pointer field nil, got %q", *got.Alias)
+	}
+	if got.Origin != "" {
+		t.Errorf("a typed nil must leave a value field zero, got %q", got.Origin)
+	}
+}
+
+// The non-nil twin still fills, so the guard above rejects absence only.
+func TestFill_NonNilPointerValueFills(t *testing.T) {
+	v := "ali"
+	got := ResultFromDoc[fillNilResult](map[string]any{"Alias": &v, "Origin": &v})
+	if got.Alias == nil || *got.Alias != "ali" {
+		t.Errorf("a pointed-to value must fill a pointer field, got %v", got.Alias)
+	}
+	if got.Origin != "ali" {
+		t.Errorf("a pointed-to value must fill a value field, got %q", got.Origin)
+	}
+}
+
+// A typed nil fills the same way through the JSON round-trip the direct fill
+// mirrors — the parity this guard restores, stated as its own assertion.
+func TestFill_TypedNilParityWithLegacyRoundTrip(t *testing.T) {
+	var missing *string
+	doc := map[string]any{"Name": "ada", "Alias": missing, "Origin": missing}
+	if got, want := ResultFromDoc[fillNilResult](doc), legacyResultFromDoc[fillNilResult](doc); got != want {
+		t.Fatalf("direct fill diverged from the JSON round-trip:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+type fillNilResult struct {
+	Name   string
+	Alias  *string
+	Origin string
+}
+
+// The filler knows ONE identity spelling: the Go field "ID". A store's own key
+// name never reaches this layer — settling it is the read engine's job — so a
+// stray one is just another unmapped document entry.
+func TestFill_IdentityIsTheGoFieldOnly(t *testing.T) {
 	doc := map[string]any{
-		"_id": "from-underscore",
+		"_id": "a-store-key",
 		"ID":  "explicit",
 	}
 	got := ResultFromDoc[fillResult](doc)
 	if got.ID.Value() != "explicit" {
-		t.Fatalf("expected the explicit ID to win over _id, got %q", got.ID.Value())
+		t.Fatalf("expected the Go field ID to fill, got %q", got.ID.Value())
 	}
 }
 

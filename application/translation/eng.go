@@ -71,6 +71,7 @@ func (coreENG) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Service unavailable.",
 		"RequestTimeoutNotification":        "The request exceeded the time limit.",
 		"ReadTimeoutNotification":           "The request was not received within the time limit.",
+		"UnsupportedCapabilityNotification": "This capability is not supported by the store this view is read from.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization header missing or malformed.",
@@ -82,7 +83,6 @@ func (coreENG) Translations() map[string]string {
 		"TenantMissingNotification":        "Tenant identifier is missing from the authenticated principal.",
 		"TenantMismatchNotification":       "Resource belongs to a different tenant.",
 		"FieldAccessForbiddenNotification": "Field is not accessible.",
-		"RelationalCapabilityNotification": "This capability is not supported by a view read from the relational backend; remove RelationalSource() to serve it from Mongo.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Internal server error.",

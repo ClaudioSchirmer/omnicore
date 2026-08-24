@@ -130,11 +130,17 @@ HTTP 200 OK
         Filling the Result is the framework's job: <code>queries.ResultFromDoc[TResult](doc)</code> maps the
         Go-keyed document onto the Result <strong>by field name</strong>, recursively through nested
         structs, slices of structs and pointer fields, and applies the read-side semantic pass every
-        surface then inherits — top-level <code>ID</code> falls back to <code>_id</code>, nil slices
-        normalize to empty typed slices at every depth, and an
+        surface then inherits — nil slices normalize to empty typed slices at every depth, a
+        <strong>nil pointer in the document stays an absence</strong> (it is never allocated into a
+        zero value, so &ldquo;there is no counterpart&rdquo; and &ldquo;the empty string&rdquo; do not
+        collapse into one answer), and an
         <a href="#value-objects"><code>EnumValueObject</code></a> carrying an out-of-set value converges to
         its <code>Unknown</code> sentinel (parity with the write-side entity reconstruction, so a
         stale or tampered stored value never surfaces as a phantom member).
+        The <strong>identity is the Go field <code>ID</code>, like any other field</strong>: no store's
+        key name reaches this layer. A reader whose documents carry only the store's own id maps it
+        onto <code>ID</code> itself, below the read seam — which is part of what a hand-written
+        <code>queries.ViewReader</code> owns.
     </p>
     <p>
         <strong><code>FromQueryResult(ctx, r TResult) (TResult, error)</code> is mandatory on every Query</strong> —
@@ -188,7 +194,7 @@ func (q FindUsersQuery) FromQueryResult(
         <tbody><tr><th>Field</th><th>Carries</th></tr>
         <tr><td><code>Filter map[string]any</code></td><td>field → value or operator clause. Keys are <strong>Go field names</strong> (the reader translates them to physical columns via the view <code>TableSchema</code>). Built from the <code>filter:"ops"</code> tags.</td></tr>
         <tr><td><code>OrderBy []OrderByField</code></td><td>ordered list of <code>{Field, Desc}</code> (Go field paths). From <code>?orderBy=</code>.</td></tr>
-        <tr><td><code>Projection map[string]int</code></td><td>per-field include (<code>1</code>) / exclude (<code>0</code>). From <code>?fields=</code> and from <code>Restrict</code>.</td></tr>
+        <tr><td><code>Projection queries.Projection</code></td><td>the field selection, keyed by <strong>Go field path</strong>: a mode (whole document / only these / all but these) and the paths it names. From <code>?fields=</code> and from <code>Restrict</code>. It names no store's convention — how an include-list is rendered, and what a backing does about its own identity key, is decided below the read seam.</td></tr>
         <tr><td><code>Limit int64</code></td><td>page size, bounded by the per-view ceiling. From <code>?first=</code> — or from <code>?last=</code>, which sets <code>Backward</code> with it.</td></tr>
         <tr><td><code>After / Before string</code></td><td>opaque keyset cursors. From <code>?after=</code> / <code>?before=</code>.</td></tr>
         <tr><td><code>Backward bool</code></td><td>walk the window that PRECEDES the cursor in canonical order — the keyset runs in inverted sort order and the slice is restored before returning. The explicit direction signal every surface sets for <code>?last=</code> (alone: the LAST N of the set; with <code>?before=</code>: the N rows before that edge); the reader also infers it from a non-empty <code>Before</code>. Ignored when <code>OnlyTotal</code> is set, like Limit/After/Before.</td></tr>

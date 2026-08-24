@@ -1,0 +1,291 @@
+<h2>Read joins — reaching another aggregate from a query</h2>
+
+<p>
+    A <strong>read join</strong> lets one aggregate's queries reach across a foreign key into <em>another</em>
+    aggregate: filter by the customer's name while listing orders, sort by it, and bring a few of its columns back on
+    the loaded entity. It is declared on the <strong>repository</strong>, applies to every read that repository's loader
+    serves, and never touches the write side.
+</p>
+
+<pre><code>func NewOrderRepository(eng core.RelationalEngine) *OrderRepository {
+    r := &amp;OrderRepository{}
+    r.BaseAggregateRepository = *read.NewBaseAggregateRepository[*domain.Order](
+        eng, func() *domain.Order { return &amp;domain.Order{} },
+    )
+    r.WithSchema(schemas.OrderSchema())   // how THIS entity is read and written
+    r.WithJoins(                          // what it may reach in a query
+        read.InnerJoin(schemas.CustomerSchema()).On("customer_id").
+            Field("CustomerName", "nome").
+            Field("CustomerDoc", "documento"),
+
+        read.LeftJoin(schemas.CarrierSchema()).On("carrier_id").
+            Field("CarrierCode", "codigo"),
+    )
+    return r
+}</code></pre>
+
+<p>The declared fields are ordinary Go fields of the entity, filled on read:</p>
+
+<pre><code>type Order struct {
+    domain.AggregateRoot
+    CustomerID domain.ID
+    CarrierID  *domain.ID
+
+    CustomerName string   // from the inner join — always matches
+    CustomerDoc  string
+    CarrierCode  *string  // from the left join — nil when there is no carrier
+}</code></pre>
+
+<p>And they are addressable in a criteria under the Go name <em>you</em> chose:</p>
+
+<pre><code>orders, err := repo.Loader.FindAll(ctx, criteria.
+    Where(criteria.Eq("CustomerName", "ana")).
+    OrderBy("CustomerName").
+    Limit(20))</code></pre>
+
+<h3>Why the repository, and not the schema or the view</h3>
+<p>
+    A <a href="#table-schema"><code>TableSchema</code></a> declares the form of <strong>one</strong> entity: its
+    columns, its id, its managed slots and its own closure (children, siblings, shared base). A foreign key to another
+    aggregate is already an ordinary column of that form — what a join adds is <em>permission to traverse it</em>. That
+    is access, not storage, and the repository is where a developer would write the join by hand.
+</p>
+<p>
+    Declaring it on the repository also means the <strong>loader</strong> owns it, and the loader is what actually
+    serves <code>FindOne</code>, <code>FindAll</code>, <code>Exists</code> and <code>Aggregate</code>. One declaration
+    therefore reaches every consumer at once:
+</p>
+<ul>
+    <li>a service calling <code>repo.Loader.FindAll(ctx, criteria)</code> with no view in sight;</li>
+    <li><code>repo.FindByID(id)</code> and the request-scoped <code>repo.ScopedReader(ctx)</code> the
+        <a href="#auto-handlers">auto command handlers</a> load through;</li>
+    <li>a <a href="#relational-view">relational view</a> declared over that loader, which inherits the reach and
+        declares nothing itself.</li>
+</ul>
+
+<h3>The two kinds</h3>
+<table>
+    <thead><tr><th>Verb</th><th>A root with no counterpart</th><th>When</th></tr></thead>
+    <tbody>
+        <tr>
+            <td><code>read.LeftJoin(target)</code></td>
+            <td><strong>is still returned</strong>; the traversed fields read as <code>NULL</code></td>
+            <td>the relationship is optional — the foreign key is a <code>*domain.ID</code></td>
+        </tr>
+        <tr>
+            <td><code>read.InnerJoin(target)</code></td>
+            <td><strong>is not returned</strong></td>
+            <td>the relationship is mandatory — the foreign key is a <code>domain.ID</code></td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="box warn">
+    <strong><code>InnerJoin</code> is legal only over a non-nullable foreign key.</strong> The declaration lives on the
+    repository, so it applies to <em>every</em> read through that loader — <code>FindByID</code> included, which is what
+    the write-side auto handlers load through. Over a nullable key an inner join would silently drop aggregates, turning
+    a legitimate write into a 404. The framework refuses that combination at construction and names
+    <code>LeftJoin</code> as the fix. Over a non-nullable key, referential integrity makes the two return the same roots,
+    so the choice is one of intent and query plan.
+</div>
+
+<div class="box warn">
+    <strong>A <code>LeftJoin</code> field must be able to hold <code>NULL</code>.</strong> With no counterpart the
+    column comes back <code>NULL</code>; a non-pointer Go field would take its zero value and report a blank name where
+    the truth is "there is no counterpart". Declare those fields as pointers — the framework refuses the combination at
+    construction otherwise.
+</div>
+
+<h3>Mapping columns onto your own names</h3>
+<p>
+    <code>.Field(goField, column)</code> takes the same two arguments, in the same order, as
+    <a href="#table-schema"><code>TableSchema.Field</code></a>: the Go field on <em>your</em> entity, then the column on
+    the joined table. The joined side's spelling never surfaces above infrastructure, so renaming is free:
+</p>
+<pre><code>read.LeftJoin(schemas.ProfessorSchema()).On("professor_id").
+    Field("Pessoa", "professor")     // criteria and DTOs speak "Pessoa"</code></pre>
+<p>
+    Call it once per column. A join that maps no field reaches nothing and is refused at construction — and so is a Go
+    field two mappings claim, whether inside one declaration or across two traversals of the same owner: both columns
+    would ride the <code>SELECT</code> and both would scan into the one field, so the second would overwrite the first
+    on every row while a criteria naming it bound to the first. Give the second traversal its own field.
+</p>
+
+<div class="box warn">
+    <strong>A nullable column needs a nullable field — whatever the join kind.</strong> An
+    <code>InnerJoin</code> proves the joined <em>row</em> exists; it says nothing about whether every column of it is
+    filled. If the target declares that column nullable, the field receiving it must be a pointer, or the first row
+    carrying a <code>NULL</code> fails the read. The framework checks it at construction and names both halves — the
+    field that cannot hold it, and the table and column that produce it. What it reads is the target's own Go
+    declaration (a pointer field is the nullable one), off the schema the join already holds; a column the target's
+    struct does not expose is left unenforced rather than guessed, and the database catalog is never consulted.
+</div>
+
+<h3>What a join field may be</h3>
+<p>
+    A scalar, and only a scalar. A join field carries <strong>no domain type</strong> — no value object of any kind
+    (scalar-backed, enum, composite) and no <code>domain.ID</code>. The framework refuses the declaration at
+    construction, naming which kind it found.
+</p>
+<p>
+    The reason is not mechanical. The value belongs to <em>another</em> aggregate and arrives read-only: it is never
+    written through this entity, so this domain never validates it. Reconstructing a domain type here would hand you an
+    instance no rule ever approved — an enum converges an unknown value to <code>Unknown</code> without a word, and a
+    composite spans several columns while a join field maps exactly one. Declare the scalar the column is stored as, and
+    let the owning aggregate be the one that reconstructs its own types.
+</p>
+<pre><code>type Order struct {
+    domain.AggregateRoot
+    CustomerID domain.ID    // a foreign key of THIS entity — a schema field, a domain type, fine
+
+    CustomerName  string    // a join field — the scalar the column is stored as
+    CustomerEmail string    // NOT vos.Email: the join brings the COLUMN, not the value object
+}</code></pre>
+
+<div class="box">
+    <strong>An identity column is the exception the framework handles for you.</strong> A traversal often wants a
+    foreign key of the target — the aggregate one hop further out. Declare that field <code>string</code>
+    (<code>*string</code> when the target's column is nullable, or when the join is a <code>LeftJoin</code>) and the
+    framework decodes the stored id form into the canonical text. This is not a convenience: mysql and sqlserver store
+    an identity as <code>BINARY(16)</code> and oracle as <code>RAW(16)</code>, which a bare string field would receive
+    as 16 raw bytes <em>without an error</em>. The same typing governs the predicate, so a filter on that field binds in
+    the form the target stores and actually matches.
+</div>
+
+<pre><code>read.InnerJoin(schemas.CampusSchema()).On("campus_id").
+    Field("CampusOwnerID", "owner_id")   // owner_id is a domain.ID on the Campus schema
+
+// on the entity — arrives as "0e5a1f6c-…", on all four engines:
+CampusOwnerID string</code></pre>
+<div class="box">
+    <strong>The predicate is always <code>fk = target.id</code>.</strong> <code>.On(...)</code> names the
+    foreign key; the other side of the comparison is the <em>target schema's declared id column</em>, which the
+    <a href="#table-schema"><code>TableSchema</code></a> already knows — so there is nothing else to declare, and
+    no way to get the two halves out of step. The corollary is a deliberate limit: a traversal onto a
+    <strong>non-id column</strong> of the target (matching a code against a natural key, say) is not expressible.
+    Model that as a real foreign key, or read it with <code>deps.DB.Querier()</code>.
+</div>
+
+<h3>Joining from an aggregate child</h3>
+<p>
+    A join may also hang off one of the root's own aggregate children, declared with
+    <code>root.Child(...)</code>. The verb names the child; <code>.To(...)</code> names the target:
+</p>
+<pre><code>r.WithJoins(
+    read.LeftJoinInChild(schemas.EnderecoSchema()).To(schemas.CidadeSchema()).
+        On("cidade_id").Field("NomeCidade", "nome"),
+)</code></pre>
+<p>
+    <code>.On(...)</code> names the foreign key on the <strong>joining</strong> table — the root's for a root join, the
+    child's for a child join — and the mapped Go field lives on the <strong>child's</strong> struct.
+</p>
+<p>
+    A child join is <strong>load-only</strong>: its fields are filled on every loaded child, but they are not
+    addressable in a criteria. Filtering the root by a field of a 1:N child is a pushdown a single root
+    <code>SELECT</code> cannot express — the same boundary every child field has.
+</p>
+<div class="box warn">
+    <strong>Inside a child, <code>InnerJoin</code> drops the CHILD element, not the root.</strong> The join
+    rides the child's own batched <code>SELECT</code>, so the row it can eliminate is the child's: the aggregate
+    still comes back, with that element missing from its collection — a silent hole in the child array rather
+    than a missing aggregate. Over the non-nullable foreign key the framework already requires there is no such
+    row, which is exactly why the requirement is enforced; prefer <code>LeftJoinInChild</code> whenever the
+    relationship is genuinely optional.
+</div>
+<p class="note">
+    <strong>Own children only.</strong> The child must be one the root's schema declares. A child of a
+    <a href="#table-schema">shared base</a> belongs to the base: declare the join on the base's own repository.
+</p>
+
+<h3>What a read join is not</h3>
+<ul>
+    <li><strong>Not a write path.</strong> A join field is not part of the <code>TableSchema</code>, so it never enters
+        an <code>INSERT</code> or <code>UPDATE</code>, and the write repository holds a schema with no loader in sight.
+        The write model remains exactly what the <code>TableSchema</code> says it is.</li>
+    <li><strong>Not a collection.</strong> Joins are 1:1 and horizontal — one column mapped to one field at a time.
+        There is no many-valued form: a 1:N join would multiply the root's rows and break the paged read.</li>
+    <li><strong>Not a Mongo concept.</strong> The <code>TableSchema</code> is untouched by a join declaration, so a
+        <a href="#views">projected view</a> over the same entity is unaffected. Where a Mongo view wants another
+        aggregate's data it <em>materializes</em> it with <code>Embed</code>, or composes it at read time with
+        <code>ComposedView</code>.</li>
+</ul>
+
+<h3>What it costs</h3>
+<p>
+    A declared root join is <strong>always in the FROM</strong>, and its columns ride the root <code>SELECT</code> — so
+    the values cost no extra round trip. Being always present is what makes the field trustworthy: a field that appeared
+    only when some filter happened to mention it would leave the same entity populated on one call and blank on the
+    next.
+</p>
+<p>
+    Each traversal is rendered under its own alias derived from the foreign key, so two joins may reach the
+    <strong>same table</strong> — a billing and a shipping address both to <code>customers</code> — without colliding.
+    That is also why one foreign key reaches one table: two joins sharing a key are refused at construction. The alias
+    follows the table name <em>bare</em>, with no <code>AS</code>: the keyword is optional before a table alias in
+    standard SQL and Oracle rejects it outright, so the bare form is the one all four backends accept.
+    Everything resolved through a join reaches the statement under that alias — the <code>WHERE</code>, the
+    <code>ORDER BY</code>, and the aggregate DSL's expressions and grouping keys alike — because two aggregates may
+    perfectly well both have a <code>name</code>.
+</p>
+<p>
+    The <strong>anchor side is qualified too</strong>, and for the same reason read backwards. A sibling and a shared
+    base share the entity's own namespace, where column names are unique by construction, so they need no prefix on
+    their own; a joined aggregate is a <em>foreign</em> namespace, free to carry a <code>name</code>, a
+    <code>code</code>, or the framework's own <code>deleted_at</code>. So the moment a declared join is in the
+    <code>FROM</code>, every column the statement emits on the anchor side — the <code>SELECT</code> list, the
+    predicate, the ordering, the aggregate expressions and grouping keys, and the archive gate on the root
+    <em>and</em> on each child — carries the table it physically lives on. Without a declared join nothing changes:
+    the statement is rendered exactly as it always was.
+</p>
+
+<h3>What a NULL means, and what archived means</h3>
+<p>
+    A <code>LeftJoin</code> with no counterpart is an <strong>absence</strong>, and it stays one all the way out: the
+    column reads as <code>NULL</code>, the Go field stays <code>nil</code>, the served document carries
+    <code>nil</code> under that name, and a Response DTO's pointer field stays <code>nil</code> — so the wire
+    carries <code>null</code>, or nothing at all where the Response declares <code>,omitempty</code> (which the
+    <code>?fields=</code> contract <a href="#auto-query-handlers">boot-enforces on every field</a>). Either way it is
+    not the zero value, which is the distinction that matters.
+    That is the whole reason the framework insists on a pointer for a left join — a non-nullable field would report a
+    blank name where the truth is "there is no counterpart", and the two are not the same answer.
+</p>
+<p>
+    A join is <strong>not gated on the archived state of the target</strong>. It answers "what is on the other side of
+    this foreign key", and a soft-deleted counterpart is still what the key points at: an archived
+    <code>Customer</code> keeps supplying <code>CustomerName</code>, and an <code>InnerJoin</code> keeps matching it.
+    The read scope (<code>?includeArchived</code>, the criteria's <code>Scope</code>) governs which <em>roots</em> a
+    read returns; it never governs the rows a declared traversal reaches across into. Where an archived counterpart
+    must disappear from the answer, the honest expression is a filter the criteria states, not a join that silently
+    drops rows.
+</p>
+
+<h3>Boot validation</h3>
+<div class="box warn">
+    <strong><code>WithJoins</code> takes the whole set, and is called once.</strong> A second call panics. Two of the
+    rules below are about a collision <em>between</em> traversals — one foreign key reaches one table, one Go field
+    receives one column — so neither can be answered from a declaration in isolation. A second call would validate its
+    own argument against a schema that says nothing about what the first already claimed, and the collision would
+    surface as a duplicate SQL alias on the first read, or as a field silently overwritten on every row. Declaring all
+    of them in one call is what makes “validated at construction” true.
+</div>
+<p>
+    Every declaration is checked against the schema, and against the other declarations, at construction — a violation
+    panics there, never on the first request:
+</p>
+<ul>
+    <li><code>WithSchema</code> was called first;</li>
+    <li>the foreign key named by <code>.On(...)</code> is a column of the joining table, and no other join on that table
+        already uses it;</li>
+    <li>the column named by <code>.Field(...)</code> is a column of the target;</li>
+    <li>the Go field exists on the owning struct and is exported;</li>
+    <li>the Go field does not shadow a name the schema already answers — its own, a sibling's or the shared base's;</li>
+    <li>the Go field is not already mapped by another traversal of the same owner (a root join and a child join land on
+        different structs, so the same spelling there is two different fields and both are legal);</li>
+    <li><code>InnerJoin</code> is over a non-nullable foreign key, and a <code>LeftJoin</code> field is nullable;</li>
+    <li>the Go field carries no domain type — no value object of any kind, and no <code>domain.ID</code>;</li>
+    <li>a field mapping an <strong>identity column</strong> of the target is <code>string</code>, or <code>*string</code>
+        when that column is nullable or the join is a <code>LeftJoin</code>;</li>
+    <li>a field receiving a column the target declares <strong>nullable</strong> is a pointer, on any join kind;</li>
+    <li>at least one <code>.Field(...)</code> is declared;</li>
+    <li>a <code>...InChild</code> child is one the root's schema declares.</li>
+</ul>

@@ -71,6 +71,7 @@ func (coreNL) Translations() map[string]string {
 		"ServiceUnavailableNotification":    "Service niet beschikbaar.",
 		"RequestTimeoutNotification":        "De aanvraag heeft de tijdslimiet overschreden.",
 		"ReadTimeoutNotification":           "De aanvraag is niet binnen de tijdslimiet ontvangen.",
+		"UnsupportedCapabilityNotification": "Deze mogelijkheid wordt niet ondersteund door de opslag waaruit deze view wordt gelezen.",
 
 		// Auth
 		"MissingAuthorizationNotification": "Authorization-header ontbreekt of is misvormd.",
@@ -82,7 +83,6 @@ func (coreNL) Translations() map[string]string {
 		"TenantMissingNotification":        "Tenant-identificatie ontbreekt in de geauthenticeerde principal.",
 		"TenantMismatchNotification":       "De resource behoort tot een andere tenant.",
 		"FieldAccessForbiddenNotification": "Veld niet toegankelijk.",
-		"RelationalCapabilityNotification": "Deze mogelijkheid wordt niet ondersteund door een view die uit de relationele backend wordt gelezen; verwijder RelationalSource() om deze vanuit Mongo te bedienen.",
 
 		// Server / routing
 		"InternalServerErrorNotification": "Interne serverfout.",

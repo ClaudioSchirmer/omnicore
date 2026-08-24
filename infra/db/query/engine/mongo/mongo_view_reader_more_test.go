@@ -119,7 +119,7 @@ func TestMongoViewReader_ReadPage_ProjectionStripsAutoIncludedOrderByField(t *te
 	// the returned doc.
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{
 		Limit:      1,
-		Projection: map[string]int{"_id": 0, "Name": 1},
+		Projection: queries.ProjectOnlyPaths("Name"),
 		OrderBy:    []queries.OrderByField{{Field: "Email"}},
 	})
 	if err != nil {
@@ -140,14 +140,14 @@ func TestMongoViewReader_ReadPage_EchoesEffectiveProjection(t *testing.T) {
 		docs:  []any{map[string]any{"_id": "u1", "name": "alice", "mail": "a@x"}},
 	}
 	r := viewReaderFixture(coll)
-	proj := map[string]int{"_id": 0, "Name": 1}
+	proj := queries.ProjectOnlyPaths("Name")
 	page, err := r.ReadPage(context.Background(), "builder_view", queries.ReadCriteria{Limit: 1, Projection: proj})
 	if err != nil {
 		t.Fatalf("ReadPage: %v", err)
 	}
 	// The tabular-export plan pruning relies on page.Projection echoing the
 	// criteria's effective projection (post-ToCriteria).
-	if got := page.Projection; len(got) != len(proj) || got["Name"] != 1 || got["_id"] != 0 {
+	if got := page.Projection; len(got.Paths) != len(proj.Paths) || !got.Selects("Name") || got.Selects("ID") {
 		t.Errorf("page.Projection = %v, want echoed %v", got, proj)
 	}
 }
@@ -348,7 +348,7 @@ func TestMongoViewReader_ReadPage_UnresolvableGoPathIsSchemaViolation(t *testing
 	cases := map[string]queries.ReadCriteria{
 		"filter":     {Limit: 10, Filter: map[string]any{"UnknownField": "v"}},
 		"orderBy":    {Limit: 10, OrderBy: []queries.OrderByField{{Field: "UnknownField"}}},
-		"projection": {Limit: 10, Projection: map[string]int{"UnknownField": 1}},
+		"projection": {Limit: 10, Projection: queries.ProjectOnlyPaths("UnknownField")},
 	}
 	for name, crit := range cases {
 		t.Run(name, func(t *testing.T) {

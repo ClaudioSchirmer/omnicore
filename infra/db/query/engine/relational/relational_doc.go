@@ -1,16 +1,27 @@
-// Package relational is the relational-backed read engine: it serves a view
-// marked query.View(...).RelationalSource(...) by loading the aggregate from the
-// SoR through the loader the view carries, then mapping the loaded entity into
-// the same column-keyed document shape a Mongo-backed view is stored in — so the
-// four web surfaces read a relational view exactly as they read a Mongo one.
+// Package relational is the relational-backed read engine: it serves a
+// query.RelationalViewDefinition by loading the aggregate from the source of
+// record through the loader the view was declared over, then mapping the loaded
+// entity into the Go-field-keyed document the query handler's Result is filled
+// from.
 //
-// The mapping here is self-contained: it reads the loaded typed entity, sharing
-// NO code with the Composer (whose shaping is fetch-coupled). The two small
-// shaping rules the Composer also applies are reproduced from exported building
-// blocks — the child-array key via core.TableSchema.CollectionSegment, the revision watermark
-// via query.DocRevisionField. The parity integration test (this document vs the
-// Composer's, compared as canonical JSON) guards that the two paths agree,
-// including any managed/magic column added to the schema later.
+// It builds no SQL of its own. A request becomes a neutral criteria.Query —
+// filter, order, window, archived scope — and the loader compiles that to SQL.
+// That is deliberate: the criteria→SQL translation is subtle (the sibling and
+// shared-base LEFT JOINs, the id qualification once a join exists, the scope gate)
+// and it has exactly ONE implementation, on the loader. A second one over the same
+// TableSchema would have to relearn all of it and would drift the first time the
+// schema grew a new kind of relation.
+//
+// What IS this package's own is the capability boundary: a request asking for
+// something a single-root read cannot serve — free-text search, a filter or sort
+// on a 1:N child field — is refused HERE, at the entry point, before any IO. No
+// layer above knows those rules, and no other engine is consulted about them.
+//
+// The document is assembled column-keyed first (BuildDocument mirrors the row as
+// the store holds it, which is the only vocabulary a shared BASE's fields are
+// reachable in) and translated to Go field names by the view's ViewNode. It
+// carries NO `_id`: the physical id column translates to the Go field "ID", which
+// is what queries.ResultFromDoc fills from.
 package relational
 
 import (
@@ -24,11 +35,11 @@ import (
 
 // BuildDocument maps a loaded aggregate (root + own children, with the
 // domain.Managed carrier populated) into the canonical column-keyed view
-// Document. Scope: a query.View aggregate — root scalars + own children (depth 1)
-// + siblings (root-level and child-level) + the shared base when the view is
-// rooted at a shared-base ROLE (its fields flattened + its native children). The
-// Embed family and a SharedBaseView (the view KIND) are refused at boot for a
-// relational view, so they never reach here.
+// Document. Scope: root scalars + own children (depth 1) + siblings (root-level
+// and child-level) + the shared base when the view is rooted at a shared-base ROLE
+// (its fields flattened + its native children). The Embed family and the
+// SharedBaseView KIND cannot be declared on a relational view at all — those
+// methods do not exist on its type — so they never reach here.
 func BuildDocument(schema *core.TableSchema, e domain.Entity) query.Document {
 	doc := query.Document{}
 	mergeWriteFields(doc, schema, e)
@@ -203,11 +214,12 @@ func timeValue(t *time.Time) any {
 	return *t
 }
 
-// idColumnValue renders a domain.ID under an id/parentID column. The exact form
-// the Composer stores (raw driver value vs canonical string, per-dialect id
-// codecs like MySQL BINARY(16)) is pinned by the parity integration test across
-// all four engines; this canonical-string form is the starting point the test
-// confirms or corrects.
+// idColumnValue renders a domain.ID under an id/parentID column, in its canonical
+// string form. The Composer reaches the same value from the other side — a raw
+// driver value put through the dialect's id codec (MySQL's BINARY(16) among
+// them) — and the two are held equal by TestRelationalDocParity_RootChildrenManaged.
+// That test runs under `integration && postgres`, so the agreement is proven on
+// Postgres and taken on the codecs' word elsewhere.
 func idColumnValue(id domain.ID) any {
 	return id.String()
 }

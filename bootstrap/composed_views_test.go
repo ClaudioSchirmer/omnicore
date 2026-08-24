@@ -67,6 +67,25 @@ func TestUpstreamCollectionSet(t *testing.T) {
 	}
 }
 
+// The list form is what the DB-per-service guard claims: declaration order, and
+// nothing for an entry with no collection (the declaration guard rejects that
+// entry itself — this only proves the empty name never reaches the claimed set,
+// where it would whitelist a collection literally named "").
+func TestUpstreamCollectionNames(t *testing.T) {
+	got := upstreamCollectionNames([]UpstreamSubscription{
+		{Topic: "a.events", Collection: "upstream_a"},
+		{Topic: "bad.events"},
+		{Topic: "b.events", Collection: "upstream_b"},
+	})
+	want := []string{"upstream_a", "upstream_b"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if len(upstreamCollectionNames(nil)) != 0 {
+		t.Error("no subscriptions must claim no collections")
+	}
+}
+
 func TestQueryConfig_MaxLinkManyLimitValidation(t *testing.T) {
 	q := &QueryConfig{MaxLimit: 100, MaxLinkManyLimit: -1}
 	if err := q.validate(); err == nil || !strings.Contains(err.Error(), "maxLinkManyLimit") {
