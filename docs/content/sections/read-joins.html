@@ -166,6 +166,66 @@ CampusOwnerID string</code></pre>
     Model that as a real foreign key, or read it with <code>deps.DB.Querier()</code>.
 </div>
 
+<h3>Which columns of the target a join may name</h3>
+<p>
+    Whatever the target's <a href="#table-schema"><code>TableSchema</code></a> answers on the <em>read</em> side, which
+    is more than the columns it declares by hand. The framework's own <strong>managed slots</strong> resolve there too,
+    under their fixed logical names — so a traversal may bring back when the counterpart was created, last touched or
+    archived, without the target having to expose any of that as a domain field.
+</p>
+<table>
+    <tbody><tr><th>On the target</th><th>Nameable in <code>.Field(..., column)</code></th><th>The field that receives it</th></tr>
+    <tr><td>a declared column</td><td>yes</td><td>the scalar it is stored as; a pointer where the target declares it nullable</td></tr>
+    <tr><td>the id column, or any identity column</td><td>yes</td><td><code>string</code>, or <code>*string</code> — see above</td></tr>
+    <tr><td><code>created_at</code>, <code>updated_at</code>, <code>deleted_at</code></td>
+        <td>yes, where the target's schema declares that slot (<code>.CreatedAt(...)</code>, <code>.UpdatedAt(...)</code>,
+            <code>.DeletedAt(...)</code>)</td>
+        <td><code>*time.Time</code>, <strong>always</strong> — see the warning below</td></tr>
+    <tr><td><code>revision</code></td>
+        <td><strong>no</strong> — the read side does not resolve it, so the declaration is refused at construction as a
+            column the target does not have</td>
+        <td>—</td></tr>
+</tbody></table>
+<pre><code>read.LeftJoin(schemas.CustomerSchema()).On("customer_id").
+    Field("CustomerName",       "name").
+    Field("CustomerArchivedAt", "deleted_at").   // a managed slot of the TARGET
+    Field("CustomerCreatedAt",  "created_at")
+
+// on the entity:
+CustomerName       *string
+CustomerArchivedAt *time.Time
+CustomerCreatedAt  *time.Time</code></pre>
+<p class="note">
+    <strong>Never under the carrier's own spelling.</strong> A join field called <code>CreatedAt</code>,
+    <code>UpdatedAt</code> or <code>DeletedAt</code> is refused — by the shadow rule where your own schema declares that
+    slot, and for want of a field to write to where it does not: your managed slots live unexported inside
+    <code>domain.Managed</code> and are read through <code>GetCreatedAt()</code> and its siblings, never as struct
+    fields. Name the traversal's copy after what it is — <code>CustomerArchivedAt</code> — which is also the rule the
+    rest of this section already follows.
+</p>
+
+<div class="box warn">
+    <strong>A managed slot is nullable and the framework cannot see that — declare the pointer yourself.</strong>
+    The nullability check reads the <em>target's own Go declaration</em>, and a managed slot is not a struct field
+    there: <code>domain.Managed</code> keeps <code>createdAt</code>, <code>updatedAt</code> and <code>deletedAt</code>
+    unexported. So the check finds nothing to read a pointer off and stays silent rather than guessing from the
+    column's meaning — the same restraint it shows a type-less external schema. A <code>LeftJoin</code> still stops
+    you, because a left-join field must be nullable whatever it maps; an <code>InnerJoin</code> does not.
+    <code>CustomerArchivedAt time.Time</code> under an <code>InnerJoin</code> therefore compiles, boots, and fails on
+    the first row whose counterpart is <em>not</em> archived — <code>deleted_at</code> is <code>NULL</code> on every
+    live row, which is precisely the row you meant to read. Declare <code>*time.Time</code> and the case does not
+    arise.
+</div>
+
+<p>
+    A managed column reached this way is a field like any other: it loads on every read, and on a root join it filters
+    and orders under the name you gave it. That is also the honest way to write the thing the join deliberately will
+    not do behind your back. A traversal never hides an archived counterpart (see <em>What a NULL means, and what
+    archived means</em>, below), so where one must disappear from the answer, say so in the criteria:
+</p>
+<pre><code>criteria.IsNull("CustomerArchivedAt")    // live counterparts only
+criteria.NotNull("CustomerArchivedAt")   // archived ones only</code></pre>
+
 <h3>Joining from an aggregate child</h3>
 <p>
     A join may also hang off one of the root's own aggregate children, declared with
@@ -276,7 +336,8 @@ CampusOwnerID string</code></pre>
     <li><code>WithSchema</code> was called first;</li>
     <li>the foreign key named by <code>.On(...)</code> is a column of the joining table, and no other join on that table
         already uses it;</li>
-    <li>the column named by <code>.Field(...)</code> is a column of the target;</li>
+    <li>the column named by <code>.Field(...)</code> is a column of the target — one it declares, its id, or one of
+        its managed timestamp slots, but never <code>revision</code>;</li>
     <li>the Go field exists on the owning struct and is exported;</li>
     <li>the Go field does not shadow a name the schema already answers — its own, a sibling's or the shared base's;</li>
     <li>the Go field is not already mapped by another traversal of the same owner (a root join and a child join land on
@@ -285,7 +346,10 @@ CampusOwnerID string</code></pre>
     <li>the Go field carries no domain type — no value object of any kind, and no <code>domain.ID</code>;</li>
     <li>a field mapping an <strong>identity column</strong> of the target is <code>string</code>, or <code>*string</code>
         when that column is nullable or the join is a <code>LeftJoin</code>;</li>
-    <li>a field receiving a column the target declares <strong>nullable</strong> is a pointer, on any join kind;</li>
+    <li>a field receiving a column the target declares <strong>nullable</strong> is a pointer, on any join kind —
+        with the one gap this list will admit to: a <strong>managed slot</strong> of the target declares nothing
+        here (the carrier's slots are unexported), so nullability goes unchecked for it and the pointer is yours to
+        get right;</li>
     <li>at least one <code>.Field(...)</code> is declared;</li>
     <li>a <code>...InChild</code> child is one the root's schema declares.</li>
 </ul>
