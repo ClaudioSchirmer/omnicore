@@ -136,6 +136,15 @@ type schemaField struct {
 	isVO           bool
 	isEnum         bool
 	underlyingType reflect.Type
+
+	// inSync / inAudit are the per-axis redaction declared by RedactedField —
+	// how this field appears in the copies the FRAMEWORK makes of the row (the
+	// outbox payload and everything downstream of it; the audit event). Both are
+	// the zero Redactor on a plain Field, which reads as "not declared" and makes
+	// every redaction walk a no-op. The relational column and the hydrated entity
+	// are never touched by either. See redaction.go.
+	inSync  Redactor
+	inAudit Redactor
 }
 
 // IDKind classifies a persisted field's identity typing, derived from its Go
@@ -401,6 +410,72 @@ func (s *TableSchema) ParentID(column string) *TableSchema {
 // only place it can live (the "mini-domain" for upstream columns). At most one
 // labelKey may be passed.
 func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSchema {
+	lk := ""
+	switch len(labelKey) {
+	case 0:
+	case 1:
+		lk = labelKey[0]
+	default:
+		panic(fmt.Sprintf("infra.TableSchema(%s): field %q accepts at most one labelKey", s.table, goName))
+	}
+	return s.declareField(goName, column, redactedFieldSpec{labelKey: lk})
+}
+
+// RedactedField declares a persisted field whose real value stays in the
+// relational column and in the hydrated entity, but appears REDACTED in the
+// copies the framework makes of the row. Same mapping contract as Field — the
+// Go field must exist on the anchored type, the column joins the bijection — and
+// the same panics guard both.
+//
+// Both axes are mandatory (see redaction.go for what each one reaches):
+//
+//	RedactedField("BankAccount", "bank_account",
+//	    core.InSync(core.RedactKeepLast(4)),
+//	    core.InAudit(core.RedactWith("***")),
+//	)
+//
+// A missing axis is a construction panic naming it. The framework will not pick
+// a redaction policy the developer did not write: silence would have to default
+// either to leaking (Plain) or to guessing, and neither is the framework's call.
+//
+// Nothing on the READ side is refused as a consequence of this declaration.
+// Filters, ordering, `?search` and the aggregate DSL keep working exactly as
+// they do for any other field — per-identity field authorization is the
+// developer's, through ReadCriteria.Restrict inside ToCriteria.
+func (s *TableSchema) RedactedField(goName, column string, opts ...RedactedFieldOption) *TableSchema {
+	var spec redactedFieldSpec
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&spec)
+		}
+	}
+	if !spec.inSync.declared() {
+		panic(missingAxisPanic(s.table, goName, "InSync", "the outbox payload — and with it the topic, every "+
+			"consuming service, the failure ledgers and the projected document"))
+	}
+	if !spec.inAudit.declared() {
+		panic(missingAxisPanic(s.table, goName, "InAudit", "the audit event — the audit_events row, the slog "+
+			"echo and the /audit endpoint"))
+	}
+	return s.declareField(goName, column, spec)
+}
+
+// missingAxisPanic builds the diagnostic for a RedactedField that left one axis
+// undeclared, naming what that axis governs so the fix is obvious.
+func missingAxisPanic(table, goName, axis, governs string) string {
+	return fmt.Sprintf(
+		"infra.TableSchema(%s): RedactedField %q does not declare core.%s(...) — both axes are mandatory. "+
+			"%s carries %s; the framework does not choose a redaction policy on your behalf. Declare "+
+			"core.%s(core.Plain()) to keep the real value there.",
+		table, goName, axis, axis, governs, axis)
+}
+
+// declareField is the single field-declaration implementation behind Field and
+// RedactedField: the reserved-name guards, the type resolution against the
+// anchored struct, the bijection claim, the labelKey rule and the storage
+// typing — plus, for a redacted declaration, validating each axis against the
+// field's effective scalar type.
+func (s *TableSchema) declareField(goName, column string, spec redactedFieldSpec) *TableSchema {
 	// "ID" and "ParentID" are reserved logical Go names. "ID" is the primary key
 	// (declare it with ID(column)); mapping it as a Field would double-map the
 	// identity (the ID already answers ColumnOf/GoOf("ID")). "ParentID" is the
@@ -433,25 +508,26 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 		mustNotCompositeField(s.table, goName, s.typ.Field(idx).Type)
 	}
 	s.mustClaimNames(goName, column, "field")
-	lk := ""
-	switch len(labelKey) {
-	case 0:
-	case 1:
-		lk = labelKey[0]
-	default:
-		panic(fmt.Sprintf("infra.TableSchema(%s): field %q accepts at most one labelKey", s.table, goName))
-	}
-	if lk != "" && s.typ != nil {
+	if spec.labelKey != "" && s.typ != nil {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): schema-level labelKey on field %q is external-only; a type-anchored schema declares the header via the `labelKey:\"…\"` struct tag, not here",
 			s.table, goName,
 		))
 	}
-	fd := schemaField{goName: goName, column: column, labelKey: lk}
+	fd := schemaField{goName: goName, column: column, labelKey: spec.labelKey}
+	// The redaction axes are validated against the field's EFFECTIVE scalar —
+	// the type behind a value object and behind a nullable pointer, which is what
+	// writeFields and GoFieldValues actually put in their maps. A type-less
+	// schema has no struct to read, so scalar stays nil and the check is skipped.
+	var scalar reflect.Type
 	if idx >= 0 {
 		fd.path = FieldPath{idx}
-		fd.applyTyping(s.table, goName, s.typ.Field(idx).Type)
+		ft := s.typ.Field(idx).Type
+		fd.applyTyping(s.table, goName, ft)
+		scalar = effectiveScalar(ft)
 	}
+	fd.inSync = spec.inSync.mustFit(s.table, goName, "InSync", scalar)
+	fd.inAudit = spec.inAudit.mustFit(s.table, goName, "InAudit", scalar)
 	s.appendField(fd)
 	return s
 }

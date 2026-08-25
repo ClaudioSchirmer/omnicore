@@ -39,7 +39,7 @@ func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id do
 		ActionName: i.ActionName(),
 		Kind:       "snapshot",
 		DateTime:   i.DateTime(),
-		Snapshot:   composedFieldValues(schema, i.Source()),
+		Snapshot:   redactAuditSnapshot(schema, composedFieldValues(schema, i.Source())),
 		Children:   childrenOf(schema, i.Source(), "insert"),
 	}
 	populateContext(&ev, ctx, auditClaims)
@@ -62,7 +62,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 		ActionName: u.ActionName(),
 		Kind:       "delta",
 		DateTime:   u.DateTime(),
-		Changes:    computeChanges(prev, cur, labels),
+		Changes:    redactAuditChanges(schema, computeChanges(prev, cur, labels)),
 		Children:   childrenOf(schema, u.Source(), "update"),
 	}
 	populateContext(&ev, ctx, auditClaims)
@@ -120,7 +120,7 @@ func transitionChanges(schema *TableSchema, src domain.Entity) []audit.FieldChan
 	if len(changes) == 0 {
 		return nil
 	}
-	return changes
+	return redactAuditChanges(schema, changes)
 }
 
 // BuildUnarchiveEvent is the symmetric inverse of BuildArchiveEvent.
@@ -156,7 +156,7 @@ func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema
 		ActionName: d.ActionName(),
 		Kind:       "snapshot",
 		DateTime:   d.DateTime(),
-		Snapshot:   snap,
+		Snapshot:   redactAuditSnapshot(schema, snap),
 		Children:   childrenOf(schema, d.Source(), "delete"),
 	}
 	populateContext(&ev, ctx, auditClaims)
@@ -171,6 +171,10 @@ func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema
 // the deleting role's entity by Go field name.
 func BuildSharedBasePurgeEvent(ctx persistence.RequestContext, d domain.Deletable, schema *TableSchema, baseID string, auditClaims []string) audit.AuditEvent {
 	base, _, _ := schema.SharedBaseRef()
+	snap := baseFieldValuesByName(base, d.Source())
+	// The purge event is rooted at the BASE, so the base's own declarations mask
+	// it — the role's are irrelevant to a row that is not the role's.
+	base.RedactAuditValues(snap)
 	ev := audit.AuditEvent{
 		EntityType: base.Table(),
 		EntityID:   baseID,
@@ -178,7 +182,7 @@ func BuildSharedBasePurgeEvent(ctx persistence.RequestContext, d domain.Deletabl
 		ActionName: d.ActionName(),
 		Kind:       "snapshot",
 		DateTime:   d.DateTime(),
-		Snapshot:   baseFieldValuesByName(base, d.Source()),
+		Snapshot:   snap,
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -277,6 +281,83 @@ func composedFieldValues(schema *TableSchema, src any) map[string]any {
 		}
 	}
 	return out
+}
+
+// Redaction of the InAudit axis — applied to the ASSEMBLED event, which is the
+// single choke point the audit_events row, the slog echo and the /audit endpoint
+// all read from.
+//
+// On a snapshot it rewrites the map. On a DELTA it must run AFTER
+// computeChanges: that function drops every key whose two sides compare equal
+// (reflect.DeepEqual), so redacting the inputs first would collapse a real
+// change into "nothing happened" and erase from the trail the one fact a
+// redacted field still owes it — that it changed. Running afterwards keeps the
+// entry and masks only its two values.
+
+// redactAuditSnapshot masks a composed snapshot in place, walking the same three
+// schemas composedFieldValues unioned: the role's own fields, its shared base,
+// its siblings. Returns the map for call-site brevity; nil passes through.
+func redactAuditSnapshot(schema *TableSchema, m map[string]any) map[string]any {
+	if m == nil || schema == nil {
+		return m
+	}
+	schema.RedactAuditValues(m)
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		base.RedactAuditValues(m)
+	}
+	for _, sib := range schema.Siblings() {
+		sib.RedactAuditValues(m)
+	}
+	return m
+}
+
+// redactAuditChanges masks From/To on every change whose field declares an
+// InAudit redactor, KEEPING the entry — the entry's presence is what tells the
+// trail the field changed. Entries for fields with no declaration are untouched.
+func redactAuditChanges(schema *TableSchema, changes []audit.FieldChange) []audit.FieldChange {
+	if len(changes) == 0 || schema == nil {
+		return changes
+	}
+	for i := range changes {
+		r, ok := auditRedactorOf(schema, changes[i].Field)
+		if !ok {
+			continue
+		}
+		changes[i].From = r.Apply(changes[i].From)
+		changes[i].To = r.Apply(changes[i].To)
+	}
+	return changes
+}
+
+// auditRedactorOf resolves a Go field's InAudit redactor across the composed
+// audited surface (own fields ∪ shared base ∪ siblings) — the same union the
+// values and the label keys are read from, so a base or sibling field is masked
+// by the declaration that owns it.
+func auditRedactorOf(schema *TableSchema, goName string) (Redactor, bool) {
+	if r, ok := schema.AuditRedactorFor(goName); ok {
+		return r, true
+	}
+	if base, _, ok := schema.SharedBaseRef(); ok {
+		if r, ok := base.AuditRedactorFor(goName); ok {
+			return r, true
+		}
+	}
+	for _, sib := range schema.Siblings() {
+		if r, ok := sib.AuditRedactorFor(goName); ok {
+			return r, true
+		}
+	}
+	return Redactor{}, false
+}
+
+// redactChildEvent masks one child entry through the CHILD's own schema — a
+// child declares its own fields, so its redaction is its own.
+func redactChildEvent(child *TableSchema, ev *audit.ChildEvent) {
+	if child == nil || ev == nil {
+		return
+	}
+	child.RedactAuditValues(ev.Snapshot)
+	ev.Changes = redactAuditChanges(child, ev.Changes)
 }
 
 // baseFieldValuesByName reads the shared-base fields off a flat role entity by
@@ -425,6 +506,9 @@ func childrenOf(schema *TableSchema, src domain.Entity, verb string) map[string]
 			if !include {
 				continue
 			}
+			// Post-diff, like the root: childEventOf already computed the delta on
+			// the real values.
+			redactChildEvent(child, &entry)
 			entries = append(entries, entry)
 		}
 		if len(entries) > 0 {

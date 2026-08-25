@@ -85,7 +85,7 @@ func (h *Hydrator) FetchRow(ctx context.Context, schema *core.TableSchema, table
 		return nil, err
 	}
 	row := results[0]
-	CoerceTypes(row, schema)
+	finishRow(row, schema)
 	return row, nil
 }
 
@@ -160,7 +160,7 @@ func (h *Hydrator) FetchLatestArchived(ctx context.Context, schema *core.TableSc
 		return nil, err
 	}
 	row := results[0]
-	CoerceTypes(row, schema)
+	finishRow(row, schema)
 	return row, nil
 }
 
@@ -241,7 +241,7 @@ func ToDocuments(ms []map[string]any, schema *core.TableSchema) []Document {
 	out := make([]Document, len(ms))
 	for i, m := range ms {
 		out[i] = m
-		CoerceTypes(out[i], schema)
+		finishRow(out[i], schema)
 	}
 	return out
 }
@@ -273,6 +273,25 @@ func RemapRevision(row Document, schema *core.TableSchema, watermarkField string
 // a Go bool; those are coerced 0/1 → bool. A no-op on Postgres (the value is
 // already a bool) and for an external/type-less schema (BoolColumns is empty). A
 // SQL NULL (nil) stays nil.
+// finishRow is what every fetch in this package runs over a scanned row before
+// handing it out: type coercion, then the InSync redaction any RedactedField
+// declares.
+//
+// This package is the RIGHT home for that second step and the relational read
+// engine is deliberately not (see the package doc): hydrate exists only to feed
+// the Mongo projection, so redacting here reaches the composer, the batch
+// composer, the consult path, the embed ripple and — through the composer — the
+// REBUILD, which is the one that would otherwise reintroduce in a recomposition
+// exactly what the payload excluded. The entity loader does not read through
+// here, so the domain keeps the real value.
+//
+// Coercion runs FIRST: a redactor that masks a string needs the value already in
+// its Go-native form.
+func finishRow(row Document, schema *core.TableSchema) {
+	CoerceTypes(row, schema)
+	schema.RedactSyncColumns(row)
+}
+
 func CoerceTypes(row Document, schema *core.TableSchema) {
 	if row == nil || schema == nil {
 		return

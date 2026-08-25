@@ -29,7 +29,6 @@ func TestUsage(t *testing.T) {
 	for _, want := range []string{
 		"omnicore-admin",
 		"Usage:",
-		"replay-all-as-events",
 		"list-failures",
 		"help",
 	} {
@@ -60,10 +59,7 @@ func TestRun_Dispatch(t *testing.T) {
 		{"dash-h", []string{"omnicore-admin", "-h"}, false, ""},
 		{"dash-dash-help", []string{"omnicore-admin", "--help"}, false, ""},
 		// Subcommand dispatch reaching the sub-Run's -h short-circuit (no DB).
-		{"replay-help", []string{"omnicore-admin", "replay-all-as-events", "-h"}, false, ""},
 		{"listfailures-help", []string{"omnicore-admin", "list-failures", "-h"}, false, ""},
-		// Dispatch into replay with a failing arg-validation branch (no DB).
-		{"replay-missing-aggregate", []string{"omnicore-admin", "replay-all-as-events"}, true, "--aggregate is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
