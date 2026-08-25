@@ -292,6 +292,57 @@ func isNumericKind(k reflect.Kind) bool {
 	return false
 }
 
+// naturalKeyRedactionPanic is the diagnostic for the one slot a redacted field
+// cannot occupy. Every OTHER framework-owned slot (ID, ParentID, Revision,
+// DeletedAt, CreatedAt, UpdatedAt) is already mutually exclusive with any field
+// declaration, in both orders — mustClaimNames refuses a field on those columns
+// and each setter refuses a column a field already claimed. The natural key is
+// the exception, because it MUST also be a mapped field: it is a business column
+// the base writes like any other.
+//
+// It still cannot be a REDACTED one. A shared base's id is
+// UUIDv5(fixed public namespace, natural key) — an unsalted SHA-1 of the
+// plaintext — and that id travels as _ids.base_id in every payload and is the _id
+// of the projected document. Masking the column while the derived id discloses it
+// is a declaration the framework cannot honor: for a low-entropy key (an
+// 11-digit taxpayer id is ≈2³⁷) recovering the value from the id is an offline
+// brute force. Refusing it at construction is the same class of guard as the
+// type check on RedactWith — not a policy the framework is imposing, but a
+// promise it will not pretend to keep.
+func naturalKeyRedactionPanic(table, column, goName string) string {
+	return fmt.Sprintf(
+		"infra.TableSchema(%s): %q is the shared base's NaturalID column and cannot be a RedactedField "+
+			"(declared here as %q). The base's id is derived from this value in the clear "+
+			"(UUIDv5 over a fixed, public namespace), and that id travels in every payload and is the "+
+			"projected document's _id — so masking the column would hide nothing. If the value is "+
+			"sensitive it is not the identity: keep the natural key on a non-sensitive column (or a "+
+			"synthetic one) and declare the sensitive value as an ordinary RedactedField beside it.",
+		table, column, goName)
+}
+
+// mustNotRedactNaturalKey enforces that rule from the FIELD side — a
+// RedactedField naming a column the schema already declared as its natural key.
+func (s *TableSchema) mustNotRedactNaturalKey(column, goName string) {
+	if s.naturalIDCol != "" && column == s.naturalIDCol {
+		panic(naturalKeyRedactionPanic(s.table, column, goName))
+	}
+}
+
+// mustNotRedactNaturalIDColumn enforces the same rule from the OTHER side — a
+// NaturalID call naming a column already declared as a redacted field. Declaration
+// order must not decide whether a guard fires, and NaturalID deliberately does
+// not run ensureColumnFree (the natural key is REQUIRED to be a mapped field), so
+// it needs this narrower check of its own.
+func (s *TableSchema) mustNotRedactNaturalIDColumn(column string) {
+	f, ok := s.byCol[column]
+	if !ok {
+		return
+	}
+	if f.inSync.declared() || f.inAudit.declared() {
+		panic(naturalKeyRedactionPanic(s.table, column, f.goName))
+	}
+}
+
 // HasRedactions reports whether any field of THIS schema declares a redaction
 // that actually transforms a value. The copy paths gate their walk on it, so a
 // service that declares no RedactedField pays a single boolean per write.

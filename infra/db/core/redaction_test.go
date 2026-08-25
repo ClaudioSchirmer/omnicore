@@ -326,6 +326,80 @@ func TestCompositePart_ParticipatesInTheRedactionShape(t *testing.T) {
 	}
 }
 
+// ─── The one column a redacted field cannot occupy ───────────────────────────
+//
+// RedactedField REPLACES Field; it is not complementary. Every slot the framework
+// owns (ID, ParentID, Revision, DeletedAt, CreatedAt, UpdatedAt) is therefore
+// already mutually exclusive with ANY field declaration, in both orders. The
+// natural key is the exception that needs a check of its own: it is REQUIRED to
+// be a mapped field, so it passes the ordinary claim — and it still must not be
+// redacted, because the base's id is derived from its plaintext.
+
+func TestNaturalKey_CannotBeRedacted_FieldFirst(t *testing.T) {
+	mustPanicWith(t, "cannot be a RedactedField", func() {
+		NewSharedBaseSchema("people").
+			ID("id").
+			Revision("revision").
+			RedactedField("Document", "document",
+				InSync(RedactKeepLast(3)), InAudit(RedactWith("***"))).
+			NaturalID("document")
+	})
+}
+
+// The reverse order must fail identically — declaration order never decides
+// whether a guard fires.
+func TestNaturalKey_CannotBeRedacted_NaturalIDFirst(t *testing.T) {
+	mustPanicWith(t, "cannot be a RedactedField", func() {
+		NewSharedBaseSchema("people").
+			ID("id").
+			Revision("revision").
+			Field("Placeholder", "placeholder").
+			NaturalID("document").
+			RedactedField("Document", "document",
+				InSync(RedactKeepLast(3)), InAudit(RedactWith("***")))
+	})
+}
+
+// The canonical shape stays legal: the natural key IS a mapped field, just not a
+// redacted one — and a sensitive column declared BESIDE it is fine.
+func TestNaturalKey_PlainFieldBesideARedactedOneIsLegal(t *testing.T) {
+	s := NewSharedBaseSchema("people").
+		ID("id").
+		Revision("revision").
+		Field("Document", "document").
+		RedactedField("Phone", "phone",
+			InSync(RedactKeepLast(4)), InAudit(RedactWith("***"))).
+		NaturalID("document")
+
+	m := map[string]any{"document": "52998224725", "phone": "14155552671"}
+	s.RedactSyncColumns(m)
+	if m["document"] != "52998224725" {
+		t.Fatalf("the natural key must travel in the clear, got %v", m["document"])
+	}
+	if m["phone"] != "*******2671" {
+		t.Fatalf("the field beside it must still be masked, got %v", m["phone"])
+	}
+}
+
+// The other framework slots need no new guard — this pins that they are already
+// refused for a redacted field, which is what makes the natural key the only
+// special case.
+func TestFrameworkSlots_AlreadyRefuseARedactedField(t *testing.T) {
+	mustPanicWith(t, "collides with a ID/managed column", func() {
+		NewTableSchema[redactFixture]("redact_fixtures").
+			ID("id").
+			DeletedAt("nickname").
+			RedactedField("Nickname", "nickname", InSync(RedactWith("***")), InAudit(Plain()))
+	})
+	// …and in the reverse order, through ensureColumnFree on the setter.
+	mustPanicWith(t, "nickname", func() {
+		NewTableSchema[redactFixture]("redact_fixtures").
+			ID("id").
+			RedactedField("Nickname", "nickname", InSync(RedactWith("***")), InAudit(Plain())).
+			DeletedAt("nickname")
+	})
+}
+
 // ─── The type-less EXTERNAL schema — the seventh declarable site ─────────────
 //
 // NewExternalSchema is the one site with no Go struct behind it: its columns

@@ -7,6 +7,49 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><a href="#table-schema~redacted-field"><code>RedactedField</code></a>:
+                sensitive data that stays in the source of record.</strong> A field can be declared so the relational
+                column and the hydrated entity keep the real value while every copy the framework makes of the row
+                shows a mask. Two mandatory axes over a closed family of four redactors — <code>core.Plain()</code>,
+                <code>core.RedactWith(v)</code>, <code>core.RedactKeepLast(n)</code>, <code>core.RedactUsing(f)</code>.
+                <ul>
+                    <li><code>core.InSync</code> governs the <strong>outbox payload</strong> assembled at commit, and
+                        therefore the topic, every consuming service, both failure ledgers and the
+                        <a href="#views~redaction-and-the-hash">projected document</a> — the composer applies the same
+                        redactor, so a rebuild cannot reintroduce what the sync excluded.</li>
+                    <li><code>core.InAudit</code> governs the <a href="#audit~audit-redaction">audit event</a>, applied
+                        <em>after</em> the delta is computed: the trail still records that a field changed without
+                        recording what to.</li>
+                    <li>Declarable at every site a field is — root, sibling, aggregate child, child-level sibling,
+                        shared base, external schema, and a <strong>part of a composite value object</strong>, where each
+                        part is redacted independently of its siblings inside the value object.</li>
+                    <li><strong>Nothing on the read side is refused</strong> as a consequence: filters, ordering,
+                        <code>?search=</code> and the aggregate DSL are unchanged, and per-identity field authorization
+                        remains <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a>. The three limits it does
+                        NOT cover — it does not protect the database, it is forward-only, and a low-entropy shared-base
+                        natural key is still disclosed by its derived id — are documented with the feature.</li>
+                </ul>
+            </li>
+            <li><strong>Fixed</strong> — <strong>a child's sibling fields now reach the audit event.</strong> The root's
+                snapshot and delta compose over its own fields ∪ its shared base's ∪ its siblings', but a CHILD carried
+                only its own table — so a child-level sibling facet was invisible to the whole trail while it persisted,
+                travelled in the payload and landed in the document. It now composes the same way one level down, and a
+                delta over a child-sibling field carries its <code>fieldLabelKey</code> like any other.</li>
+            <li><strong>Changed</strong> — <strong>the <code>children</code> block of an audit event is wider</strong>
+                for any entity with a child-level sibling (the direct consequence of the fix above: those fields were
+                absent and now appear). Nothing removed or renamed — a consumer reading specific keys is unaffected; one
+                asserting on a child entry's exact key set will see the new keys.</li>
+            <li><strong>Changed</strong> — <strong>a view's rebuild hash now covers the redaction policy declared on its
+                schema.</strong> Declaring a <code>RedactedField</code>, or changing a redactor or its parameter, is a
+                shape change: <code>DriftForgotToBump</code> fires, a <code>Version</code> bump is required, and the
+                rebuild is what replaces the values an earlier policy already wrote into the read model. The block is
+                hashed only when a redaction exists, so a service that does not use the feature hashes exactly as
+                before.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.59.0</span><span class="release-date">August 24, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#rules-dsl">Guard barriers</a> in <code>BuildRules</code>:

@@ -508,6 +508,14 @@ func (s *TableSchema) declareField(goName, column string, spec redactedFieldSpec
 		mustNotCompositeField(s.table, goName, s.typ.Field(idx).Type)
 	}
 	s.mustClaimNames(goName, column, "field")
+	// A redacted field may occupy any column a plain Field may — the framework's
+	// own slots (ID, ParentID, Revision, DeletedAt, CreatedAt, UpdatedAt) are
+	// already refused for ANY field, in both declaration orders. The natural key
+	// is the single exception that needs its own check, because it is required to
+	// be a mapped field and therefore passes the claim above.
+	if spec.inSync.declared() || spec.inAudit.declared() {
+		s.mustNotRedactNaturalKey(column, goName)
+	}
 	if spec.labelKey != "" && s.typ != nil {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): schema-level labelKey on field %q is external-only; a type-anchored schema declares the header via the `labelKey:\"…\"` struct tag, not here",
