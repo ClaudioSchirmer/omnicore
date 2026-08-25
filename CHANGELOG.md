@@ -43,13 +43,21 @@ with `1.0.0`.
   of a composite value object — `CompositeValueObject.RedactedField`, where each
   part is redacted independently of its siblings inside the value object.
 
+  `RedactedField` **replaces** `Field`, it is not complementary: a column is
+  declared once, and every framework-owned slot (`ID`, `ParentID`, `Revision`,
+  `DeletedAt`, `CreatedAt`, `UpdatedAt`) is already mutually exclusive with any
+  field declaration. The one slot that coexists with a field is `NaturalID` — and
+  redacting THAT column is a construction panic in either declaration order,
+  because a shared base's id is derived from its natural key in the clear
+  (`UUIDv5` over a fixed, public namespace) and travels in every payload as the
+  document's `_id`: masking the column would hide nothing. If the value is
+  sensitive it is not the identity.
+
   **Nothing on the read side is refused as a consequence.** Filters, ordering,
   `?search=` and the aggregate DSL keep working exactly as before; per-identity
   field authorization remains `ReadCriteria.Restrict`. Full documentation,
-  including the three limits the mechanism does **not** cover (it does not
-  protect the database, it is forward-only, and a low-entropy shared-base natural
-  key is still disclosed by its derived id), is under *TableSchema →
-  RedactedField*.
+  including the limits the mechanism does **not** cover (it does not protect the
+  database, and it is forward-only), is under *TableSchema → RedactedField*.
 
 ### Fixed
 

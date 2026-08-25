@@ -1264,14 +1264,26 @@ RedactedField("RecoveryPhrase", "recovery_phrase",
     changing what a hook returns is a shape change <strong>you</strong> announce with a <code>Version</code> bump.
 </p>
 <p>
-    <strong>3. A derived identity can still disclose a low-entropy value.</strong> A <a href="#table-schema~shared-base">shared base</a>
-    id is <code>UUIDv5(fixed namespace, natural key)</code> — an unsalted SHA-1 of the plaintext, with the namespace a
-    constant in the framework's source. That id travels as <code>_ids.base_id</code> in every payload and is the
-    <code>_id</code> of the projected document. So if the redacted field <em>is</em> the natural key — a taxpayer id, the
-    canonical case — redacting the column does not hide the value: an offline brute force over a small candidate space
-    (an 11-digit id is ≈2³⁷) matches the id directly. Redaction is not the control for that; treat a low-entropy natural
-    key as public and choose the identity accordingly.
+    <strong>3. The natural key of a shared base cannot be redacted — the framework refuses it.</strong> A
+    <a href="#table-schema~shared-base">shared base</a> id is <code>UUIDv5(fixed namespace, natural key)</code>: an
+    unsalted SHA-1 of the plaintext, with the namespace a constant in the framework's source. That id travels as
+    <code>_ids.base_id</code> in every payload and is the <code>_id</code> of the projected document, so masking the
+    column would hide nothing — an offline brute force over a small candidate space (an 11-digit taxpayer id is ≈2³⁷)
+    recovers the value from the id alone. Declaring <code>RedactedField</code> on the <code>NaturalID</code> column is
+    therefore a <strong>construction panic</strong>, in either declaration order: the framework will not accept a
+    declaration it cannot honor. If the value is sensitive it is not the identity — keep the natural key on a
+    non-sensitive (or synthetic) column and declare the sensitive value as an ordinary redacted field beside it.
 </p>
+<div class="box">
+    <strong><code>RedactedField</code> REPLACES <code>Field</code>; it is not complementary.</strong> A column is
+    declared once, through exactly one slot. Every framework-owned slot — <code>ID</code>, <code>ParentID</code>,
+    <code>Revision</code>, <code>DeletedAt</code>, <code>CreatedAt</code>, <code>UpdatedAt</code> — is already mutually
+    exclusive with any field declaration, in both orders, and a second declaration of the same Go name or the same column
+    is the usual bijection panic. Redaction is for the developer's own mapped fields: the ones that would otherwise be a
+    plain <code>Field</code>. The one slot that <em>coexists</em> with a field declaration is <code>NaturalID</code> (the
+    natural key is a business column the base writes like any other) — and that is exactly why it needs the dedicated
+    refusal above.
+</div>
 
 <h3 id="supported-column-shapes">Supported column shapes</h3>
 <div class="box">

@@ -25,11 +25,18 @@
                     <li>Declarable at every site a field is — root, sibling, aggregate child, child-level sibling,
                         shared base, external schema, and a <strong>part of a composite value object</strong>, where each
                         part is redacted independently of its siblings inside the value object.</li>
+                    <li><strong>It replaces <code>Field</code>, it is not complementary.</strong> A column is declared
+                        once; every framework-owned slot (<code>ID</code>, <code>ParentID</code>, <code>Revision</code>,
+                        <code>DeletedAt</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>) is already mutually
+                        exclusive with a field declaration. The one that coexists is <code>NaturalID</code> — and
+                        redacting THAT column is a construction panic in either order, because a shared base's id is
+                        derived from its natural key in the clear and travels as the document's <code>_id</code>:
+                        masking the column would hide nothing.</li>
                     <li><strong>Nothing on the read side is refused</strong> as a consequence: filters, ordering,
                         <code>?search=</code> and the aggregate DSL are unchanged, and per-identity field authorization
-                        remains <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a>. The three limits it does
-                        NOT cover — it does not protect the database, it is forward-only, and a low-entropy shared-base
-                        natural key is still disclosed by its derived id — are documented with the feature.</li>
+                        remains <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a>. The limits it does NOT
+                        cover — it does not protect the database, and it is forward-only — are documented with the
+                        feature.</li>
                 </ul>
             </li>
             <li><strong>Fixed</strong> — <strong>a child's sibling fields now reach the audit event.</strong> The root's
