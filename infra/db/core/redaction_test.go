@@ -326,6 +326,65 @@ func TestCompositePart_ParticipatesInTheRedactionShape(t *testing.T) {
 	}
 }
 
+// ─── The type-less EXTERNAL schema — the seventh declarable site ─────────────
+//
+// NewExternalSchema is the one site with no Go struct behind it: its columns
+// belong to an UPSTREAM service and are consumed through query.JoinUpstream, so
+// a redaction there means "do not project this upstream column into MY
+// document". It has no place in a domain fixture, which is why it is proven here
+// rather than in the e2e suite.
+//
+// Two things follow from the missing struct, and both are asserted: the type
+// check is SKIPPED (there is no field to read a type from), and the redaction
+// still applies to the column normally.
+
+func TestExternalSchema_RedactionApplies(t *testing.T) {
+	s := NewExternalSchema("upstream_people").
+		ID("id").
+		Field("DisplayName", "display_name").
+		RedactedField("Document", "document",
+			InSync(RedactKeepLast(3)),
+			InAudit(RedactWith("***")),
+		)
+
+	m := map[string]any{"document": "52998224725", "display_name": "Ana"}
+	s.RedactSyncColumns(m)
+	if m["document"] != "********725" {
+		t.Fatalf("external InSync = %v, want ********725", m["document"])
+	}
+	if m["display_name"] != "Ana" {
+		t.Fatalf("an undeclared external column must be untouched, got %v", m["display_name"])
+	}
+	if len(s.RedactionShape()) != 1 {
+		t.Fatalf("the declaration must reach the hashed shape, got %v", s.RedactionShape())
+	}
+}
+
+// With no struct to validate against, a strategy the framework would refuse on a
+// typed schema is ACCEPTED here — there is nothing to contradict. Documenting
+// that in a test keeps it a known consequence of type-lessness rather than a
+// surprise: an upstream column's type is the upstream's business.
+func TestExternalSchema_TypeCheckIsSkipped(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("a type-less schema has no field to type-check; got panic: %v", r)
+		}
+	}()
+	NewExternalSchema("upstream_people").
+		ID("id").
+		RedactedField("Amount", "amount", InSync(RedactKeepLast(2)), InAudit(Plain()))
+}
+
+// The axes stay mandatory even where the type check cannot run: the framework
+// refuses to guess a security policy regardless of what it can see.
+func TestExternalSchema_BothAxesStillMandatory(t *testing.T) {
+	mustPanicWith(t, "does not declare core.InAudit(...)", func() {
+		NewExternalSchema("upstream_people").
+			ID("id").
+			RedactedField("Document", "document", InSync(RedactWith("***")))
+	})
+}
+
 // A plain Field declares nothing, so every redaction walk over it is a no-op and
 // a service that uses no RedactedField pays one boolean per write.
 func TestPlainField_HasNoRedaction(t *testing.T) {

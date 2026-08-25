@@ -350,14 +350,55 @@ func auditRedactorOf(schema *TableSchema, goName string) (Redactor, bool) {
 	return Redactor{}, false
 }
 
-// redactChildEvent masks one child entry through the CHILD's own schema — a
-// child declares its own fields, so its redaction is its own.
+// redactChildEvent masks one child entry through the CHILD's own declarations —
+// its own fields AND its siblings', since a child's audited surface is the union
+// of both (childFieldValues). redactAuditSnapshot and auditRedactorOf already
+// walk a schema's siblings, so handing them the child schema is all it takes.
 func redactChildEvent(child *TableSchema, ev *audit.ChildEvent) {
 	if child == nil || ev == nil {
 		return
 	}
-	child.RedactAuditValues(ev.Snapshot)
+	redactAuditSnapshot(child, ev.Snapshot)
 	ev.Changes = redactAuditChanges(child, ev.Changes)
+}
+
+// childFieldValues composes ONE child item's audited surface: the child's own
+// fields ∪ its siblings' fields — the same union composedFieldValues performs at
+// the root, one level down.
+//
+// Without it a child's sibling facet was invisible to the whole audit timeline.
+// The facet persists, travels in the outbox payload (appendChildrenBlocks merges
+// it flat into the item) and lands in the projected document, so the trail was
+// the ONLY surface that did not know it existed — while the root goes out of its
+// way to union its own siblings. A child is a domain object too; the audit speaks
+// the whole object at both levels or the principle is not a principle.
+//
+// BOTH sides of a delta must be composed this way (see oldChildrenIndex): mixing
+// a unioned current state with a child-only previous one would report every
+// sibling field as a change from nil on every single update.
+func childFieldValues(child *TableSchema, item any) map[string]any {
+	out := child.GoFieldValues(item)
+	for _, sib := range child.Siblings() {
+		for k, v := range sib.GoFieldValues(item) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// childLabelKeys is the label-map analogue of childFieldValues, so a delta over a
+// child's SIBLING field carries its label like any other.
+func childLabelKeys(child *TableSchema) map[string]string {
+	out := map[string]string{}
+	for k, v := range child.LabelKeysByGoField() {
+		out[k] = v
+	}
+	for _, sib := range child.Siblings() {
+		for k, v := range sib.LabelKeysByGoField() {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // baseFieldValuesByName reads the shared-base fields off a flat role entity by
@@ -550,7 +591,9 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 			if id == "" {
 				continue
 			}
-			inner[id] = child.GoFieldValues(it.Item)
+			// Composed exactly like the current state (childFieldValues), or the
+			// delta would read every sibling field as a change from nil.
+			inner[id] = childFieldValues(child, it.Item)
 		}
 		if len(inner) > 0 {
 			out[typeName] = inner
@@ -606,7 +649,7 @@ func childEventOf(
 		}
 		return inner[id]
 	}
-	currentFields := func() map[string]any { return child.GoFieldValues(it.Item) }
+	currentFields := func() map[string]any { return childFieldValues(child, it.Item) }
 
 	switch verb {
 	case "insert":
@@ -619,7 +662,7 @@ func childEventOf(
 		case domain.OpInsert:
 			return audit.ChildEvent{ID: id, Op: "inserted", Snapshot: currentFields()}, true
 		case domain.OpUpdate:
-			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), child.LabelKeysByGoField())}, true
+			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), childLabelKeys(child))}, true
 		case domain.OpDelete:
 			return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
 		default: // OpNoop
