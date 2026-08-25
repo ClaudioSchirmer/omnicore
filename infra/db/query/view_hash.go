@@ -254,6 +254,22 @@ func writeSchemaShape(w *canonicalWriter, s *core.TableSchema) {
 	// Business columns — physical, sorted (order-independent).
 	writeSortedStrings(w, physicalColumns(s))
 
+	// Field-level redaction. A redacted field changes what the projected document
+	// CONTAINS, so it belongs to the hashed shape: declaring or changing one is
+	// then DriftForgotToBump, which forces a Version bump and therefore a rebuild
+	// — and the rebuild is what replaces the values an earlier policy had already
+	// written into the read model.
+	//
+	// The block is written ONLY when the schema declares a redaction. That keeps
+	// the hash of a service that does not use the feature byte-identical to what
+	// it was before the feature existed; hashing an empty block unconditionally
+	// would make every view in every existing service report drift on its next
+	// boot.
+	if shape := s.RedactionShape(); len(shape) > 0 {
+		w.writeTag("redaction")
+		writeSortedStrings(w, shape)
+	}
+
 	// Siblings (FLAT), sorted by table for determinism.
 	sibs := append([]*core.TableSchema(nil), s.Siblings()...)
 	sort.Slice(sibs, func(i, j int) bool { return sibs[i].Table() < sibs[j].Table() })

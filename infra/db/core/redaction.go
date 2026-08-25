@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -364,6 +365,57 @@ func (s *TableSchema) AuditRedactorFor(goName string) (Redactor, bool) {
 		return Redactor{}, false
 	}
 	return f.inAudit, true
+}
+
+// fingerprint renders this axis as a stable token for the view hash. It must be
+// deterministic across processes and builds, which is why RedactUsing collapses
+// to its kind alone: a closure has no portable identity, so the framework CANNOT
+// see that the function's body changed. Changing what a hook returns is
+// therefore a shape change the DEVELOPER must announce with a Version bump —
+// documented, not silently detected.
+func (r Redactor) fingerprint() string {
+	switch r.kind {
+	case redactPlain:
+		return "plain"
+	case redactFixed:
+		return fmt.Sprintf("fixed(%v:%v)", reflect.TypeOf(r.fixed), r.fixed)
+	case redactKeepLast:
+		return fmt.Sprintf("keepLast(%d)", r.keep)
+	case redactFunc:
+		return "using"
+	}
+	return ""
+}
+
+// RedactionShape renders this schema's declared redaction as sorted, stable
+// tokens — the material the view hash mixes in so that DECLARING a redaction,
+// or CHANGING one, is a shape change the framework detects.
+//
+// That detection is the mechanism that cleans up: a changed hash is
+// DriftForgotToBump, which forces a Version bump, which forces a rebuild, and
+// the rebuild recomposes every document through the composer — replacing the
+// values a previous policy had already projected. Without it, turning a field
+// redacted would protect future writes while every document already in the read
+// model kept its plaintext.
+//
+// EMPTY when no field of this schema declares a redaction, and the hash writer
+// omits the block entirely in that case: a service that does not use the feature
+// must hash exactly as it did before the feature existed, or every view in every
+// existing service would report drift on its next boot.
+func (s *TableSchema) RedactionShape() []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, f := range s.fields {
+		if !f.inSync.declared() && !f.inAudit.declared() {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s=sync:%s;audit:%s",
+			f.column, f.inSync.fingerprint(), f.inAudit.fingerprint()))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // effectiveScalar is the type a redactor actually sees: the scalar behind a

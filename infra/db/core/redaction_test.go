@@ -240,6 +240,92 @@ func TestRedactedField_RejectsDegenerateDeclarations(t *testing.T) {
 	})
 }
 
+// ─── Composite value objects — a PART is a persisted field like any other ────
+//
+// A part lands in the payload, the projected document and the audit event under
+// its EXPOSED name, so it carries the same two axes a root field does — and it
+// carries them INDEPENDENTLY of its siblings inside the value object: the
+// currency of a salary is not sensitive, the amount is.
+
+func cvRedactSchema(amount Redactor) *TableSchema {
+	return NewTableSchema[cvContract]("contracts").
+		ID("id").
+		Field("Code", "code").
+		Composite(NewCompositeValueObject[cvMoney]().
+			RedactedField("Amount", "salary_amount", InSync(amount), InAudit(RedactWith(int64(0)))).As("SalaryAmount").
+			Field("Currency", "salary_currency").As("SalaryCurrency"))
+}
+
+func TestCompositePart_RedactionAppliesUnderTheExposedName(t *testing.T) {
+	s := cvRedactSchema(RedactWith(int64(0)))
+	sync := map[string]any{"salary_amount": int64(850000), "salary_currency": "BRL"}
+	s.RedactSyncColumns(sync)
+	if sync["salary_amount"] != int64(0) {
+		t.Fatalf("the redacted part = %#v, want int64(0)", sync["salary_amount"])
+	}
+	if sync["salary_currency"] != "BRL" {
+		t.Fatalf("a sibling part of the SAME value object must be untouched, got %v", sync["salary_currency"])
+	}
+	// The audit map is keyed by the EXPOSED name (the As alias), which is what the
+	// timeline speaks.
+	audit := map[string]any{"SalaryAmount": int64(850000), "SalaryCurrency": "BRL"}
+	s.RedactAuditValues(audit)
+	if audit["SalaryAmount"] != int64(0) {
+		t.Fatalf("audit SalaryAmount = %#v, want int64(0)", audit["SalaryAmount"])
+	}
+	if _, ok := s.AuditRedactorFor("SalaryAmount"); !ok {
+		t.Fatal("AuditRedactorFor must resolve the part under its exposed name")
+	}
+}
+
+func TestCompositePart_BothAxesAreMandatory(t *testing.T) {
+	mustPanicWith(t, "does not declare core.InAudit(...)", func() {
+		NewCompositeValueObject[cvMoney]().
+			RedactedField("Amount", "salary_amount", InSync(RedactWith(int64(0))))
+	})
+	mustPanicWith(t, "does not declare core.InSync(...)", func() {
+		NewCompositeValueObject[cvMoney]().
+			RedactedField("Amount", "salary_amount", InAudit(RedactWith(int64(0))))
+	})
+}
+
+// A part's type is validated against the field INSIDE the value object, so the
+// same rules a root field gets apply one level down.
+func TestCompositePart_TypeIsValidatedAgainstThePart(t *testing.T) {
+	mustPanicWith(t, "the field's persisted scalar is int64", func() {
+		NewCompositeValueObject[cvMoney]().
+			RedactedField("Amount", "salary_amount", InSync(RedactWith("***")), InAudit(Plain()))
+	})
+	mustPanicWith(t, "RedactKeepLast, which is string-only", func() {
+		NewCompositeValueObject[cvMoney]().
+			RedactedField("Amount", "salary_amount", InSync(RedactKeepLast(2)), InAudit(Plain()))
+	})
+}
+
+// A part's header comes from the tag inside the value object — the value object
+// owns its own vocabulary — so Label is refused here, exactly as a schema-level
+// labelKey is refused on a type-anchored schema.
+func TestCompositePart_LabelIsRefused(t *testing.T) {
+	mustPanicWith(t, "core.Label(...) on part", func() {
+		NewCompositeValueObject[cvMoney]().
+			RedactedField("Amount", "salary_amount",
+				InSync(Plain()), InAudit(Plain()), Label("Whatever"))
+	})
+}
+
+// The declaration reaches the schema's shape, so it moves the view hash like any
+// other field's does (asserted end to end in infra/db/query).
+func TestCompositePart_ParticipatesInTheRedactionShape(t *testing.T) {
+	shape := cvRedactSchema(RedactWith(int64(0))).RedactionShape()
+	if len(shape) != 1 || !strings.Contains(shape[0], "salary_amount=") {
+		t.Fatalf("RedactionShape = %v, want one entry for salary_amount", shape)
+	}
+	other := cvRedactSchema(RedactWith(int64(-1))).RedactionShape()
+	if shape[0] == other[0] {
+		t.Fatal("a different replacement value must render a different fingerprint")
+	}
+}
+
 // A plain Field declares nothing, so every redaction walk over it is a no-op and
 // a service that uses no RedactedField pays one boolean per write.
 func TestPlainField_HasNoRedaction(t *testing.T) {
