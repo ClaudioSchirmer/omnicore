@@ -15,7 +15,7 @@
         <div class="stat"><span class="num">5</span><span class="lbl">relational engines — PostgreSQL, MySQL, SQL Server, Oracle &amp; SQLite, one seam</span></div>
         <div class="stat"><span class="num">16</span><span class="lbl">filter operators, allowlisted per field</span></div>
         <div class="stat"><span class="num">7</span><span class="lbl">built-in language catalogs</span></div>
-        <div class="stat"><span class="num">92.5%</span><span class="lbl">unit-test coverage</span></div>
+        <div class="stat"><span class="num">92.6%</span><span class="lbl">unit-test coverage</span></div>
     </div>
 
     <div class="spotlight">
@@ -146,6 +146,7 @@
                 <li><a href="#auth-middleware">JWT authentication</a> — JWKS / PEM / external validator, revocation cache, expired-vs-invalid split</li>
                 <li><a href="#authz-seams">3-layer authorization</a> — permission gate (<code>resource:action</code>) · <code>BuildRules</code> · tenant scoping</li>
                 <li><a href="#authz-seams">Field-level read control</a> — <code>Restrict</code> gates columns; 403 on an active reference, silent omission otherwise</li>
+                <li><a href="#table-schema~redacted-field">Field-level redaction</a> — <code>RedactedField</code>: the real value stays in the column and in the entity, masked in every copy the framework makes (payload → topic → document, and the audit event)</li>
                 <li><a href="#grpc">Shared <code>authcore</code></a> — one validation core behind the REST and gRPC shells</li>
             </ul>
             <div class="cap-more"><a href="#authz-seams">Authorization →</a></div>

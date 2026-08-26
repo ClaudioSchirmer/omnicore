@@ -87,6 +87,11 @@ func (s *TableSchema) NaturalID(column string) *TableSchema {
 		panic(fmt.Sprintf("infra.TableSchema(%s): NaturalID requires a non-empty column.", s.table))
 	}
 	s.mustNotRedeclare(s.naturalIDCol, "NaturalID", column)
+	// The natural key is REQUIRED to be a mapped field, so ensureColumnFree does
+	// not apply here — but it must not be a REDACTED one: the base's id is derived
+	// from this value in the clear. Checked from both sides so declaration order
+	// never decides whether the guard fires (see redaction.go).
+	s.mustNotRedactNaturalIDColumn(column)
 	s.naturalIDCol = column
 	return s
 }

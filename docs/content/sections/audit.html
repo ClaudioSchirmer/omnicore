@@ -253,6 +253,51 @@ audit:
         <li><code>actorClaims</code> — the subset declared by <code>auth.auditClaims</code>. Empty / absent allowlist → the block is omitted entirely; the signing-secret-style claims you never declared do not leak.</li>
     </ul>
 
+    <h3 id="audit-redaction">Redacted fields — what changed without what it changed to</h3>
+    <p>
+        A field declared with <a href="#table-schema~redacted-field"><code>RedactedField</code></a> carries a policy for
+        the audit event on its own axis, <code>core.InAudit(...)</code>, independent of what the same field shows in the
+        projected document. The trail is often the surface that matters most here: it is permanent, it is read through
+        <a href="#audit~audit-endpoint">an endpoint</a>, and with <code>audit.destinations</code> at its default it is also
+        echoed to the log aggregator.
+    </p>
+    <p>
+        <strong>The redaction runs AFTER the delta is computed.</strong> That order is the whole design.
+        <code>changes</code> carries only the keys whose two sides differ, so masking the inputs first would collapse a
+        real change into "nothing happened" and erase from the trail the one fact a masked field still owes it — that it
+        changed. Running afterwards keeps the entry and masks only its two values:
+    </p>
+<pre><code>"changes": [
+  { "field": "BankAccount", "fieldLabelKey": "EmployeeAccountField",
+    "from": "***", "to": "***" }
+]</code></pre>
+    <p>
+        <strong>An entry that is present means the field changed</strong> — read it that way, because
+        <code>from</code> and <code>to</code> being equal is the mask, not a no-op. A field that did <em>not</em> change
+        stays absent exactly as before; the mask applies to the values, never to the diff decision.
+    </p>
+    <p>
+        On a <code>snapshot</code> (insert / delete) the key is <strong>present, masked</strong> — never dropped. That is
+        deliberate and it is why the event needs no "restricted" marker: with the key always there, a reader never has to
+        tell "hidden by policy" apart from "the field did not exist in that version of the schema".
+    </p>
+    <p>
+        The composition rules of the two blocks above apply unchanged. The <strong>root</strong> resolves a redactor
+        across the role's own fields ∪ its <a href="#table-schema~shared-base">shared base</a>'s ∪ its
+        <a href="#table-schema~sibling-tables">siblings</a>' — the same union the values come from — so a base or sibling
+        field is masked by the declaration that owns it. A <strong>child</strong> does the same one level down, over its
+        own fields ∪ its siblings': a child is a domain object too, and its facet is part of its audited surface, in the
+        snapshot and in the delta alike.
+    </p>
+    <p>
+        Both axes are mandatory on the declaration, so <code>core.InAudit(core.Plain())</code> is how a field is masked in
+        the derived copies while the trail keeps the real value — a reasonable posture when the trail lives in the same
+        database, inside the same transaction, behind a permissioned route. The reverse (<code>core.InSync(core.Plain())</code>
+        with a masked audit) is equally available: the read model keeps a name a listing needs while the trail refuses to
+        accumulate it forever. The full family, the type rules and the honest limits of the mechanism are documented at
+        <a href="#table-schema~redacted-field">TableSchema → RedactedField</a>.
+    </p>
+
     <h3 id="audit-labels">Field labels — translated identifier on the audit row</h3>
     <p>
         The audit <code>field</code> (the raw Go field name, e.g. <code>Name</code>, <code>ZipCode</code>) is a

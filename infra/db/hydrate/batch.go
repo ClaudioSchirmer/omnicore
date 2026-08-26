@@ -66,7 +66,7 @@ func (h *Hydrator) FetchInGrouped(ctx context.Context, schema *core.TableSchema,
 		}
 		for _, m := range results {
 			row := Document(m)
-			CoerceTypes(row, schema)
+			finishRow(row, schema)
 			k := fmt.Sprintf("%v", row[keyCol])
 			out[k] = append(out[k], row)
 		}

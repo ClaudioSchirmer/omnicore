@@ -22,6 +22,7 @@ type (
 	UpsertSetMode    = core.UpsertSetMode
 	OrphanPolicy     = core.OrphanPolicy
 	RoleRef          = core.RoleRef
+	Redactor         = core.Redactor
 )
 
 const (

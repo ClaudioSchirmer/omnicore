@@ -1091,6 +1091,200 @@ func StudentSchema() *core.TableSchema {
     (the <code>core.NewSharedBaseSchema</code> identity) is <a href="#table-schema~shared-base">above</a>.
 </p>
 
+<h3 id="redacted-field">RedactedField — sensitive data that stays in the source of record</h3>
+<p>
+    Declaring a field persists it — and, by the same declaration, sends it to the outbox payload (and from there to the
+    topic, to every consuming service and to the projected document) and to the audit event. For a bank account, a
+    recovery phrase or a taxpayer id that is exactly one declaration too many: the value has to be stored, and it has no
+    business being replicated into a log aggregator, a broker with days of retention, and a second datastore.
+</p>
+<p>
+    <code>RedactedField</code> is the same mapping as <code>Field</code> — same bijection, same boot checks, same
+    panics — plus a declaration of <strong>how the value appears in each copy the framework makes of the row</strong>.
+    The relational column and the hydrated entity always keep the real value:
+</p>
+<pre><code>core.NewTableSchema[*Employee]("employees").
+    ID("id").
+    Field("Name", "name").
+    RedactedField("BankAccount", "bank_account",
+        core.InSync(core.RedactKeepLast(4)),      // "****3312" in the derived copies
+        core.InAudit(core.RedactWith("***")),     // the trail says THAT it changed
+    ).
+    DeletedAt("deleted_at")</code></pre>
+<p>
+    <strong>The line the feature draws is who makes the copy.</strong> The framework copies a row by itself, and those
+    copies are its responsibility — that is what a redactor governs. Exposure on a read surface is the
+    <em>developer's</em>: the Response DTO is the wire authority, <code>filter:</code>/<code>sort:</code> are opt-in tags,
+    and per-identity field authorization is <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a>.
+    <strong>Nothing on the read side is refused because a field is redacted.</strong> Filters, ordering,
+    <code>?search=</code> and the aggregate DSL keep working exactly as they do for any other field; the framework offers
+    the mechanism and does not decide the project's policy.
+</p>
+
+<h4 id="redacted-field-axes">The two axes — both mandatory</h4>
+<table>
+    <thead><tr><th>Axis</th><th>Governs</th></tr></thead>
+    <tbody>
+    <tr>
+        <td><code>core.InSync(r)</code></td>
+        <td>
+            The <strong>outbox payload</strong>, assembled at commit — and therefore the outbox row, the topic, every
+            consuming service, both failure ledgers, and the <strong>projected document</strong>. For most views the
+            document <em>is</em> the payload (the payload-direct projection); the composer applies the SAME redactor, so
+            a <a href="#views~views-versioning">rebuild</a> cannot reintroduce what the sync excluded.
+        </td>
+    </tr>
+    <tr>
+        <td><code>core.InAudit(r)</code></td>
+        <td>
+            The <strong>audit event</strong> — the <code>audit_events</code> row, the slog echo and the
+            <code>/audit</code> endpoint, which all read one object. Applied <em>after</em> the delta is computed, so the
+            trail still records that a field changed. See <a href="#audit~audit-redaction">Audit → redacted fields</a>.
+        </td>
+    </tr>
+    </tbody>
+</table>
+<p>
+    A missing axis is a <strong>construction panic naming it</strong>. That is not the framework dictating policy — it is
+    the framework refusing to <em>decide in your place</em>: silence would have to default either to leaking or to
+    guessing, and neither is its call. Declare <code>core.Plain()</code> to keep the real value on an axis.
+</p>
+
+<h4 id="redacted-field-family">The closed family</h4>
+<table>
+    <thead><tr><th>Redactor</th><th>Effect</th><th>Accepted on</th></tr></thead>
+    <tbody>
+    <tr><td><code>core.Plain()</code></td><td>the real value on this axis</td><td>any column</td></tr>
+    <tr><td><code>core.RedactWith(v)</code></td><td>a fixed replacement</td><td>a column whose scalar matches <code>v</code></td></tr>
+    <tr><td><code>core.RedactKeepLast(n)</code></td><td>masks every rune but the last <code>n</code></td><td><code>string</code> only</td></tr>
+    <tr><td><code>core.RedactUsing(f)</code></td><td>a caller-supplied mask</td><td><code>string</code> only</td></tr>
+    </tbody>
+</table>
+<p>
+    <code>RedactWith</code>'s value is validated at declaration time against the field's <strong>effective scalar</strong>
+    — the type behind a value object, and behind the pointer of a nullable field — so the payload keeps the shape
+    <code>PayloadColumnTypes</code> declares and the view's <code>$jsonSchema</code> still validates. A numeric literal is
+    converted to the column's numeric type (<code>RedactWith(0)</code> on an <code>int64</code> column stores
+    <code>int64(0)</code>); every other mismatch, and a string-only redactor on a non-string column, is a panic that names
+    the fix. <code>RedactKeepLast</code> counts <strong>runes</strong>, and masks a value <em>entirely</em> when it is no
+    longer than <code>n</code> — keeping it verbatim would disclose the whole value precisely for the shortest inputs.
+</p>
+<p>
+    <strong>NULL stays NULL, on every redactor.</strong> A nil value means the column is SQL NULL, and substituting for it
+    would both lie about nullability and break the payload's all-null rule in the dangerous direction: a 1 : 1
+    <a href="#table-schema~sibling-tables">sibling</a> row that the write DELETED would arrive with a non-null column and the projector
+    would keep the stale sub-document alive forever. The symmetric rule binds a hook: returning empty for a non-empty
+    input <strong>panics</strong>, because an empty scalar reads as that same removed row.
+</p>
+<p>
+    <strong>There is no <code>Omit</code>.</strong> An absent key is not spare vocabulary — it already means "the 1 : 1
+    sibling row was removed" in the payload contract, so dropping a key would delete a live sub-document from the
+    projection; and in the audit an absent entry is exactly the information a delta exists to carry. Every redactor
+    therefore keeps the key and changes the value, which also means the whole feature leaves the document's
+    <em>shape</em> untouched — the property every invariant of the projection subsystem is built on.
+</p>
+
+<h4 id="redacted-field-hook">The hook, and why it must be pure</h4>
+<pre><code>func maskPhrase(s string) string { return fmt.Sprintf("phrase:%d", len(s)) }
+
+RedactedField("RecoveryPhrase", "recovery_phrase",
+    core.InSync(core.RedactUsing(maskPhrase)),
+    core.InAudit(core.RedactWith("***")),
+)</code></pre>
+<p>
+    <code>RedactUsing</code> is the escape hatch that keeps the family small — the local half of an e-mail, a formatted
+    document number, a length fingerprint. It receives the <strong>underlying scalar</strong>, not the value object
+    (<code>WriteFields</code> and <code>GoFieldValues</code> unwrap first), so a <code>vos.Document</code> arrives as a
+    <code>string</code>.
+</p>
+<p>
+    <strong>f MUST BE PURE.</strong> It runs at two independent points: assembling the payload inside the write
+    transaction, and composing the document in the composer — which is also the <em>rebuild</em> path, possibly months
+    later in a different binary. A function that reads the clock, randomness or mutable config makes a rebuilt document
+    diverge from the one the sync wrote, and the framework <em>cannot verify purity</em>: what it has is a late backstop
+    (the verify shape check and the payload/composer equivalence gate). A panic inside <code>f</code> is deliberately not
+    recovered — it unwinds into the persister's deferred rollback, so the write is abandoned rather than completed with an
+    unredacted value. Failure closes; it never opens.
+</p>
+
+<h4 id="redacted-field-sites">Every place it can be declared</h4>
+<p>
+    Each site reaches the payload and the audit event by a different code path, and all of them are covered:
+</p>
+<table>
+    <thead><tr><th>Site</th><th>Declared on</th></tr></thead>
+    <tbody>
+    <tr><td>the aggregate root</td><td><code>NewTableSchema[T]</code></td></tr>
+    <tr><td>a <a href="#table-schema~sibling-tables">sibling</a> of the root</td><td><code>NewSiblingSchema[T]</code></td></tr>
+    <tr><td>an aggregate child</td><td>the child's own <code>NewTableSchema</code></td></tr>
+    <tr><td>a sibling of a child</td><td><code>NewSiblingSchema</code> attached to the child</td></tr>
+    <tr><td>a <a href="#table-schema~shared-base">shared base</a></td><td><code>NewSharedBaseSchema</code> (type-less)</td></tr>
+    <tr><td>a part of a <a href="#table-schema~normalize-3nf">composite value object</a></td><td><code>CompositeValueObject.RedactedField</code></td></tr>
+    <tr><td>an upstream column</td><td><code>NewExternalSchema</code> (type-less)</td></tr>
+    </tbody>
+</table>
+<p>
+    A <strong>composite value object</strong> declares it on the part, with the same two axes, and each part is redacted
+    independently of its siblings inside the value object — the currency of a salary is not sensitive, the amount is.
+    <code>As(...)</code> still follows; <code>core.Label(...)</code> is refused, because a part's header comes from the tag
+    <em>inside</em> the value object, which owns its own vocabulary:
+</p>
+<pre><code>core.NewCompositeValueObject[vos.Money]().
+    RedactedField("Amount", "salary_amount",
+        core.InSync(core.RedactWith(0)),
+        core.InAudit(core.RedactWith(0)),
+    ).As("SalaryAmount").
+    Field("Currency", "salary_currency").As("SalaryCurrency")</code></pre>
+<p>
+    On the two <strong>type-less</strong> schemas there is no Go field to read a type from, so the type check is skipped —
+    an upstream column's type is the upstream's business — while both axes stay mandatory. A type-anchored schema takes
+    its header from the <code>labelKey:"…"</code> struct tag as always; on an external schema, <code>core.Label("Key")</code>
+    is the option form of the <code>labelKey</code> argument <code>Field</code> takes.
+</p>
+
+<h4 id="redacted-field-limits">What it does and does not protect</h4>
+<p>
+    The threat it addresses is <strong>the copies</strong>: whoever reads the log aggregator, the broker, the read model
+    or the audit endpoint. Three limits belong in the same breath, because a reader who assumes otherwise is worse off
+    than one who never used the feature.
+</p>
+<p>
+    <strong>1. It does not protect the database.</strong> The column holds the real value by design — that is the point.
+    A DBA, a backup and a <code>SELECT *</code> see everything. Encryption at rest is a different control and this is not
+    it.
+</p>
+<p>
+    <strong>2. It is forward-only.</strong> Declaring a field redacted protects future writes; it does not clean topics
+    already emitted, <code>audit_events</code> rows already written, failure-ledger payloads or log archives. What it
+    <em>does</em> clean is the read model: the declaration participates in the view's <code>RebuildHash</code>, so
+    declaring or changing one is <code>DriftForgotToBump</code> → a <code>Version</code> bump → a rebuild, and the rebuild
+    recomposes every document through the composer. See <a href="#views~redaction-and-the-hash">Views → redaction and the
+    rebuild hash</a>. One consequence to know: a <code>RedactUsing</code> hook contributes only its <em>kind</em> to the
+    hash, because a closure has no portable identity — the framework cannot see that the function's body changed, so
+    changing what a hook returns is a shape change <strong>you</strong> announce with a <code>Version</code> bump.
+</p>
+<p>
+    <strong>3. The natural key of a shared base cannot be redacted — the framework refuses it.</strong> A
+    <a href="#table-schema~shared-base">shared base</a> id is <code>UUIDv5(fixed namespace, natural key)</code>: an
+    unsalted SHA-1 of the plaintext, with the namespace a constant in the framework's source. That id travels as
+    <code>_ids.base_id</code> in every payload and is the <code>_id</code> of the projected document, so masking the
+    column would hide nothing — an offline brute force over a small candidate space (an 11-digit taxpayer id is ≈2³⁷)
+    recovers the value from the id alone. Declaring <code>RedactedField</code> on the <code>NaturalID</code> column is
+    therefore a <strong>construction panic</strong>, in either declaration order: the framework will not accept a
+    declaration it cannot honor. If the value is sensitive it is not the identity — keep the natural key on a
+    non-sensitive (or synthetic) column and declare the sensitive value as an ordinary redacted field beside it.
+</p>
+<div class="box">
+    <strong><code>RedactedField</code> REPLACES <code>Field</code>; it is not complementary.</strong> A column is
+    declared once, through exactly one slot. Every framework-owned slot — <code>ID</code>, <code>ParentID</code>,
+    <code>Revision</code>, <code>DeletedAt</code>, <code>CreatedAt</code>, <code>UpdatedAt</code> — is already mutually
+    exclusive with any field declaration, in both orders, and a second declaration of the same Go name or the same column
+    is the usual bijection panic. Redaction is for the developer's own mapped fields: the ones that would otherwise be a
+    plain <code>Field</code>. The one slot that <em>coexists</em> with a field declaration is <code>NaturalID</code> (the
+    natural key is a business column the base writes like any other) — and that is exactly why it needs the dedicated
+    refusal above.
+</div>
+
 <h3 id="supported-column-shapes">Supported column shapes</h3>
 <div class="box">
     <strong>The relational store is PostgreSQL, MySQL, SQL Server, Oracle, <em>or</em> SQLite; the read projection is MongoDB — except for a <a href="#relational-view">relational view</a>, which serves straight from the relational store.</strong>

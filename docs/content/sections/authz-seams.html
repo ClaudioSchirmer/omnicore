@@ -107,6 +107,14 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
     drops from the JSON <strong>and</strong> the CSV/XLSX (header included), so
     <code>ToCriteria</code> is the single source of truth across every format.
   </p>
+  <div class="box">
+    <strong>This gates the READ. Its counterpart gates the COPIES.</strong> <code>Restrict</code> decides who may
+    <em>see</em> a column on a given request; it does nothing about the value the framework itself replicates into the
+    outbox payload (and from there the topic, the consuming services and the projected document) and into the audit
+    event. That is <a href="#table-schema~redacted-field"><code>RedactedField</code></a>, declared on the schema, with a
+    policy per axis. The two are independent and usually both wanted: redaction keeps a salary out of every derived copy,
+    while <code>Restrict</code> decides which caller sees the column that still holds it.
+  </div>
   <pre><code>func (q FindUserByParamsQuery) ToCriteria(ctx *configuration.AppContext) (fwqueries.ReadCriteria, error) {
     crit := q.Criteria
     if id := ctx.Identity(); id == nil || !id.HasPermission("users:admin") {

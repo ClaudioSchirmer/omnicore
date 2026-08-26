@@ -1405,6 +1405,41 @@ same envelope, same projector, same pagination block as any view read</div>
     collection — the active-slot pointer switches only at the flip — and re-materialize the old content.
 </p>
 
+<h3 id="redaction-and-the-hash">Redacted fields — the projection, and why the hash carries the policy</h3>
+<p>
+    A field declared with <a href="#table-schema~redacted-field"><code>RedactedField</code></a> reaches the document
+    already masked, and it reaches it by <strong>two independent paths that must agree</strong>. The day-to-day path is
+    payload-direct — the payload <em>is</em> the state, so the mask the write applied is simply what lands. The other is
+    the <strong>composer</strong>, which reads the real columns from the source of record and is used for SharedBaseView
+    documents, views with embeds, the ripple, the reconcile repair and, above all, the <strong>rebuild</strong>. The
+    composer applies the same redactor: without that, a recomposition would faithfully put back the plaintext the sync had
+    just excluded — the one asymmetry that would leak, and it would leak only on the path nobody watches.
+</p>
+<p>
+    Everything the read side does over that field it does over the mask. Filters, ordering, <code>?fields=</code> and
+    <code>?search=</code> keep working — the framework refuses nothing — which means a
+    <code>?document.eq=&lt;plaintext&gt;</code> now matches <em>nothing</em>, silently. That is a consequence to design
+    for, not a bug: if a surface must remain searchable by that value, do not redact it on the sync axis, or serve it from
+    a <a href="#relational-view">relational view</a>, where the read goes to the source of record and per-identity field
+    authorization (<a href="#authz-seams"><code>ReadCriteria.Restrict</code></a>) decides who sees it.
+</p>
+<p>
+    <strong>The declaration participates in the rebuild hash.</strong> A redacted field changes what the document
+    <em>contains</em>, so it belongs to the hashed shape exactly like a column does: declaring one, changing the
+    strategy, or changing a strategy's parameter moves the hash, which is <code>DriftForgotToBump</code>, which forces a
+    <code>Version</code> bump, which forces a rebuild — and <strong>the rebuild is what replaces the values an earlier
+    policy already wrote into the read model</strong>. Without it, turning a field redacted would protect future writes
+    while every document already projected kept its plaintext forever.
+</p>
+<p>
+    Two properties of that hashing are worth knowing. The block is written <strong>only when a redaction exists</strong>,
+    so a service that does not use the feature hashes exactly as it did before the feature landed — otherwise every view
+    in every existing service would have reported drift on its next boot. And a <code>RedactUsing</code> hook contributes
+    only its <em>kind</em>: a closure has no portable identity, so the framework cannot see that the function's body
+    changed. Changing what a hook returns is a shape change <strong>you</strong> announce with a <code>Version</code>
+    bump.
+</p>
+
 <h3 id="views-race">Concurrency &amp; staleness — the projection race model</h3>
 <p>
     A materialized segment is a stored copy, so two writers refreshing it can land out of order; a read-time composition

@@ -11,6 +11,86 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-08-25
+
+### Added
+
+- **`RedactedField` — sensitive data that stays in the source of record.** A
+  field can now be declared so that the relational column and the hydrated
+  entity keep the real value while every copy the framework makes of the row
+  shows a mask. Two mandatory axes, over a closed family of four redactors:
+
+  ```go
+  RedactedField("BankAccount", "bank_account",
+      core.InSync(core.RedactKeepLast(4)),   // the payload → topic → document
+      core.InAudit(core.RedactWith("***")),  // the audit event
+  )
+  ```
+
+  `core.InSync` governs the outbox payload assembled at commit — and therefore
+  the topic, every consuming service, both failure ledgers and the projected
+  document; the composer applies the same redactor, so a rebuild cannot
+  reintroduce what the sync excluded. `core.InAudit` governs the audit event, and
+  is applied **after** the delta is computed, so the trail still records that a
+  field changed without recording what to. Both axes are mandatory: a missing one
+  is a construction panic, because the framework will not choose a redaction
+  policy on your behalf. The family is `core.Plain()`, `core.RedactWith(v)`
+  (validated at declaration time against the column's effective scalar),
+  `core.RedactKeepLast(n)` and `core.RedactUsing(f)` (string-only; `f` must be
+  pure — it runs both in the write transaction and in the composer, which is the
+  rebuild path).
+
+  Declarable at every site a field is: the root, a sibling, an aggregate child, a
+  child-level sibling, a shared base, an external (upstream) schema, and a part
+  of a composite value object — `CompositeValueObject.RedactedField`, where each
+  part is redacted independently of its siblings inside the value object.
+
+  `RedactedField` **replaces** `Field`, it is not complementary: a column is
+  declared once, and every framework-owned slot (`ID`, `ParentID`, `Revision`,
+  `DeletedAt`, `CreatedAt`, `UpdatedAt`) is already mutually exclusive with any
+  field declaration. The one slot that coexists with a field is `NaturalID` — and
+  redacting THAT column is a construction panic in either declaration order,
+  because a shared base's id is derived from its natural key in the clear
+  (`UUIDv5` over a fixed, public namespace) and travels in every payload as the
+  document's `_id`: masking the column would hide nothing. If the value is
+  sensitive it is not the identity.
+
+  **Nothing on the read side is refused as a consequence.** Filters, ordering,
+  `?search=` and the aggregate DSL keep working exactly as before; per-identity
+  field authorization remains `ReadCriteria.Restrict`. Full documentation,
+  including the limits the mechanism does **not** cover (it does not protect the
+  database, and it is forward-only), is under *TableSchema → RedactedField*.
+
+### Fixed
+
+- **A child's sibling fields now reach the audit event.** The audit timeline
+  composes the root's snapshot and delta over the role's own fields ∪ its shared
+  base's ∪ its siblings' — but a CHILD carried only its own table, so a
+  child-level sibling facet was invisible to the whole trail while it persisted
+  correctly, travelled in the outbox payload and landed in the projected
+  document. A child is a domain object too: its snapshot and its delta now
+  compose the same way, one level down, and a delta over a child-sibling field
+  carries its `fieldLabelKey` like any other.
+
+### Changed
+
+- **The `children` block of an audit event is wider for any entity with a
+  child-level sibling.** A direct consequence of the fix above: those fields were
+  absent and now appear in the child's `snapshot` and `changes`. Nothing was
+  removed or renamed — a consumer that reads specific keys is unaffected; one
+  that asserts on the exact key set of a child entry will see the new keys.
+
+- **A view's rebuild hash now covers the redaction policy declared on its
+  schema.** Declaring a `RedactedField`, or changing a redactor or its parameter,
+  changes what the projected document contains, so it is a shape change:
+  `DriftForgotToBump` fires, a `Version` bump is required, and the resulting
+  rebuild is what replaces the values an earlier policy already wrote into the
+  read model. The block is written **only when a redaction exists**, so a service
+  that does not use the feature hashes exactly as it did before. One caveat:
+  `core.RedactUsing` contributes only its kind — a closure has no portable
+  identity, so changing what a hook returns is a shape change the developer
+  announces with a `Version` bump.
+
 ## [0.59.0] - 2026-08-24
 
 ### Added

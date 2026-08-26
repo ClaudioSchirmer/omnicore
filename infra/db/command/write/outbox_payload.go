@@ -103,6 +103,14 @@ func buildWritePayload(
 	for k, v := range rootFields {
 		out[k] = v
 	}
+	// Redaction of the InSync axis happens HERE, on the copy — never on
+	// rootFields, which is the very map the INSERT/UPDATE binds (see
+	// aggregate_write.go: one WriteFields call feeds both the DML and this
+	// payload). Applying it upstream would write the mask to the column that
+	// exists to hold the real value. Every segment below redacts through its OWN
+	// schema, because a sibling, a child and a shared base each declare their own
+	// fields.
+	schema.RedactSyncColumns(out)
 	// Siblings — flat at the top, ALWAYS present. An all-nil facet still emits
 	// its columns as explicit nulls: under event-carried state the consumer
 	// cannot distinguish "sibling cleared by this write" from "sibling
@@ -112,7 +120,9 @@ func buildWritePayload(
 	// and DROPS the keys (shape parity with the composer, which omits a
 	// missing sibling row).
 	for _, sib := range schema.Siblings() {
-		for k, v := range sib.WriteFields(src) {
+		sf := sib.WriteFields(src)
+		sib.RedactSyncColumns(sf)
+		for k, v := range sf {
 			out[k] = v
 		}
 	}
@@ -121,6 +131,7 @@ func buildWritePayload(
 	// separate ParentID column so the payload is self-sufficient on every verb.
 	if base, fkCol, ok := schema.SharedBaseRef(); ok && meta.BaseID != "" {
 		bf, _ := sharedBaseValues(base, src)
+		base.RedactSyncColumns(bf)
 		for k, v := range bf {
 			out[k] = v
 		}
@@ -189,7 +200,9 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, eventType, fromBase, child, childHasDeletedAt)
 			item := map[string]any{payloadKeyOp: op}
 			if op != "archive" && op != "unarchive" && op != "delete" {
-				for k, v := range child.WriteFields(it.Item) {
+				cf := child.WriteFields(it.Item)
+				child.RedactSyncColumns(cf)
+				for k, v := range cf {
 					item[k] = v
 				}
 				// The child's SIBLING fields merge FLAT into the item (shape #4),
@@ -197,9 +210,15 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 				// sibling slice stays absent, mirroring the write itself.
 				for _, sib := range child.Siblings() {
 					sf := sib.WriteFields(it.Item)
+					// The all-nil test decides PRESENCE, so it must read the real
+					// values: redaction runs only after the row is known to exist
+					// (and never turns a non-nil value into nil, so the two orders
+					// agree — the order here is the one that stays correct if a
+					// future redactor is added).
 					if allNilFields(sf) {
 						continue
 					}
+					sib.RedactSyncColumns(sf)
 					for k, v := range sf {
 						item[k] = v
 					}

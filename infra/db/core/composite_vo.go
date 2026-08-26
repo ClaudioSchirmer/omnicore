@@ -44,6 +44,13 @@ type compositePartDecl struct {
 	voField string // the field's name INSIDE the value object
 	column  string
 	exposed string // the logical name everything downstream sees (As, or voField)
+
+	// Per-axis redaction, declared by RedactedField. A part is a persisted field
+	// like any other — it lands in the payload, the projected document and the
+	// audit event under its EXPOSED name — so it carries the same two axes a
+	// root field does. Zero on a plain Field. See redaction.go.
+	inSync  Redactor
+	inAudit Redactor
 }
 
 // NewCompositeValueObject starts the decomposition of the composite value
@@ -69,6 +76,61 @@ func NewCompositeValueObject[VO any]() *CompositeValueObject {
 // exposed under to everything downstream (criteria, audit, the projection, the
 // read DTO) unless As(...) renames it.
 func (c *CompositeValueObject) Field(goName, column string) *CompositeValueObject {
+	return c.declarePart(goName, column, redactedFieldSpec{})
+}
+
+// RedactedField declares a part whose real value stays in its column and in the
+// value object the domain reconstructs, and appears REDACTED in the copies the
+// framework makes — the same contract TableSchema.RedactedField carries, with
+// the same two mandatory axes:
+//
+//	NewCompositeValueObject[vos.Money]().
+//	    RedactedField("Amount", "salary_amount",
+//	        core.InSync(core.RedactWith(0)),
+//	        core.InAudit(core.RedactWith(0)),
+//	    ).As("SalaryAmount").
+//	    Field("Currency", "salary_currency")
+//
+// A part is redacted INDEPENDENTLY of its siblings inside the value object: the
+// currency of a salary is not sensitive, the amount is. As(...) still follows,
+// renaming the exposed name; core.Label(...) is refused, because a part's label
+// comes from the tag inside the value object — the value object owns its own
+// vocabulary.
+func (c *CompositeValueObject) RedactedField(goName, column string, opts ...RedactedFieldOption) *CompositeValueObject {
+	var spec redactedFieldSpec
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&spec)
+		}
+	}
+	if spec.labelKey != "" {
+		panic(fmt.Sprintf(
+			"infra.CompositeValueObject(%s): core.Label(...) on part %q — a part's header comes from the "+
+				"`labelKey:\"…\"` tag INSIDE the value object, which owns its own vocabulary.", c.typ, goName))
+	}
+	if !spec.inSync.declared() {
+		panic(missingPartAxisPanic(c.typ, goName, "InSync"))
+	}
+	if !spec.inAudit.declared() {
+		panic(missingPartAxisPanic(c.typ, goName, "InAudit"))
+	}
+	return c.declarePart(goName, column, spec)
+}
+
+// missingPartAxisPanic mirrors missingAxisPanic for a composite part.
+func missingPartAxisPanic(voType reflect.Type, goName, axis string) string {
+	return fmt.Sprintf(
+		"infra.CompositeValueObject(%s): RedactedField %q does not declare core.%s(...) — both axes are "+
+			"mandatory. The framework does not choose a redaction policy on your behalf; declare "+
+			"core.%s(core.Plain()) to keep the real value there.",
+		voType, goName, axis, axis)
+}
+
+// declarePart is the single part-declaration implementation behind Field and
+// RedactedField: the value object must really carry the field, the part must not
+// repeat a name or claim a taken column, and a redacted part's axes are
+// validated against the part's own effective scalar type.
+func (c *CompositeValueObject) declarePart(goName, column string, spec redactedFieldSpec) *CompositeValueObject {
 	if exportedFieldIndex(c.typ, goName) < 0 {
 		panic(fmt.Sprintf(
 			"infra.CompositeValueObject(%s): %q is not an exported single-depth field of the value object — "+
@@ -84,7 +146,14 @@ func (c *CompositeValueObject) Field(goName, column string) *CompositeValueObjec
 				c.typ, column))
 		}
 	}
-	c.parts = append(c.parts, compositePartDecl{voField: goName, column: column, exposed: goName})
+	scalar := effectiveScalar(c.typ.Field(exportedFieldIndex(c.typ, goName)).Type)
+	c.parts = append(c.parts, compositePartDecl{
+		voField: goName,
+		column:  column,
+		exposed: goName,
+		inSync:  spec.inSync.mustFit(c.typ.String(), goName, "InSync", scalar),
+		inAudit: spec.inAudit.mustFit(c.typ.String(), goName, "InAudit", scalar),
+	})
 	return c
 }
 
@@ -173,6 +242,8 @@ func (s *TableSchema) Composite(c *CompositeValueObject) *TableSchema {
 			column:      p.column,
 			voType:      c.typ,
 			voFieldName: p.voField,
+			inSync:      p.inSync,
+			inAudit:     p.inAudit,
 		}
 		if decl.prefix.resolved() {
 			fd.path = append(append(FieldPath{}, decl.prefix...), exportedFieldIndex(c.typ, p.voField))

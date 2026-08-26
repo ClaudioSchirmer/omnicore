@@ -1,12 +1,11 @@
 // Command omnicore-admin is the operator-side CLI for one-off framework
-// administration tasks. Today it ships a single subcommand,
-// replay-all-as-events, used to bootstrap a brand-new consumer service
-// (B) against an existing producer (A) whose Kafka retention does not
-// cover the full history.
+// administration tasks. Today it ships a single subcommand, list-failures,
+// the read-only triage of the unified projection failure ledger (replay of
+// those rows is automatic, driven by the mongo.parkedRetry loop).
 //
 // Usage:
 //
-//	omnicore-admin replay-all-as-events --aggregate <name> [flags]
+//	omnicore-admin list-failures [flags]
 //
 // The subcommand pattern uses stdlib flag.FlagSet so the framework adds
 // no extra module dependencies. New subcommands plug into the
@@ -23,7 +22,6 @@ import (
 	"syscall"
 
 	"github.com/ClaudioSchirmer/omnicore/cmd/omnicore-admin/listfailures"
-	"github.com/ClaudioSchirmer/omnicore/cmd/omnicore-admin/replay"
 )
 
 func main() {
@@ -45,8 +43,6 @@ func run() error {
 	args := os.Args[2:]
 
 	switch sub {
-	case "replay-all-as-events":
-		return replay.Run(ctx, args)
 	case "list-failures":
 		return listfailures.Run(ctx, args)
 	case "-h", "--help", "help":
@@ -65,8 +61,6 @@ func usage(out *os.File) {
 	fmt.Fprintln(out, "  omnicore-admin <subcommand> [flags]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Subcommands:")
-	fmt.Fprintln(out, "  replay-all-as-events       Replay every active aggregate as a synthetic INSERTED event")
-	fmt.Fprintln(out, "                             (use to bootstrap a brand-new consumer against an existing producer)")
 	fmt.Fprintln(out, "  list-failures              List pending rows of the unified projection failure ledger")
 	fmt.Fprintln(out, "                             (read-only — replay is automatic via the mongo.parkedRetry loop)")
 	fmt.Fprintln(out, "  help                       Show this message")
