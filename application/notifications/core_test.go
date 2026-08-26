@@ -48,6 +48,12 @@ func TestKernelNotifications_Semantic(t *testing.T) {
 		{"PayloadTooLarge", PayloadTooLargeNotification{}, domain.SemanticPayloadTooLarge},
 		{"RequestTimeout", RequestTimeoutNotification{}, domain.SemanticGatewayTimeout},
 		{"ReadTimeout", ReadTimeoutNotification{}, domain.SemanticRequestTimeout},
+		{"TooManyRequests", TooManyRequestsNotification{}, domain.SemanticTooManyRequests},
+		{"ResourceGone", ResourceGoneNotification{}, domain.SemanticGone},
+		{"PreconditionFailed", PreconditionFailedNotification{}, domain.SemanticPreconditionFailed},
+		{"UnsupportedMediaType", UnsupportedMediaTypeNotification{}, domain.SemanticUnsupportedMediaType},
+		{"NotImplemented", NotImplementedNotification{}, domain.SemanticNotImplemented},
+		{"BadGateway", BadGatewayNotification{}, domain.SemanticBadGateway},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

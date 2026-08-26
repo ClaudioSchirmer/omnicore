@@ -22,12 +22,16 @@ import (
 //
 //  2. *fiber.Error with a code the framework specializes — 404 (router
 //     could not match METHOD + path), 405 (path matches but the method
-//     is not registered), 413 (body exceeds the configured BodyLimit) and
+//     is not registered), 413 (body exceeds the configured BodyLimit),
 //     408 (Fiber's ErrRequestTimeout — the fasthttp read timeout fired while
-//     reading the request; the client was too slow). Each is emitted as its
-//     typed notification (RouteNotFoundNotification, MethodNotAllowedNotification,
-//     PayloadTooLargeNotification, ReadTimeoutNotification) carrying "METHOD /path"
-//     on FieldName so clients can branch UI without parsing the translated message.
+//     reading the request; the client was too slow) and 429 (a rate-limit
+//     middleware rejected the request through fiber.ErrTooManyRequests —
+//     the framework ships no limiter, but it renders one's refusal). Each is
+//     emitted as its typed notification (RouteNotFoundNotification,
+//     MethodNotAllowedNotification, PayloadTooLargeNotification,
+//     ReadTimeoutNotification, TooManyRequestsNotification) carrying
+//     "METHOD /path" on FieldName so clients can branch UI without parsing
+//     the translated message.
 //
 //  3. *fiber.Error with any other code — by design, treated as an unknown
 //     escape and emitted as InternalServerErrorNotification with status 500.
@@ -70,6 +74,8 @@ func ErrorHandler(pipe *pipeline.Pipeline) fiber.ErrorHandler {
 				return respondPayloadTooLarge(c, pipe)
 			case fiber.StatusRequestTimeout:
 				return respondReadTimeout(c, pipe)
+			case fiber.StatusTooManyRequests:
+				return respondTooManyRequests(c, pipe)
 			}
 		}
 
@@ -129,6 +135,23 @@ func respondReadTimeout(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    c.Method() + " " + c.Path(),
 		Notification: notifications.ReadTimeoutNotification{},
+	})
+	return respondViaPipeline(c, pipe, ctx)
+}
+
+// respondTooManyRequests emits a single TooManyRequestsNotification carrying
+// "METHOD /path" as FieldName. SemanticTooManyRequests maps to 429. The
+// framework ships no rate limiter — this branch exists so a middleware that
+// rejects through fiber.ErrTooManyRequests (Fiber's own limiter does when its
+// LimitReached handler returns the error rather than writing a bare status)
+// lands in the canonical envelope instead of the 500 an unrecognized code
+// used to produce. Any Retry-After the limiter already set on the context
+// survives: this path only writes status + body.
+func respondTooManyRequests(c fiber.Ctx, pipe *pipeline.Pipeline) error {
+	ctx := domain.NewNotificationContext("Request")
+	ctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    c.Method() + " " + c.Path(),
+		Notification: notifications.TooManyRequestsNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
 }

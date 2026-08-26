@@ -89,6 +89,13 @@ func (corePTBR) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Rota não encontrada.",
 		"MethodNotAllowedNotification":    "Método HTTP não permitido para esta rota.",
 		"PayloadTooLargeNotification":     "Corpo da requisição excede o tamanho permitido.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":      "Requisições em excesso. Tente novamente mais tarde.",
+		"ResourceGoneNotification":         "Este recurso não está mais disponível.",
+		"PreconditionFailedNotification":   "Uma pré-condição informada na requisição não foi atendida.",
+		"UnsupportedMediaTypeNotification": "Tipo de conteúdo não suportado por este endpoint.",
+		"NotImplementedNotification":       "Este recurso não está implementado.",
+		"BadGatewayNotification":           "Um serviço externo retornou uma resposta inválida.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,

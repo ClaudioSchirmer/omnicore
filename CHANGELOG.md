@@ -11,6 +11,55 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **Six everyday HTTP semantics.** `NotificationSemantic` gained
+  `SemanticGone` (410), `SemanticPreconditionFailed` (412),
+  `SemanticUnsupportedMediaType` (415), `SemanticTooManyRequests` (429),
+  `SemanticNotImplemented` (501) and `SemanticBadGateway` (502), each mapped on
+  every surface at once — HTTP status, gRPC/Connect code and the envelope's
+  `semantic` string. A service reaches them the way it already reaches 409:
+
+  ```go
+  type QuotaExhaustedNotification struct{ domain.ApplicationNotificationBase }
+  func (QuotaExhaustedNotification) Semantic() domain.NotificationSemantic {
+      return domain.SemanticTooManyRequests   // → 429 / RESOURCE_EXHAUSTED
+  }
+  ```
+
+  Before this, 429 was unreachable through the canonical path: the enum had no
+  member for it, and a value invented outside the enum misses
+  `semanticToStatus` silently — the response degrades to 422 carrying
+  `"semantic": "Validation"`, which is the one answer worse than no answer.
+  Nothing in the framework emits the new members on its own (the 429 branch
+  below aside): the framework ships no rate limiter, negotiates no media type
+  and reads no conditional header. It owns the vocabulary so the service can
+  say these things in the canonical envelope.
+
+- **Six kernel notifications** carrying those semantics —
+  `TooManyRequestsNotification`, `ResourceGoneNotification`,
+  `PreconditionFailedNotification`, `UnsupportedMediaTypeNotification`,
+  `NotImplementedNotification` and `BadGatewayNotification` in
+  `application/notifications`, translated in all seven built-in catalogs.
+
+- **OpenAPI default error examples** for 410, 412, 415, 429, 501 and 502, so a
+  route declaring one of them via `Doc.ResponseExamples` renders the shared
+  `ErrorEnvelope` shape instead of falling back to the 500 example.
+  `DefaultErrorExample` now covers 400/401/403/404/410/412/415/422/429/500/501/502.
+  The set a canonical route documents automatically (`standardErrors`) is
+  unchanged — a route that declares nothing documents nothing new.
+
+### Changed
+
+- **`fwweb.ErrorHandler` answers 429 instead of 500** when a middleware rejects
+  through `fiber.ErrTooManyRequests`. It joins the 404 / 405 / 408 / 413
+  branches and emits `TooManyRequestsNotification` in context `"Request"` with
+  `METHOD /path` on `field`. Previously an unrecognized `*fiber.Error` code fell
+  through to the unknown-escape branch, so a rate-limited client was told the
+  server had crashed. Any `Retry-After` the middleware already set on the
+  context survives — the envelope render writes status and body only, and
+  carries no header slot of its own.
+
 ## [0.60.0] - 2026-08-25
 
 ### Added

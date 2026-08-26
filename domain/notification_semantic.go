@@ -20,6 +20,12 @@ const (
 	SemanticGatewayTimeout                               // → 504 Gateway Timeout (request exceeded the server-side deadline)
 	SemanticStateConflict                                // → 409 Conflict (entity/system in the wrong state — precondition failure, not a duplicate)
 	SemanticRequestTimeout                               // → 408 Request Timeout (the client did not send the full request within the transport read timeout)
+	SemanticGone                                         // → 410 Gone (the resource existed and was permanently removed — a NotFound the server can vouch for)
+	SemanticPreconditionFailed                           // → 412 Precondition Failed (a conditional header the client sent — If-Match / If-Unmodified-Since — did not hold)
+	SemanticUnsupportedMediaType                         // → 415 Unsupported Media Type (the request's Content-Type is not one this endpoint accepts)
+	SemanticTooManyRequests                              // → 429 Too Many Requests (rate limit or quota exhausted — the client should retry later)
+	SemanticNotImplemented                               // → 501 Not Implemented (the endpoint is declared but the capability behind it is not built)
+	SemanticBadGateway                                   // → 502 Bad Gateway (an upstream this service depends on answered with something unusable)
 )
 
 // String returns the canonical name for logs, debug and wire format.
@@ -49,6 +55,18 @@ func (s NotificationSemantic) String() string {
 		return "StateConflict"
 	case SemanticRequestTimeout:
 		return "RequestTimeout"
+	case SemanticGone:
+		return "Gone"
+	case SemanticPreconditionFailed:
+		return "PreconditionFailed"
+	case SemanticUnsupportedMediaType:
+		return "UnsupportedMediaType"
+	case SemanticTooManyRequests:
+		return "TooManyRequests"
+	case SemanticNotImplemented:
+		return "NotImplemented"
+	case SemanticBadGateway:
+		return "BadGateway"
 	default:
 		return "Validation"
 	}

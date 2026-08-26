@@ -355,9 +355,10 @@ func TestErrorHandler_ReadTimeout(t *testing.T) {
 // TestErrorHandler_FiberErrorOtherCode proves a *fiber.Error with a code
 // the framework does NOT specialize (e.g. 418 raised by a custom middleware
 // via fiber.NewError) is treated as an unknown escape and falls through to
-// the 500 envelope. The framework specializes 404 / 405 / 413; every other
-// code stays as 500 by design — services that need custom HTTP semantics
-// must emit a NotificationCarrier instead of raising fiber.NewError.
+// the 500 envelope. The framework specializes 404 / 405 / 408 / 413 / 429;
+// every other code stays as 500 by design — services that need custom HTTP
+// semantics must emit a NotificationCarrier instead of raising
+// fiber.NewError.
 func TestErrorHandler_FiberErrorOtherCode_FallsThroughToInternal(t *testing.T) {
 	app := newAppWithErrorHandler()
 	app.Get("/teapot", func(c fiber.Ctx) error {
@@ -381,5 +382,73 @@ func TestErrorHandler_FiberErrorOtherCode_FallsThroughToInternal(t *testing.T) {
 	rawBytes, _ := json.Marshal(body)
 	if strings.Contains(string(rawBytes), "i am a teapot") {
 		t.Fatalf("fiber.Error message leaked: %s", rawBytes)
+	}
+}
+
+// TestErrorHandler_TooManyRequests proves a middleware rejecting through
+// fiber.ErrTooManyRequests reaches the canonical envelope as a typed 429.
+// Before the branch existed this landed in the unknown-escape fallthrough and
+// a rate-limited client was told the server had crashed.
+func TestErrorHandler_TooManyRequests(t *testing.T) {
+	const sentinel = "FIBER-429-SENTINEL-XYZ"
+	app := newAppWithErrorHandler()
+	app.Get("/limited", func(c fiber.Ctx) error {
+		return fiber.NewError(fiber.StatusTooManyRequests, sentinel)
+	})
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/limited", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp.StatusCode)
+	}
+
+	body := decodeResponse(t, resp.Body)
+	resp.Body.Close()
+	if body.Status != fiber.StatusTooManyRequests {
+		t.Fatalf("expected envelope status 429, got %d", body.Status)
+	}
+	if len(body.Errors) != 1 || body.Errors[0].Context != "Request" {
+		t.Fatalf("expected 1 error in context \"Request\", got %+v", body.Errors)
+	}
+	msg := body.Errors[0].Messages[0]
+	if msg.NotificationKey != "TooManyRequestsNotification" {
+		t.Fatalf("expected NotificationKey=TooManyRequestsNotification, got %q", msg.NotificationKey)
+	}
+	if msg.Semantic != "TooManyRequests" {
+		t.Fatalf("expected Semantic=TooManyRequests, got %q", msg.Semantic)
+	}
+	if msg.Field != "GET /limited" {
+		t.Fatalf("expected field=\"GET /limited\", got %q", msg.Field)
+	}
+	if rawBytes, _ := json.Marshal(body); strings.Contains(string(rawBytes), sentinel) {
+		t.Fatalf("fiber.Error message leaked: %s", rawBytes)
+	}
+}
+
+// TestErrorHandler_TooManyRequests_PreservesRetryAfter proves the retry hint a
+// limiter sets on the context before rejecting survives the envelope render.
+// A 429 without Retry-After is half an answer, and the canonical Response
+// carries no header slot — so the guarantee the framework can make is that it
+// does not DROP what the middleware already set.
+func TestErrorHandler_TooManyRequests_PreservesRetryAfter(t *testing.T) {
+	app := newAppWithErrorHandler()
+	app.Use(func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderRetryAfter, "30")
+		return fiber.ErrTooManyRequests
+	})
+	app.Get("/limited", func(c fiber.Ctx) error { return nil })
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/limited", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get(fiber.HeaderRetryAfter); got != "30" {
+		t.Fatalf("expected Retry-After preserved as \"30\", got %q", got)
 	}
 }

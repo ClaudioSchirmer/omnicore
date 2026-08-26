@@ -228,3 +228,56 @@ func TestRespondFromResult_ExceptionBranchCarriesCanonicalEnvelope(t *testing.T)
 type errInjected struct{}
 
 func (errInjected) Error() string { return "injected exception" }
+
+// TestStatusFromBasicHTTPFamily locks Semantic→status for the six everyday
+// statuses the framework maps but does not emit itself. A miss in
+// semanticToStatus does not fail loudly — statusFromNotifications simply
+// walks past it and returns 422 — so the table entry IS the contract and
+// this test is what defends it.
+func TestStatusFromBasicHTTPFamily(t *testing.T) {
+	cases := []struct {
+		key  string
+		sem  domain.NotificationSemantic
+		want int
+	}{
+		{"ResourceGoneNotification", domain.SemanticGone, fiber.StatusGone},
+		{"PreconditionFailedNotification", domain.SemanticPreconditionFailed, fiber.StatusPreconditionFailed},
+		{"UnsupportedMediaTypeNotification", domain.SemanticUnsupportedMediaType, fiber.StatusUnsupportedMediaType},
+		{"TooManyRequestsNotification", domain.SemanticTooManyRequests, fiber.StatusTooManyRequests},
+		{"NotImplementedNotification", domain.SemanticNotImplemented, fiber.StatusNotImplemented},
+		{"BadGatewayNotification", domain.SemanticBadGateway, fiber.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			dtos := []notifications.ContextDTO{{
+				Context:  "Request",
+				Messages: []notifications.MessageDTO{{NotificationKey: tc.key, Semantic: tc.sem}},
+			}}
+			if got := statusFromNotifications(dtos); got != tc.want {
+				t.Fatalf("%s: expected %d, got %d", tc.key, tc.want, got)
+			}
+		})
+	}
+}
+
+// TestResponseFromContextDTOs_CarriesNewSemanticLabels proves the envelope's
+// `semantic` slot renders the new labels instead of degrading to
+// "Validation" — the failure mode an out-of-vocabulary semantic produces.
+func TestResponseFromContextDTOs_CarriesNewSemanticLabels(t *testing.T) {
+	dtos := []notifications.ContextDTO{{
+		Context: "Request",
+		Messages: []notifications.MessageDTO{
+			{NotificationKey: "TooManyRequestsNotification", Semantic: domain.SemanticTooManyRequests},
+		},
+	}}
+	resp := ResponseFromContextDTOs(dtos, statusFromNotifications(dtos), "")
+	if resp.Status != fiber.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %d", resp.Status)
+	}
+	if got := resp.Errors[0].Messages[0].Semantic; got != "TooManyRequests" {
+		t.Fatalf("expected semantic TooManyRequests, got %q", got)
+	}
+	if resp.Description != "Too Many Requests" {
+		t.Fatalf("expected description \"Too Many Requests\", got %q", resp.Description)
+	}
+}

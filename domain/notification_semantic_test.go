@@ -84,3 +84,39 @@ func TestNotificationSemanticString(t *testing.T) {
 		}
 	}
 }
+
+// TestNotificationSemanticString_BasicHTTPFamily locks the wire label of the
+// six statuses added to close the everyday-HTTP gap. The label is what lands
+// in the REST envelope's `semantic`, the gRPC ErrorInfo metadata and the
+// GraphQL extension — a regression here is a silent contract change on three
+// surfaces at once.
+func TestNotificationSemanticString_BasicHTTPFamily(t *testing.T) {
+	cases := map[NotificationSemantic]string{
+		SemanticGone:                 "Gone",
+		SemanticPreconditionFailed:   "PreconditionFailed",
+		SemanticUnsupportedMediaType: "UnsupportedMediaType",
+		SemanticTooManyRequests:      "TooManyRequests",
+		SemanticNotImplemented:       "NotImplemented",
+		SemanticBadGateway:           "BadGateway",
+	}
+	for s, want := range cases {
+		if got := s.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", int(s), got, want)
+		}
+	}
+}
+
+// TestNotificationSemantic_NoDuplicateLabels asserts the enum is injective on
+// String(): two semantics sharing a label would make the wire ambiguous
+// exactly where the split exists to disambiguate (Conflict vs StateConflict,
+// MethodNotAllowed vs NotImplemented, Unavailable vs BadGateway).
+func TestNotificationSemantic_NoDuplicateLabels(t *testing.T) {
+	seen := map[string]NotificationSemantic{}
+	for s := SemanticValidation; s <= SemanticBadGateway; s++ {
+		label := s.String()
+		if prev, dup := seen[label]; dup {
+			t.Errorf("semantics %d and %d share the label %q", int(prev), int(s), label)
+		}
+		seen[label] = s
+	}
+}

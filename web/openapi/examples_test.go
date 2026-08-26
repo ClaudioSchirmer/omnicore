@@ -17,6 +17,9 @@ func TestDefaultErrorExample_KnownStatuses(t *testing.T) {
 		http.StatusBadRequest, http.StatusUnauthorized,
 		http.StatusNotFound, http.StatusUnprocessableEntity,
 		http.StatusInternalServerError,
+		http.StatusGone, http.StatusPreconditionFailed,
+		http.StatusUnsupportedMediaType, http.StatusTooManyRequests,
+		http.StatusNotImplemented, http.StatusBadGateway,
 	} {
 		ex, ok := DefaultErrorExample(status)
 		if !ok {

@@ -76,6 +76,35 @@ var defaultErrorExamples = map[int]Example{
 		Summary: "Recovered panic / unexpected error",
 		Value:   errorEnvelopeValue(http.StatusInternalServerError, "Server", "InternalServerErrorNotification", "", "", "Internal"),
 	},
+	// The statuses below are vocabulary the framework maps but never emits on
+	// its own (the 429 middleware branch aside). They carry a default example
+	// so a route that DECLARES one via Doc.ResponseExamples renders the shared
+	// envelope instead of falling back to the 500 shape; they stay out of
+	// standardErrors, so a route that does not declare them documents nothing.
+	http.StatusGone: {
+		Summary: "Resource permanently removed",
+		Value:   errorEnvelopeValue(http.StatusGone, "Request", "ResourceGoneNotification", "id", "", "Gone"),
+	},
+	http.StatusPreconditionFailed: {
+		Summary: "Conditional request precondition not met",
+		Value:   errorEnvelopeValue(http.StatusPreconditionFailed, "Request", "PreconditionFailedNotification", "", "", "PreconditionFailed"),
+	},
+	http.StatusUnsupportedMediaType: {
+		Summary: "Content-Type this endpoint cannot read",
+		Value:   errorEnvelopeValue(http.StatusUnsupportedMediaType, "Request", "UnsupportedMediaTypeNotification", "", "", "UnsupportedMediaType"),
+	},
+	http.StatusTooManyRequests: {
+		Summary: "Rate limit or quota exhausted",
+		Value:   errorEnvelopeValue(http.StatusTooManyRequests, "Request", "TooManyRequestsNotification", "", "", "TooManyRequests"),
+	},
+	http.StatusNotImplemented: {
+		Summary: "Route declared, capability not built",
+		Value:   errorEnvelopeValue(http.StatusNotImplemented, "Request", "NotImplementedNotification", "", "", "NotImplemented"),
+	},
+	http.StatusBadGateway: {
+		Summary: "Upstream answered with an unusable response",
+		Value:   errorEnvelopeValue(http.StatusBadGateway, "Server", "BadGatewayNotification", "", "", "BadGateway"),
+	},
 }
 
 // DefaultErrorExample returns the canonical envelope example the framework
@@ -85,9 +114,9 @@ var defaultErrorExamples = map[int]Example{
 // entry alongside their own variants on a status that they otherwise
 // override entirely.
 //
-// ok=true when the status has a framework default (400/401/403/404/422/500
-// today); ok=false for any other status — the consumer is on their own
-// for those.
+// ok=true when the status has a framework default (400/401/403/404/410/412/
+// 415/422/429/500/501/502 today); ok=false for any other status — the
+// consumer is on their own for those.
 func DefaultErrorExample(status int) (Example, bool) {
 	ex, ok := defaultErrorExamples[status]
 	return ex, ok

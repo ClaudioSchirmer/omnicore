@@ -89,6 +89,13 @@ func (coreES) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Ruta no encontrada.",
 		"MethodNotAllowedNotification":    "Método HTTP no permitido para esta ruta.",
 		"PayloadTooLargeNotification":     "El cuerpo de la solicitud supera el tamaño permitido.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":      "Demasiadas solicitudes. Inténtelo de nuevo más tarde.",
+		"ResourceGoneNotification":         "Este recurso ya no está disponible.",
+		"PreconditionFailedNotification":   "No se cumplió una condición previa indicada en la solicitud.",
+		"UnsupportedMediaTypeNotification": "Tipo de contenido no admitido por este endpoint.",
+		"NotImplementedNotification":       "Esta funcionalidad no está implementada.",
+		"BadGatewayNotification":           "Un servicio externo devolvió una respuesta no válida.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,

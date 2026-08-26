@@ -257,6 +257,12 @@ return bootstrap.Wiring{ …, Features: []bootstrap.Feature{users} }</code></pre
     <tr><td><code>SemanticPayloadTooLarge</code></td><td>RESOURCE_EXHAUSTED</td></tr>
     <tr><td><code>SemanticGatewayTimeout</code></td><td>DEADLINE_EXCEEDED</td></tr>
     <tr><td><code>SemanticRequestTimeout</code></td><td>DEADLINE_EXCEEDED — mapped for enum completeness; in practice it is raised by the HTTP read timeout, which this transport does not have</td></tr>
+    <tr><td><code>SemanticGone</code></td><td>NOT_FOUND — the permanently-removed flavor of absence; <code>ErrorInfo.reason</code> and the <code>semantic</code> metadata distinguish it from the plain 404</td></tr>
+    <tr><td><code>SemanticPreconditionFailed</code></td><td>FAILED_PRECONDITION — the conditional-header flavor; shares the code with <code>SemanticStateConflict</code></td></tr>
+    <tr><td><code>SemanticUnsupportedMediaType</code></td><td>INVALID_ARGUMENT — a wire-contract refusal like <code>SemanticSchema</code>; HTTP-only in practice (this transport negotiates no media type)</td></tr>
+    <tr><td><code>SemanticTooManyRequests</code></td><td>RESOURCE_EXHAUSTED — shares the code with <code>SemanticPayloadTooLarge</code>: both say a quota was spent</td></tr>
+    <tr><td><code>SemanticNotImplemented</code></td><td>UNIMPLEMENTED — shares the code with <code>SemanticMethodNotAllowed</code></td></tr>
+    <tr><td><code>SemanticBadGateway</code></td><td>UNAVAILABLE — shares the code with <code>SemanticUnavailable</code></td></tr>
 </tbody></table>
 <p>
     The table is the whole <a href="#status-mapping"><code>Semantic</code></a> enum: every member maps, so no failure

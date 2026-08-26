@@ -7,6 +7,49 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>six everyday HTTP semantics.</strong>
+                <a href="#status-mapping"><code>NotificationSemantic</code></a> gained
+                <code>SemanticGone</code> (410), <code>SemanticPreconditionFailed</code> (412),
+                <code>SemanticUnsupportedMediaType</code> (415), <code>SemanticTooManyRequests</code> (429),
+                <code>SemanticNotImplemented</code> (501) and <code>SemanticBadGateway</code> (502) — each
+                mapped on every surface at once: the HTTP status, the <a href="#grpc">gRPC/Connect code</a>
+                and the envelope's <code>semantic</code> string. A service reaches them the way it already
+                reaches 409, by overriding <code>Semantic()</code> on its own notification; nothing is
+                registered anywhere.
+                <ul>
+                    <li><strong>429 had no canonical path before.</strong> The enum carried no member for it,
+                        and a value invented outside the enum is neither a compile error nor a boot failure —
+                        it simply misses the lookup table, so the response degrades to <strong>422</strong>
+                        carrying <code>"semantic": "Validation"</code>. The vocabulary is the framework's, and
+                        this closes the everyday gaps in it.</li>
+                    <li><strong>The framework does not emit them</strong> (the 429 branch below aside): it ships
+                        no rate limiter, negotiates no media type, reads no conditional header and never decides
+                        on your behalf that a resource is permanently gone. It owns the vocabulary so the service
+                        can say these things in the canonical envelope.</li>
+                    <li>Six kernel notifications carry them — <code>TooManyRequestsNotification</code>,
+                        <code>ResourceGoneNotification</code>, <code>PreconditionFailedNotification</code>,
+                        <code>UnsupportedMediaTypeNotification</code>, <code>NotImplementedNotification</code>,
+                        <code>BadGatewayNotification</code> — translated in all seven built-in catalogs.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong><a href="#openapi">OpenAPI</a> default error examples</strong>
+                for 410, 412, 415, 429, 501 and 502, so a route declaring one via <code>Doc.ResponseExamples</code>
+                renders the shared <code>ErrorEnvelope</code> shape instead of falling back to the 500 example.
+                The set a canonical route documents <em>automatically</em> is unchanged — a route that declares
+                nothing documents nothing new.</li>
+            <li><strong>Changed</strong> — <strong><code>fwweb.ErrorHandler</code> answers 429 instead of 500</strong>
+                when a middleware rejects through <code>fiber.ErrTooManyRequests</code>. It joins the
+                404 / 405 / 408 / 413 branches and emits <code>TooManyRequestsNotification</code> in context
+                <code>"Request"</code> with <code>METHOD /path</code> on <code>field</code>; previously an
+                unrecognized <code>*fiber.Error</code> code fell through to the unknown-escape branch, so a
+                rate-limited client was told the server had crashed. Any
+                <a href="#status-mapping~retry-after"><code>Retry-After</code></a> the middleware already set on
+                the context survives.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.60.0</span><span class="release-date">August 25, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><a href="#table-schema~redacted-field"><code>RedactedField</code></a>:

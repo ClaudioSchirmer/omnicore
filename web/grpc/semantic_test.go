@@ -24,18 +24,24 @@ func dtosWith(sem domain.NotificationSemantic, key, field, msg string) []notific
 
 func TestCodeFromNotificationsTable(t *testing.T) {
 	cases := map[domain.NotificationSemantic]connect.Code{
-		domain.SemanticSchema:           connect.CodeInvalidArgument,
-		domain.SemanticNotFound:         connect.CodeNotFound,
-		domain.SemanticConflict:         connect.CodeAlreadyExists,
-		domain.SemanticStateConflict:    connect.CodeFailedPrecondition,
-		domain.SemanticForbidden:        connect.CodePermissionDenied,
-		domain.SemanticUnauthorized:     connect.CodeUnauthenticated,
-		domain.SemanticUnavailable:      connect.CodeUnavailable,
-		domain.SemanticInternal:         connect.CodeInternal,
-		domain.SemanticMethodNotAllowed: connect.CodeUnimplemented,
-		domain.SemanticPayloadTooLarge:  connect.CodeResourceExhausted,
-		domain.SemanticGatewayTimeout:   connect.CodeDeadlineExceeded,
-		domain.SemanticRequestTimeout:   connect.CodeDeadlineExceeded,
+		domain.SemanticSchema:               connect.CodeInvalidArgument,
+		domain.SemanticNotFound:             connect.CodeNotFound,
+		domain.SemanticConflict:             connect.CodeAlreadyExists,
+		domain.SemanticStateConflict:        connect.CodeFailedPrecondition,
+		domain.SemanticForbidden:            connect.CodePermissionDenied,
+		domain.SemanticUnauthorized:         connect.CodeUnauthenticated,
+		domain.SemanticUnavailable:          connect.CodeUnavailable,
+		domain.SemanticInternal:             connect.CodeInternal,
+		domain.SemanticMethodNotAllowed:     connect.CodeUnimplemented,
+		domain.SemanticPayloadTooLarge:      connect.CodeResourceExhausted,
+		domain.SemanticGatewayTimeout:       connect.CodeDeadlineExceeded,
+		domain.SemanticRequestTimeout:       connect.CodeDeadlineExceeded,
+		domain.SemanticGone:                 connect.CodeNotFound,
+		domain.SemanticPreconditionFailed:   connect.CodeFailedPrecondition,
+		domain.SemanticUnsupportedMediaType: connect.CodeInvalidArgument,
+		domain.SemanticTooManyRequests:      connect.CodeResourceExhausted,
+		domain.SemanticNotImplemented:       connect.CodeUnimplemented,
+		domain.SemanticBadGateway:           connect.CodeUnavailable,
 	}
 	for sem, want := range cases {
 		if got := codeFromNotifications(dtosWith(sem, "K", "", "m")); got != want {

@@ -89,6 +89,13 @@ func (coreNL) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route niet gevonden.",
 		"MethodNotAllowedNotification":    "HTTP-methode niet toegestaan voor deze route.",
 		"PayloadTooLargeNotification":     "Verzoekbody overschrijdt de toegestane omvang.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":      "Te veel verzoeken. Probeer het later opnieuw.",
+		"ResourceGoneNotification":         "Deze bron is niet langer beschikbaar.",
+		"PreconditionFailedNotification":   "Aan een in het verzoek gestelde voorwaarde is niet voldaan.",
+		"UnsupportedMediaTypeNotification": "Inhoudstype wordt niet ondersteund door dit endpoint.",
+		"NotImplementedNotification":       "Deze functionaliteit is niet geïmplementeerd.",
+		"BadGatewayNotification":           "Een upstream-service gaf een ongeldig antwoord.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,

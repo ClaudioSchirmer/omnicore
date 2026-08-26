@@ -142,6 +142,103 @@ func (PayloadTooLargeNotification) Semantic() domain.NotificationSemantic {
 	return domain.SemanticPayloadTooLarge
 }
 
+// TooManyRequestsNotification is the rate-limit / quota refusal: the request
+// was well-formed and authorized, but the caller has spent its allowance for
+// now and should retry later. The framework never emits it on its own — it
+// ships no rate limiter — but it owns the vocabulary so a service (or a
+// third-party middleware rejecting through fiber.ErrTooManyRequests) surfaces
+// the refusal in the canonical envelope instead of a bare status line.
+// Carries SemanticTooManyRequests -> 429 on HTTP and RESOURCE_EXHAUSTED on gRPC.
+//
+// A 429 is only half an answer without a retry hint. The envelope carries no
+// headers, so a handler that knows when the window reopens sets
+// c.Set(fiber.HeaderRetryAfter, ...) before responding — the header the
+// framework's own httpclient honors on the way back in.
+type TooManyRequestsNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (TooManyRequestsNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticTooManyRequests
+}
+
+// ResourceGoneNotification is the stronger sibling of
+// RecordNotFoundNotification: the resource DID exist at this address and was
+// permanently removed, and the server is willing to say so. Reach for it when
+// absence is a fact worth publishing (a hard-deleted aggregate, a retired
+// endpoint) and for plain "no row matched" keep the 404 — a 410 tells caches
+// and crawlers to stop asking, which is not something to claim by accident.
+// Carries SemanticGone -> 410 on HTTP and NOT_FOUND on gRPC.
+type ResourceGoneNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (ResourceGoneNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticGone
+}
+
+// PreconditionFailedNotification is the conditional-request refusal: the
+// client sent a precondition header (If-Match, If-Unmodified-Since) and the
+// resource no longer satisfies it. Distinct from
+// ConcurrentModificationNotification (409 StateConflict), which is the
+// framework's own revision guard firing INSIDE a write: there the client
+// asserted nothing and the collision was detected for it; here the client
+// stated a condition up front and the server is answering that statement.
+// Carries SemanticPreconditionFailed -> 412 on HTTP and FAILED_PRECONDITION
+// on gRPC.
+type PreconditionFailedNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (PreconditionFailedNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticPreconditionFailed
+}
+
+// UnsupportedMediaTypeNotification is the Content-Type refusal: the endpoint
+// cannot read the representation the client sent. Distinct from
+// SchemaViolationNotification (400 Schema), which is a body the endpoint DID
+// read and found malformed — this one is refused before parsing is attempted.
+// Carries SemanticUnsupportedMediaType -> 415 on HTTP and INVALID_ARGUMENT on
+// gRPC (the same code the Schema flavor uses; the envelope's semantic string
+// disambiguates).
+type UnsupportedMediaTypeNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (UnsupportedMediaTypeNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticUnsupportedMediaType
+}
+
+// NotImplementedNotification is the "declared but not built" refusal: the
+// route exists and the request is valid, and the capability behind it is not
+// implemented yet. Distinct from MethodNotAllowedNotification (405), which
+// says the verb will never be served at this path; a 501 says not yet.
+// Carries SemanticNotImplemented -> 501 on HTTP and UNIMPLEMENTED on gRPC.
+type NotImplementedNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (NotImplementedNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticNotImplemented
+}
+
+// BadGatewayNotification is the upstream-answered-garbage refusal: this
+// service reached a dependency it composes over (an httpclient endpoint, a
+// gRPC peer, an upstream a view subscribes to) and got back a response it
+// cannot use — a broken payload, an unusable status, a contract the peer no
+// longer honors. Distinct from ServiceUnavailableNotification (503), which is
+// THIS service declining to serve, and from RequestTimeoutNotification (504),
+// which is the deadline elapsing: a 502 means the conversation completed and
+// the answer was wrong. Carries SemanticBadGateway -> 502 on HTTP and
+// UNAVAILABLE on gRPC.
+type BadGatewayNotification struct {
+	domain.ApplicationNotificationBase
+}
+
+func (BadGatewayNotification) Semantic() domain.NotificationSemantic {
+	return domain.SemanticBadGateway
+}
+
 // MissingPermissionNotification is emitted by Mount/MountRaw's runtime gate
 // when the request's Identity does not carry the required permission declared
 // via fwopenapi.RequirePermission. The required permission string is carried
