@@ -20,6 +20,13 @@ func TestDefaultErrorExample_KnownStatuses(t *testing.T) {
 		http.StatusGone, http.StatusPreconditionFailed,
 		http.StatusUnsupportedMediaType, http.StatusTooManyRequests,
 		http.StatusNotImplemented, http.StatusBadGateway,
+		http.StatusPaymentRequired, http.StatusNotAcceptable,
+		http.StatusRequestedRangeNotSatisfiable, http.StatusLocked,
+		http.StatusPreconditionRequired, http.StatusUnavailableForLegalReasons,
+		http.StatusInsufficientStorage, http.StatusMethodNotAllowed,
+		http.StatusRequestTimeout, http.StatusConflict,
+		http.StatusRequestEntityTooLarge, http.StatusRequestHeaderFieldsTooLarge,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout,
 	} {
 		ex, ok := DefaultErrorExample(status)
 		if !ok {
@@ -39,7 +46,9 @@ func TestDefaultErrorExample_KnownStatuses(t *testing.T) {
 }
 
 func TestDefaultErrorExample_UnknownStatusReturnsFalse(t *testing.T) {
-	_, ok := DefaultErrorExample(451)
+	// 418 is the framework's standing "never mapped" sentinel — the same one
+	// web.ErrorHandler's fallthrough test uses.
+	_, ok := DefaultErrorExample(418)
 	if ok {
 		t.Fatal("non-standard status should return ok=false")
 	}
@@ -359,14 +368,16 @@ func TestSpec_ErrorExamples_EmptyDefaultRemovesEntry(t *testing.T) {
 }
 
 func TestSpec_ErrorExamples_CustomStatusRendersConsumerExamples(t *testing.T) {
-	// A canonical route may emit a status outside the framework's
-	// default error set (400/401/403/404/422/500) — typically when a
-	// domain notification overrides Semantic() to Conflict/Unavailable/
-	// etc. Declaring Doc.ResponseExamples[N] for that status must surface
-	// a responses["N"] entry carrying the consumer's examples, not be
-	// silently dropped.
+	// A route may emit a status the framework's Semantic table does not map
+	// at all — 424 Failed Dependency here, one of the statuses deliberately
+	// left out of the vocabulary because 502/503/409 already cover its
+	// ground. Declaring Doc.ResponseExamples[N] for such a status must
+	// surface a responses["N"] entry carrying exactly the consumer's
+	// examples: rendered, not silently dropped, and with no canonical
+	// `default` merged in, because the framework has nothing to say about a
+	// status it never emits.
 	reg := NewRegistry()
-	conflictEnvelope := errorEnvelopeValue(409, "User", "EmailAlreadyExistsNotification", "email", "alice@x", "Conflict")
+	depEnvelope := errorEnvelopeValue(424, "User", "UpstreamPrerequisiteFailedNotification", "", "", "FailedDependency")
 	Mount(reg, fiber.New(), fiber.MethodPost, "/users",
 		func(c fiber.Ctx) error { return nil },
 		RouteSpec{
@@ -376,10 +387,10 @@ func TestSpec_ErrorExamples_CustomStatusRendersConsumerExamples(t *testing.T) {
 		},
 		Doc{
 			ResponseExamples: map[int]map[string]Example{
-				fiber.StatusConflict: {
-					"duplicateEmail": {
-						Summary: "Email already registered",
-						Value:   conflictEnvelope,
+				fiber.StatusFailedDependency: {
+					"prerequisiteFailed": {
+						Summary: "A prerequisite resource could not be resolved",
+						Value:   depEnvelope,
 					},
 				},
 			},
@@ -388,11 +399,11 @@ func TestSpec_ErrorExamples_CustomStatusRendersConsumerExamples(t *testing.T) {
 	out := marshalSpec(t, NewSpec(Config{Title: "T", Version: "1"}, reg))
 	post := out["paths"].(map[string]any)["/users"].(map[string]any)["post"].(map[string]any)
 	responses := post["responses"].(map[string]any)
-	resp, exists := responses["409"].(map[string]any)
+	resp, exists := responses["424"].(map[string]any)
 	if !exists {
 		t.Fatalf("custom status declared via ResponseExamples should render; got statuses %v", keysOfAny(responses))
 	}
-	if resp["description"] != "Conflict" {
+	if resp["description"] != "Failed Dependency" {
 		t.Fatalf("custom status description should come from http.StatusText; got %v", resp["description"])
 	}
 	content := resp["content"].(map[string]any)["application/json"].(map[string]any)
@@ -407,10 +418,11 @@ func TestSpec_ErrorExamples_CustomStatusRendersConsumerExamples(t *testing.T) {
 	if !ok {
 		t.Fatalf("consumer examples should render under plural examples; got %+v", content)
 	}
-	if _, exists := examples["duplicateEmail"]; !exists {
+	if _, exists := examples["prerequisiteFailed"]; !exists {
 		t.Fatalf("consumer-declared example should render; got %v", keysOfAny(examples))
 	}
-	// 409 has no DefaultErrorExample entry → no auto-merged `default`.
+	// 424 is outside the Semantic table → no DefaultErrorExample → no
+	// auto-merged `default`.
 	if _, exists := examples["default"]; exists {
 		t.Fatalf("non-default status should NOT auto-merge a default entry; got %v", keysOfAny(examples))
 	}

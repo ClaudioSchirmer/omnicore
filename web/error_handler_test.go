@@ -353,12 +353,12 @@ func TestErrorHandler_ReadTimeout(t *testing.T) {
 }
 
 // TestErrorHandler_FiberErrorOtherCode proves a *fiber.Error with a code
-// the framework does NOT specialize (e.g. 418 raised by a custom middleware
-// via fiber.NewError) is treated as an unknown escape and falls through to
-// the 500 envelope. The framework specializes 404 / 405 / 408 / 413 / 429;
-// every other code stays as 500 by design — services that need custom HTTP
-// semantics must emit a NotificationCarrier instead of raising
-// fiber.NewError.
+// the framework does NOT specialize (418 — the standing sentinel, and a status
+// the vocabulary deliberately never maps) is treated as an unknown escape and
+// falls through to the 500 envelope. The framework specializes
+// 400 / 404 / 405 / 408 / 413 / 429 / 431 / 501; every other code stays as 500
+// by design — services that need custom HTTP semantics must emit a
+// NotificationCarrier instead of raising fiber.NewError.
 func TestErrorHandler_FiberErrorOtherCode_FallsThroughToInternal(t *testing.T) {
 	app := newAppWithErrorHandler()
 	app.Get("/teapot", func(c fiber.Ctx) error {
@@ -450,5 +450,95 @@ func TestErrorHandler_TooManyRequests_PreservesRetryAfter(t *testing.T) {
 	}
 	if got := resp.Header.Get(fiber.HeaderRetryAfter); got != "30" {
 		t.Fatalf("expected Retry-After preserved as \"30\", got %q", got)
+	}
+}
+
+// errorHandlerBranch is the shared shape of the transport-authored branches:
+// a *fiber.Error code Fiber's serverErrorHandler can produce, answered with a
+// typed notification in the canonical envelope, carrying METHOD /path and
+// never leaking the fiber message.
+type errorHandlerBranch struct {
+	name     string
+	code     int
+	key      string
+	semantic string
+	context  string
+}
+
+// TestErrorHandler_TransportAuthoredBranches covers the three branches added
+// when the audit of Fiber's serverErrorHandler (app.go, the switch that
+// normalizes every fasthttp failure) showed it hands us statuses we were
+// turning into 500: a request it could not read as HTTP at all, a header block
+// over the read buffer, and an HTTP verb this server implements nowhere.
+func TestErrorHandler_TransportAuthoredBranches(t *testing.T) {
+	cases := []errorHandlerBranch{
+		{"malformed request", fiber.StatusBadRequest, "MalformedRequestNotification", "Schema", "Request"},
+		{"header block too large", fiber.StatusRequestHeaderFieldsTooLarge, "RequestHeaderFieldsTooLargeNotification", "RequestHeaderFieldsTooLarge", "Request"},
+		{"unsupported HTTP method", fiber.StatusNotImplemented, "NotImplementedNotification", "NotImplemented", "Request"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const sentinel = "FIBER-SENTINEL-SHOULD-NOT-LEAK"
+			app := newAppWithErrorHandler()
+			app.Get("/probe", func(c fiber.Ctx) error {
+				return fiber.NewError(tc.code, sentinel)
+			})
+
+			resp, err := app.Test(httptest.NewRequest("GET", "/probe", nil))
+			if err != nil {
+				t.Fatalf("app.Test: %v", err)
+			}
+			if resp.StatusCode != tc.code {
+				t.Fatalf("expected %d, got %d", tc.code, resp.StatusCode)
+			}
+
+			body := decodeResponse(t, resp.Body)
+			resp.Body.Close()
+			if body.Status != tc.code {
+				t.Fatalf("expected envelope status %d, got %d", tc.code, body.Status)
+			}
+			if len(body.Errors) != 1 || body.Errors[0].Context != tc.context {
+				t.Fatalf("expected 1 error in context %q, got %+v", tc.context, body.Errors)
+			}
+			msg := body.Errors[0].Messages[0]
+			if msg.NotificationKey != tc.key {
+				t.Fatalf("expected NotificationKey=%s, got %q", tc.key, msg.NotificationKey)
+			}
+			if msg.Semantic != tc.semantic {
+				t.Fatalf("expected Semantic=%s, got %q", tc.semantic, msg.Semantic)
+			}
+			if msg.Field != "GET /probe" {
+				t.Fatalf("expected field=\"GET /probe\", got %q", msg.Field)
+			}
+			if rawBytes, _ := json.Marshal(body); strings.Contains(string(rawBytes), sentinel) {
+				t.Fatalf("fiber.Error message leaked: %s", rawBytes)
+			}
+		})
+	}
+}
+
+// TestErrorHandler_BadGatewayStaysInternal locks a deliberate NON-mapping.
+// Fiber's serverErrorHandler raises ErrBadGateway (502) for a non-timeout
+// net.Error while reading the request — a network failure on the CLIENT's
+// connection. SemanticBadGateway means the opposite: an upstream this service
+// depends on answered with something unusable. Rendering it as 502 would make
+// the envelope assert something false, so it falls through to 500, which is
+// merely uninformative. If someone "completes" the switch by adding a 502
+// branch, this fails and points them here.
+func TestErrorHandler_BadGatewayStaysInternal(t *testing.T) {
+	app := newAppWithErrorHandler()
+	app.Get("/upstream", func(c fiber.Ctx) error { return fiber.ErrBadGateway })
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/upstream", nil))
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		t.Fatalf("expected 500 (502 is deliberately not specialized), got %d", resp.StatusCode)
+	}
+	body := decodeResponse(t, resp.Body)
+	resp.Body.Close()
+	if got := body.Errors[0].Messages[0].NotificationKey; got != "InternalServerErrorNotification" {
+		t.Fatalf("expected InternalServerErrorNotification, got %q", got)
 	}
 }

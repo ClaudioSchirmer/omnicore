@@ -27,25 +27,33 @@ const errorInfoDomain = "omnicore"
 // canonical gRPC code — the sibling of web.semanticToStatus (HTTP) built
 // from the same enum, per the design in tasks/grpc.md.
 var semanticToCode = map[domain.NotificationSemantic]connect.Code{
-	domain.SemanticValidation:           connect.CodeInvalidArgument,    // 422 sibling
-	domain.SemanticSchema:               connect.CodeInvalidArgument,    // 400 sibling (ErrorInfo.reason disambiguates)
-	domain.SemanticNotFound:             connect.CodeNotFound,           // 404
-	domain.SemanticConflict:             connect.CodeAlreadyExists,      // 409, duplicate flavor
-	domain.SemanticStateConflict:        connect.CodeFailedPrecondition, // 409, wrong-state flavor
-	domain.SemanticForbidden:            connect.CodePermissionDenied,   // 403
-	domain.SemanticUnauthorized:         connect.CodeUnauthenticated,    // 401
-	domain.SemanticUnavailable:          connect.CodeUnavailable,        // 503
-	domain.SemanticInternal:             connect.CodeInternal,           // 500
-	domain.SemanticMethodNotAllowed:     connect.CodeUnimplemented,      // 405
-	domain.SemanticPayloadTooLarge:      connect.CodeResourceExhausted,  // 413
-	domain.SemanticGatewayTimeout:       connect.CodeDeadlineExceeded,   // 504
-	domain.SemanticRequestTimeout:       connect.CodeDeadlineExceeded,   // 408 (HTTP-only in practice; mapped for enum completeness)
-	domain.SemanticGone:                 connect.CodeNotFound,           // 410, permanently-removed flavor of absence
-	domain.SemanticPreconditionFailed:   connect.CodeFailedPrecondition, // 412 (the conditional-header flavor; ErrorInfo.reason disambiguates from 409)
-	domain.SemanticUnsupportedMediaType: connect.CodeInvalidArgument,    // 415 sibling (wire contract; ErrorInfo.reason disambiguates from 400)
-	domain.SemanticTooManyRequests:      connect.CodeResourceExhausted,  // 429
-	domain.SemanticNotImplemented:       connect.CodeUnimplemented,      // 501 (ErrorInfo.reason disambiguates from the 405 flavor)
-	domain.SemanticBadGateway:           connect.CodeUnavailable,        // 502 (ErrorInfo.reason disambiguates from the 503 flavor)
+	domain.SemanticValidation:                  connect.CodeInvalidArgument,    // 422 sibling
+	domain.SemanticSchema:                      connect.CodeInvalidArgument,    // 400 sibling (ErrorInfo.reason disambiguates)
+	domain.SemanticNotFound:                    connect.CodeNotFound,           // 404
+	domain.SemanticConflict:                    connect.CodeAlreadyExists,      // 409, duplicate flavor
+	domain.SemanticStateConflict:               connect.CodeFailedPrecondition, // 409, wrong-state flavor
+	domain.SemanticForbidden:                   connect.CodePermissionDenied,   // 403
+	domain.SemanticUnauthorized:                connect.CodeUnauthenticated,    // 401
+	domain.SemanticUnavailable:                 connect.CodeUnavailable,        // 503
+	domain.SemanticInternal:                    connect.CodeInternal,           // 500
+	domain.SemanticMethodNotAllowed:            connect.CodeUnimplemented,      // 405
+	domain.SemanticPayloadTooLarge:             connect.CodeResourceExhausted,  // 413
+	domain.SemanticGatewayTimeout:              connect.CodeDeadlineExceeded,   // 504
+	domain.SemanticRequestTimeout:              connect.CodeDeadlineExceeded,   // 408 (HTTP-only in practice; mapped for enum completeness)
+	domain.SemanticGone:                        connect.CodeNotFound,           // 410, permanently-removed flavor of absence
+	domain.SemanticPreconditionFailed:          connect.CodeFailedPrecondition, // 412 (the conditional-header flavor; ErrorInfo.reason disambiguates from 409)
+	domain.SemanticUnsupportedMediaType:        connect.CodeInvalidArgument,    // 415 sibling (wire contract; ErrorInfo.reason disambiguates from 400)
+	domain.SemanticTooManyRequests:             connect.CodeResourceExhausted,  // 429
+	domain.SemanticNotImplemented:              connect.CodeUnimplemented,      // 501 (ErrorInfo.reason disambiguates from the 405 flavor)
+	domain.SemanticBadGateway:                  connect.CodeUnavailable,        // 502 (ErrorInfo.reason disambiguates from the 503 flavor)
+	domain.SemanticPaymentRequired:             connect.CodePermissionDenied,   // 402 — an authorization-shaped refusal the caller can lift by paying
+	domain.SemanticNotAcceptable:               connect.CodeInvalidArgument,    // 406 sibling (wire contract; HTTP-only in practice)
+	domain.SemanticRangeNotSatisfiable:         connect.CodeOutOfRange,         // 416 — the one connect code that means exactly this
+	domain.SemanticLocked:                      connect.CodeAborted,            // 423 — "aborted, typically a concurrency hold": retryable, unlike the 409 flavors
+	domain.SemanticPreconditionRequired:        connect.CodeFailedPrecondition, // 428 (ErrorInfo.reason disambiguates from 409/412)
+	domain.SemanticUnavailableForLegalReasons:  connect.CodePermissionDenied,   // 451 (ErrorInfo.reason disambiguates from the 403 flavor)
+	domain.SemanticInsufficientStorage:         connect.CodeResourceExhausted,  // 507 — a quota, like 413 and 429
+	domain.SemanticRequestHeaderFieldsTooLarge: connect.CodeResourceExhausted,  // 431 — the header sibling of 413
 }
 
 // codeFromNotifications mirrors web.statusFromNotifications: the first

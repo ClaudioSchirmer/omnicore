@@ -41,25 +41,33 @@ func RespondFromResult[T any](c fiber.Ctx, result pipeline.Result[T], successSta
 // canonical HTTP status code. A different transport (gRPC, GraphQL) would
 // build its own table from the same enum.
 var semanticToStatus = map[domain.NotificationSemantic]int{
-	domain.SemanticValidation:           fiber.StatusUnprocessableEntity,   // 422
-	domain.SemanticNotFound:             fiber.StatusNotFound,              // 404
-	domain.SemanticConflict:             fiber.StatusConflict,              // 409
-	domain.SemanticForbidden:            fiber.StatusForbidden,             // 403
-	domain.SemanticUnauthorized:         fiber.StatusUnauthorized,          // 401
-	domain.SemanticUnavailable:          fiber.StatusServiceUnavailable,    // 503
-	domain.SemanticSchema:               fiber.StatusBadRequest,            // 400
-	domain.SemanticInternal:             fiber.StatusInternalServerError,   // 500
-	domain.SemanticMethodNotAllowed:     fiber.StatusMethodNotAllowed,      // 405
-	domain.SemanticPayloadTooLarge:      fiber.StatusRequestEntityTooLarge, // 413
-	domain.SemanticGatewayTimeout:       fiber.StatusGatewayTimeout,        // 504
-	domain.SemanticStateConflict:        fiber.StatusConflict,              // 409 (state/precondition flavor)
-	domain.SemanticRequestTimeout:       fiber.StatusRequestTimeout,        // 408 (transport read timeout — client too slow)
-	domain.SemanticGone:                 fiber.StatusGone,                  // 410 (existed here, permanently removed)
-	domain.SemanticPreconditionFailed:   fiber.StatusPreconditionFailed,    // 412 (a conditional header the client sent did not hold)
-	domain.SemanticUnsupportedMediaType: fiber.StatusUnsupportedMediaType,  // 415 (Content-Type this endpoint cannot read)
-	domain.SemanticTooManyRequests:      fiber.StatusTooManyRequests,       // 429 (rate limit / quota exhausted)
-	domain.SemanticNotImplemented:       fiber.StatusNotImplemented,        // 501 (route declared, capability not built)
-	domain.SemanticBadGateway:           fiber.StatusBadGateway,            // 502 (an upstream answered with something unusable)
+	domain.SemanticValidation:                  fiber.StatusUnprocessableEntity,          // 422
+	domain.SemanticNotFound:                    fiber.StatusNotFound,                     // 404
+	domain.SemanticConflict:                    fiber.StatusConflict,                     // 409
+	domain.SemanticForbidden:                   fiber.StatusForbidden,                    // 403
+	domain.SemanticUnauthorized:                fiber.StatusUnauthorized,                 // 401
+	domain.SemanticUnavailable:                 fiber.StatusServiceUnavailable,           // 503
+	domain.SemanticSchema:                      fiber.StatusBadRequest,                   // 400
+	domain.SemanticInternal:                    fiber.StatusInternalServerError,          // 500
+	domain.SemanticMethodNotAllowed:            fiber.StatusMethodNotAllowed,             // 405
+	domain.SemanticPayloadTooLarge:             fiber.StatusRequestEntityTooLarge,        // 413
+	domain.SemanticGatewayTimeout:              fiber.StatusGatewayTimeout,               // 504
+	domain.SemanticStateConflict:               fiber.StatusConflict,                     // 409 (state/precondition flavor)
+	domain.SemanticRequestTimeout:              fiber.StatusRequestTimeout,               // 408 (transport read timeout — client too slow)
+	domain.SemanticGone:                        fiber.StatusGone,                         // 410 (existed here, permanently removed)
+	domain.SemanticPreconditionFailed:          fiber.StatusPreconditionFailed,           // 412 (a conditional header the client sent did not hold)
+	domain.SemanticUnsupportedMediaType:        fiber.StatusUnsupportedMediaType,         // 415 (Content-Type this endpoint cannot read)
+	domain.SemanticTooManyRequests:             fiber.StatusTooManyRequests,              // 429 (rate limit / quota exhausted)
+	domain.SemanticNotImplemented:              fiber.StatusNotImplemented,               // 501 (route declared, capability not built)
+	domain.SemanticBadGateway:                  fiber.StatusBadGateway,                   // 502 (an upstream answered with something unusable)
+	domain.SemanticPaymentRequired:             fiber.StatusPaymentRequired,              // 402 (billing / quota gate)
+	domain.SemanticNotAcceptable:               fiber.StatusNotAcceptable,                // 406 (nothing this endpoint produces satisfies Accept)
+	domain.SemanticRangeNotSatisfiable:         fiber.StatusRequestedRangeNotSatisfiable, // 416 (the requested byte range does not exist)
+	domain.SemanticLocked:                      fiber.StatusLocked,                       // 423 (temporarily held — retryable)
+	domain.SemanticPreconditionRequired:        fiber.StatusPreconditionRequired,         // 428 (the conditional header is mandatory here)
+	domain.SemanticUnavailableForLegalReasons:  fiber.StatusUnavailableForLegalReasons,   // 451 (withheld by law, not by permission)
+	domain.SemanticInsufficientStorage:         fiber.StatusInsufficientStorage,          // 507 (storage allowance exhausted)
+	domain.SemanticRequestHeaderFieldsTooLarge: fiber.StatusRequestHeaderFieldsTooLarge,  // 431 (header block / request line over the read buffer)
 }
 
 // statusFromNotifications returns the HTTP status of the first message whose

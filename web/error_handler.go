@@ -20,18 +20,37 @@ import (
 //     reaching RespondFromResult. Translated via the Pipeline and emitted
 //     with the status derived from its own notifications' Semantic().
 //
-//  2. *fiber.Error with a code the framework specializes — 404 (router
-//     could not match METHOD + path), 405 (path matches but the method
-//     is not registered), 413 (body exceeds the configured BodyLimit),
-//     408 (Fiber's ErrRequestTimeout — the fasthttp read timeout fired while
-//     reading the request; the client was too slow) and 429 (a rate-limit
-//     middleware rejected the request through fiber.ErrTooManyRequests —
-//     the framework ships no limiter, but it renders one's refusal). Each is
-//     emitted as its typed notification (RouteNotFoundNotification,
-//     MethodNotAllowedNotification, PayloadTooLargeNotification,
-//     ReadTimeoutNotification, TooManyRequestsNotification) carrying
-//     "METHOD /path" on FieldName so clients can branch UI without parsing
-//     the translated message.
+//  2. *fiber.Error with a code the framework specializes. Fiber's
+//     serverErrorHandler normalizes every transport-level failure fasthttp
+//     reports into a small set of statuses before the app's handler runs, and
+//     this switch answers each of them with its typed notification carrying
+//     "METHOD /path" on FieldName, so clients branch UI without parsing the
+//     translated message:
+//
+//     400 — the request could not be read as HTTP at all (Fiber's catch-all
+//     for a parse failure) → MalformedRequestNotification. The underlying
+//     parse error stays off the wire.
+//     404 — the router could not match METHOD + path → RouteNotFoundNotification.
+//     405 — the path matches but the method is not registered (or fasthttp
+//     reported ErrGetOnly) → MethodNotAllowedNotification.
+//     408 — the fasthttp read timeout fired while reading the request; the
+//     client was too slow → ReadTimeoutNotification.
+//     413 — the body exceeds the configured BodyLimit → PayloadTooLargeNotification.
+//     429 — a rate-limit middleware rejected through fiber.ErrTooManyRequests;
+//     the framework ships no limiter, but it renders one's refusal →
+//     TooManyRequestsNotification.
+//     431 — the header block or request line did not fit the read buffer
+//     (fasthttp's ErrSmallBuffer) → RequestHeaderFieldsTooLargeNotification.
+//     501 — an HTTP request method this server implements nowhere →
+//     NotImplementedNotification.
+//
+//     One status Fiber produces is deliberately NOT specialized: its
+//     ErrBadGateway (502), raised for a non-timeout net.Error while reading
+//     the request. That is a network failure on the CLIENT's connection, while
+//     SemanticBadGateway means an upstream this service depends on answered
+//     with something unusable — the opposite claim. Rendering it as 502 would
+//     make the envelope assert something false, so it falls through to 500,
+//     which is merely uninformative.
 //
 //  3. *fiber.Error with any other code — by design, treated as an unknown
 //     escape and emitted as InternalServerErrorNotification with status 500.
@@ -76,6 +95,12 @@ func ErrorHandler(pipe *pipeline.Pipeline) fiber.ErrorHandler {
 				return respondReadTimeout(c, pipe)
 			case fiber.StatusTooManyRequests:
 				return respondTooManyRequests(c, pipe)
+			case fiber.StatusBadRequest:
+				return respondMalformedRequest(c, pipe)
+			case fiber.StatusRequestHeaderFieldsTooLarge:
+				return respondRequestHeaderFieldsTooLarge(c, pipe)
+			case fiber.StatusNotImplemented:
+				return respondNotImplemented(c, pipe)
 			}
 		}
 
@@ -152,6 +177,48 @@ func respondTooManyRequests(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx.AddNotificationMessage(domain.NotificationMessage{
 		FieldName:    c.Method() + " " + c.Path(),
 		Notification: notifications.TooManyRequestsNotification{},
+	})
+	return respondViaPipeline(c, pipe, ctx)
+}
+
+// respondMalformedRequest emits a single MalformedRequestNotification carrying
+// "METHOD /path" as FieldName. SemanticSchema maps to 400. This is Fiber's
+// catch-all branch — a request it could not read as HTTP and had no more
+// specific status for. It used to fall through to 500: the client sent
+// something unreadable and was told the server had crashed.
+func respondMalformedRequest(c fiber.Ctx, pipe *pipeline.Pipeline) error {
+	ctx := domain.NewNotificationContext("Request")
+	ctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    c.Method() + " " + c.Path(),
+		Notification: notifications.MalformedRequestNotification{},
+	})
+	return respondViaPipeline(c, pipe, ctx)
+}
+
+// respondRequestHeaderFieldsTooLarge emits a single
+// RequestHeaderFieldsTooLargeNotification carrying "METHOD /path" as FieldName.
+// SemanticRequestHeaderFieldsTooLarge maps to 431 — the header sibling of the
+// 413 above. fasthttp raises ErrSmallBuffer while parsing the header block or
+// the request line and Fiber normalizes it to this status.
+func respondRequestHeaderFieldsTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) error {
+	ctx := domain.NewNotificationContext("Request")
+	ctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    c.Method() + " " + c.Path(),
+		Notification: notifications.RequestHeaderFieldsTooLargeNotification{},
+	})
+	return respondViaPipeline(c, pipe, ctx)
+}
+
+// respondNotImplemented emits a single NotImplementedNotification carrying
+// "METHOD /path" as FieldName. SemanticNotImplemented maps to 501. Reached when
+// fasthttp reports an unsupported HTTP request method — a verb this server
+// implements nowhere, which is the transport-level reading of the same "the
+// server does not do this" the service-level emitter makes.
+func respondNotImplemented(c fiber.Ctx, pipe *pipeline.Pipeline) error {
+	ctx := domain.NewNotificationContext("Request")
+	ctx.AddNotificationMessage(domain.NotificationMessage{
+		FieldName:    c.Method() + " " + c.Path(),
+		Notification: notifications.NotImplementedNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
 }

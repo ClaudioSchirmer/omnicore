@@ -105,6 +105,66 @@ var defaultErrorExamples = map[int]Example{
 		Summary: "Upstream answered with an unusable response",
 		Value:   errorEnvelopeValue(http.StatusBadGateway, "Server", "BadGatewayNotification", "", "", "BadGateway"),
 	},
+	http.StatusPaymentRequired: {
+		Summary: "Billing or quota gate",
+		Value:   errorEnvelopeValue(http.StatusPaymentRequired, "Request", "PaymentRequiredNotification", "", "", "PaymentRequired"),
+	},
+	http.StatusNotAcceptable: {
+		Summary: "No representation satisfies Accept",
+		Value:   errorEnvelopeValue(http.StatusNotAcceptable, "Request", "NotAcceptableNotification", "", "", "NotAcceptable"),
+	},
+	http.StatusRequestedRangeNotSatisfiable: {
+		Summary: "Requested byte range does not exist",
+		Value:   errorEnvelopeValue(http.StatusRequestedRangeNotSatisfiable, "Request", "RangeNotSatisfiableNotification", "", "", "RangeNotSatisfiable"),
+	},
+	http.StatusLocked: {
+		Summary: "Resource temporarily held — retryable",
+		Value:   errorEnvelopeValue(http.StatusLocked, "Request", "ResourceLockedNotification", "id", "", "Locked"),
+	},
+	http.StatusPreconditionRequired: {
+		Summary: "Conditional header is mandatory here",
+		Value:   errorEnvelopeValue(http.StatusPreconditionRequired, "Request", "PreconditionRequiredNotification", "", "", "PreconditionRequired"),
+	},
+	http.StatusUnavailableForLegalReasons: {
+		Summary: "Withheld by law",
+		Value:   errorEnvelopeValue(http.StatusUnavailableForLegalReasons, "Request", "UnavailableForLegalReasonsNotification", "", "", "UnavailableForLegalReasons"),
+	},
+	http.StatusInsufficientStorage: {
+		Summary: "Storage allowance exhausted",
+		Value:   errorEnvelopeValue(http.StatusInsufficientStorage, "Request", "InsufficientStorageNotification", "", "", "InsufficientStorage"),
+	},
+	// The entries below close a gap this round exposed rather than created:
+	// these statuses were always in semanticToStatus, but had no default
+	// example, so a route DECLARING one rendered the 500-shaped fallback.
+	// With them the registry mirrors the Semantic table exactly.
+	http.StatusMethodNotAllowed: {
+		Summary: "Path is registered for other verbs",
+		Value:   errorEnvelopeValue(http.StatusMethodNotAllowed, "Route", "MethodNotAllowedNotification", "DELETE /resource", "", "MethodNotAllowed"),
+	},
+	http.StatusRequestTimeout: {
+		Summary: "Client was too slow sending the request",
+		Value:   errorEnvelopeValue(http.StatusRequestTimeout, "Request", "ReadTimeoutNotification", "POST /resource", "", "RequestTimeout"),
+	},
+	http.StatusConflict: {
+		Summary: "Duplicate — this already exists",
+		Value:   errorEnvelopeValue(http.StatusConflict, "Request", "EntityAlreadyAddedNotification", "email", "", "Conflict"),
+	},
+	http.StatusRequestEntityTooLarge: {
+		Summary: "Body exceeds the configured BodyLimit",
+		Value:   errorEnvelopeValue(http.StatusRequestEntityTooLarge, "Request", "PayloadTooLargeNotification", "POST /resource", "", "PayloadTooLarge"),
+	},
+	http.StatusRequestHeaderFieldsTooLarge: {
+		Summary: "Header block exceeds the read buffer",
+		Value:   errorEnvelopeValue(http.StatusRequestHeaderFieldsTooLarge, "Request", "RequestHeaderFieldsTooLargeNotification", "GET /resource", "", "RequestHeaderFieldsTooLarge"),
+	},
+	http.StatusServiceUnavailable: {
+		Summary: "This service is declining to serve",
+		Value:   errorEnvelopeValue(http.StatusServiceUnavailable, "Server", "ServiceUnavailableNotification", "", "", "Unavailable"),
+	},
+	http.StatusGatewayTimeout: {
+		Summary: "Handler exceeded the server-side deadline",
+		Value:   errorEnvelopeValue(http.StatusGatewayTimeout, "Request", "RequestTimeoutNotification", "", "", "GatewayTimeout"),
+	},
 }
 
 // DefaultErrorExample returns the canonical envelope example the framework
@@ -114,9 +174,11 @@ var defaultErrorExamples = map[int]Example{
 // entry alongside their own variants on a status that they otherwise
 // override entirely.
 //
-// ok=true when the status has a framework default (400/401/403/404/410/412/
-// 415/422/429/500/501/502 today); ok=false for any other status — the
-// consumer is on their own for those.
+// ok=true for every status the framework's Semantic table maps — the registry
+// mirrors web.semanticToStatus one-for-one, plus 400, which the transport-level
+// MalformedRequestNotification shares with the payload-level Schema flavor.
+// ok=false for any other status (418 and the rest of the registry the framework
+// deliberately does not map) — the consumer is on their own for those.
 func DefaultErrorExample(status int) (Example, bool) {
 	ex, ok := defaultErrorExamples[status]
 	return ex, ok

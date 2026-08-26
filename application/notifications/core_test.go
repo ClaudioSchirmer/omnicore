@@ -54,6 +54,17 @@ func TestKernelNotifications_Semantic(t *testing.T) {
 		{"UnsupportedMediaType", UnsupportedMediaTypeNotification{}, domain.SemanticUnsupportedMediaType},
 		{"NotImplemented", NotImplementedNotification{}, domain.SemanticNotImplemented},
 		{"BadGateway", BadGatewayNotification{}, domain.SemanticBadGateway},
+		{"PaymentRequired", PaymentRequiredNotification{}, domain.SemanticPaymentRequired},
+		{"NotAcceptable", NotAcceptableNotification{}, domain.SemanticNotAcceptable},
+		{"RangeNotSatisfiable", RangeNotSatisfiableNotification{}, domain.SemanticRangeNotSatisfiable},
+		{"ResourceLocked", ResourceLockedNotification{}, domain.SemanticLocked},
+		{"PreconditionRequired", PreconditionRequiredNotification{}, domain.SemanticPreconditionRequired},
+		{"UnavailableForLegalReasons", UnavailableForLegalReasonsNotification{}, domain.SemanticUnavailableForLegalReasons},
+		{"InsufficientStorage", InsufficientStorageNotification{}, domain.SemanticInsufficientStorage},
+		{"RequestHeaderFieldsTooLarge", RequestHeaderFieldsTooLargeNotification{}, domain.SemanticRequestHeaderFieldsTooLarge},
+		// Shares SemanticSchema with the payload-level SchemaViolationNotification
+		// on purpose — same status, different author, distinct typed key.
+		{"MalformedRequest", MalformedRequestNotification{}, domain.SemanticSchema},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -36,16 +36,37 @@
         <tr><td><code>SemanticTooManyRequests</code></td><td><strong>429 Too Many Requests</strong></td><td><code>TooManyRequestsNotification</code> — rate limit or quota exhausted. The request was well-formed and authorized; the caller has spent its allowance for now. Also emitted by <code>fwweb.ErrorHandler</code> when a middleware rejects through <code>fiber.ErrTooManyRequests</code></td></tr>
         <tr><td><code>SemanticNotImplemented</code></td><td><strong>501 Not Implemented</strong></td><td><code>NotImplementedNotification</code> — the route exists and the request is valid; the capability behind it is not built. Distinct from <code>SemanticMethodNotAllowed</code> (405), which says the verb will never be served at this path: a 501 says not yet</td></tr>
         <tr><td><code>SemanticBadGateway</code></td><td><strong>502 Bad Gateway</strong></td><td><code>BadGatewayNotification</code> — this service reached a dependency it composes over (an <a href="#httpclient">httpclient</a> endpoint, a gRPC peer, an upstream a view subscribes to) and got back a response it cannot use. Distinct from <code>SemanticUnavailable</code> (503), which is THIS service declining to serve, and from <code>SemanticGatewayTimeout</code> (504), which is the deadline elapsing: a 502 means the conversation completed and the answer was wrong</td></tr>
+        <tr><td><code>SemanticPaymentRequired</code></td><td><strong>402 Payment Required</strong></td><td><code>PaymentRequiredNotification</code> — a billing or quota gate: the request is well-formed and the caller authenticated, and the account has to settle up first. Distinct from 429, which is a rate the caller merely waits out, and from 403, which no payment would lift</td></tr>
+        <tr><td><code>SemanticNotAcceptable</code></td><td><strong>406 Not Acceptable</strong></td><td><code>NotAcceptableNotification</code> — the response half of content negotiation: nothing this endpoint can produce satisfies the request's <code>Accept</code>. The request half is <code>SemanticUnsupportedMediaType</code> (415) — that one refuses what the client SENT, this one refuses what it asked to RECEIVE</td></tr>
+        <tr><td><code>SemanticRangeNotSatisfiable</code></td><td><strong>416 Range Not Satisfiable</strong></td><td><code>RangeNotSatisfiableNotification</code> — the requested byte range does not exist in the representation. Relevant on file-shaped responses: the <a href="#auto-query-handlers">tabular export</a> serves one, with <code>Content-Disposition</code> and a concrete <code>Content-Type</code></td></tr>
+        <tr><td><code>SemanticLocked</code></td><td><strong>423 Locked</strong></td><td><code>ResourceLockedNotification</code> — someone else holds the resource right now. What separates it from the two 409 flavors is <strong>retryability</strong>, and that is the whole reason it exists: a Conflict or a StateConflict means "reload and reconcile — repeating this request unchanged will fail again", a lock means "repeat it later and it will work". Pairs with <a href="#status-mapping~retry-after"><code>Retry-After</code></a> the way 429 does</td></tr>
+        <tr><td><code>SemanticPreconditionRequired</code></td><td><strong>428 Precondition Required</strong></td><td><code>PreconditionRequiredNotification</code> — the other half of the conditional-request story: 412 answers a condition the client STATED and that no longer holds; this one refuses a request that had to carry a condition and carried none. Without it a 412-only service never tells a client that omits the header to start sending one — the lost-update hole stays open</td></tr>
+        <tr><td><code>SemanticUnavailableForLegalReasons</code></td><td><strong>451 Unavailable For Legal Reasons</strong></td><td><code>UnavailableForLegalReasonsNotification</code> — a court order, a takedown, a geographic restriction. Distinct from the 403 family in WHO it is about: a 403 says THIS caller may not and another might; a 451 says nobody may have this here, and no permission the caller could hold would change it</td></tr>
+        <tr><td><code>SemanticInsufficientStorage</code></td><td><strong>507 Insufficient Storage</strong></td><td><code>InsufficientStorageNotification</code> — the writer has no room left. The useful reading is a QUOTA (a tenant past its allowance), not a full disk: a genuinely full volume surfaces as the infrastructure exception it is, through the 500 path. Distinct from 429 (meters a rate) and 402 (meters an account)</td></tr>
+        <tr><td><code>SemanticRequestHeaderFieldsTooLarge</code></td><td><strong>431 Request Header Fields Too Large</strong></td><td><code>RequestHeaderFieldsTooLargeNotification</code> — the header block or the request line did not fit the server's read buffer. The header sibling of 413, which meters the body. Emitted by <code>fwweb.ErrorHandler</code>: fasthttp raises <code>ErrSmallBuffer</code> while parsing and Fiber normalizes it to this status</td></tr>
         <tr><td><code>SemanticInternal</code></td><td><strong>500 Internal Server Error</strong></td><td><code>InternalServerErrorNotification</code> (recovered panic, escaped non-NotificationCarrier error) emitted by <code>fwweb.ErrorHandler</code></td></tr>
     </tbody></table>
     <div class="note">
-        <strong>Vocabulary the framework maps but does not emit.</strong> The last six rows are there so a
-        service can say these things through the canonical path. Except for the 429 branch in
-        <code>fwweb.ErrorHandler</code>, no framework code path raises them: the framework ships no rate
-        limiter, negotiates no media type, reads no conditional header and never decides on your behalf
-        that a resource is permanently gone. Declaring <code>Semantic()</code> on your own notification is
-        the whole opt-in — the same mechanism the 409 example below uses, with a wider vocabulary to
-        choose from.
+        <strong>Who authors what.</strong> The table has two halves. Some rows the FRAMEWORK raises —
+        the routing and transport statuses (400, 404, 405, 408, 413, 429, 431, 501) come out of
+        <code>fwweb.ErrorHandler</code>, and the kernel domain notifications raise 404, 409 and 403 from
+        the write path. The rest is <strong>vocabulary for the service</strong>: the framework ships no
+        rate limiter, negotiates no media type, reads no conditional header, serves no byte ranges,
+        holds no locks and never decides on your behalf that a resource is gone or withheld by law.
+        Declaring <code>Semantic()</code> on your own notification is the whole opt-in — the same
+        mechanism the 409 example below uses, over the full table.
+    </div>
+    <div class="note">
+        <strong>Where the table stops, and why.</strong> The vocabulary is closed on purpose, and the
+        line is not taste: a status is absent only when it is <strong>unreachable</strong> (nothing in
+        this stack can author it — 411, which fasthttp never raises; 414, which collapses into
+        <code>ErrSmallBuffer</code> and surfaces as 431; 417, which fasthttp writes straight to the
+        socket without passing through the error handler; and the proxy/HTTP-2/TLS family 407, 421,
+        425, 426, 511), <strong>redundant</strong> (424 Failed Dependency, whose ground 502, 503 and
+        409 already cover), or <strong>structurally incompatible</strong> — which is the 304 case: it
+        would have to answer with no body, and the canonical envelope always writes one. 418 is
+        reserved by IANA as a joke and serves here as the standing "never mapped" sentinel the
+        <code>ErrorHandler</code> fallthrough test asserts against.
     </div>
     <div class="note">
         <strong>SemanticSchema vs SemanticValidation</strong>: Schema = wire contract violated
@@ -68,6 +89,14 @@
             <code>AppContext.Language()</code> and emitted with the status derived from each
             notification's <code>Semantic()</code> (same path <code>RespondFromResult</code>
             uses on Failure).</li>
+        <li><strong>Fiber 400</strong> (the request could not be read as HTTP at all — Fiber's
+            catch-all for a parse failure it has no more specific status for) →
+            <code>MalformedRequestNotification</code> in context <code>"Request"</code> with
+            <code>METHOD /path</code> echoed on <code>field</code>; mapped via
+            <code>SemanticSchema → 400</code>. Deliberately NOT
+            <code>SchemaViolationNotification</code>: that type's contract is about the request
+            PAYLOAD, and reusing it here would make a documented domain contract false. The underlying
+            parse error stays off the wire.</li>
         <li><strong>Fiber router 404</strong> (no matching route) →
             <code>RouteNotFoundNotification</code> in context <code>"Route"</code> with
             <code>METHOD /path</code> echoed on <code>field</code>; mapped via
@@ -93,6 +122,16 @@
             <code>SemanticTooManyRequests → 429</code>. The framework ships no limiter — this branch
             exists so one plugged in by the service renders its refusal in the canonical envelope
             instead of the 500 an unrecognized code produces.</li>
+        <li><strong>Fiber 431</strong> (the header block or request line did not fit the read buffer —
+            fasthttp's <code>ErrSmallBuffer</code>) →
+            <code>RequestHeaderFieldsTooLargeNotification</code> in context <code>"Request"</code> with
+            <code>METHOD /path</code> echoed on <code>field</code>; mapped via
+            <code>SemanticRequestHeaderFieldsTooLarge → 431</code>.</li>
+        <li><strong>Fiber 501</strong> (an HTTP request method this server implements nowhere) →
+            <code>NotImplementedNotification</code> in context <code>"Request"</code> with
+            <code>METHOD /path</code> echoed on <code>field</code>; mapped via
+            <code>SemanticNotImplemented → 501</code>. Same notification the service-level emitter
+            uses — "the server does not do this", read one layer down.</li>
         <li><strong>Any other error</strong> (recovered panic, unexpected error, any other
             <code>*fiber.Error</code> code) → <code>InternalServerErrorNotification</code>
             in context <code>"Server"</code>; mapped via <code>SemanticInternal → 500</code>.
@@ -104,6 +143,16 @@
             rather than calling <code>fiber.NewError</code> — the "one canonical path" rule
             still applies.</li>
     </ul>
+    <div class="box warn">
+        <strong>One status Fiber produces that we deliberately do NOT specialize.</strong> Fiber's
+        <code>serverErrorHandler</code> raises <code>ErrBadGateway</code> (502) for a non-timeout
+        <code>net.Error</code> while reading the request — a network failure on the CLIENT's
+        connection. <code>SemanticBadGateway</code> means the opposite: an upstream this service
+        depends on answered with something unusable. Rendering that as a 502 would make the envelope
+        assert something false, so it falls through to 500, which is merely uninformative. A test locks
+        this, so "completing" the switch fails the build and points back here.
+    </div>
+
     <p>
         Sample 500 envelope (translated to PT-BR via <code>Accept-Language: pt-BR</code>):
     </p>
@@ -245,7 +294,9 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
         the <code>NotificationSemantic</code> enum. A value invented outside it
         (<code>domain.NotificationSemantic(99)</code>) is not a compile error and not a boot failure — it
         simply misses <code>semanticToStatus</code>, and the response degrades to <strong>422</strong> with
-        <code>"semantic": "Validation"</code> on the wire. If the status you need is not in the table, say
+        <code>"semantic": "Validation"</code> on the wire. In practice you should never need to: the
+        table above is closed over every status something in this stack can actually author. If the
+        status you need is not in the table, say
         so to the maintainer rather than inventing a value: the enum is the one place a new transport
         semantic is added, and adding it there is what keeps REST, gRPC and GraphQL telling the same story.
     </div>

@@ -112,11 +112,32 @@ func TestNotificationSemanticString_BasicHTTPFamily(t *testing.T) {
 // MethodNotAllowed vs NotImplemented, Unavailable vs BadGateway).
 func TestNotificationSemantic_NoDuplicateLabels(t *testing.T) {
 	seen := map[string]NotificationSemantic{}
-	for s := SemanticValidation; s <= SemanticBadGateway; s++ {
+	for s := SemanticValidation; s <= SemanticRequestHeaderFieldsTooLarge; s++ {
 		label := s.String()
 		if prev, dup := seen[label]; dup {
 			t.Errorf("semantics %d and %d share the label %q", int(prev), int(s), label)
 		}
 		seen[label] = s
+	}
+}
+
+// TestNotificationSemanticString_ClosingFamily locks the wire label of the
+// eight statuses added to close the vocabulary — everything left over that
+// something in this stack can actually author.
+func TestNotificationSemanticString_ClosingFamily(t *testing.T) {
+	cases := map[NotificationSemantic]string{
+		SemanticPaymentRequired:             "PaymentRequired",
+		SemanticNotAcceptable:               "NotAcceptable",
+		SemanticRangeNotSatisfiable:         "RangeNotSatisfiable",
+		SemanticLocked:                      "Locked",
+		SemanticPreconditionRequired:        "PreconditionRequired",
+		SemanticUnavailableForLegalReasons:  "UnavailableForLegalReasons",
+		SemanticInsufficientStorage:         "InsufficientStorage",
+		SemanticRequestHeaderFieldsTooLarge: "RequestHeaderFieldsTooLarge",
+	}
+	for s, want := range cases {
+		if got := s.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", int(s), got, want)
+		}
 	}
 }

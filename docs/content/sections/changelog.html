@@ -7,7 +7,7 @@
 </div>
 <div class="changelog">
     <div class="release">
-        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <div class="release-head"><span class="release-tag">v0.61.0</span><span class="release-date">August 26, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>six everyday HTTP semantics.</strong>
                 <a href="#status-mapping"><code>NotificationSemantic</code></a> gained
@@ -34,11 +34,44 @@
                         <code>BadGatewayNotification</code> — translated in all seven built-in catalogs.</li>
                 </ul>
             </li>
-            <li><strong>Added</strong> — <strong><a href="#openapi">OpenAPI</a> default error examples</strong>
-                for 410, 412, 415, 429, 501 and 502, so a route declaring one via <code>Doc.ResponseExamples</code>
-                renders the shared <code>ErrorEnvelope</code> shape instead of falling back to the 500 example.
-                The set a canonical route documents <em>automatically</em> is unchanged — a route that declares
-                nothing documents nothing new.</li>
+            <li><strong>Added</strong> — <strong>the vocabulary is closed over everything reachable.</strong>
+                A second pass added <code>SemanticPaymentRequired</code> (402), <code>SemanticNotAcceptable</code>
+                (406), <code>SemanticRangeNotSatisfiable</code> (416), <code>SemanticLocked</code> (423),
+                <code>SemanticPreconditionRequired</code> (428), <code>SemanticUnavailableForLegalReasons</code>
+                (451), <code>SemanticInsufficientStorage</code> (507) and
+                <code>SemanticRequestHeaderFieldsTooLarge</code> (431), with a kernel notification each. The enum
+                carries 27 members.
+                <ul>
+                    <li>The line for what stays out is not taste. A status is absent only when it is
+                        <strong>unreachable</strong> (411, which fasthttp never raises; 414, which collapses into
+                        <code>ErrSmallBuffer</code> and surfaces as 431; 417, which fasthttp writes straight to the
+                        socket; the proxy/HTTP-2/TLS family), <strong>redundant</strong> (424, whose ground
+                        502/503/409 already cover), or <strong>structurally incompatible</strong> — the 304 case,
+                        which would have to answer with no body while the canonical envelope always writes one.</li>
+                    <li>Several are pairs whose other half was already there: 406 completes the content negotiation
+                        415 started, and 428 completes the conditional-request story 412 started — without it a
+                        client that simply omits <code>If-Match</code> is never told to send one.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong><a href="#openapi">OpenAPI</a> default error examples</strong> now
+                mirror the <a href="#status-mapping">Semantic table</a> one-for-one. Beyond the new statuses this
+                closes a gap the round exposed rather than created: 405, 408, 409, 413, 503 and 504 were always
+                mapped at runtime but had no default example, so a route <em>declaring</em> one rendered the
+                500-shaped fallback in its spec. A test fails the build if a semantic is ever added without its
+                example. The set a canonical route documents <em>automatically</em> is unchanged — a route that
+                declares nothing documents nothing new.</li>
+            <li><strong>Changed</strong> — <strong><code>fwweb.ErrorHandler</code> answers three more
+                transport-authored statuses.</strong> An audit of Fiber's <code>serverErrorHandler</code> — the
+                switch that normalizes every fasthttp failure before the app's handler runs — showed it hands the
+                framework statuses that were being turned into 500: <strong>400</strong> (a request that could not
+                be read as HTTP at all) → <code>MalformedRequestNotification</code>; <strong>431</strong> (header
+                block over the read buffer) → <code>RequestHeaderFieldsTooLargeNotification</code>;
+                <strong>501</strong> (an HTTP method this server implements nowhere) →
+                <code>NotImplementedNotification</code>. One stays deliberately unspecialized: Fiber's
+                <code>ErrBadGateway</code> (502) is a network failure on the CLIENT's connection, while
+                <code>SemanticBadGateway</code> means an upstream answered with something unusable — the opposite
+                claim. Rendering it would make the envelope assert something false, so it falls through to 500,
+                which is merely uninformative. A test locks the decision.</li>
             <li><strong>Changed</strong> — <strong><code>fwweb.ErrorHandler</code> answers 429 instead of 500</strong>
                 when a middleware rejects through <code>fiber.ErrTooManyRequests</code>. It joins the
                 404 / 405 / 408 / 413 branches and emits <code>TooManyRequestsNotification</code> in context
