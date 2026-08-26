@@ -11,6 +11,102 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-08-26
+
+### Added
+
+- **Six everyday HTTP semantics.** `NotificationSemantic` gained
+  `SemanticGone` (410), `SemanticPreconditionFailed` (412),
+  `SemanticUnsupportedMediaType` (415), `SemanticTooManyRequests` (429),
+  `SemanticNotImplemented` (501) and `SemanticBadGateway` (502), each mapped on
+  every surface at once — HTTP status, gRPC/Connect code and the envelope's
+  `semantic` string. A service reaches them the way it already reaches 409:
+
+  ```go
+  type QuotaExhaustedNotification struct{ domain.ApplicationNotificationBase }
+  func (QuotaExhaustedNotification) Semantic() domain.NotificationSemantic {
+      return domain.SemanticTooManyRequests   // → 429 / RESOURCE_EXHAUSTED
+  }
+  ```
+
+  Before this, 429 was unreachable through the canonical path: the enum had no
+  member for it, and a value invented outside the enum misses
+  `semanticToStatus` silently — the response degrades to 422 carrying
+  `"semantic": "Validation"`, which is the one answer worse than no answer.
+  Nothing in the framework emits the new members on its own (the 429 branch
+  below aside): the framework ships no rate limiter, negotiates no media type
+  and reads no conditional header. It owns the vocabulary so the service can
+  say these things in the canonical envelope.
+
+- **Six kernel notifications** carrying those semantics —
+  `TooManyRequestsNotification`, `ResourceGoneNotification`,
+  `PreconditionFailedNotification`, `UnsupportedMediaTypeNotification`,
+  `NotImplementedNotification` and `BadGatewayNotification` in
+  `application/notifications`, translated in all seven built-in catalogs.
+
+- **OpenAPI default error examples** for 410, 412, 415, 429, 501 and 502, so a
+  route declaring one of them via `Doc.ResponseExamples` renders the shared
+  `ErrorEnvelope` shape instead of falling back to the 500 example.
+  `DefaultErrorExample` now covers 400/401/403/404/410/412/415/422/429/500/501/502.
+  The set a canonical route documents automatically (`standardErrors`) is
+  unchanged — a route that declares nothing documents nothing new.
+
+- **The vocabulary is closed over everything reachable.** A second pass added
+  `SemanticPaymentRequired` (402), `SemanticNotAcceptable` (406),
+  `SemanticRangeNotSatisfiable` (416), `SemanticLocked` (423),
+  `SemanticPreconditionRequired` (428), `SemanticUnavailableForLegalReasons`
+  (451), `SemanticInsufficientStorage` (507) and
+  `SemanticRequestHeaderFieldsTooLarge` (431), with a kernel notification each.
+  The enum now carries 27 members.
+
+  The line for what stays out is not taste: a status is absent only when it is
+  **unreachable** (411, which fasthttp never raises; 414, which collapses into
+  `ErrSmallBuffer` and surfaces as 431; 417, which fasthttp writes straight to
+  the socket; the proxy/HTTP-2/TLS family 407, 421, 425, 426, 511),
+  **redundant** (424, whose ground 502/503/409 already cover), or
+  **structurally incompatible** — the 304 case, which would have to answer with
+  no body while the canonical envelope always writes one.
+
+- **`openapi.DefaultErrorExample` now mirrors the Semantic table one-for-one.**
+  Beyond the new statuses, this closes a gap the round exposed rather than
+  created: 405, 408, 409, 413, 503 and 504 were always mapped at runtime but
+  had no default example, so a route DECLARING one of them rendered the
+  500-shaped fallback in its spec. A test in `web` now fails the build if a
+  semantic is ever added without its example.
+
+### Changed
+
+- **`fwweb.ErrorHandler` answers three more transport-authored statuses.** An
+  audit of Fiber's `serverErrorHandler` — the switch that normalizes every
+  fasthttp failure before the app's handler runs — showed it hands the
+  framework statuses that were being turned into 500:
+
+  - **400**, its catch-all for a request that could not be read as HTTP at all
+    → `MalformedRequestNotification`. Deliberately not
+    `SchemaViolationNotification`, whose documented contract is about the
+    request payload.
+  - **431**, the header block or request line over the read buffer (fasthttp's
+    `ErrSmallBuffer`) → `RequestHeaderFieldsTooLargeNotification`.
+  - **501**, an HTTP request method this server implements nowhere →
+    `NotImplementedNotification`.
+
+  One status Fiber produces stays deliberately unspecialized: its
+  `ErrBadGateway` (502), raised for a non-timeout `net.Error` while reading the
+  request. That is a network failure on the CLIENT's connection, while
+  `SemanticBadGateway` means an upstream answered with something unusable — the
+  opposite claim. Rendering it as 502 would make the envelope assert something
+  false, so it falls through to 500, which is merely uninformative. A test locks
+  the decision.
+
+- **`fwweb.ErrorHandler` answers 429 instead of 500** when a middleware rejects
+  through `fiber.ErrTooManyRequests`. It joins the 404 / 405 / 408 / 413
+  branches and emits `TooManyRequestsNotification` in context `"Request"` with
+  `METHOD /path` on `field`. Previously an unrecognized `*fiber.Error` code fell
+  through to the unknown-escape branch, so a rate-limited client was told the
+  server had crashed. Any `Retry-After` the middleware already set on the
+  context survives — the envelope render writes status and body only, and
+  carries no header slot of its own.
+
 ## [0.60.0] - 2026-08-25
 
 ### Added

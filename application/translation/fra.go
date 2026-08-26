@@ -89,6 +89,22 @@ func (coreFR) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route introuvable.",
 		"MethodNotAllowedNotification":    "Méthode HTTP non autorisée pour cette route.",
 		"PayloadTooLargeNotification":     "La charge utile de la requête dépasse la taille autorisée.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":             "Trop de requêtes. Veuillez réessayer plus tard.",
+		"ResourceGoneNotification":                "Cette ressource n'est plus disponible.",
+		"PreconditionFailedNotification":          "Une condition préalable indiquée dans la requête n'est pas remplie.",
+		"UnsupportedMediaTypeNotification":        "Type de contenu non pris en charge par ce point d'accès.",
+		"NotImplementedNotification":              "Cette fonctionnalité n'est pas implémentée.",
+		"BadGatewayNotification":                  "Un service en amont a renvoyé une réponse invalide.",
+		"PaymentRequiredNotification":             "Le paiement doit être régularisé avant de traiter cette requête.",
+		"NotAcceptableNotification":               "Aucune représentation disponible ne correspond au type de contenu demandé.",
+		"RangeNotSatisfiableNotification":         "La plage demandée n'est pas disponible pour cette ressource.",
+		"ResourceLockedNotification":              "Cette ressource est temporairement verrouillée. Réessayez dans un instant.",
+		"PreconditionRequiredNotification":        "Cette requête doit comporter un en-tête de condition préalable.",
+		"UnavailableForLegalReasonsNotification":  "Cette ressource est indisponible pour des raisons légales.",
+		"InsufficientStorageNotification":         "Le quota de stockage est épuisé.",
+		"RequestHeaderFieldsTooLargeNotification": "Les en-têtes de la requête dépassent la taille autorisée.",
+		"MalformedRequestNotification":            "La requête n'a pas pu être lue.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,

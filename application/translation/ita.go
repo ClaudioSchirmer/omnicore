@@ -89,6 +89,22 @@ func (coreIT) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Rotta non trovata.",
 		"MethodNotAllowedNotification":    "Metodo HTTP non consentito per questa rotta.",
 		"PayloadTooLargeNotification":     "Il corpo della richiesta supera la dimensione consentita.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":             "Troppe richieste. Riprova più tardi.",
+		"ResourceGoneNotification":                "Questa risorsa non è più disponibile.",
+		"PreconditionFailedNotification":          "Una precondizione indicata nella richiesta non è stata soddisfatta.",
+		"UnsupportedMediaTypeNotification":        "Tipo di contenuto non supportato da questo endpoint.",
+		"NotImplementedNotification":              "Questa funzionalità non è implementata.",
+		"BadGatewayNotification":                  "Un servizio a monte ha restituito una risposta non valida.",
+		"PaymentRequiredNotification":             "È necessario regolarizzare il pagamento prima di evadere questa richiesta.",
+		"NotAcceptableNotification":               "Nessuna rappresentazione disponibile corrisponde al tipo di contenuto richiesto.",
+		"RangeNotSatisfiableNotification":         "L'intervallo richiesto non è disponibile per questa risorsa.",
+		"ResourceLockedNotification":              "Questa risorsa è temporaneamente bloccata. Riprova tra poco.",
+		"PreconditionRequiredNotification":        "Questa richiesta deve includere un'intestazione di precondizione.",
+		"UnavailableForLegalReasonsNotification":  "Questa risorsa non è disponibile per motivi legali.",
+		"InsufficientStorageNotification":         "La quota di archiviazione è esaurita.",
+		"RequestHeaderFieldsTooLargeNotification": "Le intestazioni della richiesta superano la dimensione consentita.",
+		"MalformedRequestNotification":            "Non è stato possibile leggere la richiesta.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,

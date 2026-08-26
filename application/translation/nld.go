@@ -89,6 +89,22 @@ func (coreNL) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route niet gevonden.",
 		"MethodNotAllowedNotification":    "HTTP-methode niet toegestaan voor deze route.",
 		"PayloadTooLargeNotification":     "Verzoekbody overschrijdt de toegestane omvang.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":             "Te veel verzoeken. Probeer het later opnieuw.",
+		"ResourceGoneNotification":                "Deze bron is niet langer beschikbaar.",
+		"PreconditionFailedNotification":          "Aan een in het verzoek gestelde voorwaarde is niet voldaan.",
+		"UnsupportedMediaTypeNotification":        "Inhoudstype wordt niet ondersteund door dit endpoint.",
+		"NotImplementedNotification":              "Deze functionaliteit is niet geïmplementeerd.",
+		"BadGatewayNotification":                  "Een upstream-service gaf een ongeldig antwoord.",
+		"PaymentRequiredNotification":             "Betaling is vereist voordat dit verzoek kan worden afgehandeld.",
+		"NotAcceptableNotification":               "Geen beschikbare weergave komt overeen met het gevraagde inhoudstype.",
+		"RangeNotSatisfiableNotification":         "Het gevraagde bereik is niet beschikbaar voor deze bron.",
+		"ResourceLockedNotification":              "Deze bron is tijdelijk vergrendeld. Probeer het zo meteen opnieuw.",
+		"PreconditionRequiredNotification":        "Dit verzoek moet een voorwaarde-header bevatten.",
+		"UnavailableForLegalReasonsNotification":  "Deze bron is niet beschikbaar om juridische redenen.",
+		"InsufficientStorageNotification":         "Het opslagquotum is uitgeput.",
+		"RequestHeaderFieldsTooLargeNotification": "De verzoekheaders overschrijden de toegestane omvang.",
+		"MalformedRequestNotification":            "Het verzoek kon niet worden gelezen.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,

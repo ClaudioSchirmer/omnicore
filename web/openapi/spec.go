@@ -408,8 +408,8 @@ func (s *Spec) canonicalResponses(op Operation, gen *Generator) map[string]any {
 	// envelopes so the consumer's examples render alongside the shared
 	// ErrorEnvelope schema. The framework default auto-merge in
 	// buildErrorExamplesMap naturally skips statuses without a default
-	// entry (DefaultErrorExample covers only 400/401/403/404/422/500),
-	// so non-default statuses surface exactly the consumer's examples.
+	// entry (see DefaultErrorExample for the covered set), so statuses
+	// outside it surface exactly the consumer's examples.
 	for code := range op.resolvedResponseExamples {
 		if code == status {
 			continue

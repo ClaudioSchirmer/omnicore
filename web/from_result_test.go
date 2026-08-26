@@ -9,6 +9,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -228,3 +229,117 @@ func TestRespondFromResult_ExceptionBranchCarriesCanonicalEnvelope(t *testing.T)
 type errInjected struct{}
 
 func (errInjected) Error() string { return "injected exception" }
+
+// TestStatusFromBasicHTTPFamily locks Semantic→status for the six everyday
+// statuses the framework maps but does not emit itself. A miss in
+// semanticToStatus does not fail loudly — statusFromNotifications simply
+// walks past it and returns 422 — so the table entry IS the contract and
+// this test is what defends it.
+func TestStatusFromBasicHTTPFamily(t *testing.T) {
+	cases := []struct {
+		key  string
+		sem  domain.NotificationSemantic
+		want int
+	}{
+		{"ResourceGoneNotification", domain.SemanticGone, fiber.StatusGone},
+		{"PreconditionFailedNotification", domain.SemanticPreconditionFailed, fiber.StatusPreconditionFailed},
+		{"UnsupportedMediaTypeNotification", domain.SemanticUnsupportedMediaType, fiber.StatusUnsupportedMediaType},
+		{"TooManyRequestsNotification", domain.SemanticTooManyRequests, fiber.StatusTooManyRequests},
+		{"NotImplementedNotification", domain.SemanticNotImplemented, fiber.StatusNotImplemented},
+		{"BadGatewayNotification", domain.SemanticBadGateway, fiber.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			dtos := []notifications.ContextDTO{{
+				Context:  "Request",
+				Messages: []notifications.MessageDTO{{NotificationKey: tc.key, Semantic: tc.sem}},
+			}}
+			if got := statusFromNotifications(dtos); got != tc.want {
+				t.Fatalf("%s: expected %d, got %d", tc.key, tc.want, got)
+			}
+		})
+	}
+}
+
+// TestResponseFromContextDTOs_CarriesNewSemanticLabels proves the envelope's
+// `semantic` slot renders the new labels instead of degrading to
+// "Validation" — the failure mode an out-of-vocabulary semantic produces.
+func TestResponseFromContextDTOs_CarriesNewSemanticLabels(t *testing.T) {
+	dtos := []notifications.ContextDTO{{
+		Context: "Request",
+		Messages: []notifications.MessageDTO{
+			{NotificationKey: "TooManyRequestsNotification", Semantic: domain.SemanticTooManyRequests},
+		},
+	}}
+	resp := ResponseFromContextDTOs(dtos, statusFromNotifications(dtos), "")
+	if resp.Status != fiber.StatusTooManyRequests {
+		t.Fatalf("expected status 429, got %d", resp.Status)
+	}
+	if got := resp.Errors[0].Messages[0].Semantic; got != "TooManyRequests" {
+		t.Fatalf("expected semantic TooManyRequests, got %q", got)
+	}
+	if resp.Description != "Too Many Requests" {
+		t.Fatalf("expected description \"Too Many Requests\", got %q", resp.Description)
+	}
+}
+
+// TestStatusFromClosingFamily locks Semantic→status for the eight statuses
+// added to close the vocabulary. Same reason as the basic family above: a miss
+// in semanticToStatus is silent (the walk just continues and 422 comes out),
+// so the table entry IS the contract.
+func TestStatusFromClosingFamily(t *testing.T) {
+	cases := []struct {
+		key  string
+		sem  domain.NotificationSemantic
+		want int
+	}{
+		{"PaymentRequiredNotification", domain.SemanticPaymentRequired, fiber.StatusPaymentRequired},
+		{"NotAcceptableNotification", domain.SemanticNotAcceptable, fiber.StatusNotAcceptable},
+		{"RangeNotSatisfiableNotification", domain.SemanticRangeNotSatisfiable, fiber.StatusRequestedRangeNotSatisfiable},
+		{"ResourceLockedNotification", domain.SemanticLocked, fiber.StatusLocked},
+		{"PreconditionRequiredNotification", domain.SemanticPreconditionRequired, fiber.StatusPreconditionRequired},
+		{"UnavailableForLegalReasonsNotification", domain.SemanticUnavailableForLegalReasons, fiber.StatusUnavailableForLegalReasons},
+		{"InsufficientStorageNotification", domain.SemanticInsufficientStorage, fiber.StatusInsufficientStorage},
+		{"RequestHeaderFieldsTooLargeNotification", domain.SemanticRequestHeaderFieldsTooLarge, fiber.StatusRequestHeaderFieldsTooLarge},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			dtos := []notifications.ContextDTO{{
+				Context:  "Request",
+				Messages: []notifications.MessageDTO{{NotificationKey: tc.key, Semantic: tc.sem}},
+			}}
+			if got := statusFromNotifications(dtos); got != tc.want {
+				t.Fatalf("%s: expected %d, got %d", tc.key, tc.want, got)
+			}
+		})
+	}
+}
+
+// TestEverySemanticHasADocumentedExample is the guard that keeps the two
+// registries from drifting: every status the Semantic table can produce must
+// have an openapi.DefaultErrorExample, otherwise a route DECLARING that status
+// renders the 500-shaped fallback in its spec while the runtime emits the real
+// envelope. Adding a semantic without its example is exactly the kind of
+// half-landed change this fails on.
+func TestEverySemanticHasADocumentedExample(t *testing.T) {
+	for sem, status := range semanticToStatus {
+		if _, ok := openapi.DefaultErrorExample(status); !ok {
+			t.Errorf("semantic %s maps to %d, which has no openapi.DefaultErrorExample", sem, status)
+		}
+	}
+}
+
+// TestEverySemanticIsMappedAndLabelled asserts the enum has no member the HTTP
+// table forgot, and none whose String() silently fell back to "Validation" —
+// the two ways a new semantic half-lands and degrades to 422 on the wire
+// without anything failing.
+func TestEverySemanticIsMappedAndLabelled(t *testing.T) {
+	for sem := domain.SemanticValidation; sem <= domain.SemanticRequestHeaderFieldsTooLarge; sem++ {
+		if _, ok := semanticToStatus[sem]; !ok {
+			t.Errorf("semantic %d has no entry in semanticToStatus", int(sem))
+		}
+		if sem != domain.SemanticValidation && sem.String() == "Validation" {
+			t.Errorf("semantic %d has no String() case — it renders as %q on the wire", int(sem), "Validation")
+		}
+	}
+}

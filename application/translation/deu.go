@@ -89,6 +89,22 @@ func (coreDE) Translations() map[string]string {
 		"RouteNotFoundNotification":       "Route nicht gefunden.",
 		"MethodNotAllowedNotification":    "HTTP-Methode für diese Route nicht erlaubt.",
 		"PayloadTooLargeNotification":     "Anfragerumpf überschreitet die zulässige Größe.",
+		// Transport semantics the framework maps but does not emit itself
+		"TooManyRequestsNotification":             "Zu viele Anfragen. Bitte versuchen Sie es später erneut.",
+		"ResourceGoneNotification":                "Diese Ressource ist nicht mehr verfügbar.",
+		"PreconditionFailedNotification":          "Eine in der Anfrage angegebene Vorbedingung wurde nicht erfüllt.",
+		"UnsupportedMediaTypeNotification":        "Inhaltstyp wird von diesem Endpunkt nicht unterstützt.",
+		"NotImplementedNotification":              "Diese Funktion ist nicht implementiert.",
+		"BadGatewayNotification":                  "Ein vorgelagerter Dienst hat eine ungültige Antwort zurückgegeben.",
+		"PaymentRequiredNotification":             "Vor Bearbeitung dieser Anfrage ist eine Zahlung erforderlich.",
+		"NotAcceptableNotification":               "Keine verfügbare Darstellung entspricht dem angeforderten Inhaltstyp.",
+		"RangeNotSatisfiableNotification":         "Der angeforderte Bereich ist für diese Ressource nicht verfügbar.",
+		"ResourceLockedNotification":              "Diese Ressource ist vorübergehend gesperrt. Bitte versuchen Sie es in Kürze erneut.",
+		"PreconditionRequiredNotification":        "Diese Anfrage muss einen Vorbedingungs-Header enthalten.",
+		"UnavailableForLegalReasonsNotification":  "Diese Ressource ist aus rechtlichen Gründen nicht verfügbar.",
+		"InsufficientStorageNotification":         "Das Speicherkontingent ist aufgebraucht.",
+		"RequestHeaderFieldsTooLargeNotification": "Die Anfrage-Header überschreiten die zulässige Größe.",
+		"MalformedRequestNotification":            "Die Anfrage konnte nicht gelesen werden.",
 
 		// Notification context labels — the framework builds its own
 		// NotificationContext values with these names (web.respondRouteNotFound,
