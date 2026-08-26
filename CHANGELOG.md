@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-08-25
+
 ### Added
 
 - **`RedactedField` — sensitive data that stays in the source of record.** A
