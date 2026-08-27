@@ -510,6 +510,23 @@ func (s *userServiceImpl) EmailExists(email string, excludeID fwdomain.ID) bool 
         <a href="#custom-command-handler">Custom command handler</a>).
     </p>
 
+    <h3 id="archived-is-unreachable">An archived aggregate is unreachable to every other verb</h3>
+    <p>
+        <code>Repository.FindByID</code> filters <code>WHERE deleted_at IS NULL</code>, and every write handler
+        except Unarchive starts by loading through it. So once a record is archived, <strong>every other verb
+        answers 404</strong>: the update and the partial update, the archive itself, the DELETE, and — because
+        they are all root updates — every per-entry operation on its children, add and remove alike. Nothing is
+        written, and the row keeps exactly the state the archive left it in.
+    </p>
+    <p>
+        This is <code>DeletedAt</code> being a <em>delete</em> rather than a flag, and it has one deliberate
+        exception: <strong>Unarchive is the way back</strong>, and it is the only verb that can see an archived
+        record at all (next section). Two consequences worth designing for: a client cannot "clean up" an
+        archived aggregate with a DELETE — it must unarchive first — and an archived aggregate's children cannot
+        be edited through any surface, which is why a child that needs its own reversible removal belongs in its
+        own aggregate rather than as a collection under one.
+    </p>
+
     <h3>UnarchiveCommandHandler asymmetry</h3>
     <p>
         <code>UnarchiveCommandHandler</code> does NOT call <code>FindByID</code> (record is archived;

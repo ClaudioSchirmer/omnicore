@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.61.1] - 2026-08-27
+
 ### Fixed
 
 - **Removing an aggregate child now follows the child's own `DeletedAt`, like
@@ -34,6 +36,19 @@ with `1.0.0`.
     survives with an honest verb. The outbox payload follows the same rule, so
     the projection drops the element instead of stamping an archive on a row
     that is gone.
+
+  Two other manual sections carried the old rule as fact and are corrected with
+  it: the audit trail's per-child op table (`audit.html`) and the old-state
+  snapshot's (`old-state.html`) both claimed a removed child is always
+  `archived` with the row left recoverable. Each now has the two rows the rule
+  actually produces, keyed on what the child declares.
+
+  Documented in the same round, because the work surfaced it as an undocumented
+  behavior rather than a change: **an archived aggregate is unreachable to every
+  verb but Unarchive**. Every write handler except that one loads through
+  `FindByID`, which filters `WHERE deleted_at IS NULL`, so an archived record
+  answers 404 to the update, the archive, the DELETE and to every per-entry
+  operation on its children alike — and the way back is the explicit unarchive.
 
   Two boot messages went stale with the same round and were corrected: the
   base-child guard claimed "DeletedAt is all-or-nothing per base", which the

@@ -220,6 +220,14 @@ BEGIN — one TX for data + outbox + audit
 COMMIT
    └─► afterCommit — audit echo + domain events</div>
 
+    <div class="box warn">
+        <strong>An archived aggregate is unreachable to every verb but Unarchive.</strong> The verbs above all
+        load through <code>FindByID</code>, which filters <code>WHERE deleted_at IS NULL</code> — so on an
+        ARCHIVED root every one of them answers 404, the per-entry child operations included. The row keeps the
+        state the archive left it in, and the way back is the explicit unarchive. See
+        <a href="#auto-handlers~archived-is-unreachable">An archived aggregate is unreachable to every other verb</a>.
+    </div>
+
     <h3 id="child-deleted-at">What a child's <code>DeletedAt</code> declares</h3>
     <p>
         A child's removal is decided by <strong>one thing — whether the child's own schema declares

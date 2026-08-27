@@ -7,7 +7,7 @@
 </div>
 <div class="changelog">
     <div class="release">
-        <div class="release-head"><span class="release-tag">Unreleased</span></div>
+        <div class="release-head"><span class="release-tag">v0.61.1</span><span class="release-date">August 27, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>removing an aggregate child follows the child's own
                 <code>DeletedAt</code>, like the root does.</strong> The column is the whole rule: a child that
@@ -33,7 +33,16 @@
                 shared base) plus the rules that only exist over a COMBINATION of declarations. Two boot messages were
                 corrected in the same round: the base-child guard claimed "DeletedAt is all-or-nothing per base" — which
                 the framework no longer implements — and the base-child sibling refusal promised a "(v1)" scope it does
-                not have. Both guards are unchanged; only the wording is.</li>
+                not have. Both guards are unchanged; only the wording is. The per-child op tables in
+                <a href="#audit">Audit</a> and <a href="#old-state">Old-state snapshot</a> carried the old rule as fact
+                (a removed child is always <code>archived</code>, row recoverable) and now carry the two rows the rule
+                actually produces.</li>
+            <li><strong>Docs</strong> — <a href="#auto-handlers~archived-is-unreachable">An archived aggregate is
+                unreachable to every other verb</a> is new, and documents behavior that was never written down: every
+                write handler but Unarchive loads through <code>FindByID</code>, which filters
+                <code>WHERE deleted_at IS NULL</code>, so an archived record answers <strong>404</strong> to the update,
+                the archive, the DELETE and to every per-entry operation on its children — nothing is written, and the
+                explicit unarchive is the only way back.</li>
             <li>Nothing changes for a child that declares <code>DeletedAt</code> — the dominant path is untouched.
                 A child without the column still takes no part in the owner's archive/unarchive cascade (there is
                 nothing to stamp): its rows stay active while the owner is archived, and the owner's document is
