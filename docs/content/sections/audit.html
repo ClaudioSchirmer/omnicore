@@ -195,7 +195,10 @@ audit:
         by Go type name (<code>Address</code>, <code>OrderLine</code>); each entry carries
         <code>{id, op, snapshot}</code> or <code>{id, op, changes}</code> following the same
         <code>kind</code> discipline. <strong>Child ops are lifecycle-grounded</strong> — every op echoes what
-        the write did to that row's existence and archived state. For an <code>update</code> root, the op is decided by
+        the write did to that row's existence and archived state, which is why a removed child has TWO
+        ops rather than one: the child's own schema decides whether the row was stamped or deleted, and
+        the trail says which. The previous state rides along as the snapshot either way, so deleting a
+        row removes the row, not the record of it. For an <code>update</code> root, the op is decided by
         <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> (where the child <em>started</em> vs where it is
         now), not by its current status alone — so a DB-loaded child re-added is <code>updated</code> (not
         <code>inserted</code>), and a brand-new child added then removed before commit produces <strong>no entry</strong>
@@ -206,7 +209,8 @@ audit:
         <tr><td><code>insert</code></td><td>all current</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
         <tr><td><code>update</code> — <code>OpInsert</code></td><td>brand-new child kept (added, never DB-loaded)</td><td><code>inserted</code></td><td><code>INSERT INTO addresses (...)</code></td></tr>
         <tr><td><code>update</code> — <code>OpUpdate</code></td><td>DB-loaded child changed OR re-added (<code>Constructor→Changed/Added</code>)</td><td><code>updated</code></td><td><code>UPDATE addresses SET col=val, updated_at=$now</code></td></tr>
-        <tr><td><code>update</code> — <code>OpDelete</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — <code>OpDelete</code>, child declares <code>DeletedAt</code></td><td>DB-loaded child removed (<code>Constructor→Removed</code>)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now</code> (row stays, recoverable)</td></tr>
+        <tr><td><code>update</code> — <code>OpDelete</code>, child declares <strong>no</strong> <code>DeletedAt</code></td><td>same, on a child with no archived state to enter</td><td><code>deleted</code></td><td><code>DELETE FROM addresses WHERE id=$1</code> — its sibling rows first, same TX (see <a href="#aggregate-persistence~child-deleted-at">What a child's <code>DeletedAt</code> declares</a>)</td></tr>
         <tr><td><code>update</code> — <code>OpNoop</code></td><td>untouched DB child (<code>Constructor→Constructor</code>) OR new-then-removed (<code>Added→Removed</code>) — <strong>both skipped</strong></td><td>—</td><td>(no SQL, no entry)</td></tr>
         <tr><td><code>archive</code></td><td>every loaded active child (cascade)</td><td><code>archived</code></td><td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td></tr>
         <tr><td><code>unarchive</code></td><td>every loaded archived child (cascade)</td><td><code>unarchived</code></td><td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td></tr>

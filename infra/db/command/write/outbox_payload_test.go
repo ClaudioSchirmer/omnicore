@@ -102,37 +102,35 @@ func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 }
 
 func TestChildOpName_Mapping(t *testing.T) {
-	withSD := NewTableSchema[*builderTestEntity]("c").ID("id").ParentID("r_id").
-		Field("Name", "name").DeletedAt("deleted_at")
-	noSD := NewTableSchema[*builderTestEntity]("c2").ID("id").ParentID("r_id").
-		Field("Name", "name")
-
-	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, "UPDATED", false, withSD, true); got != "insert" {
+	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, "UPDATED", true); got != "insert" {
 		t.Errorf("new item → insert, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), false, "UPDATED", false, withSD, true); got != "update" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), false, "UPDATED", true); got != "update" {
 		t.Errorf("DB item changed → update, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), false, "UPDATED", false, withSD, true); got != "noop" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), false, "UPDATED", true); got != "noop" {
 		t.Errorf("untouched DB item → noop, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", false, withSD, true); got != "archive" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", true); got != "archive" {
 		t.Errorf("removed (archivable) → archive, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", true, noSD, false); got != "delete" {
-		t.Errorf("removed base-child without DeletedAt → delete, got %q", got)
+	// The column decides, and nothing else does: a removed child that declares no
+	// DeletedAt reports the DELETE the persister issued — whether it is a role's
+	// own child or a shared base's native one.
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", false); got != "delete" {
+		t.Errorf("removed child without DeletedAt → delete, got %q", got)
 	}
 
 	// Soft verbs report the CASCADE the root statement performed, not the item's
 	// own status: every child row under the ParentID took the same transition.
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, "ARCHIVED", false, withSD, true); got != "archive" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, "ARCHIVED", true); got != "archive" {
 		t.Errorf("archive cascades onto every child, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", false, withSD, true); got != "unarchive" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", true); got != "unarchive" {
 		t.Errorf("unarchive restores every child, got %q", got)
 	}
 	// A child table with no DeletedAt takes no cascade at all.
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", false, noSD, false); got != "noop" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", false); got != "noop" {
 		t.Errorf("a child without DeletedAt is skipped by the cascade, got %q", got)
 	}
 }

@@ -664,7 +664,14 @@ func childEventOf(
 		case domain.OpUpdate:
 			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), childLabelKeys(child))}, true
 		case domain.OpDelete:
-			return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
+			// The child's schema decided the effect (removeChild): a child that
+			// declares DeletedAt was archived, one that declares none had its row
+			// deleted. The snapshot of the previous state is the same either way —
+			// it is what keeps the history of a physically removed row.
+			if _, ok := child.DeletedAtColumn(); ok {
+				return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
+			}
+			return audit.ChildEvent{ID: id, Op: "deleted", Snapshot: prevFields()}, true
 		default: // OpNoop
 			return audit.ChildEvent{}, false
 		}

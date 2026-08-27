@@ -39,7 +39,7 @@ func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 // bcRoleSchema declares endereco as a NATIVE CHILD OF THE BASE (pessoa), shared by
-// every role. deletedAt toggles the all-or-nothing lifecycle on base + base-child.
+// every role. deletedAt toggles the archive column on base + base-child alike.
 // The purge policy is declared explicitly (the default is KeepOrphan) so the
 // orphan-delete test below exercises the purge branch.
 func bcRoleSchema(deletedAt bool) *TableSchema {

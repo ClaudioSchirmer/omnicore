@@ -715,8 +715,8 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 	}
 	// A shared base's native child (base-child) is a leaf of the base: it carries
 	// the base's deterministic id as its ParentID and may not itself nest. No
-	// grandchildren and (v1) no sibling on a base-child — the recursive width
-	// allowed at the role level is deliberately not opened on the base side yet.
+	// grandchildren and no sibling on a base-child — the recursive width allowed at
+	// the role level is not part of the base side of the model.
 	if s.isSharedBase {
 		if len(child.children) > 0 {
 			panic(fmt.Sprintf(
@@ -726,8 +726,8 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 		}
 		if len(child.siblings) > 0 {
 			panic(fmt.Sprintf(
-				"infra.TableSchema(%s): shared-base child %q declares a Sibling — a sibling on a base-child is "+
-					"not supported (v1). Declare the fields directly on the child.", s.table, child.typ.Name()))
+				"infra.TableSchema(%s): shared-base child %q declares a Sibling — a base-child carries no "+
+					"sibling table. Declare the fields directly on the child.", s.table, child.typ.Name()))
 		}
 	}
 	// Children are keyed by Go type name, so a second child of the SAME type would

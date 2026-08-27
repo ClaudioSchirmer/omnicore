@@ -222,26 +222,6 @@ func validateEndpoint(errs *validationErrors, prefix string, ec EndpointConfig) 
 	}
 }
 
-type reservedField struct {
-	value any
-	phase string
-}
-
-func rejectReserved(errs *validationErrors, prefix string, fields map[string]reservedField) {
-	keys := make([]string, 0, len(fields))
-	for k := range fields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		f := fields[k]
-		if f.value == nil {
-			continue
-		}
-		errs.addf("%s.%s: not yet supported in the current phase (introduced with %s)", prefix, k, f.phase)
-	}
-}
-
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

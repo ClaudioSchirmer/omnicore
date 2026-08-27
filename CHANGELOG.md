@@ -11,6 +11,58 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.61.1] - 2026-08-27
+
+### Fixed
+
+- **Removing an aggregate child now follows the child's own `DeletedAt`, like
+  the root does.** The column is the whole rule: a child that declares
+  `DeletedAt` is archived on removal, a child that declares none has its row
+  deleted. Where the child lives no longer changes the answer — a role's own
+  child and a shared base's native child behave identically.
+
+  Three defects close with it:
+
+  - a role's own child declaring no `DeletedAt` could not be removed at all: the
+    write reached `archiveChild`, which had no column to stamp, and the request
+    failed with an infrastructure error at runtime (there was no boot guard
+    either, so the service started and broke on the first removal);
+  - a hard-removed child left its **sibling rows** behind. The child's siblings
+    are now deleted first, in the same transaction — the order `hardDelete`
+    already used when the whole aggregate goes;
+  - the audit trail labelled every removed child `archived`, including one whose
+    row had just been physically deleted. It now reports `deleted` for that case,
+    keeping the same previous-state snapshot, so the history of a deleted row
+    survives with an honest verb. The outbox payload follows the same rule, so
+    the projection drops the element instead of stamping an archive on a row
+    that is gone.
+
+  Two other manual sections carried the old rule as fact and are corrected with
+  it: the audit trail's per-child op table (`audit.html`) and the old-state
+  snapshot's (`old-state.html`) both claimed a removed child is always
+  `archived` with the row left recoverable. Each now has the two rows the rule
+  actually produces, keyed on what the child declares.
+
+  Documented in the same round, because the work surfaced it as an undocumented
+  behavior rather than a change: **an archived aggregate is unreachable to every
+  verb but Unarchive**. Every write handler except that one loads through
+  `FindByID`, which filters `WHERE deleted_at IS NULL`, so an archived record
+  answers 404 to the update, the archive, the DELETE and to every per-entry
+  operation on its children alike — and the way back is the explicit unarchive.
+
+  Two boot messages went stale with the same round and were corrected: the
+  base-child guard claimed "DeletedAt is all-or-nothing per base", which the
+  framework no longer implements (an archivable base with a base-child that
+  declares no column is legal, and now has defined behavior), and the base-child
+  sibling refusal promised a "(v1)" scope it does not have — a base-child carries
+  no sibling table, full stop. Both guards are unchanged; only the wording is.
+
+  Nothing changes for a child that declares `DeletedAt` — the dominant path is
+  untouched. A child without the column still takes no part in the owner's
+  archive/unarchive cascade (there is nothing to stamp): its rows stay active
+  while the owner is archived, and the owner's document is hidden by the owner's
+  own state.
+
 ## [0.61.0] - 2026-08-26
 
 ### Added

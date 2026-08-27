@@ -92,13 +92,6 @@ var supportedAuthTypes = map[string]struct{}{
 	"credentials-exchange":      {},
 }
 
-// futureAuthTypes maps not-yet-supported provider types to the phase that
-// introduces them, so the validator can give an actionable rejection.
-var futureAuthTypes = map[string]string{
-	"oauth2-password": "oauth2 password grant phase",
-	"oauth2-refresh":  "oauth2 refresh grant phase",
-}
-
 // validateAuthProviders runs schema checks on the top-level
 // authProviders block.
 func validateAuthProviders(cfg map[string]AuthProviderConfig) []string {
@@ -111,10 +104,6 @@ func validateAuthProviders(cfg map[string]AuthProviderConfig) []string {
 		t := strings.ToLower(strings.TrimSpace(p.Type))
 		if t == "" {
 			errs = append(errs, fmt.Sprintf("%s.type: required", prefix))
-			continue
-		}
-		if phase, ok := futureAuthTypes[t]; ok {
-			errs = append(errs, fmt.Sprintf("%s.type: %q is not yet supported (introduced with the %s)", prefix, p.Type, phase))
 			continue
 		}
 		if _, ok := supportedAuthTypes[t]; !ok {
