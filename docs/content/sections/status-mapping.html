@@ -289,6 +289,7 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
         No registration at startup. The framework maps the typed
         <code>Semantic()</code> declaration directly to the HTTP status at runtime.
     </p>
+
     <div class="box warn">
         <strong>The vocabulary is the framework's.</strong> <code>Semantic()</code> must return a member of
         the <code>NotificationSemantic</code> enum. A value invented outside it
@@ -312,6 +313,66 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
         without touching notification definitions. A future gRPC layer would map the
         identical enum to its status codes the same way.
     </div>
+
+    <h3 id="notification-bases">Which base — the layer that raises it</h3>
+    <p>
+        Every notification embeds a base from the <code>domain</code> package, and there are
+        <strong>three</strong> — one per layer that can author a rejection. They are markers: all three
+        embed the same <code>NotificationBase</code>, so all three seal the interface and carry the same
+        default <code>Semantic()</code> (<code>SemanticValidation</code> → 422), and no framework code
+        branches on which one you picked. The choice is architectural, and it is not free-form:
+        <strong>the base names the layer that RAISES the notification, and the type is declared in that
+        same layer</strong> — never one layer's base on a type declared in another.
+    </p>
+    <table>
+        <tbody><tr><th>Base</th><th>Raised by</th><th>Declared in</th></tr>
+        <tr>
+            <td><code>domain.DomainNotificationBase</code></td>
+            <td>a <code>BuildRules</code> rejection, a value object's <code>IsValid</code>, an aggregate invariant</td>
+            <td><code>internal/domain/</code> — its <code>notifications.go</code>, or <code>vos/</code> / <code>aggregatevos/</code> for the types those packages emit (<a href="#service-layout">Service layout</a>)</td>
+        </tr>
+        <tr>
+            <td><code>domain.ApplicationNotificationBase</code></td>
+            <td>a hand-written command/query handler — a precondition the aggregate does not own, an orchestration refusal, an outbound failure translated into this service's vocabulary</td>
+            <td><code>internal/application/</code>, beside the handler that raises it</td>
+        </tr>
+        <tr>
+            <td><code>domain.InfrastructureNotificationBase</code></td>
+            <td>an adapter — a unique violation classified by the dialect, a migration failure, a fixed upstream→semantic mapping the adapter owns as part of its contract</td>
+            <td><code>internal/infra/</code>, beside the adapter that raises it</td>
+        </tr>
+    </tbody></table>
+    <p>
+        The framework holds itself to the same rule, and reading it is the shortest way to see the split:
+        the domain kernel notifications sit in <code>domain/notification_core.go</code> on
+        <code>DomainNotificationBase</code>, the application kernel in
+        <code>application/notifications/core.go</code> on <code>ApplicationNotificationBase</code>, the
+        migration failures under <code>infra/migration</code> on
+        <code>InfrastructureNotificationBase</code>.
+    </p>
+
+    <div class="box warn">
+        <strong>An endpoint whose rules are not the aggregate's.</strong> When a request is validated by the
+        <em>handler</em> rather than by <code>BuildRules</code> — an orchestration precondition, a
+        cross-resource check the aggregate has no business knowing, a translated outbound failure — the
+        rejection is an <strong>application</strong> notification: it takes
+        <code>ApplicationNotificationBase</code> and it is declared in <code>internal/application/</code>.
+        Moving it into <code>internal/domain/notifications.go</code> to sit beside the aggregate's own is
+        the mistake this table exists to prevent — the aggregate never raises it, so the domain must not
+        declare it, and a domain package that names a concern only the handler has stops being the
+        zero-IO, self-contained layer the architecture depends on. Note that this is a placement rule, not
+        a capability one: a persisted table still needs its type-anchored
+        <a href="#table-schema">TableSchema</a> over a domain struct even when that struct's
+        <code>BuildRules</code> is empty (see <a href="#custom-command-handler">Manual command
+        handler</a>). Worked example of the handler-side translation:
+        <a href="#httpclient">httpclient · Outbound error handling</a>.
+    </div>
+
+    <p>
+        The wire is identical whichever base you pick — <code>NotificationKey</code> is the struct name, so
+        the translation key, the <code>notificationKey</code> the client branches on, and the status the
+        <code>Semantic()</code> selects do not change with the layer. Only the placement does.
+    </p>
 
     <h3>Wire format includes <code>notificationKey</code> + <code>semantic</code></h3>
     <p>
