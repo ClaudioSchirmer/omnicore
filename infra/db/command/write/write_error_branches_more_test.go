@@ -22,8 +22,9 @@ import (
 
 // ─── Child mutation guards ───────────────────────────────────────────────────
 
-// A Removed child must carry an id to archive; a Removed child whose schema has
-// no DeletedAt column cannot be archived (role children must be archivable).
+// A Removed child must carry an id, whichever way it is removed; and a Removed
+// child whose schema declares no DeletedAt is hard-deleted rather than archived,
+// wherever it lives — a role's own child included.
 func TestRemovedChild_Guards(t *testing.T) {
 	t.Run("missingID", func(t *testing.T) {
 		root := &aggWriteRoot{Name: "r"}
@@ -52,9 +53,18 @@ func TestRemovedChild_Guards(t *testing.T) {
 			domain.RemoveAggregateChild(r, domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id)))
 			return nil
 		}, nil, "GetUpdatable")
-		be := newFlatBE(&recBeginner{tx: &recTx{count: 1}})
-		if _, err := be.Update(newBuilderCtx(), upd, schema, WriteHook{}); err == nil {
-			t.Fatal("expected the missing-DeletedAt guard on the removed child")
+		tx := &recTx{count: 1}
+		be := newFlatBE(&recBeginner{tx: tx})
+		if _, err := be.Update(newBuilderCtx(), upd, schema, WriteHook{}); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "DELETE FROM agg_w_children") }) {
+			t.Errorf("a role child WITHOUT DeletedAt must hard-delete (DELETE FROM agg_w_children), got %v", tx.execs)
+		}
+		if hasStmt(tx.execs, func(s string) bool {
+			return strings.HasPrefix(s, "UPDATE agg_w_children") && strings.Contains(s, "deleted_at")
+		}) {
+			t.Errorf("a child with no DeletedAt column has nothing to stamp, got %v", tx.execs)
 		}
 	})
 }

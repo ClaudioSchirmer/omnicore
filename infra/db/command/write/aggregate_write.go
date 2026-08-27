@@ -289,7 +289,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 					return err
 				}
 			case domain.OpDelete:
-				if err := removeChild(ctx, tx, d, child, typeName, it.Item, fromBase, now); err != nil {
+				if err := removeChild(ctx, tx, d, child, it.Item, now); err != nil {
 					return err
 				}
 			}
@@ -298,21 +298,31 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 	return nil
 }
 
-// removeChild applies a Removed child: archive (DeletedAt) when the child has a
-// DeletedAt column, else — only for a base-child, whose lifecycle follows the
-// shared base — hard-delete the row. A role child without DeletedAt still errors
-// inside archiveChild (unchanged): a removable role child must be archivable.
-func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, fromBase bool, now time.Time) error {
-	if fromBase {
-		if _, ok := child.DeletedAtColumn(); !ok {
-			id := item.GetID().Value()
-			if id == "" {
-				return fmt.Errorf("db: cannot delete base child %q without id", child.Table())
-			}
-			return tx.Exec(ctx, deleteSQL(d, child.Table(), child.IDColumn()), d.EncodeArg(domain.NewID(id)))
+// removeChild applies a Removed child: the CHILD'S SCHEMA decides, exactly like the
+// root's does. A child that declares DeletedAt is ARCHIVED (the row lingers, hidden,
+// and the owner's unarchive brings it back); a child that declares none has no state
+// to stamp, so the honest write is the DELETE — the same answer the root gives an
+// entity without DeletedAt. Position in the tree is irrelevant: a role's own child and
+// a shared base's native child follow the identical rule.
+//
+// A hard-removed child takes its sibling rows with it, mirroring what hardDelete does
+// for the whole aggregate (a sibling is a 1:1 slice of the child's row and cannot
+// outlive it). Base-children carry no siblings (rejected at boot), so that loop is a
+// no-op there — it exists for the role children this path now covers.
+func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, now time.Time) error {
+	if sdCol, ok := child.DeletedAtColumn(); ok {
+		return archiveChild(ctx, tx, d, child, sdCol, item, now)
+	}
+	id := item.GetID().Value()
+	if id == "" {
+		return fmt.Errorf("db: cannot delete child %q without id", child.Table())
+	}
+	for _, sib := range child.Siblings() {
+		if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), child.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+			return err
 		}
 	}
-	return archiveChild(ctx, tx, d, child, typeName, item, now)
+	return tx.Exec(ctx, deleteSQL(d, child.Table(), child.IDColumn()), d.EncodeArg(domain.NewID(id)))
 }
 
 // insertChild persists one Added child and returns the ID it minted — the
@@ -353,16 +363,13 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	return applySiblingUpdates(ctx, tx, d, child, item, id, false)
 }
 
-// archiveChild: Removed → Archive. A child with DeletedAt disabled cannot be
-// archived — surfaced as an error.
-func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, typeName string, item domain.AggregateValueObject, now time.Time) error {
+// archiveChild: Removed → Archive, for a child whose schema declares DeletedAt.
+// removeChild resolves the column and only routes here when it exists, so the
+// column arrives resolved rather than being re-derived (and re-guarded) here.
+func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, sdCol string, item domain.AggregateValueObject, now time.Time) error {
 	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot archive child %q without id", child.Table())
-	}
-	sdCol, err := requireDeletedAt(child, typeName)
-	if err != nil {
-		return err
 	}
 	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.IDColumn(), ""),
 		d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))

@@ -7,6 +7,40 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>removing an aggregate child follows the child's own
+                <code>DeletedAt</code>, like the root does.</strong> The column is the whole rule: a child that
+                declares <code>DeletedAt</code> is archived on removal, a child that declares none has its row
+                deleted. Where the child lives no longer changes the answer — a role's own child and a shared
+                base's native child behave identically. See
+                <a href="#aggregate-persistence~child-deleted-at">What a child's <code>DeletedAt</code> declares</a>.
+                <ul>
+                    <li>A role's own child declaring no <code>DeletedAt</code> could not be removed at all: the
+                        write reached the archive step with no column to stamp and failed with an infrastructure
+                        error at runtime. There was no boot guard either, so the service started and broke on the
+                        first removal.</li>
+                    <li>A hard-removed child left its <strong>sibling rows</strong> behind. They are now deleted
+                        first, in the same transaction — the order the aggregate's own hard delete already used.</li>
+                    <li>The audit trail labelled every removed child <code>archived</code>, including one whose row
+                        had just been physically deleted; it now reports <code>deleted</code> for that case, keeping
+                        the same previous-state snapshot. The outbox payload follows the same rule, so the
+                        projection drops the element instead of stamping an archive on a row that is gone.</li>
+                </ul>
+            </li>
+            <li><strong>Docs</strong> — <a href="#table-schema~refused-shapes">Shapes the model refuses</a> is new:
+                a ✓/✗ matrix of what each node of a schema may declare (root/role, aggregate child, base-child, sibling,
+                shared base) plus the rules that only exist over a COMBINATION of declarations. Two boot messages were
+                corrected in the same round: the base-child guard claimed "DeletedAt is all-or-nothing per base" — which
+                the framework no longer implements — and the base-child sibling refusal promised a "(v1)" scope it does
+                not have. Both guards are unchanged; only the wording is.</li>
+            <li>Nothing changes for a child that declares <code>DeletedAt</code> — the dominant path is untouched.
+                A child without the column still takes no part in the owner's archive/unarchive cascade (there is
+                nothing to stamp): its rows stay active while the owner is archived, and the owner's document is
+                hidden from default reads by the owner's own state.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.61.0</span><span class="release-date">August 26, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>six everyday HTTP semantics.</strong>

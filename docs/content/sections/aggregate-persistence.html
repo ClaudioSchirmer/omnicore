@@ -106,8 +106,257 @@ func (Endereco) CollectionName() string { return "Enderecos" }</code></pre>
         <li><strong>Archive(root)</strong> → Archive on all active children</li>
         <li><strong>Unarchive(root)</strong> → Unarchive on all archived children (requires <code>domain.ArchivedFinder</code> on the Repository to hydrate the aggregate)</li>
         <li><strong>Delete(root)</strong> → an explicit <code>DELETE</code> on every declared child table (by ParentID), in the same TX, before the root DELETE — the framework owns the cascade in Go, not a database <code>ON DELETE CASCADE</code></li>
-        <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items</li>
+        <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items when the child declares <code>DeletedAt</code>; <code>DELETE</code> of those rows when it does not (see <a href="#aggregate-persistence~child-deleted-at">What a child's DeletedAt declares</a>)</li>
     </ul>
+
+    <h3 id="insert-path">The INSERT path</h3>
+    <p>
+        One transaction covers the root, its children, its siblings, the outbox row and the audit row. The last branch of
+        each step is the <strong>shared-base trail</strong> — an aggregate with no
+        <a href="#table-schema~shared-base">shared base</a> never reaches it, so read the step and skip that branch.
+    </p>
+
+    <div class="flow">Insert(entity)
+   │   └─ the SCHEMA picks the path: a root declaring SharedBase(base, fk) goes through
+   │      insertWithBase, everything else through insertAggregate. Same guarantees
+   ▼
+BEGIN — one TX for data + outbox + audit
+   │
+   ├─► hook afterBegin (position A)   fires before any framework write
+   │
+   ├─► SHARED BASE ONLY — the identity is written FIRST (the role's ParentID needs it)
+   │      natural key ──► UUIDv5 ──► the base's deterministic id
+   │      │
+   │      ├─ does the base row exist?
+   │      │     no  → INSERT base, revision 1
+   │      │     yes → UPDATE base — shared fields are LAST-WRITE-WINS and the write is
+   │      │           unguarded: several roles converge on this identity, so guarding it
+   │      │           would turn another role's write into a conflict on this one
+   │      │           └─ and the request must have LOADED the identity first
+   │      │              (GetUpsertable). A blind insert over an existing identity is
+   │      │              refused: it would duplicate the identity's own data
+   │      │
+   │      └─ is there already an ACTIVE role row for this identity?
+   │            yes → 409 EntityAlreadyAdded — nothing is written
+   │            no  → carry on. An ARCHIVED remnant is deliberately NOT looked for:
+   │                  the schema's own constraints admit or veto this insert
+   │
+   ├─► INSERT root      the id is minted in Go — or IS the base id, in the shared-ID
+   │                    model where role.id == base.id. revision starts at 1, and
+   │                    CreatedAt/UpdatedAt are stamped from ONE writeNow() instant
+   │
+   ├─► writeChildren    every child is Added → INSERT
+   │      │             └─ except a base-child the warm upsert already loaded: it
+   │      │                arrives Constructor → OpNoop and is never re-inserted
+   │      ├─ the child id is minted here and WRITTEN BACK into the aggregate map, so the
+   │      │  response and the outbox/audit snapshots carry real ids instead of empty ones
+   │      └─ a child's own siblings are inserted right after its row
+   │
+   ├─► INSERT root siblings   an all-nil sibling is skipped — no row at all
+   │
+   ├─► SHARED BASE ONLY — a new ACTIVE role means the identity is alive: if every prior
+   │                      role was archived, the base and its own children are reactivated
+   │
+   ├─► outbox INSERTED   ONE row per write; the payload is self-sufficient
+   │                     (root ∪ base ∪ siblings ∪ children with their ops ∪ ids)
+   ├─► audit event       kind=snapshot — the post-write state, written in-TX when
+   │                     the database destination is on
+   ├─► hook beforeCommit (position D)   after every write, before COMMIT
+   ▼
+COMMIT
+   └─► afterCommit — the audit echo and the entity's domain events go out, post-commit</div>
+
+    <h3 id="update-path">The UPDATE path</h3>
+    <p>
+        Update is <strong>load-first</strong>, and that is what makes it cheap: an untouched child resolves to
+        <code>OpNoop</code> and emits no SQL at all. The root's own UPDATE carries the optimistic-concurrency guard;
+        children and the shared base are deliberately unguarded, each for its own reason.
+    </p>
+
+    <div class="flow">Update(entity)
+   │   └─ PUT (full replace) or PATCH (partial) — the difference rides IsPartial and is
+   │      visible in exactly one place below: what an all-nil sibling means
+   ▼
+BEGIN — one TX for data + outbox + audit
+   │
+   ├─► hook afterBegin (position A)
+   │
+   ├─► SHARED BASE ONLY — the natural key is IMMUTABLE
+   │      it derives the identity's id, so a request that changed it would upsert a
+   │      DIFFERENT identity while this role kept pointing at the old one. Refused here
+   │
+   ├─► UPDATE root ... WHERE id = ? AND revision = (the revision the load returned)
+   │      │  the guard is free on the happy path — it rides the UPDATE's own WHERE
+   │      └─ zero rows? the framework asks WHY before answering:
+   │            the row still exists → 409 ConcurrentModification (someone moved it)
+   │            the row is gone      → 404 not found
+   │
+   ├─► writeChildren    domain.OperationOf(OriginalStatus, CurrentStatus), per item:
+   │      ├─ Constructor              OpNoop    untouched — no SQL
+   │      ├─ Added                    INSERT    (+ its siblings)
+   │      ├─ Added → Removed          OpNoop    added and removed before commit
+   │      ├─ Constructor → Added      UPDATE    a re-sent child is NOT a new row
+   │      ├─ Changed                  UPDATE    (+ its siblings, as a full replace)
+   │      └─ Constructor → Removed    ARCHIVE or DELETE — the child's own column decides
+   │                                  (see the next section)
+   │
+   │      a child UPDATE is unguarded on purpose: a child declares no revision, and the
+   │      OWNER's guarded UPDATE already proved nobody moved the aggregate
+   │
+   ├─► root siblings    UPSERT by the shared id. An all-nil sibling is the ONE place the
+   │                    verb shows through:
+   │                       PUT   → the row is DELETED (a full body cleared the slice)
+   │                       PATCH → the row is left untouched (the body said nothing)
+   │
+   ├─► SHARED BASE ONLY — UPDATE base (last-write-wins, unguarded), then reactivate it if
+   │                      it was archived: an updated role is an active role
+   │
+   ├─► outbox UPDATED   ONE row per write, carrying the base id + revision so the fan-out
+   │                    to the OTHER roles' read models rides this same event
+   ├─► audit event      kind=delta — the field-level changes; the children ride along,
+   │                    each with its own op
+   ├─► hook beforeCommit (position D)
+   ▼
+COMMIT
+   └─► afterCommit — audit echo + domain events</div>
+
+    <h3 id="child-deleted-at">What a child's <code>DeletedAt</code> declares</h3>
+    <p>
+        A child's removal is decided by <strong>one thing — whether the child's own schema declares
+        <code>DeletedAt</code></strong>, the same rule the root follows. A child that declares the column is
+        <strong>archived</strong>: the row lingers, hidden from reads, and the owner's unarchive brings it back. A child that
+        declares none has no state to stamp, so the honest write is the <strong>DELETE</strong> — exactly the answer the root
+        gives an entity without <code>DeletedAt</code>. Where the child lives makes no difference: a role's own child and a
+        shared base's native child follow the identical rule.
+    </p>
+    <p>
+        The difference against the root is that the root has <em>two verbs</em> over the same table — <code>DELETE</code> and
+        <code>PATCH …/archive</code> — while a child has a single primitive (<code>RemoveAggregateChild</code>), so the
+        declaration is what chooses:
+    </p>
+
+    <div class="flow">RemoveAggregateChild(root, item)
+   │   ├─ a PUT replace-all lands here too: an item omitted from the body is a Removed item
+   │   └─ this is not a verb of its own: it runs INSIDE the UPDATE path above — same TX,
+   │      same hooks, same single outbox row
+   ▼
+writeChildren → domain.OperationOf(OriginalStatus, CurrentStatus)
+   │   └─ each child is ParentID-routed first: a role's own child carries the ROLE id, a
+   │      shared base's own child carries the BASE id. That routing is the only thing the
+   │      shared base changes here — the lifecycle below is the same for both
+   │
+   ├─► Added → Removed        OpNoop
+   │      └─ added and removed before commit: no SQL at all, the row never existed
+   │
+   └─► Constructor → Removed  OpDelete
+          │
+          ▼
+       removeChild — the CHILD'S OWN schema decides, and nothing else does
+          │   └─ a role's own child and a base-child take the same two branches: where a
+          │      child hangs changes its ParentID, never its verb
+          │
+          ├─► it declares DeletedAt(col) ──► ARCHIVE
+          │      UPDATE child SET col = now WHERE id = ?
+          │      audit op "archived"  ·  outbox _op "archive"
+          │      └─ the row lingers, hidden from reads; the OWNER's unarchive brings it back
+          │
+          └─► it declares no DeletedAt ────► DELETE
+                 DELETE FROM child_sibling WHERE id = ?
+                 DELETE FROM child         WHERE id = ?
+                    └─ the sibling rows go FIRST: a sibling is a 1:1 slice of the child's
+                       row and cannot outlive it
+                 audit op "deleted"  ·  outbox _op "delete"
+                 └─ the row is gone; the audit event still carries its last state</div>
+
+    <p>
+        The owner's own verbs read the same declaration, and this is where the two halves meet — a child that declares no
+        column takes no part in the archive cascade, but no child escapes the hard delete. The last branch of each verb is
+        the <strong>shared-base trail</strong>: what the framework converges on the identity <em>after</em> the role's own
+        rows are written. An aggregate with no <a href="#table-schema~shared-base">shared base</a> simply never reaches it
+        — read the verb, skip that branch (details in
+        <a href="#table-schema~shared-base-children">Shared-base children</a>).
+    </p>
+
+    <div class="flow">BEGIN · hook afterBegin (A)   the three verbs below ride the SAME envelope as INSERT and
+   │                          UPDATE: one framework-owned TX, hooks at positions A and D,
+   ▼                          one outbox row, one in-TX audit row
+
+Archive(root)      UPDATE root SET deleted_at = now
+                   │
+                   ├─► child WITH DeletedAt     UPDATE child SET deleted_at = now
+                   │      └─ one statement per child table, so the cascade reaches rows
+                   │         the aggregate never loaded
+                   │
+                   ├─► child WITHOUT DeletedAt  untouched
+                   │      └─ nothing to stamp: its rows stay ACTIVE while the owner is
+                   │         archived. The owner's document is hidden from default reads
+                   │         by the OWNER's state, not by the child's
+                   │
+                   └─► SHARED BASE ONLY — convergence, after the role's own rows
+                          is any OTHER role still ACTIVE?
+                             yes → the base is untouched (someone still lives there)
+                             no  → the base archives, and its own children follow the very
+                                   same two rules above — with the column, stamped; without
+                                   it, left active under an archived base
+                          └─ OrphanPolicy plays NO part here: it governs the hard branch
+                             only. Soft is reversible, so nothing is ever destroyed by it
+
+Unarchive(root)    UPDATE root SET deleted_at = NULL
+                   │
+                   ├─► child WITH DeletedAt     UPDATE child SET deleted_at = NULL
+                   ├─► child WITHOUT DeletedAt  untouched — it never left
+                   │
+                   └─► SHARED BASE ONLY — is the base archived?
+                             yes → reactivate it and restore its own archived children
+                             no  → nothing to do
+
+Delete(root)       DELETE FROM child_sibling  (subquery over the child rows about to go)
+                   DELETE FROM child          (by ParentID)
+                   DELETE FROM root_sibling   (by the root id)
+                   DELETE FROM root
+                   │   └─ the child's DeletedAt is NOT consulted here: a hard delete is the
+                   │      end of the line, and normalization takes the rows with it
+                   │
+                   └─► SHARED BASE ONLY — convergence, after the role row is gone
+                          note the base's OWN children were not touched above — they belong
+                          to the identity, not to this role
+                          │
+                          is any role row left, ACTIVE or ARCHIVED?
+                             yes → the base stays (an archived remnant still references it),
+                                   and archives if no role is active
+                             no  → OrphanPolicy decides — and it is the ONLY place it decides:
+                                     KeepOrphan (the DEFAULT)
+                                        the base stays. Declaring DeletedAt, the orphaned
+                                        identity ARCHIVES instead of staying active: dormant
+                                        and revivable, never destroyed
+                                     DeleteWhenUnreferenced (opt-in)
+                                        PURGE, under a savepoint:
+                                           DELETE FROM base_child  (every one, column or not)
+                                           DELETE FROM base
+                                        └─ database-vetoable: a foreign key from ANY table
+                                           still pointing at the base — even one the registry
+                                           never saw — rolls back to the savepoint. The base
+                                           survives and this role delete still commits.
+                                           Declare the role→base FKs plain/RESTRICT so the
+                                           veto has teeth; an ON DELETE CASCADE ParentID opts
+                                           that table into the destruction instead
+   │
+   ▼
+outbox ARCHIVED / UNARCHIVED / DELETED  ·  audit event  ·  hook beforeCommit (D)  ·  COMMIT
+   ├─ audit kind: transition for archive and unarchive, snapshot for delete (the last
+   │  state of a row the database no longer has)
+   ├─ a shared-base PURGE is never invisible: it emits its OWN DELETED outbox row and its
+   │  own audit event for the base, alongside the role's
+   └─ afterCommit — audit echo + domain events</div>
+
+    <p>
+        Two things follow that the framework cannot enforce for you. The <strong>route should tell the same truth</strong> as
+        the declaration — <code>DELETE …/:id/&lt;children&gt;/:childId</code> for a child that declares no column,
+        <code>PATCH …/:id/&lt;children&gt;/:childId/archive</code> for one that does; the framework mounts neither, so that
+        one is yours to keep honest. And a hard-removed child is <strong>not lost history</strong>: the audit event carries
+        the child's previous state as its snapshot under <code>op = "deleted"</code>. Deleting the row removes the row, not
+        the record of it.
+    </p>
 
     <h3>Guarantees of the aggregate path</h3>
     <table>
@@ -116,7 +365,7 @@ func (Endereco) CollectionName() string { return "Enderecos" }</code></pre>
         <tr><td>Exactly <strong>one outbox row</strong> per operation (granularity B — the aggregate is the event unit)</td><td><code>insertAggregate / updateAggregate</code></td></tr>
         <tr><td>ParentID injected before the child INSERT</td><td><code>insertChild</code></td></tr>
         <tr><td>The child ID minted by the INSERT is <strong>written back into the aggregate map</strong> (<code>AssignAggregateItemID</code> stamps the item's <code>ID</code> field, statuses untouched) — so post-write readers see the child exactly as persisted: <code>FromEntity</code> can mirror children <em>with their ids</em> in the write response, and the outbox/audit snapshots (built after the child INSERTs) carry real ids instead of empty ones. An item without a settable <code>domain.ID</code>-typed <code>ID</code> field is skipped silently</td><td><code>writeChildren / domain.AssignAggregateItemID</code></td></tr>
-        <tr><td>Each child is bucketed by <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> — comparing where the item <em>started</em> (zero value or DB-loaded) against where it is now — into one <code>AggregateItemOp</code>: <code>OpInsert</code>→INSERT, <code>OpUpdate</code>→UPDATE, <code>OpDelete</code>→Archive (UPDATE <code>deleted_at</code>; the row stays recoverable), <code>OpNoop</code>→skipped. Two cross-status cases follow from the pair: a DB-loaded child re-added (<code>Constructor→Added</code>) is an <strong>UPDATE</strong>, not an INSERT; a brand-new child added then removed before commit (<code>Added→Removed</code>) is <strong>OpNoop</strong> — no SQL, never persisted</td><td><code>writeChildren</code></td></tr>
+        <tr><td>Each child is bucketed by <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> — comparing where the item <em>started</em> (zero value or DB-loaded) against where it is now — into one <code>AggregateItemOp</code>: <code>OpInsert</code>→INSERT, <code>OpUpdate</code>→UPDATE, <code>OpDelete</code>→Archive (UPDATE <code>deleted_at</code>; the row stays recoverable) when the child declares <code>DeletedAt</code>, else <code>DELETE</code> of the child row — its sibling rows first, same TX, <code>OpNoop</code>→skipped. Two cross-status cases follow from the pair: a DB-loaded child re-added (<code>Constructor→Added</code>) is an <strong>UPDATE</strong>, not an INSERT; a brand-new child added then removed before commit (<code>Added→Removed</code>) is <strong>OpNoop</strong> — no SQL, never persisted</td><td><code>writeChildren</code></td></tr>
         <tr><td>Archive of the root cascades archive on all active children</td><td><code>archiveAggregate</code></td></tr>
         <tr><td>Unarchive of the root restores all archived children of that root</td><td><code>unarchiveAggregate</code></td></tr>
         <tr><td>Hard Delete of the root issues an explicit <code>DELETE</code> per declared child table (by ParentID) before the root DELETE, same TX — no dependence on <code>ON DELETE CASCADE</code> (the ParentID clause is an optional safety-net)</td><td><code>deleteAggregate</code></td></tr>

@@ -313,6 +313,13 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     projects (same derived segment) is still a boot error.
 </div>
 
+<p>
+    <strong>A child's <code>DeletedAt</code> declares how that child is removed</strong>, the same way it does on a root:
+    declared, and removing an item archives the row; absent, and removing it deletes the row (its sibling rows first). The
+    rule, its three consequences and what it means for the child's route are in
+    <a href="#aggregate-persistence~child-deleted-at">What a child's <code>DeletedAt</code> declares</a>.
+</p>
+
 <h3>Decomposing a composite value object</h3>
 <p>
     A <a href="#value-objects">composite value object</a> — a struct that owns its rule and declares no
@@ -721,6 +728,75 @@ func OrdersView() *query.ViewDefinition {
     <em>only</em> way to bind the schema — the field is unexported, so there is no direct-assignment path that bypasses
     these checks.</p>
 
+<h3 id="refused-shapes">Shapes the model refuses</h3>
+<p>
+    The checks above catch <em>declaration mistakes</em> — a misspelled field, a column claimed twice, a slot declared
+    twice. This section is the other list: the <strong>shapes the model does not have</strong>. Each one is refused at
+    boot, in full, with the alternative named in the message — there is no flag that turns any of them on, and none is
+    pending. Width is always unlimited; what is bounded is depth, ownership and lifecycle.
+</p>
+
+<h4>What each node may declare</h4>
+<table>
+    <thead><tr>
+        <th>Declaration</th><th>Root / role</th><th>Aggregate child</th><th>Base-child</th><th>Sibling</th><th>Shared base</th>
+    </tr></thead>
+    <tbody>
+        <tr><td><code>.ID(col)</code></td><td><span class="yes-mark">✓</span> mandatory</td><td><span class="yes-mark">✓</span> mandatory</td><td><span class="yes-mark">✓</span> mandatory</td><td><span class="no-mark">✗</span> borrows the owner's</td><td><span class="yes-mark">✓</span> mandatory</td></tr>
+        <tr><td><code>.Field(...)</code> · <code>.RedactedField(...)</code> · <code>.Composite(...)</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td><code>.ParentID(col)</code></td><td>—<sup>1</sup></td><td><span class="yes-mark">✓</span> mandatory</td><td><span class="yes-mark">✓</span> mandatory</td><td><span class="no-mark">✗</span></td><td>—</td></tr>
+        <tr><td><code>.SharedBase(base, fk)</code></td><td><span class="yes-mark">✓</span><sup>2</sup></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td></tr>
+        <tr><td><code>.Child(...)</code> — 1:N</td><td><span class="yes-mark">✓</span></td><td><span class="no-mark">✗</span> no grandchildren</td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td><code>.Sibling(...)</code> — 1:1</td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td></tr>
+        <tr><td><code>.Revision(col)</code></td><td><span class="yes-mark">✓</span> mandatory</td><td><span class="no-mark">✗</span> guarded by the owner</td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="yes-mark">✓</span> mandatory</td></tr>
+        <tr><td><code>.DeletedAt(col)</code></td><td><span class="yes-mark">✓</span> optional</td><td><span class="yes-mark">✓</span> optional</td><td><span class="yes-mark">✓</span> only if the base declares one</td><td><span class="no-mark">✗</span> the owner controls the row</td><td><span class="yes-mark">✓</span> optional</td></tr>
+        <tr><td><code>.CreatedAt(col)</code> · <code>.UpdatedAt(col)</code></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td><td><span class="yes-mark">✓</span></td><td><span class="no-mark">✗</span> the owner's dates the row</td><td><span class="yes-mark">✓</span></td></tr>
+        <tr><td><code>.NaturalID(col)</code> · <code>.OrphanPolicy(...)</code></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="no-mark">✗</span></td><td><span class="yes-mark">✓</span> NaturalID mandatory</td></tr>
+    </tbody>
+</table>
+<p class="note">
+    <sup>1</sup> The <code>ParentID</code> is what MAKES a schema an aggregate child — a root declares none.
+    <sup>2</sup> And that is what makes the root a <em>role</em>; a role references at most one shared base.
+    Every <span class="no-mark">✗</span> above is a boot panic naming the alternative, not a silent no-op.
+</p>
+
+<h4>Rules over a combination of declarations</h4>
+<p>These cannot be read off a single node — they are refused when two declarations are put side by side:</p>
+<table>
+    <thead><tr><th>Refused combination</th><th>Refused at</th><th>Model it as</th></tr></thead>
+    <tbody>
+        <tr><td>One schema declaring both <code>.ParentID(...)</code> and <code>.SharedBase(...)</code></td><td>Declaration, in both orders</td><td>A schema is a child OR a role — two ParentIDs would be two parents</td></tr>
+        <tr><td>A role referencing more than one shared base</td><td><code>.SharedBase(...)</code></td><td>A second shared identity is a second role</td></tr>
+        <tr><td>Two child collections of the SAME Go type</td><td><code>.Child(...)</code></td><td>One collection per type — two would share one segment and one key</td></tr>
+        <tr><td>Two children resolving to the same <code>CollectionName()</code></td><td><code>.Child(...)</code></td><td>Give them distinct declared names</td></tr>
+        <tr><td>The same child type declared on the role AND on its base</td><td><code>ValidateSharedBaseChildren</code></td><td>A child type belongs to exactly one owner</td></tr>
+        <tr><td>A base-child with <code>DeletedAt</code> under a base that declares none</td><td><code>ValidateSharedBaseChildren</code></td><td>Declare it on the base too, or drop it — an archived state nothing can cascade onto has no owner</td></tr>
+        <tr><td><code>ModeArchive</code>/<code>ModeUnarchive</code> without <code>DeletedAt</code></td><td><code>WithSchema</code></td><td>Declare the column, or drop the mode</td></tr>
+        <tr><td><code>AggregateChildren()</code> and the <code>.Child(...)</code> set naming different types</td><td><code>WithSchema</code></td><td>The domain and infra declarations must name the same set, both ways</td></tr>
+        <tr><td>An embed source whose schema carries <code>.Child(...)</code></td><td><code>ValidateViewSchemas</code></td><td>Read side: a child projects automatically wherever its schema is used</td></tr>
+        <tr><td>An embed of an embed</td><td>Does not compile — a leg exposes no such builder</td><td>A <code>JoinView</code> source's own embeds, a second top-level embed, or a read-time <code>ComposedView</code></td></tr>
+    </tbody>
+</table>
+
+<div class="box">
+    <strong>Legal, and often mistaken for refused.</strong> Three lifecycle pairings are deliberate and carry meaning:
+    a <strong>child with no <code>DeletedAt</code></strong> (its removal is a <code>DELETE</code>, siblings first — see
+    <a href="#aggregate-persistence~child-deleted-at">What a child's <code>DeletedAt</code> declares</a>); an
+    <strong>archivable base with a base-child that declares no column</strong> (the base archives, that child removes by
+    <code>DELETE</code> and sits out the cascade); and a <strong>root with no <code>DeletedAt</code> owning an archivable
+    child</strong> (the root only deletes, the child still archives on removal). The column is a per-node declaration, not
+    an aggregate-wide one.
+</div>
+
+<p>
+    The read side has its own shape rules, enforced by <code>ValidateViewSchemas</code>: a <code>SharedBaseView</code>
+    must root at a <code>NewSharedBaseSchema</code> and a plain <code>query.View</code> must not (the two constructors are
+    exclusive both ways), a <code>SharedBaseView</code> declares at least one <code>.Role(...)</code>, the view→view embed
+    graph must be <strong>acyclic</strong>, and no read model may take a name ending in the reserved blue-green slot
+    suffixes <code>__0</code>/<code>__1</code> or collide with another read model's name. They are documented with the
+    declarations themselves under <a href="#views">Views</a>.
+</p>
+
 <h3>Audit stays in the domain vocabulary</h3>
 <p>
     Audit does <strong>not</strong> consume the schema. The timeline's <code>snapshot</code> keys and
@@ -1072,10 +1148,13 @@ func StudentSchema() *core.TableSchema {
 <ul>
     <li><strong>A type is a base-child OR a role-child, never both.</strong> The framework dispatches each declared child
         type to exactly one owner (the base or the role) when it injects the ParentID; a type claimed by both is a boot panic.</li>
-    <li><strong>DeletedAt is all-or-nothing per base.</strong> A base-child that declares <code>DeletedAt</code> requires
-        the base itself to declare <code>DeletedAt</code> — the shared lifecycle converges as a unit (archiving the last
-        active role archives the base <em>and</em> its native children), so a child cannot be archivable under a
-        non-archivable base.</li>
+    <li><strong>A base-child cannot declare an archived state its base can never drive.</strong> A base-child that
+        declares <code>DeletedAt</code> requires the base itself to declare <code>DeletedAt</code>: the shared lifecycle
+        converges as a unit (archiving the last active role archives the base <em>and</em> its native children), so under
+        a non-archivable base that column would never be cascaded onto. The opposite pairing is legal and has its own
+        meaning — a base-child that declares no column under an archivable base removes by <code>DELETE</code> and takes
+        no part in the base's cascade, exactly like a role's own child
+        (<a href="#aggregate-persistence~child-deleted-at">What a child's <code>DeletedAt</code> declares</a>).</li>
     <li><strong>Depth stays at one.</strong> A base-child is a leaf — it carries no sibling and no grandchild
         <code>.Child(...)</code>, exactly like an aggregate child (model a separate aggregate for deeper nesting).</li>
 </ul>

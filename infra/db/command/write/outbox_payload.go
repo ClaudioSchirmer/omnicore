@@ -197,7 +197,7 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 		list := make([]map[string]any, 0, len(items))
 		_, childHasDeletedAt := child.DeletedAtColumn()
 		for _, it := range items {
-			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, eventType, fromBase, child, childHasDeletedAt)
+			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, eventType, childHasDeletedAt)
 			item := map[string]any{payloadKeyOp: op}
 			if op != "archive" && op != "unarchive" && op != "delete" {
 				cf := child.WriteFields(it.Item)
@@ -258,14 +258,15 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 }
 
 // childOpName maps the persister's OperationOf categorization to the payload's
-// "_op" verb. A Removed child mirrors removeChild's actual effect: hard-delete
-// for a base-child without DeletedAt, archive otherwise.
+// "_op" verb. A Removed child mirrors removeChild's actual effect, and that
+// effect is decided by ONE thing — the child's own DeletedAt column: archive
+// when it declares one, hard-delete when it does not, wherever the child lives.
 //
 // On a soft verb the item's own status is irrelevant: the root's cascade hit
 // EVERY child row under the ParentID with one statement, so every item reports
 // that same transition — unless its table has no DeletedAt column, which the
 // cascade skips.
-func childOpName(op domain.AggregateItemOp, softVerb bool, eventType string, fromBase bool, child *TableSchema, childHasDeletedAt bool) string {
+func childOpName(op domain.AggregateItemOp, softVerb bool, eventType string, childHasDeletedAt bool) string {
 	if softVerb {
 		if !childHasDeletedAt {
 			return "noop"
@@ -281,10 +282,8 @@ func childOpName(op domain.AggregateItemOp, softVerb bool, eventType string, fro
 	case domain.OpUpdate:
 		return "update"
 	case domain.OpDelete:
-		if fromBase {
-			if _, ok := child.DeletedAtColumn(); !ok {
-				return "delete"
-			}
+		if !childHasDeletedAt {
+			return "delete"
 		}
 		return "archive"
 	default:

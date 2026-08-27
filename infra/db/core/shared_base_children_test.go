@@ -113,7 +113,8 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 			SharedBase(base, "pessoa_id")
 		role.ValidateSharedBaseChildren()
 	})
-	// A base + base-child that BOTH declare DeletedAt validate cleanly (all-or-nothing satisfied).
+	// A base + base-child that BOTH declare DeletedAt validate cleanly: the base can drive
+	// the column it declares.
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").DeletedAt("deleted_at").
 		Child(NewTableSchema[addrFixture]("endereco").ID("id").ParentID("pessoa_id").
 			Field("Street", "street").DeletedAt("deleted_at"))

@@ -23,37 +23,6 @@ import (
 	"time"
 )
 
-// --- validate.go: rejectReserved ----------------------------------------
-
-func TestRejectReserved(t *testing.T) {
-	var errs validationErrors
-	rejectReserved(&errs, "svc", map[string]reservedField{
-		"zeta":  {value: "set", phase: "Phase 9"},
-		"alpha": {value: 42, phase: "Phase 9"},
-		"gamma": {value: nil, phase: "Phase 9"}, // nil → skipped
-	})
-	if len(errs) != 2 {
-		t.Fatalf("expected 2 errors (nil skipped); got %d: %v", len(errs), errs)
-	}
-	// Keys are sorted: alpha before zeta.
-	if !strings.Contains(errs[0], "svc.alpha") || !strings.Contains(errs[0], "Phase 9") {
-		t.Errorf("unexpected first error: %q", errs[0])
-	}
-	if !strings.Contains(errs[1], "svc.zeta") {
-		t.Errorf("unexpected second error: %q", errs[1])
-	}
-}
-
-func TestRejectReserved_AllNil(t *testing.T) {
-	var errs validationErrors
-	rejectReserved(&errs, "svc", map[string]reservedField{
-		"a": {value: nil, phase: "P"},
-	})
-	if len(errs) != 0 {
-		t.Fatalf("all-nil reserved fields must produce no errors; got %v", errs)
-	}
-}
-
 // --- retry.go: network error classifiers --------------------------------
 
 type fakeNetErr struct {

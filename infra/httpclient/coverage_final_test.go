@@ -174,17 +174,19 @@ func joinHas(errs []string, sub string) bool {
 	return strings.Contains(strings.Join(errs, "\n"), sub)
 }
 
-// validateAuthProviders: empty type, future type, unrecognized type branches.
+// validateAuthProviders: empty type and unrecognized type branches. A provider
+// type outside the supported set is rejected as unrecognized, whatever it is —
+// there is no second tier of "declared but not implemented".
 func TestValidateAuthProviders_Branches(t *testing.T) {
 	if errs := validateAuthProviders(nil); errs != nil {
 		t.Errorf("empty map should yield nil, got %v", errs)
 	}
 	errs := validateAuthProviders(map[string]AuthProviderConfig{
 		"a": {Type: ""},                // missing type
-		"b": {Type: "oauth2-password"}, // future type
+		"b": {Type: "oauth2-password"}, // outside the supported set
 		"c": {Type: "totally-bogus"},   // unrecognized
 	})
-	for _, want := range []string{"type: required", "not yet supported", "not a recognized"} {
+	for _, want := range []string{"type: required", `"oauth2-password" is not a recognized`, `"totally-bogus" is not a recognized`} {
 		if !joinHas(errs, want) {
 			t.Errorf("expected an error containing %q, got %v", want, errs)
 		}
