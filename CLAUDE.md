@@ -125,7 +125,7 @@ For any contract, behavior, field list, or example, open the mapped file under `
 ### Pipeline
 | Topic | Section | Essence |
 |---|---|---|
-| Notification `Semantic` → HTTP status, error envelopes, Fiber router codes | `status-mapping.html` | Typed declaration IS registration; `SemanticValidation`→422 default. |
+| Notification `Semantic` → HTTP status, error envelopes, Fiber router codes; the three layer bases and which one a service picks | `status-mapping.html` | Typed declaration IS registration; `SemanticValidation`→422 default; the base names the layer that RAISES the notification, and the type is declared in that same layer. |
 
 ### Infrastructure
 | Topic | Section | Essence |
@@ -168,7 +168,7 @@ These constrain design decisions across the whole module. Each is detailed in th
 2. **One TX for data + outbox + audit.** Each write opens one relational transaction containing the data write(s), exactly one outbox row per aggregate operation (granularity B), and the in-TX `audit_events` row when `database` routing is on. Custom repos must preserve this.
 3. **Lifecycle hooks fire inside that TX, once per operation** — `afterBegin` before any framework write, `beforeCommit` after all writes and before COMMIT; same positions on flat and aggregate paths. Hook error rolls back (preserving type identity); hook panic rolls back and propagates to the single recover point in the pipeline.
 4. **Domain has zero IO** — pure types, validation, rules; cross-layer errors only via `domain.NotificationCarrier`.
-5. **Notifications are typed structs**; the human string comes from the translation layer at the boundary; `NotificationKey` (the struct name) and `Semantic` flow to the wire. Kernel notifications embed their layer's base (`Domain`/`Application`/`Infrastructure`NotificationBase) — never mix.
+5. **Notifications are typed structs**; the human string comes from the translation layer at the boundary; `NotificationKey` (the struct name) and `Semantic` flow to the wire. Every notification — the framework's kernel ones and a service's own alike — embeds its layer's base (`Domain`/`Application`/`Infrastructure`NotificationBase): the base names the layer that RAISES it and the type is declared in that same layer, so a handler-authored rejection is an application notification and never enters the domain. Never mix.
 6. **Every Archivable has a symmetric Unarchivable**; cascade root↔children is symmetric and universal.
 7. **Mongo mirrors the relational backend by default** — archived rows survive in the projection unless a view opts into `DeleteOnArchive()`; default reads hide them at EVERY level (the root `deleted_at` gate + the archived-entry strip on every segment: child arrays, roles, materialized embed segments and `EmbedInChild` enrichments), `?includeArchived` surfaces all of them at once. The strip applies to a segment if and ONLY IF the schema behind it declares `DeletedAt` — the declaration is what defines an archived state; a source declaring none is never filtered.
 8. **Names are declared, never inferred** — `TableSchema` is the sole place physical column names live (mandatory, explicit, complete; an undeclared field is never persisted/scanned/audited; one declaration drives write + criteria + scan + Mongo view), and an aggregate child's collection segment is declared by the DOMAIN (`AggregateValueObject.CollectionName`), feeding the read side and the notification wire path from one source. The framework carries no pluralization or case convention that invents a name.

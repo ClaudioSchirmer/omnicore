@@ -26,6 +26,7 @@
   "qry-export": "auto-query-handlers",
   "qry-manual": "custom-query-handler",
   "qry-path": "custom-query-handler",
+  "notification-bases": "status-mapping",
   "json-path-fields": "status-mapping",
   "field-labels": "status-mapping",
   "env-vars": "bootstrap",
