@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-08-28
+
 ### Changed
 
 - **BREAKING (behavior): unarchiving a root restores only the children ITS OWN
