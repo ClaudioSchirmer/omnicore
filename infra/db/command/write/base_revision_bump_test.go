@@ -162,8 +162,8 @@ func TestNormalizeCreatedAt_DriverShapes(t *testing.T) {
 		{"int", 42, time.Time{}},
 	}
 	for _, c := range cases {
-		if got := normalizeCreatedAt(c.in); !got.Equal(c.want) {
-			t.Errorf("%s: normalizeCreatedAt(%v) = %v, want %v", c.name, c.in, got, c.want)
+		if got := normalizeStamp(c.in); !got.Equal(c.want) {
+			t.Errorf("%s: normalizeStamp(%v) = %v, want %v", c.name, c.in, got, c.want)
 		}
 	}
 }

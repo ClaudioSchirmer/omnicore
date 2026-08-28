@@ -155,8 +155,8 @@ func TestChildCascadeSQL_MySQL(t *testing.T) {
 	if archive != "UPDATE `addresses` SET `deleted_at` = ? WHERE `user_id` = ? AND `deleted_at` IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NULL", " IS NOT NULL")
-	if unarchive != "UPDATE `addresses` SET `deleted_at` = NULL WHERE `user_id` = ? AND `deleted_at` IS NOT NULL" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
+	if unarchive != "UPDATE `addresses` SET `deleted_at` = NULL WHERE `user_id` = ? AND `deleted_at` = (SELECT `deleted_at` FROM `users` WHERE `id` = ?)" {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

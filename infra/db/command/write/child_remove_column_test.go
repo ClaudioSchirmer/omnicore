@@ -148,7 +148,7 @@ func TestBuildWritePayload_RemovedChildOpFollowsTheColumn(t *testing.T) {
 		root.SetID(domain.NewID(id))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
 		domain.RemoveAggregateChild(root, domain.WithID(covChild{Label: "x"}, domain.NewID("c1")))
-		p := buildWritePayload(schema, root, root.GetAggregateRoot(), "UPDATED", testNow,
+		p := buildWritePayload(schema, root, root.GetAggregateRoot(), "UPDATED", testNow, CascadeStamps{},
 			schema.WriteFields(root), outboxMeta{ID: id})
 		children, ok := p[payloadKeyChildren].(map[string]any)
 		if !ok {

@@ -245,7 +245,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// archived (every prior role archived), reactivate it + its native children —
 	// the base's AUTOMATIC revival (its lifecycle is derived; only ROLE revival
 	// is out of the insert's scope).
-	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
+	if _, err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// ONE outbox row per write: the payload is self-sufficient (role ∪ base ∪
@@ -253,7 +253,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// SyncEngine fans out to the OTHER roles' read models from THIS event — the
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, roleFields,
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, roleFields,
 			outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now), BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -324,7 +324,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	}
 	// An updated role is active → keep the shared identity active (reactivate if a
 	// prior all-archived state left it archived). Idempotent when already active.
-	if err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
+	if _, err := b.reactivateBaseIfArchived(ctx, tx, d, schema, src); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ownRev := int64(0)
@@ -337,7 +337,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	// ONE outbox row per write (see insertWithBase): the payload carries the
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, roleFields,
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, roleFields,
 			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, CreatedAt: ownCreatedAt, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -367,7 +367,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 // base. Shared-ID model: pure arithmetic — the role id IS UUIDv5(naturalKey),
 // so the id derived from the request must equal the row's own id. Separate-ParentID
 // model: one ID-indexed SELECT (inside the open TX) projecting the comparison
-// as ANSI CASE 1/0 — the same dialect-safe form baseIsArchived uses (a bare
+// as ANSI CASE 1/0 — the dialect-safe form for a boolean answer (a bare
 // boolean-valued `fk = ?` in a SELECT list is a PG/MySQL-ism; T-SQL would
 // parse it as an alias assignment); a missing row skips the guard (the
 // role UPDATE right after reports not-found exactly as before). The Old
@@ -482,7 +482,8 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 			// vetoed — the base survives; fall through to the archive convergence.
 		}
 	}
-	return AuditBundle{}, false, b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
+	_, archErr := b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
+	return AuditBundle{}, false, archErr
 }
 
 // anyRoleRowReferences reports whether any role row — active OR archived, from
@@ -563,31 +564,44 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 
 // reactivateBaseIfArchived un-archives the base + its native children when a role
 // is/becomes active and the base was archived (the revive direction).
-func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) error {
+//
+// The probe reads the base's archive STAMP, not a yes/no: a zero stamp is the
+// same "nothing to do" the boolean gave (the base is active), and a non-zero one
+// is what the native-children cascade needs — the instant their own archive
+// bound, so the restore reaches exactly the children the base's archive put to
+// sleep and leaves the ones archived on their own where they are.
+// It answers the instant it undid — zero when there was nothing to undo — so the
+// caller can describe the base-children segment with the stamp THEIR statement
+// used, which is the base's own and not necessarily the role's.
+func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) (time.Time, error) {
 	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
 	if !ok || err != nil {
-		return err
+		return time.Time{}, err
 	}
-	archived, err := baseIsArchived(ctx, tx, d, base, sd, baseID)
-	if err != nil || !archived {
-		return err
+	stamp, err := readArchiveStamp(ctx, tx, d, base.Table(), sd, base.IDColumn(), baseID)
+	if err != nil || stamp.IsZero() {
+		return time.Time{}, err
 	}
-	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, nil)
+	return stamp, unarchiveBaseCascade(ctx, tx, d, base, sd, baseID)
 }
 
 // archiveBaseIfNoActiveRole archives the base + its native children once the role
 // just archived leaves NO active role referencing the base — stamped with the
 // SAME writeNow() instant the triggering role operation bound.
-func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, now time.Time) error {
+//
+// It answers that instant when it fired and the zero time when it did not (no
+// shared base, no DeletedAt on it, or another role still active): the base
+// children were then NOT touched, and the event must not claim they were.
+func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, now time.Time) (time.Time, error) {
 	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
 	if !ok || err != nil {
-		return err
+		return time.Time{}, err
 	}
 	active, err := b.anyActiveRole(ctx, tx, d, base, baseID)
 	if err != nil || active {
-		return err
+		return time.Time{}, err
 	}
-	return cascadeBaseLifecycle(ctx, tx, d, base, sd, baseID, &now)
+	return now, archiveBaseCascade(ctx, tx, d, base, sd, baseID, now)
 }
 
 // convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
@@ -597,14 +611,14 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 // soft-write paths ahead of the root UPDATE) — otherwise the dev's active-only
 // unique index vetoes the UPDATE itself first, surfacing a raw constraint
 // error instead of the friendly conflict.
-func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string, now time.Time) error {
+func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string, now time.Time) (time.Time, error) {
 	switch eventType {
 	case "ARCHIVED":
 		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
 	case "UNARCHIVED":
 		return b.reactivateBaseIfArchived(ctx, tx, d, schema, src)
 	}
-	return nil
+	return time.Time{}, nil
 }
 
 // vetoUnarchiveWithActiveSibling enforces, on the /unarchive verb, the invariant
@@ -667,76 +681,68 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 	return base, sd, deterministicBaseID(nk), true, nil
 }
 
-// cascadeBaseLifecycle archives (stamp != nil — the operation's writeNow()
-// value bound as the DeletedAt stamp) or unarchives (stamp == nil — SQL NULL)
-// the base row and each archivable native child, gated so it is idempotent
-// (a no-op when already in the target state). The BASE-ROW statement also bumps
-// `revision = revision + 1` — a lifecycle transition is a base-data change and
-// must move the last-writer-wins token like any other base write; the gate
-// guarantees the bump fires only on a real transition.
-func cascadeBaseLifecycle(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string, stamp *time.Time) error {
-	rev := d.QuoteIdent(base.RevisionColumn())
-	bump := ", " + rev + " = " + rev + " + 1"
-	if stamp != nil {
-		sql := fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s AND %s IS NULL",
-			d.QuoteIdent(base.Table()), d.QuoteIdent(sd), d.Placeholder(1), bump,
-			d.QuoteIdent(base.IDColumn()), d.Placeholder(2), d.QuoteIdent(sd))
-		if err := tx.Exec(ctx, sql, d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
-			return err
-		}
-	} else {
-		sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
-			d.QuoteIdent(base.Table()), d.QuoteIdent(sd), bump,
-			d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(sd))
-		if err := tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID))); err != nil {
-			return err
-		}
+// archiveBaseCascade / unarchiveBaseCascade are the base's two lifecycle
+// directions, and they are the SAME cascade the aggregate root runs over its own
+// children (cascadeChildren) — a shared base is a mini-root, so it converges by
+// the same rule and around the same single instant:
+//
+//	archive   → stamp `now` (the triggering role operation's one writeNow(), the
+//	            very value the role row and the role's own children carry) on the
+//	            base row and on every native child still ACTIVE
+//	unarchive → clear it from the native children carrying EXACTLY the base's
+//	            archive stamp — read from the base row itself, which is why they
+//	            move BEFORE it does — and then from the base row
+//
+// Both are gated so they are idempotent (a no-op when already in the target
+// state). The BASE-ROW statement also bumps `revision = revision + 1` — a
+// lifecycle transition is a base-data change and must move the last-writer-wins
+// token like any other base write; the gate guarantees the bump fires only on a
+// real transition.
+func archiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string, stamp time.Time) error {
+	sql := fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s AND %s IS NULL",
+		d.QuoteIdent(base.Table()), d.QuoteIdent(sd), d.Placeholder(1), baseRevisionBump(d, base),
+		d.QuoteIdent(base.IDColumn()), d.Placeholder(2), d.QuoteIdent(sd))
+	if err := tx.Exec(ctx, sql, d.EncodeArg(stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
+		return err
 	}
 	for _, bc := range base.ChildSchemas() {
 		csd, ok := bc.DeletedAtColumn()
 		if !ok {
 			continue
 		}
-		if stamp != nil {
-			if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn()),
-				d.EncodeArg(*stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := tx.Exec(ctx, childCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn(), nullSetExpr(d), " IS NOT NULL"),
-			d.EncodeArg(domain.NewID(baseID))); err != nil {
+		if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn()),
+			d.EncodeArg(stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// baseIsArchived reports whether the base row currently carries a non-null
-// DeletedAt marker (read once, for idempotency).
-func baseIsArchived(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) (bool, error) {
-	// Project the archived state as ANSI CASE 1/0 rather than scanning the raw
-	// DeletedAt timestamp (a non-null timestamp cannot be scanned into a
-	// []byte under Postgres' binary protocol — it works only while NULL, which
-	// is exactly the case reactivateBaseIfArchived probes for) or a bare
-	// boolean-valued expression (`col IS NOT NULL` in a SELECT list is a
-	// PG/MySQL-ism — T-SQL has no boolean expressions outside predicates).
-	// CASE WHEN … THEN 1 ELSE 0 END scans into an int on every dialect.
-	q := "SELECT CASE WHEN " + d.QuoteIdent(sd) + " IS NOT NULL THEN 1 ELSE 0 END FROM " + d.QuoteIdent(base.Table()) +
-		" WHERE " + d.QuoteIdent(base.IDColumn()) + " = " + d.Placeholder(1)
-	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
-	if err != nil {
-		return false, err
+func unarchiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) error {
+	// The native children go FIRST: their statement reads the base's own
+	// DeletedAt to know which of them this archive put to sleep, and the base
+	// UPDATE below is what clears it (see unarchiveCascadeSQL).
+	for _, bc := range base.ChildSchemas() {
+		csd, ok := bc.DeletedAtColumn()
+		if !ok {
+			continue
+		}
+		if err := tx.Exec(ctx, unarchiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn(), base.Table(), sd, base.IDColumn()),
+			d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(baseID))); err != nil {
+			return err
+		}
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		return false, rows.Err()
-	}
-	var archived int64
-	if err := rows.Scan(&archived); err != nil {
-		return false, err
-	}
-	return archived == 1, rows.Err()
+	sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
+		d.QuoteIdent(base.Table()), d.QuoteIdent(sd), baseRevisionBump(d, base),
+		d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(sd))
+	return tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
+}
+
+// baseRevisionBump renders the base row's ", revision = revision + 1" tail,
+// shared by the two lifecycle directions.
+func baseRevisionBump(d Dialect, base *TableSchema) string {
+	rev := d.QuoteIdent(base.RevisionColumn())
+	return ", " + rev + " = " + rev + " + 1"
 }
 
 // anyActiveRole reports whether any role row referencing the base (instance ∪

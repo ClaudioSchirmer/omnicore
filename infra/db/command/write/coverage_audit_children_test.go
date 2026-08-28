@@ -2,6 +2,7 @@ package write
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -96,6 +97,19 @@ func TestChildEventOf_UpdateRemovedChild(t *testing.T) {
 	}
 }
 
+// archiveTestStamp is the instant these tests archive with — the one value a
+// root and the children its cascade stamped all carry.
+var archiveTestStamp = time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+
+// archivedCovChild builds a child as the LOADER would hand it over: identified,
+// and carrying the DeletedAt its row holds (domain.SetManagedColumns is the
+// framework's populate seam).
+func archivedCovChild(id string, deletedAt time.Time) domain.AggregateValueObject {
+	child := domain.WithID(covChild{Label: "x"}, domain.NewID(id))
+	domain.SetManagedColumns(&child, 1, nil, nil, &deletedAt)
+	return child
+}
+
 func TestChildEventOf_ArchiveChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
@@ -104,25 +118,63 @@ func TestChildEventOf_ArchiveChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	ev := BuildArchiveEvent(newBuilderCtx(), ar, covAggSchema, nil)
+	ev := BuildArchiveEvent(newBuilderCtx(), ar, covAggSchema, nil, CascadeStamps{Own: archiveTestStamp})
 	kids := ev.Children["covChild"]
 	if len(kids) != 1 || kids[0].Op != "archived" {
 		t.Fatalf("archive child event drifted: %+v", ev.Children)
 	}
 }
 
+// An already-archived child is NOT part of the archive cascade: the statement is
+// gated on `deleted_at IS NULL`, so its row keeps the older stamp it carries and
+// the trail must not claim this archive touched it.
+func TestChildEventOf_ArchiveSkipsAlreadyArchivedChild(t *testing.T) {
+	root := &covAgg{Name: "a"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	root.AggregateConstructor([]domain.AggregateValueObject{archivedCovChild("c1", archiveTestStamp.Add(-2*time.Hour))})
+	ar, err := domain.GetArchivable(root, nil, "GetArchivable")
+	if err != nil {
+		t.Fatalf("GetArchivable: %v", err)
+	}
+	ev := BuildArchiveEvent(newBuilderCtx(), ar, covAggSchema, nil, CascadeStamps{Own: archiveTestStamp})
+	if len(ev.Children["covChild"]) != 0 {
+		t.Fatalf("a child already archived must not appear on the archive trail: %+v", ev.Children)
+	}
+}
+
 func TestChildEventOf_UnarchiveChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
 	root.SetID(domain.NewID(uuid.NewString()))
-	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(covChild{Label: "x"}, domain.NewID("c1"))})
+	root.AggregateConstructor([]domain.AggregateValueObject{archivedCovChild("c1", archiveTestStamp)})
 	un, err := domain.GetUnarchivable(root, nil, "GetUnarchivable")
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	ev := BuildUnarchiveEvent(newBuilderCtx(), un, covAggSchema, nil)
+	ev := BuildUnarchiveEvent(newBuilderCtx(), un, covAggSchema, nil, CascadeStamps{Own: archiveTestStamp})
 	kids := ev.Children["covChild"]
 	if len(kids) != 1 || kids[0].Op != "unarchived" {
 		t.Fatalf("unarchive child event drifted: %+v", ev.Children)
+	}
+}
+
+// The child the ROOT'S archive put to sleep comes back and is reported; the one
+// archived on its own, under its own older stamp, is not — the restore statement
+// never reached its row.
+func TestChildEventOf_UnarchiveReportsOnlyTheCascadedChildren(t *testing.T) {
+	root := &covAgg{Name: "a"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	root.AggregateConstructor([]domain.AggregateValueObject{
+		archivedCovChild("c1", archiveTestStamp),
+		archivedCovChild("c2", archiveTestStamp.Add(-2*time.Hour)),
+	})
+	un, err := domain.GetUnarchivable(root, nil, "GetUnarchivable")
+	if err != nil {
+		t.Fatalf("GetUnarchivable: %v", err)
+	}
+	ev := BuildUnarchiveEvent(newBuilderCtx(), un, covAggSchema, nil, CascadeStamps{Own: archiveTestStamp})
+	kids := ev.Children["covChild"]
+	if len(kids) != 1 || kids[0].ID != "c1" || kids[0].Op != "unarchived" {
+		t.Fatalf("the restore must report ONLY the child this root archived, got %+v", kids)
 	}
 }
 

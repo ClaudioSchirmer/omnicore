@@ -56,7 +56,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, nil, "INSERTED", now, fields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
+		buildWritePayload(schema, src, nil, "INSERTED", now, CascadeStamps{}, fields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -86,7 +86,9 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 		root, _ := entity.AggregateInfo()
 		return domain.WriteResult{ID: entity.ID()}, b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
 			HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
-			func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
+			func(stamps CascadeStamps) audit.AuditEvent {
+				return BuildArchiveEvent(ctx, entity, schema, b.auditClaims, stamps)
+			},
 			entity.Events())
 	}
 	if base, fkCol, ok := schema.SharedBaseRef(); ok {
@@ -123,7 +125,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, nil, "UPDATED", now, fields, meta)); err != nil {
+		buildWritePayload(schema, src, nil, "UPDATED", now, CascadeStamps{}, fields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -146,7 +148,9 @@ func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archi
 	root, _ := entity.AggregateInfo()
 	return b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
-		func() audit.AuditEvent { return BuildArchiveEvent(ctx, entity, schema, b.auditClaims) },
+		func(stamps CascadeStamps) audit.AuditEvent {
+			return BuildArchiveEvent(ctx, entity, schema, b.auditClaims, stamps)
+		},
 		entity.Events())
 }
 
@@ -154,7 +158,9 @@ func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Una
 	root, _ := entity.AggregateInfo()
 	return b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
 		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED", writeNow(),
-		func() audit.AuditEvent { return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims) },
+		func(stamps CascadeStamps) audit.AuditEvent {
+			return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims, stamps)
+		},
 		entity.Events())
 }
 
@@ -196,8 +202,9 @@ func (b *BaseEngine) Delete(ctx persistence.RequestContext, entity domain.Deleta
 //     active-only unique index vetoes the UPDATE itself with a raw constraint
 //     error instead of the canonical conflict;
 //   - the child cascade is SET-BASED (one statement per child table, not one
-//     per item): the verb archives every child row under the ParentID, which is
-//     not the per-item categorization an update performs;
+//     per item): the verb archives every ACTIVE child row under the ParentID —
+//     and unarchives back exactly the rows that archive stamped, which is not
+//     the per-item categorization an update performs;
 //   - the shared identity converges by LIFECYCLE (archive the base once no
 //     active role remains, reactivate it on unarchive) — the base's business
 //     fields are NOT rewritten here: several roles share that row, it is
@@ -219,7 +226,7 @@ func (b *BaseEngine) softWrite(
 	hctx HookContext,
 	eventType string,
 	now time.Time,
-	buildEvent func() audit.AuditEvent,
+	buildEvent func(stamps CascadeStamps) audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
 	sdCol, err := requireDeletedAt(schema, hctx.EntityType)
@@ -246,6 +253,24 @@ func (b *BaseEngine) softWrite(
 			return err
 		}
 	}
+	// ONE instant drives this row and the children under it. Archiving, it is the
+	// operation's single writeNow(): the root row and every child row the cascade
+	// stamps get that exact value, and the payload and the audit describe that
+	// same value. Unarchiving, it is the stamp the root row still carries — read
+	// from the row itself, BEFORE the UPDATE below clears it — because that is
+	// what tells the children this archive put to sleep from the ones that were
+	// already archived on their own. Zero (an already-active row, an idempotent
+	// unarchive) means there was no archive to undo, and the cascade then touches
+	// nothing. A shared base contributes a SECOND instant of its own further
+	// down, for the children that hang off the identity (see CascadeStamps).
+	cascade := now
+	if !archive {
+		st, err := readArchiveStamp(ctx, tx, d, schema.Table(), sdCol, schema.IDColumn(), id)
+		if err != nil {
+			return err
+		}
+		cascade = st
+	}
 	// The transition is a written column like any other: `now` archives, SQL
 	// NULL restores. WriteFields never carries it (DeletedAt is managed), so the
 	// verb adds it to the same map the statement and the payload both read.
@@ -255,22 +280,30 @@ func (b *BaseEngine) softWrite(
 	} else {
 		fields[sdCol] = nil
 	}
+	// The child cascade runs FIRST, both directions. The restore reads the root's
+	// DeletedAt inside its own statement — that column IS the discriminator — and
+	// the UPDATE below is what clears it. Ordering within the transaction is free;
+	// reading before overwriting is not.
+	if err := cascadeChildren(ctx, tx, d, root, schema, id, archive, cascade); err != nil {
+		return err
+	}
 	rev := loadedRevision(src)
 	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), id, fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
 	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), hctx.EntityType, schema.IDColumn(), id, rev); err != nil {
-		return err
-	}
-	if err := cascadeChildren(ctx, tx, d, root, schema, id, archive, now); err != nil {
 		return err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, id, true); err != nil {
 		return err
 	}
 	// SharedBase role: drive the shared identity's lifecycle from this verb
-	// (archive once no role stays active; reactivate on unarchive). No-op otherwise.
-	if err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now); err != nil {
+	// (archive once no role stays active; reactivate on unarchive). No-op
+	// otherwise. It answers the instant IT acted on — the base's own, which the
+	// base-children segment of the payload and of the audit must be read against.
+	baseCascade, err := b.convergeBaseAfterSoftWrite(ctx, tx, d, schema, src, eventType, now)
+	if err != nil {
 		return err
 	}
+	stamps := CascadeStamps{Own: cascade, Base: baseCascade}
 	// Payload meta AFTER the convergence, so its base_revision reflects any
 	// lifecycle transition this verb caused on the base row.
 	meta, err := outboxMetaFor(ctx, tx, d, schema, src, id)
@@ -278,10 +311,10 @@ func (b *BaseEngine) softWrite(
 		return err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), eventType, id,
-		buildWritePayload(schema, src, root, eventType, now, fields, meta)); err != nil {
+		buildWritePayload(schema, src, root, eventType, now, stamps, fields, meta)); err != nil {
 		return err
 	}
-	ab := b.BuildAudit(buildEvent, evs)
+	ab := b.BuildAudit(func() audit.AuditEvent { return buildEvent(stamps) }, evs)
 	if err := b.WriteAuditRow(ctx, tx, ab.Ev); err != nil {
 		return err
 	}
@@ -301,8 +334,27 @@ func (b *BaseEngine) softWrite(
 // route children through writeChildren: the cascade reaches every child row of
 // the aggregate, including any the caller never loaded, at a cost that does not
 // grow with the collection. A flat entity (root == nil) contributes nothing.
-func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, id string, archive bool, now time.Time) error {
+//
+// The two directions are symmetric around ONE instant, `cascade`:
+//
+//	archive   → stamp it on the children that are still ACTIVE (the ones already
+//	            archived keep their own, older stamp)
+//	unarchive → clear it from the children that carry EXACTLY it — the set the
+//	            archive above stamped, and nothing else
+//
+// So a child archived on its own stays archived when the root comes back: its
+// stamp is not the root's. A zero `cascade` on the restore direction means the
+// root carried no archive stamp at all, and then there is nothing to undo.
+//
+// `cascade` is what the archive direction BINDS and what the whole operation
+// reports (payload, audit). The restore direction does not bind it: it reads the
+// root's own column inside the statement (unarchiveCascadeSQL), which is why the
+// caller runs this BEFORE clearing that column.
+func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, id string, archive bool, cascade time.Time) error {
 	if root == nil {
+		return nil
+	}
+	if !archive && cascade.IsZero() {
 		return nil
 	}
 	for typeName := range root.AllAggregateItems() {
@@ -317,16 +369,117 @@ func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Ag
 		var err error
 		if archive {
 			err = tx.Exec(ctx, archiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn()),
-				d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
+				d.EncodeArg(cascade), d.EncodeArg(domain.NewID(id)))
 		} else {
-			err = tx.Exec(ctx, childCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn(), nullSetExpr(d), " IS NOT NULL"),
-				d.EncodeArg(domain.NewID(id)))
+			rootSd, ok := schema.DeletedAtColumn()
+			if !ok {
+				continue // unreachable on the soft verbs (requireDeletedAt gates them)
+			}
+			err = tx.Exec(ctx, unarchiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn(), schema.Table(), rootSd, schema.IDColumn()),
+				d.EncodeArg(domain.NewID(id)), d.EncodeArg(domain.NewID(id)))
 		}
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// CascadeStamps carries the instants ONE soft verb's cascades acted on. There are
+// two, because there are two cascades and they are not always the same write:
+//
+//	Own  — the root/role's own declared children, stamped by (or restored from)
+//	       the root row's DeletedAt
+//	Base — a shared base's native children, which move only when the BASE's
+//	       lifecycle moves, under the base row's own stamp. Zero when the base
+//	       did not transition at all: an archive that left another role active
+//	       never touched those rows, and an unarchive of a role whose base was
+//	       already active has nothing to restore
+//
+// A role archived at T1 while a sibling role stayed active leaves the base up;
+// when that sibling is archived at T2 the base and its children go down carrying
+// T2. Unarchiving the first role then restores base children from T2 while the
+// role's own children come back from T1 — one verb, two instants, and reporting
+// either one for the other's segment would describe rows that never moved.
+type CascadeStamps struct {
+	Own  time.Time
+	Base time.Time
+}
+
+// forChild picks the instant that governs one child collection: the base's when
+// the child belongs to the shared identity, the root's otherwise.
+func (c CascadeStamps) forChild(fromBase bool) time.Time {
+	if fromBase {
+		return c.Base
+	}
+	return c.Own
+}
+
+// cascadeTouches answers, for ONE loaded child item, whether the root's set-based
+// cascade statement reached its row — the Go-side reading of the very predicate
+// the SQL carries, so the event the write announces and the rows it wrote can
+// never describe different sets.
+//
+//	archive   → WHERE deleted_at IS NULL   : only the children still active
+//	unarchive → WHERE deleted_at = $cascade: only the children this root's own
+//	                                         archive put to sleep
+//
+// item is the child's loaded DeletedAt (nil = active). Compared with Equal, not
+// ==: the two values travel through different scans, and an instant is an
+// instant whatever monotonic reading or location the driver attached to it.
+//
+// A ZERO cascade means no such statement ran — a restore of a row that carried no
+// archive stamp, or a shared base that did not transition because another role
+// stayed active — and then it reached nothing, in either direction.
+func cascadeTouches(archive bool, item *time.Time, cascade time.Time) bool {
+	if cascade.IsZero() {
+		return false
+	}
+	if archive {
+		return item == nil
+	}
+	return item != nil && item.Equal(cascade)
+}
+
+// loadedDeletedAt reads the DeletedAt a child item carries FROM ITS LOAD — the
+// managed carrier every entity and value object embeds (domain.Managed). Probed,
+// never required, exactly like loadedRevision: an item that carries no carrier
+// (hand-built, or a repository outside the framework's read path) reads as
+// active, which is what an item with no archive history is.
+func loadedDeletedAt(v any) *time.Time {
+	if dc, ok := v.(interface{ GetDeletedAt() *time.Time }); ok {
+		return dc.GetDeletedAt()
+	}
+	return nil
+}
+
+// readArchiveStamp reads the DeletedAt value a row currently carries, inside the
+// write TX and before the verb touches it — the zero time when the column is
+// NULL (the row is active) or the row is gone. It is the ONE read the restore
+// direction needs: the value it answers is the discriminator the child cascade
+// binds, the partition the outbox payload reports, and the set the audit event
+// describes, so all three can only ever agree.
+//
+// Scanned through `any` + normalizeStamp for the same reason readRevisionCreatedAt
+// is: the wire form of a timestamp differs per driver (time.Time on pgx/godror,
+// a []byte on MySQL without parseTime, RFC3339 TEXT on SQLite), and the
+// normalizer is where that is already settled.
+func readArchiveStamp(ctx context.Context, tx WriteTx, d Dialect, table, sdCol, pkCol, id string) (time.Time, error) {
+	q := d.ApplyLimit("SELECT "+d.QuoteIdent(sdCol)+" FROM "+d.QuoteIdent(table)+
+		" WHERE "+d.QuoteIdent(pkCol)+" = "+d.Placeholder(1), 1)
+	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(id)))
+	if err != nil || rows == nil {
+		return time.Time{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return time.Time{}, rows.Err()
+	}
+	var raw any
+	if err := rows.Scan(&raw); err != nil {
+		return time.Time{}, err
+	}
+	return normalizeStamp(raw), rows.Err()
 }
 
 // loadedRevision answers the optimistic-concurrency token the entity carries

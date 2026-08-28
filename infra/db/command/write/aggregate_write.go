@@ -55,7 +55,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, rootFields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, rootFields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -107,7 +107,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, rootFields, meta)); err != nil {
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, rootFields, meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {

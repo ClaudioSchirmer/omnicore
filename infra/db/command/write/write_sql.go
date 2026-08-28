@@ -158,14 +158,6 @@ func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
 		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.Placeholder(1), bump, d.QuoteIdent(pk), d.Placeholder(2))
 }
 
-// nullSetExpr is the unarchive assignment of the symmetric cascade (SQL NULL —
-// no bound value). The archive direction binds the operation stamp instead
-// (archiveCascadeSQL); nowSetExpr remains only as the dialect-NOW counterpart
-// for callers outside the data write path.
-func nowSetExpr(d Dialect) string { return d.NowExpr() }
-
-func nullSetExpr(Dialect) string { return "NULL" }
-
 func deleteSQL(d Dialect, table, pk string) string {
 	return fmt.Sprintf("DELETE FROM %s WHERE %s = %s",
 		d.QuoteIdent(table), d.QuoteIdent(pk), d.Placeholder(1))
@@ -181,25 +173,60 @@ func childDeleteSQL(d Dialect, childTable, fkCol string) string {
 		d.QuoteIdent(childTable), d.QuoteIdent(fkCol), d.Placeholder(1))
 }
 
-// childCascadeSQL renders the UNARCHIVE direction of the symmetric cascade on a
-// child table: set the DeletedAt column (setExpr, "NULL" on this path) for
-// children of the root whose state matches the gate (" IS NOT NULL" =
-// archived). The single arg is the root id. The archive direction binds the
-// operation stamp and lives in archiveCascadeSQL.
-func childCascadeSQL(d Dialect, childTable, childSd, fkCol, setExpr, gate string) string {
-	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s AND %s%s",
-		d.QuoteIdent(childTable), d.QuoteIdent(childSd), setExpr,
-		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd), gate)
-}
-
 // archiveCascadeSQL renders the ARCHIVE direction of the symmetric cascade: set
 // the DeletedAt column to the operation stamp (bound as the FIRST arg) for
 // the ACTIVE children of the root (second arg). Gated on `IS NULL` so it is
-// idempotent and never re-stamps an already-archived child.
+// idempotent, never re-stamps an already-archived child — and so the stamp it
+// writes is, for every row it touches, the SAME instant the root row carries:
+// one writeNow() per operation, bound here and by the root UPDATE alike. That
+// equality is not a coincidence to preserve casually — it IS the discriminator
+// unarchiveCascadeSQL reads back.
 func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
 	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s AND %s IS NULL",
 		d.QuoteIdent(childTable), d.QuoteIdent(childSd), d.Placeholder(1),
 		d.QuoteIdent(fkCol), d.Placeholder(2), d.QuoteIdent(childSd))
+}
+
+// unarchiveCascadeSQL renders the UNARCHIVE direction of the symmetric cascade:
+// clear the DeletedAt column of the children the OWNER'S OWN archive stamped —
+// the owner id binds first (the ParentID), the owner ROW id second.
+//
+// The gate used to be `IS NOT NULL` ("every archived child"), and that is the
+// bug it exists to fix: a child archived on its own two years ago has nothing to
+// do with the root's archive, yet the root's unarchive resurrected it along with
+// the rest. The two cases are already distinguishable in the data, because the
+// archive cascade binds the operation's single writeNow() instant on the owner
+// row AND on every child row it stamps, while skipping (IS NULL gate) the
+// children that were already archived — those keep their own, older stamp. So
+// "was archived BY this owner's archive" reads exactly as "carries the owner's
+// archive stamp", with no marker column and no backfill: rows written by earlier
+// versions of the framework already carry it.
+//
+// The owner's stamp is read INSIDE the statement, as a sub-select on its own
+// row, instead of being bound as a Go time.Time. Both forms are the same
+// comparison on paper; only this one survives every driver. A bound time.Time
+// carries a location, and a driver is free to hand it to the server as a
+// TIMESTAMP WITH TIME ZONE — Oracle's does — against a column declared without
+// one, and the server then reconciles the two through the session's time zone
+// and matches nothing. It does not error: the restore simply reaches no row
+// while the event says the children woke up. Column against column, the values
+// never leave the server and no time zone is ever introduced.
+//
+// The statement therefore MUST run before the owner's own row is cleared (see
+// cascadeChildren / unarchiveBaseCascade) — that sub-select is the discriminator.
+//
+// The comparison is still an equality between two stored timestamps, so it is
+// only as sharp as the columns' precision: owner and child DeletedAt columns must
+// share the same type, with sub-second precision (DATETIME(6), TIMESTAMP(6),
+// DATETIME2(6), TIMESTAMPTZ — what the generator emits). A second-precision
+// column collapses two operations that happened within the same second into one
+// stamp; a child column COARSER than the owner's truncates the stamp it was
+// given and stops matching, which fails safe (nothing is revived) but silently.
+func unarchiveCascadeSQL(d Dialect, childTable, childSd, fkCol, ownerTable, ownerSd, ownerPK string) string {
+	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s AND %s = (SELECT %s FROM %s WHERE %s = %s)",
+		d.QuoteIdent(childTable), d.QuoteIdent(childSd),
+		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd),
+		d.QuoteIdent(ownerSd), d.QuoteIdent(ownerTable), d.QuoteIdent(ownerPK), d.Placeholder(2))
 }
 
 // childSiblingDeleteSQL hard-deletes a child's sibling rows when the root is

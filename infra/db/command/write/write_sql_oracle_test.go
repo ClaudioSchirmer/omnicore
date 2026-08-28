@@ -130,16 +130,17 @@ func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	}
 }
 
-// TestChildCascadeSQL_Oracle: the cascade's setExpr arrives from the caller
-// already resolved against the dialect (nowSetExpr → SYSTIMESTAMP here).
+// TestChildCascadeSQL_Oracle: both directions of the symmetric cascade, each
+// binding the operation's own instant — written by the archive, matched by the
+// restore.
 func TestChildCascadeSQL_Oracle(t *testing.T) {
 	d := testOracleDialect{}
 	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
 	if archive != `UPDATE "ADDRESSES" SET "DELETED_AT" = :1 WHERE "USER_ID" = :2 AND "DELETED_AT" IS NULL` {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nullSetExpr(d), " IS NOT NULL")
-	if unarchive != `UPDATE "ADDRESSES" SET "DELETED_AT" = NULL WHERE "USER_ID" = :1 AND "DELETED_AT" IS NOT NULL` {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
+	if unarchive != `UPDATE "ADDRESSES" SET "DELETED_AT" = NULL WHERE "USER_ID" = :1 AND "DELETED_AT" = (SELECT "DELETED_AT" FROM "USERS" WHERE "ID" = :2)` {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -58,6 +59,66 @@ func (r *fakeRows) Scan(dest ...any) error {
 }
 func (r *fakeRows) Err() error   { return nil }
 func (r *fakeRows) Close() error { return nil }
+
+// cascadeTouches is the Go-side reading of the cascade's own WHERE clause, and
+// loadedDeletedAt is where it gets its input — including from a value object
+// that carries no managed carrier at all, which reads as active (there is no
+// archive history to read).
+func TestCascadeTouches_MirrorsTheStatementPredicate(t *testing.T) {
+	stamp := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+	older := stamp.Add(-2 * time.Hour)
+
+	// archive → WHERE deleted_at IS NULL
+	if !cascadeTouches(true, nil, stamp) {
+		t.Error("the archive cascade stamps the ACTIVE children")
+	}
+	if cascadeTouches(true, &older, stamp) {
+		t.Error("the archive cascade skips a child that is already archived")
+	}
+	// unarchive → WHERE deleted_at = $stamp
+	if !cascadeTouches(false, &stamp, stamp) {
+		t.Error("the restore reaches the child this root's archive stamped")
+	}
+	if cascadeTouches(false, &older, stamp) {
+		t.Error("the restore must not reach a child archived on its own")
+	}
+	if cascadeTouches(false, nil, stamp) {
+		t.Error("an active child has nothing to restore")
+	}
+	if cascadeTouches(false, &stamp, time.Time{}) {
+		t.Error("no stamp to undo → the restore reaches nothing")
+	}
+	// A zero instant means the statement never ran, and that answer must hold in
+	// BOTH directions — a shared base another active role kept up archives
+	// nothing, however active its native children look.
+	if cascadeTouches(true, nil, time.Time{}) {
+		t.Error("no archive cascade ran → it stamped nothing")
+	}
+	// Equal, not ==: the same instant in another location still matches.
+	elsewhere := stamp.In(time.FixedZone("UTC-3", -3*60*60))
+	if !cascadeTouches(false, &elsewhere, stamp) {
+		t.Error("an instant is an instant, whatever location the driver attached")
+	}
+	// An item with no domain.Managed carrier reads as active.
+	if got := loadedDeletedAt(struct{ Label string }{"no carrier"}); got != nil {
+		t.Errorf("a carrier-less item has no archive history, got %v", got)
+	}
+}
+
+// rowsArchivedAt scripts the readArchiveStamp probe — the single-column
+// `SELECT deleted_at FROM <table> WHERE <pk> = $1` the restore direction runs
+// before it clears the row — as one row carrying stamp, scanned through `any`
+// exactly as a driver hands a timestamp over.
+func rowsArchivedAt(stamp time.Time) func(string, []any) (Rows, error) {
+	return func(string, []any) (Rows, error) {
+		return &fakeRows{remaining: 1, scan: func(dest []any) error {
+			if p, ok := dest[0].(*any); ok {
+				*p = stamp
+			}
+			return nil
+		}}, nil
+	}
+}
 
 type recTxHandle struct{ persistence.SealedTxHandle }
 

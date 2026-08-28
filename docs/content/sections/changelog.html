@@ -7,6 +7,49 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.62.0</span><span class="release-date">August 28, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>unarchiving a root restores only the
+                children its own archive put to sleep.</strong> The restore cascade was gated on "is this child
+                archived?", so unarchiving a root resurrected every archived child under it — including ones removed on
+                their own months or years earlier, through a PUT replace-all or <code>RemoveAggregateChild</code>. It is
+                now gated on the stamp the root row itself carries: the archive cascade already writes the operation's
+                single instant on the root row and on every child row it stamps, skipping the children already archived
+                (which keep their own older stamp), so "archived because of the root" reads exactly as "carries the
+                root's archive stamp". No new column, no migration, no backfill — rows written by earlier versions
+                already carry the discriminator. See
+                <a href="#aggregate-persistence~unarchive-scope">What an unarchive brings back</a>.
+                <ul>
+                    <li>The same rule governs a <a href="#table-schema~shared-base">shared base</a>: the base row and its
+                        native children go down with the triggering role operation's one instant, and the reactivation
+                        restores the native children carrying the base's own stamp. A soft verb therefore carries TWO
+                        instants, because they are not always the same write — a role archived while a sibling role
+                        stayed active leaves the identity up, and the base only goes down later, with the last role.</li>
+                    <li>The discriminator is compared column against column — the child cascade reads the owner's
+                        stamp in a sub-select on its own row, and therefore runs before that row is cleared. Binding it
+                        back from Go is the same comparison on paper and does not survive every driver: a bound
+                        timestamp carries a location, and a driver that sends it as a zoned value against a column
+                        declared without one makes the server reconcile the two through its session time zone and match
+                        nothing — silently.</li>
+                    <li>Fixed with it: an archive that left another role active reported the base's native children as
+                        archived in the outbox payload and the audit trail while no statement had touched their rows,
+                        so the projected document showed them archived until the next rebuild. A base that does not
+                        transition now reports nothing about its children.</li>
+                    <li>The outbox payload and the audit trail report the same set the statements wrote: a child the
+                        cascade did not reach travels as <code>_op: "noop"</code> and is absent from the audit
+                        <code>children</code> block, instead of claiming a transition its row never took — so a live
+                        document and one rebuilt from the source still agree.</li>
+                    <li><strong>Requires sub-second precision on the <code>DeletedAt</code> columns, matching between
+                        root and child</strong> (<code>TIMESTAMPTZ</code> / <code>TIMESTAMP(6)</code> /
+                        <code>DATETIME(6)</code> / <code>DATETIME2(6)</code>). A second-precision column collapses two
+                        operations that happened within the same second; a child column coarser than the root's
+                        truncates the stamp it was given and stops matching it, which fails safe (nothing is
+                        restored) but silently.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.61.1</span><span class="release-date">August 27, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>removing an aggregate child follows the child's own

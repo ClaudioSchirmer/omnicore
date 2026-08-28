@@ -3,6 +3,7 @@ package write
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -145,12 +146,15 @@ func TestBaseEngine_UpdateAggregate_AllChildOps(t *testing.T) {
 }
 
 func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
+	// The instant the root was archived with — written on the root row and on the
+	// children the cascade stamped, and read back by the restore to find them.
+	stamp := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	for _, verb := range []string{"archive", "unarchive"} {
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
 
-		tx := &recTx{count: 1}
+		tx := &recTx{count: 1, queryFn: rowsArchivedAt(stamp)}
 		be := newFlatBE(&recBeginner{tx: tx})
 		var err error
 		if verb == "archive" {
@@ -169,6 +173,101 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 		// root soft-write + child cascade + outbox + audit = 4.
 		if len(tx.execs) != 4 {
 			t.Errorf("%s: expected 4 statements, got %d: %v", verb, len(tx.execs), tx.execs)
+		}
+	}
+}
+
+// ONE writeNow() per operation, and it is the SAME value on every row the archive
+// touches — the root's own DeletedAt and the stamp its child cascade binds. That
+// equality is the whole basis of the restore direction (unarchiveCascadeSQL
+// matches on it), so it is asserted, not assumed.
+func TestBaseEngine_ArchiveAggregate_RootAndChildrenShareOneInstant(t *testing.T) {
+	root := &aggWriteRoot{Name: "r"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
+	a, _ := domain.GetArchivable(root, nil, "GetArchivable")
+
+	tx := &recTx{count: 1}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Archive(newBuilderCtx(), a, aggWriteSchema(), firingHook); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	var rootStamp, childStamp time.Time
+	for i, sql := range tx.execs {
+		switch {
+		case strings.HasPrefix(sql, "UPDATE agg_w SET deleted_at = $1"):
+			rootStamp, _ = tx.execArgs[i][0].(time.Time)
+		case strings.HasPrefix(sql, "UPDATE agg_w_children SET deleted_at = $1"):
+			childStamp, _ = tx.execArgs[i][0].(time.Time)
+		}
+	}
+	if rootStamp.IsZero() || childStamp.IsZero() {
+		t.Fatalf("both the root UPDATE and the child cascade must bind a stamp, got %v / %v (%v)", rootStamp, childStamp, tx.execs)
+	}
+	if !rootStamp.Equal(childStamp) {
+		t.Errorf("the child cascade must bind the root's own instant: root %v, children %v", rootStamp, childStamp)
+	}
+}
+
+// The restore is not "every archived child": it reads the stamp the root itself
+// carries, so the statement reaches exactly the rows that archive put to sleep.
+// The stamp stays inside the statement (a sub-select on the root row) instead of
+// being bound as a Go time — a bound time.Time carries a location and a driver
+// may hand it over as a zoned value against a column declared without one, which
+// silently matches nothing. It follows that the cascade must run BEFORE the root
+// UPDATE clears that column, and that is asserted here too.
+func TestBaseEngine_UnarchiveAggregate_CascadeReadsTheRootsOwnStamp(t *testing.T) {
+	stamp := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+	root := &aggWriteRoot{Name: "r"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
+	u, _ := domain.GetUnarchivable(root, nil, "GetUnarchivable")
+
+	tx := &recTx{count: 1, queryFn: rowsArchivedAt(stamp)}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), u, aggWriteSchema(), firingHook); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	cascadeAt, rootAt := -1, -1
+	for i, sql := range tx.execs {
+		switch {
+		case strings.HasPrefix(sql, "UPDATE agg_w_children SET deleted_at = NULL"):
+			cascadeAt = i
+			if !strings.Contains(sql, "AND deleted_at = (SELECT deleted_at FROM agg_w WHERE id = $2)") {
+				t.Errorf("the restore must read the root's own stamp in the statement, got %q", sql)
+			}
+			if args := tx.execArgs[i]; len(args) != 2 {
+				t.Errorf("cascade args = %v, want [parentID rootID]", args)
+			}
+		case strings.HasPrefix(sql, "UPDATE agg_w SET deleted_at"):
+			rootAt = i
+		}
+	}
+	if cascadeAt < 0 || rootAt < 0 {
+		t.Fatalf("expected both the child cascade and the root UPDATE: %v", tx.execs)
+	}
+	if cascadeAt > rootAt {
+		t.Errorf("the cascade reads the root's DeletedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
+	}
+	_ = stamp
+}
+
+// A root that carries no archive stamp has nothing to undo: the idempotent
+// unarchive of an active row must not touch a single child row.
+func TestBaseEngine_UnarchiveAggregate_ActiveRootCascadesNothing(t *testing.T) {
+	root := &aggWriteRoot{Name: "r"}
+	root.SetID(domain.NewID(uuid.NewString()))
+	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
+	u, _ := domain.GetUnarchivable(root, nil, "GetUnarchivable")
+
+	tx := &recTx{count: 1, queryFn: rowsNone()} // the probe finds no stamp
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), u, aggWriteSchema(), firingHook); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	for _, sql := range tx.execs {
+		if strings.HasPrefix(sql, "UPDATE agg_w_children") {
+			t.Errorf("no stamp to undo → no child cascade, got %q", sql)
 		}
 	}
 }

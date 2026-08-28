@@ -89,13 +89,17 @@ func (m outboxMeta) idsBlock() map[string]any {
 // (INSERTED / UPDATED / ARCHIVED / UNARCHIVED). rootFields is the verb's bound
 // column→value map for the root/role table; src is the entity value the
 // sibling and shared-base fields read from; root is the aggregate (nil for a
-// flat entity); now is the operation stamp the DML bound.
+// flat entity); now is the operation stamp the DML bound; stamps carries the soft
+// verbs' cascade instants (the stamps an archive wrote, the stamps an unarchive
+// undoes — see CascadeStamps), read only by the children blocks and zero on every
+// other verb.
 func buildWritePayload(
 	schema *TableSchema,
 	src domain.Entity,
 	root *domain.AggregateRoot,
 	eventType string,
 	now time.Time,
+	stamps CascadeStamps,
 	rootFields domain.Fields,
 	meta outboxMeta,
 ) map[string]any {
@@ -168,7 +172,7 @@ func buildWritePayload(
 		}
 	}
 	out[payloadKeyIDs] = meta.idsBlock()
-	appendChildrenBlocks(out, schema, root, eventType, now)
+	appendChildrenBlocks(out, schema, root, eventType, stamps)
 	return out
 }
 
@@ -182,7 +186,16 @@ func buildWritePayload(
 // it, so a live document and one rebuilt from the source disagreed about which
 // children were archived. A child table without a DeletedAt column takes no
 // cascade and stays "noop".
-func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.AggregateRoot, eventType string, now time.Time) {
+//
+// Which items the cascade actually touched is decided by cascadeTouches, off the
+// SAME instants the statements bound (see CascadeStamps — the root's for its own
+// children, the base's for a shared identity's native ones): a child already
+// archived when the root archived, a child whose stamp is not the one being
+// undone, and every base-child of a base that did not transition at all are
+// "noop" — their rows did not move, so the projected element must not move
+// either. Read the two together: this block and the child cascade are one
+// decision expressed twice, once as SQL and once as an event.
+func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.AggregateRoot, eventType string, stamps CascadeStamps) {
 	if root == nil {
 		return
 	}
@@ -196,8 +209,10 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 		}
 		list := make([]map[string]any, 0, len(items))
 		_, childHasDeletedAt := child.DeletedAtColumn()
+		cascade := stamps.forChild(fromBase)
 		for _, it := range items {
-			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, eventType, childHasDeletedAt)
+			inCascade := childHasDeletedAt && cascadeTouches(eventType == "ARCHIVED", loadedDeletedAt(it.Item), cascade)
+			op := childOpName(domain.OperationOf(it.OriginalStatus, it.CurrentStatus), soft, eventType, childHasDeletedAt, inCascade)
 			item := map[string]any{payloadKeyOp: op}
 			if op != "archive" && op != "unarchive" && op != "delete" {
 				cf := child.WriteFields(it.Item)
@@ -230,7 +245,7 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 			if sd, ok := child.DeletedAtColumn(); ok {
 				switch op {
 				case "archive":
-					item[sd] = now
+					item[sd] = cascade
 				case "unarchive":
 					item[sd] = nil
 				}
@@ -262,13 +277,16 @@ func appendChildrenBlocks(out map[string]any, schema *TableSchema, root *domain.
 // effect is decided by ONE thing — the child's own DeletedAt column: archive
 // when it declares one, hard-delete when it does not, wherever the child lives.
 //
-// On a soft verb the item's own status is irrelevant: the root's cascade hit
-// EVERY child row under the ParentID with one statement, so every item reports
-// that same transition — unless its table has no DeletedAt column, which the
-// cascade skips.
-func childOpName(op domain.AggregateItemOp, softVerb bool, eventType string, childHasDeletedAt bool) string {
+// On a soft verb the item's own status is irrelevant: what decides is whether
+// the root's set-based cascade reached that row (inCascade, resolved by the
+// caller from the operation's instant). A row the statement did not touch —
+// no DeletedAt column, already archived when the root archived, archived under
+// a different stamp than the one being undone — reports "noop". Off the soft
+// verbs inCascade says nothing (there is no cascade) and the Removed item's
+// effect is decided by childHasDeletedAt alone, as it always was.
+func childOpName(op domain.AggregateItemOp, softVerb bool, eventType string, childHasDeletedAt, inCascade bool) string {
 	if softVerb {
-		if !childHasDeletedAt {
+		if !inCascade {
 			return "noop"
 		}
 		if eventType == "ARCHIVED" {
@@ -352,14 +370,17 @@ func readRevisionCreatedAt(ctx context.Context, tx WriteTx, d Dialect, table, re
 	if err := rows.Scan(&rev, &rawCreatedAt); err != nil {
 		return 0, time.Time{}, err
 	}
-	return rev, normalizeCreatedAt(rawCreatedAt), rows.Err()
+	return rev, normalizeStamp(rawCreatedAt), rows.Err()
 }
 
-// normalizeCreatedAt coerces a scanned created_at into a UTC time.Time. The write
-// path binds UTC values, so a naive string form (MySQL DATETIME without
-// parseTime) parses as UTC. An unrecognized form degrades to zero — the
-// tombstone then falls back to revision-only, never a wrong discriminator.
-func normalizeCreatedAt(v any) time.Time {
+// normalizeStamp coerces a scanned timestamp (a created_at for the tombstone's
+// incarnation discriminator, a deleted_at for the archive cascade's) into a UTC
+// time.Time. The write path binds UTC values, so a naive string form (MySQL
+// DATETIME without parseTime) parses as UTC. An unrecognized form — and a NULL,
+// which arrives as a nil any — degrades to zero: the tombstone then falls back
+// to revision-only and the restore cascade to touching nothing, never a wrong
+// discriminator.
+func normalizeStamp(v any) time.Time {
 	switch t := v.(type) {
 	case time.Time:
 		return t.UTC()

@@ -166,7 +166,7 @@ archivable, err := domain.GetArchivable(current, h.Service, "GetArchivable")
             <tr><td>update — StatusRemoved, child declares <strong>no</strong> <code>DeletedAt</code></td><td>same primitives — the child's schema is what differs</td><td><code>"deleted"</code> <span class="muted">(SQL is <code>DELETE</code>, its sibling rows first)</span></td><td><code>snapshot</code> (the state the row had when it went)</td></tr>
             <tr><td>update — StatusConstructor</td><td colspan="3"><em>untouched — skipped (no SQL)</em></td></tr>
             <tr><td>archive</td><td>every loaded active child (cascade)</td><td><code>"archived"</code></td><td><code>snapshot</code></td></tr>
-            <tr><td>unarchive</td><td>every loaded child (cascade restore)</td><td><code>"unarchived"</code></td><td><code>snapshot</code></td></tr>
+            <tr><td>unarchive</td><td>every loaded child the cascade restored — the ones carrying the root's own archive stamp (<a href="#aggregate-persistence~unarchive-scope">what an unarchive brings back</a>)</td><td><code>"unarchived"</code></td><td><code>snapshot</code></td></tr>
             <tr><td>delete</td><td>every loaded child (explicit <code>DELETE</code> by ParentID, in-TX)</td><td><code>"deleted"</code></td><td><code>snapshot</code></td></tr>
         </tbody>
     </table>

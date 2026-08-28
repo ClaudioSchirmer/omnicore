@@ -3,6 +3,7 @@ package write
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -170,19 +171,9 @@ func TestInsertWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 
 // --- unified lifecycle convergence (convergeBase) ----------------------------
 
-// rowsBaseArchived scripts baseIsArchived to find an archived base: the probe
-// projects the archived state as ANSI CASE 1/0 and scans an int, so the
-// archived case is a single row with 1.
-func rowsBaseArchived() func(string, []any) (Rows, error) {
-	return func(string, []any) (Rows, error) {
-		return &fakeRows{remaining: 1, scan: func(dest []any) error {
-			if p, ok := dest[0].(*int64); ok {
-				*p = 1
-			}
-			return nil
-		}}, nil
-	}
-}
+// baseArchiveStamp is the instant the shared base (and the native children its
+// cascade stamped) went down with — what the reactivation reads back and binds.
+var baseArchiveStamp = time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 
 func TestConvergeBase_ArchiveLastActiveRoleArchivesBase(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
@@ -201,6 +192,25 @@ func TestConvergeBase_ArchiveLastActiveRoleArchivesBase(t *testing.T) {
 	}
 	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = $1") }) {
 		t.Errorf("the base archive must cascade to the base-children (UPDATE endereco SET deleted_at = $1), got %v", tx.execs)
+	}
+	// ONE writeNow() for the whole operation: the role row, the shared identity
+	// it drove down and that identity's native children all carry the very same
+	// instant — which is what lets the reactivation find them again.
+	stamps := map[string]time.Time{}
+	for i, sql := range tx.execs {
+		for _, table := range []string{"aluno", "pessoa", "endereco"} {
+			if strings.HasPrefix(sql, "UPDATE "+table+" SET deleted_at = $1") {
+				stamps[table], _ = tx.execArgs[i][0].(time.Time)
+			}
+		}
+	}
+	if len(stamps) != 3 {
+		t.Fatalf("expected a stamp on the role, the base and the base-children, got %v (%v)", stamps, tx.execs)
+	}
+	for table, got := range stamps {
+		if got.IsZero() || !got.Equal(stamps["aluno"]) {
+			t.Errorf("%s was stamped with %v, want the role operation's own instant %v", table, got, stamps["aluno"])
+		}
 	}
 }
 
@@ -227,15 +237,16 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	// The unarchive path probes twice: the active-sibling veto (FROM aluno — no
-	// other active row, the revive proceeds) then the base state (FROM pessoa —
-	// currently archived, so it reactivates).
-	baseArchived := rowsBaseArchived()
+	// The unarchive path probes three times: the active-sibling veto (SELECT 1
+	// FROM aluno — no other active row, so the revive proceeds), the role's own
+	// archive stamp, then the base's (FROM pessoa — non-zero, so the base is
+	// archived and reactivates, carrying its native children with it).
+	archived := rowsArchivedAt(baseArchiveStamp)
 	tx := &recTx{count: 1, queryFn: func(sql string, args []any) (Rows, error) {
-		if strings.Contains(sql, "FROM aluno") {
-			return &fakeRows{remaining: 0}, nil
+		if strings.HasPrefix(sql, "SELECT deleted_at FROM") {
+			return archived(sql, args)
 		}
-		return baseArchived(sql, args)
+		return &fakeRows{remaining: 0}, nil
 	}}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); err != nil {
@@ -246,6 +257,53 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	}
 	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = NULL") }) {
 		t.Errorf("base reactivation must cascade to the base-children (UPDATE endereco SET deleted_at = NULL), got %v", tx.execs)
+	}
+	// And it reaches exactly the base-children the BASE'S archive stamped: the
+	// statement reads that instant off the base row itself, not "every archived
+	// row under the base", so an endereco archived on its own stays where it is.
+	// Reading it means the children must move BEFORE the base row is cleared.
+	childAt, baseAt := -1, -1
+	for i, sql := range tx.execs {
+		switch {
+		case strings.HasPrefix(sql, "UPDATE endereco SET deleted_at = NULL"):
+			childAt = i
+			if !strings.Contains(sql, "AND deleted_at = (SELECT deleted_at FROM pessoa WHERE id = $2)") {
+				t.Errorf("the base-children restore must read the base's own stamp, got %q", sql)
+			}
+			if args := tx.execArgs[i]; len(args) != 2 {
+				t.Errorf("cascade args = %v, want [baseID baseID]", args)
+			}
+		case strings.HasPrefix(sql, "UPDATE pessoa SET deleted_at = NULL"):
+			baseAt = i
+		}
+	}
+	if childAt < 0 || baseAt < 0 {
+		t.Fatalf("expected both the base-children cascade and the base UPDATE: %v", tx.execs)
+	}
+	if childAt > baseAt {
+		t.Errorf("the base-children cascade reads the base's DeletedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
+	}
+}
+
+// A base that is NOT archived has no stamp to undo: the reactivation must stop
+// at the probe, touching neither the base row nor its native children.
+func TestConvergeBase_UnarchiveLeavesAnActiveBaseAlone(t *testing.T) {
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, err := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+	if err != nil {
+		t.Fatalf("GetUnarchivable: %v", err)
+	}
+	tx := &recTx{count: 1, queryFn: rowsNone()} // no sibling, and no stamp on the base
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = NULL") }) {
+		t.Errorf("an active base must not be re-activated, got %v", tx.execs)
+	}
+	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco") }) {
+		t.Errorf("no base transition → no base-children cascade, got %v", tx.execs)
 	}
 }
 

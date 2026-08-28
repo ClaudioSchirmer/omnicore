@@ -11,6 +11,58 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-08-28
+
+### Changed
+
+- **BREAKING (behavior): unarchiving a root restores only the children ITS OWN
+  archive put to sleep.** The restore cascade used to be gated on "is this child
+  archived?" (`deleted_at IS NOT NULL`), so unarchiving a root resurrected every
+  archived child under it — including ones removed on their own months or years
+  earlier, through a PUT replace-all or `RemoveAggregateChild`. It is now gated
+  on the stamp the root row itself carries: the archive cascade already writes
+  the operation's single `writeNow()` instant on the root row AND on every child
+  row it stamps (skipping, as before, the children already archived, which keep
+  their own older stamp), so "archived because of the root" reads exactly as
+  "carries the root's archive stamp". No new column, no migration, no backfill —
+  rows written by earlier versions already carry the discriminator.
+
+  - The same rule governs a **shared base**: the base row and its native children
+    go down with the triggering role operation's one instant, and the
+    reactivation restores the native children carrying the base's own stamp. The
+    boolean `baseIsArchived` probe is now a stamp read — same single SELECT.
+    A soft verb therefore carries TWO instants (`write.CascadeStamps`), because
+    they are not always the same write: a role archived while a sibling role
+    stayed active leaves the identity up, so the base and its children only go
+    down later, with the LAST role. The role's own children are restored from the
+    role's stamp and the base's native children from the base's.
+  - Fixed with it: an archive that left another role active reported the base's
+    native children as archived in the outbox payload and the audit trail, while
+    no statement had touched their rows — the projected document showed them
+    archived until the next rebuild. A base that does not transition now reports
+    nothing about its children.
+  - The **outbox payload** and the **audit trail** report the same set the
+    statements wrote: a child the cascade did not reach travels as `_op: "noop"`
+    (and is absent from the audit `children` block) instead of claiming a
+    transition its row never took. A live document and one rebuilt from the
+    source therefore still agree.
+  - The discriminator is compared COLUMN AGAINST COLUMN — the child cascade reads
+    the owner's stamp in a sub-select on its own row, and therefore runs before
+    the row is cleared. Reading it into Go and binding it back is the same
+    comparison on paper and does not survive every driver: a bound timestamp
+    carries a location, godror sends it as a zoned value against Oracle's
+    `TIMESTAMP(6)`, and the server reconciles the two through its session time
+    zone and matches nothing — silently.
+  - **Requires sub-second precision on the `DeletedAt` columns, matching between
+    root and child** (`TIMESTAMPTZ` / `TIMESTAMP(6)` / `DATETIME(6)` /
+    `DATETIME2(6)`). A second-precision column (a bare MySQL `DATETIME`)
+    collapses two operations that happened within the same second; a child
+    column coarser than the root's truncates the stamp it was given and stops
+    matching it, which fails safe (nothing is restored) but silently.
+  - Internal signature changes in `infra/db/command/write` (the operation's
+    cascade instant is threaded to the payload and audit builders):
+    `BuildArchiveEvent` / `BuildUnarchiveEvent` take a trailing `time.Time`.
+
 ## [0.61.1] - 2026-08-27
 
 ### Fixed
