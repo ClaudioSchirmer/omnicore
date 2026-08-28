@@ -205,10 +205,10 @@ func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
 // The comparison is an equality between two stored timestamps, so it is only as
 // sharp as the columns' precision: root and child DeletedAt columns must share
 // the same type, with sub-second precision (DATETIME(6), TIMESTAMP(6),
-// DATETIME2(6), TIMESTAMPTZ — what the generator emits). A second-precision
-// column collapses two operations that happened within the same second into one
-// stamp; a child column COARSER than the root's truncates the stamp it was
-// given and stops matching, which fails safe (nothing is revived) but silently.
+// DATETIME2(6), TIMESTAMPTZ). A second-precision column collapses two
+// operations that happened within the same second into one stamp; a child
+// column COARSER than the root's truncates the stamp it was given and stops
+// matching, which fails safe (nothing is revived) but silently.
 func unarchiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
 	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s AND %s = %s",
 		d.QuoteIdent(childTable), d.QuoteIdent(childSd),

@@ -35,10 +35,10 @@
                         document and one rebuilt from the source still agree.</li>
                     <li><strong>Requires sub-second precision on the <code>DeletedAt</code> columns, matching between
                         root and child</strong> (<code>TIMESTAMPTZ</code> / <code>TIMESTAMP(6)</code> /
-                        <code>DATETIME(6)</code> / <code>DATETIME2(6)</code> — what the generator emits). A
-                        second-precision column collapses two operations that happened within the same second; a child
-                        column coarser than the root's truncates the stamp it was given and stops matching it, which
-                        fails safe (nothing is restored) but silently.</li>
+                        <code>DATETIME(6)</code> / <code>DATETIME2(6)</code>). A second-precision column collapses two
+                        operations that happened within the same second; a child column coarser than the root's
+                        truncates the stamp it was given and stops matching it, which fails safe (nothing is
+                        restored) but silently.</li>
                 </ul>
             </li>
         </ul>

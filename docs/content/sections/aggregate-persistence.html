@@ -262,10 +262,10 @@ unarchive       read root.deleted_at = T1, then
     <div class="note">
         <strong>The DeletedAt columns must carry sub-second precision, and root and child must agree on it.</strong> The
         discriminator is an equality between two stored timestamps, so it is only as sharp as the column type:
-        <code>TIMESTAMPTZ</code> / <code>TIMESTAMP(6)</code> / <code>DATETIME(6)</code> / <code>DATETIME2(6)</code> — what
-        the generator emits. A second-precision column (a bare MySQL <code>DATETIME</code>) collapses two operations that
-        happened within the same second into one stamp; a child column coarser than the root's truncates the stamp it was
-        given and stops matching it, which fails safe (nothing is restored) but silently.
+        <code>TIMESTAMPTZ</code> / <code>TIMESTAMP(6)</code> / <code>DATETIME(6)</code> / <code>DATETIME2(6)</code>.
+        A second-precision column (a bare MySQL <code>DATETIME</code>) collapses two operations that happened within the
+        same second into one stamp; a child column coarser than the root's truncates the stamp it was given and stops
+        matching it, which fails safe (nothing is restored) but silently.
     </div>
 
     <h3 id="child-deleted-at">What a child's <code>DeletedAt</code> declares</h3>

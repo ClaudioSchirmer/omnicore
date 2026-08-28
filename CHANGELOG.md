@@ -46,11 +46,10 @@ with `1.0.0`.
     source therefore still agree.
   - **Requires sub-second precision on the `DeletedAt` columns, matching between
     root and child** (`TIMESTAMPTZ` / `TIMESTAMP(6)` / `DATETIME(6)` /
-    `DATETIME2(6)` — what the generator emits). A second-precision column (a bare
-    MySQL `DATETIME`) collapses two operations that happened within the same
-    second; a child column coarser than the root's truncates the stamp it was
-    given and stops matching it, which fails safe (nothing is restored) but
-    silently.
+    `DATETIME2(6)`). A second-precision column (a bare MySQL `DATETIME`)
+    collapses two operations that happened within the same second; a child
+    column coarser than the root's truncates the stamp it was given and stops
+    matching it, which fails safe (nothing is restored) but silently.
   - Internal signature changes in `infra/db/command/write` (the operation's
     cascade instant is threaded to the payload and audit builders):
     `BuildArchiveEvent` / `BuildUnarchiveEvent` take a trailing `time.Time`.
