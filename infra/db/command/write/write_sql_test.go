@@ -103,8 +103,8 @@ func TestChildCascadeSQL_Shared(t *testing.T) {
 	if archive != "UPDATE addresses SET deleted_at = $1 WHERE user_id = $2 AND deleted_at IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
-	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = $1 AND deleted_at = $2" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
+	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = $1 AND deleted_at = (SELECT deleted_at FROM users WHERE id = $2)" {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

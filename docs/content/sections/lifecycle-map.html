@@ -196,7 +196,7 @@
             <tr>
                 <td><code>unarchive</code> — cascade</td>
                 <td>the symmetric cascade: restores the children the root's OWN archive stamped, gated on the stamp the root row still carries. A child archived on its own — a PUT-replace casualty, a <code>RemoveAggregateChild</code> — carries a different instant and stays archived</td>
-                <td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at=$2</code></td>
+                <td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at=(SELECT deleted_at FROM users WHERE id=$2)</code> — read column against column, and therefore before the root row is cleared</td>
                 <td><code>unarchived</code> (only for the rows it reached)</td>
             </tr>
             <tr>

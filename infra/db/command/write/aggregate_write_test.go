@@ -209,9 +209,14 @@ func TestBaseEngine_ArchiveAggregate_RootAndChildrenShareOneInstant(t *testing.T
 	}
 }
 
-// The restore is not "every archived child": it binds the stamp the root itself
-// carried, so the statement reaches exactly the rows that archive put to sleep.
-func TestBaseEngine_UnarchiveAggregate_CascadeBindsTheRootsOwnStamp(t *testing.T) {
+// The restore is not "every archived child": it reads the stamp the root itself
+// carries, so the statement reaches exactly the rows that archive put to sleep.
+// The stamp stays inside the statement (a sub-select on the root row) instead of
+// being bound as a Go time — a bound time.Time carries a location and a driver
+// may hand it over as a zoned value against a column declared without one, which
+// silently matches nothing. It follows that the cascade must run BEFORE the root
+// UPDATE clears that column, and that is asserted here too.
+func TestBaseEngine_UnarchiveAggregate_CascadeReadsTheRootsOwnStamp(t *testing.T) {
 	stamp := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
@@ -223,26 +228,28 @@ func TestBaseEngine_UnarchiveAggregate_CascadeBindsTheRootsOwnStamp(t *testing.T
 	if err := be.Unarchive(newBuilderCtx(), u, aggWriteSchema(), firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	var found bool
+	cascadeAt, rootAt := -1, -1
 	for i, sql := range tx.execs {
-		if !strings.HasPrefix(sql, "UPDATE agg_w_children SET deleted_at = NULL") {
-			continue
-		}
-		found = true
-		if !strings.Contains(sql, "AND deleted_at = $2") {
-			t.Errorf("the restore must be gated on the root's stamp, got %q", sql)
-		}
-		args := tx.execArgs[i]
-		if len(args) != 2 {
-			t.Fatalf("cascade args = %v, want [rootID stamp]", args)
-		}
-		if got, ok := args[1].(time.Time); !ok || !got.Equal(stamp) {
-			t.Errorf("the bound stamp = %v, want the root's own %v", args[1], stamp)
+		switch {
+		case strings.HasPrefix(sql, "UPDATE agg_w_children SET deleted_at = NULL"):
+			cascadeAt = i
+			if !strings.Contains(sql, "AND deleted_at = (SELECT deleted_at FROM agg_w WHERE id = $2)") {
+				t.Errorf("the restore must read the root's own stamp in the statement, got %q", sql)
+			}
+			if args := tx.execArgs[i]; len(args) != 2 {
+				t.Errorf("cascade args = %v, want [parentID rootID]", args)
+			}
+		case strings.HasPrefix(sql, "UPDATE agg_w SET deleted_at"):
+			rootAt = i
 		}
 	}
-	if !found {
-		t.Fatalf("no child cascade statement was emitted: %v", tx.execs)
+	if cascadeAt < 0 || rootAt < 0 {
+		t.Fatalf("expected both the child cascade and the root UPDATE: %v", tx.execs)
 	}
+	if cascadeAt > rootAt {
+		t.Errorf("the cascade reads the root's DeletedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
+	}
+	_ = stamp
 }
 
 // A root that carries no archive stamp has nothing to undo: the idempotent

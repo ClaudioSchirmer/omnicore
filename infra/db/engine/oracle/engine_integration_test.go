@@ -716,6 +716,67 @@ func TestOracleEngine_AggregateRoundTrip(t *testing.T) {
 	}
 }
 
+// The restore direction, end to end on Oracle. It is asserted HERE and not only
+// on Postgres because the discriminator is a stored TIMESTAMP the verb reads back
+// and compares — a per-driver round-trip — and a mismatch does not error: the
+// statement simply matches no row and the children stay asleep while the event
+// says they woke up.
+func TestOracleEngine_UnarchiveAggregate_RestoresTheChildrenItArchived(t *testing.T) {
+	eng, raw := setupAgg(t)
+	ctx := ctxFor()
+
+	a := &acct{Name: "Acme"}
+	domain.AddAggregateChild(a, tag{Label: "vip"})
+	ins, err := domain.GetInsertable(a, nil, "GetInsertable")
+	if err != nil {
+		t.Fatalf("GetInsertable: %v", err)
+	}
+	res, err := eng.Insert(ctx, ins, acctSchema(), core.WriteHook{})
+	if err != nil {
+		t.Fatalf("Insert aggregate: %v", err)
+	}
+
+	loader := read.NewAggregateLoader[*acct](eng, func() *acct { return &acct{} }).WithSchema(acctSchema())
+	loaded, err := loader.FindOne(ctx, criteria.ByID(res.ID))
+	if err != nil {
+		t.Fatalf("FindOne: %v", err)
+	}
+	arch, err := domain.GetArchivable(loaded, nil, "GetArchivable")
+	if err != nil {
+		t.Fatalf("GetArchivable: %v", err)
+	}
+	if err := eng.Archive(ctx, arch, acctSchema(), core.WriteHook{}); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// Reload through the archived scope, exactly as UnarchiveCommandHandler does.
+	archived, err := loader.FindOne(ctx, criteria.ByID(res.ID).OnlyArchived())
+	if err != nil {
+		t.Fatalf("FindOne archived: %v", err)
+	}
+	un, err := domain.GetUnarchivable(archived, nil, "GetUnarchivable")
+	if err != nil {
+		t.Fatalf("GetUnarchivable: %v", err)
+	}
+	if err := eng.Unarchive(ctx, un, acctSchema(), core.WriteHook{}); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+
+	var activeRoots, activeChildren int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM accts WHERE deleted_at IS NULL`).Scan(&activeRoots); err != nil {
+		t.Fatalf("count active roots: %v", err)
+	}
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM acct_tags WHERE deleted_at IS NULL`).Scan(&activeChildren); err != nil {
+		t.Fatalf("count active children: %v", err)
+	}
+	if activeRoots != 1 {
+		t.Fatalf("the root did not come back: %d active", activeRoots)
+	}
+	if activeChildren != 1 {
+		t.Fatalf("the restore cascade left %d active children, want 1 — the stamp it bound did not match the one it wrote", activeChildren)
+	}
+}
+
 type dupEmailNotification struct{ domain.DomainNotificationBase }
 
 // TestOracleEngine_UniqueViolation proves the dialect-aware mapErr: an

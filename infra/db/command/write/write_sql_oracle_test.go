@@ -139,8 +139,8 @@ func TestChildCascadeSQL_Oracle(t *testing.T) {
 	if archive != `UPDATE "ADDRESSES" SET "DELETED_AT" = :1 WHERE "USER_ID" = :2 AND "DELETED_AT" IS NULL` {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
-	if unarchive != `UPDATE "ADDRESSES" SET "DELETED_AT" = NULL WHERE "USER_ID" = :1 AND "DELETED_AT" = :2` {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
+	if unarchive != `UPDATE "ADDRESSES" SET "DELETED_AT" = NULL WHERE "USER_ID" = :1 AND "DELETED_AT" = (SELECT "DELETED_AT" FROM "USERS" WHERE "ID" = :2)` {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

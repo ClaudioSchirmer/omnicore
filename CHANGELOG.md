@@ -44,6 +44,13 @@ with `1.0.0`.
     (and is absent from the audit `children` block) instead of claiming a
     transition its row never took. A live document and one rebuilt from the
     source therefore still agree.
+  - The discriminator is compared COLUMN AGAINST COLUMN — the child cascade reads
+    the owner's stamp in a sub-select on its own row, and therefore runs before
+    the row is cleared. Reading it into Go and binding it back is the same
+    comparison on paper and does not survive every driver: a bound timestamp
+    carries a location, godror sends it as a zoned value against Oracle's
+    `TIMESTAMP(6)`, and the server reconciles the two through its session time
+    zone and matches nothing — silently.
   - **Requires sub-second precision on the `DeletedAt` columns, matching between
     root and child** (`TIMESTAMPTZ` / `TIMESTAMP(6)` / `DATETIME(6)` /
     `DATETIME2(6)`). A second-precision column (a bare MySQL `DATETIME`)

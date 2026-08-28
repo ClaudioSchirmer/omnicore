@@ -137,8 +137,8 @@ func TestChildCascadeSQL_SQLServer(t *testing.T) {
 	if archive != "UPDATE [addresses] SET [deleted_at] = @p1 WHERE [user_id] = @p2 AND [deleted_at] IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
-	if unarchive != "UPDATE [addresses] SET [deleted_at] = NULL WHERE [user_id] = @p1 AND [deleted_at] = @p2" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
+	if unarchive != "UPDATE [addresses] SET [deleted_at] = NULL WHERE [user_id] = @p1 AND [deleted_at] = (SELECT [deleted_at] FROM [users] WHERE [id] = @p2)" {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

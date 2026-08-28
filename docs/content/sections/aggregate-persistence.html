@@ -247,9 +247,20 @@ COMMIT
                 child A (active)   = T1   ← the cascade stamped it
                 child B (archived) = T0   ← untouched, it was already down
 
-unarchive       read root.deleted_at = T1, then
-                UPDATE child SET deleted_at = NULL WHERE parent_id = ? AND deleted_at = T1
-                └─ A comes back · B stays archived, still carrying T0</div>
+unarchive       UPDATE child SET deleted_at = NULL
+                 WHERE parent_id = ? AND deleted_at = (SELECT deleted_at FROM root WHERE id = ?)
+                └─ A comes back · B stays archived, still carrying T0
+                └─ then the root row is cleared — in that order, because the sub-select IS the
+                   discriminator</div>
+    <p>
+        The comparison is written column against column, on purpose. Reading the root's stamp into
+        the application and binding it back as a parameter is the same comparison on paper and does
+        not survive every driver: a bound timestamp carries a location, a driver is free to send it
+        as a zoned value against a column declared without one, and the server then reconciles the
+        two through its session time zone and matches nothing — no error, just a restore that
+        reaches no row while the event says the children woke up. Inside the statement the values
+        never leave the server.
+    </p>
     <p>
         The same rule governs a <a href="#table-schema~shared-base">shared base</a>: the base row and its native children
         go down with the triggering role operation's one instant, and the reactivation restores the native children
@@ -352,14 +363,16 @@ Archive(root)      UPDATE root SET deleted_at = now
                           └─ OrphanPolicy plays NO part here: it governs the hard branch
                              only. Soft is reversible, so nothing is ever destroyed by it
 
-Unarchive(root)    read the stamp the root row carries, then
-                   UPDATE root SET deleted_at = NULL
-                   │
-                   ├─► child WITH DeletedAt     UPDATE child SET deleted_at = NULL
-                   │                            WHERE parent_id = ? AND deleted_at = <that stamp>
+Unarchive(root)    ├─► child WITH DeletedAt     UPDATE child SET deleted_at = NULL
+                   │                            WHERE parent_id = ?
+                   │                              AND deleted_at = (SELECT deleted_at FROM root
+                   │                                                WHERE id = ?)
                    │      └─ exactly the rows the root's archive stamped. A child archived on its
-                   │         own carries a different instant and stays archived
+                   │         own carries a different instant and stays archived. The stamp is read
+                   │         INSIDE the statement, so this runs BEFORE the root row is cleared
                    ├─► child WITHOUT DeletedAt  untouched — it never left
+                   │
+                   UPDATE root SET deleted_at = NULL
                    │
                    └─► SHARED BASE ONLY — is the base archived?
                              yes → reactivate it and restore the native children the BASE'S archive

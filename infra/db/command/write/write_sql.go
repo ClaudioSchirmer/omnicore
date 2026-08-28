@@ -188,31 +188,45 @@ func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
 }
 
 // unarchiveCascadeSQL renders the UNARCHIVE direction of the symmetric cascade:
-// clear the DeletedAt column of the children the ROOT'S OWN archive stamped —
-// the root id binds first, the root's archive stamp second.
+// clear the DeletedAt column of the children the OWNER'S OWN archive stamped —
+// the owner id binds first (the ParentID), the owner ROW id second.
 //
 // The gate used to be `IS NOT NULL` ("every archived child"), and that is the
 // bug it exists to fix: a child archived on its own two years ago has nothing to
 // do with the root's archive, yet the root's unarchive resurrected it along with
 // the rest. The two cases are already distinguishable in the data, because the
-// archive cascade binds the operation's single writeNow() instant on the root
+// archive cascade binds the operation's single writeNow() instant on the owner
 // row AND on every child row it stamps, while skipping (IS NULL gate) the
 // children that were already archived — those keep their own, older stamp. So
-// "was archived BY this root's archive" reads exactly as "carries the root's
+// "was archived BY this owner's archive" reads exactly as "carries the owner's
 // archive stamp", with no marker column and no backfill: rows written by earlier
 // versions of the framework already carry it.
 //
-// The comparison is an equality between two stored timestamps, so it is only as
-// sharp as the columns' precision: root and child DeletedAt columns must share
-// the same type, with sub-second precision (DATETIME(6), TIMESTAMP(6),
-// DATETIME2(6), TIMESTAMPTZ). A second-precision column collapses two
-// operations that happened within the same second into one stamp; a child
-// column COARSER than the root's truncates the stamp it was given and stops
-// matching, which fails safe (nothing is revived) but silently.
-func unarchiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
-	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s AND %s = %s",
+// The owner's stamp is read INSIDE the statement, as a sub-select on its own
+// row, instead of being bound as a Go time.Time. Both forms are the same
+// comparison on paper; only this one survives every driver. A bound time.Time
+// carries a location, and a driver is free to hand it to the server as a
+// TIMESTAMP WITH TIME ZONE — Oracle's does — against a column declared without
+// one, and the server then reconciles the two through the session's time zone
+// and matches nothing. It does not error: the restore simply reaches no row
+// while the event says the children woke up. Column against column, the values
+// never leave the server and no time zone is ever introduced.
+//
+// The statement therefore MUST run before the owner's own row is cleared (see
+// cascadeChildren / unarchiveBaseCascade) — that sub-select is the discriminator.
+//
+// The comparison is still an equality between two stored timestamps, so it is
+// only as sharp as the columns' precision: owner and child DeletedAt columns must
+// share the same type, with sub-second precision (DATETIME(6), TIMESTAMP(6),
+// DATETIME2(6), TIMESTAMPTZ — what the generator emits). A second-precision
+// column collapses two operations that happened within the same second into one
+// stamp; a child column COARSER than the owner's truncates the stamp it was
+// given and stops matching, which fails safe (nothing is revived) but silently.
+func unarchiveCascadeSQL(d Dialect, childTable, childSd, fkCol, ownerTable, ownerSd, ownerPK string) string {
+	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s AND %s = (SELECT %s FROM %s WHERE %s = %s)",
 		d.QuoteIdent(childTable), d.QuoteIdent(childSd),
-		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd), d.Placeholder(2))
+		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd),
+		d.QuoteIdent(ownerSd), d.QuoteIdent(ownerTable), d.QuoteIdent(ownerPK), d.Placeholder(2))
 }
 
 // childSiblingDeleteSQL hard-deletes a child's sibling rows when the root is

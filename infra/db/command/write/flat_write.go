@@ -280,12 +280,16 @@ func (b *BaseEngine) softWrite(
 	} else {
 		fields[sdCol] = nil
 	}
+	// The child cascade runs FIRST, both directions. The restore reads the root's
+	// DeletedAt inside its own statement — that column IS the discriminator — and
+	// the UPDATE below is what clears it. Ordering within the transaction is free;
+	// reading before overwriting is not.
+	if err := cascadeChildren(ctx, tx, d, root, schema, id, archive, cascade); err != nil {
+		return err
+	}
 	rev := loadedRevision(src)
 	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), id, fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
 	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), hctx.EntityType, schema.IDColumn(), id, rev); err != nil {
-		return err
-	}
-	if err := cascadeChildren(ctx, tx, d, root, schema, id, archive, cascade); err != nil {
 		return err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, id, true); err != nil {
@@ -341,6 +345,11 @@ func (b *BaseEngine) softWrite(
 // So a child archived on its own stays archived when the root comes back: its
 // stamp is not the root's. A zero `cascade` on the restore direction means the
 // root carried no archive stamp at all, and then there is nothing to undo.
+//
+// `cascade` is what the archive direction BINDS and what the whole operation
+// reports (payload, audit). The restore direction does not bind it: it reads the
+// root's own column inside the statement (unarchiveCascadeSQL), which is why the
+// caller runs this BEFORE clearing that column.
 func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.AggregateRoot, schema *TableSchema, id string, archive bool, cascade time.Time) error {
 	if root == nil {
 		return nil
@@ -362,8 +371,12 @@ func cascadeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Ag
 			err = tx.Exec(ctx, archiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn()),
 				d.EncodeArg(cascade), d.EncodeArg(domain.NewID(id)))
 		} else {
-			err = tx.Exec(ctx, unarchiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn()),
-				d.EncodeArg(domain.NewID(id)), d.EncodeArg(cascade))
+			rootSd, ok := schema.DeletedAtColumn()
+			if !ok {
+				continue // unreachable on the soft verbs (requireDeletedAt gates them)
+			}
+			err = tx.Exec(ctx, unarchiveCascadeSQL(d, child.Table(), childSd, child.ParentIDColumn(), schema.Table(), rootSd, schema.IDColumn()),
+				d.EncodeArg(domain.NewID(id)), d.EncodeArg(domain.NewID(id)))
 		}
 		if err != nil {
 			return err

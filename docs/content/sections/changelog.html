@@ -25,6 +25,12 @@
                         restores the native children carrying the base's own stamp. A soft verb therefore carries TWO
                         instants, because they are not always the same write — a role archived while a sibling role
                         stayed active leaves the identity up, and the base only goes down later, with the last role.</li>
+                    <li>The discriminator is compared column against column — the child cascade reads the owner's
+                        stamp in a sub-select on its own row, and therefore runs before that row is cleared. Binding it
+                        back from Go is the same comparison on paper and does not survive every driver: a bound
+                        timestamp carries a location, and a driver that sends it as a zoned value against a column
+                        declared without one makes the server reconcile the two through its session time zone and match
+                        nothing — silently.</li>
                     <li>Fixed with it: an archive that left another role active reported the base's native children as
                         archived in the outbox payload and the audit trail while no statement had touched their rows,
                         so the projected document showed them archived until the next rebuild. A base that does not

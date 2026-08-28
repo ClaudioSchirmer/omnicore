@@ -259,20 +259,29 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 		t.Errorf("base reactivation must cascade to the base-children (UPDATE endereco SET deleted_at = NULL), got %v", tx.execs)
 	}
 	// And it reaches exactly the base-children the BASE'S archive stamped: the
-	// statement is gated on that instant, not on "every archived row under the
-	// base", so an endereco archived on its own stays where it is.
+	// statement reads that instant off the base row itself, not "every archived
+	// row under the base", so an endereco archived on its own stays where it is.
+	// Reading it means the children must move BEFORE the base row is cleared.
+	childAt, baseAt := -1, -1
 	for i, sql := range tx.execs {
-		if !strings.HasPrefix(sql, "UPDATE endereco SET deleted_at = NULL") {
-			continue
+		switch {
+		case strings.HasPrefix(sql, "UPDATE endereco SET deleted_at = NULL"):
+			childAt = i
+			if !strings.Contains(sql, "AND deleted_at = (SELECT deleted_at FROM pessoa WHERE id = $2)") {
+				t.Errorf("the base-children restore must read the base's own stamp, got %q", sql)
+			}
+			if args := tx.execArgs[i]; len(args) != 2 {
+				t.Errorf("cascade args = %v, want [baseID baseID]", args)
+			}
+		case strings.HasPrefix(sql, "UPDATE pessoa SET deleted_at = NULL"):
+			baseAt = i
 		}
-		if !strings.Contains(sql, "AND deleted_at = $2") {
-			t.Errorf("the base-children restore must be gated on the base's stamp, got %q", sql)
-		}
-		if args := tx.execArgs[i]; len(args) != 2 {
-			t.Errorf("cascade args = %v, want [baseID stamp]", args)
-		} else if got, ok := args[1].(time.Time); !ok || !got.Equal(baseArchiveStamp) {
-			t.Errorf("the bound stamp = %v, want the base's own %v", args[1], baseArchiveStamp)
-		}
+	}
+	if childAt < 0 || baseAt < 0 {
+		t.Fatalf("expected both the base-children cascade and the base UPDATE: %v", tx.execs)
+	}
+	if childAt > baseAt {
+		t.Errorf("the base-children cascade reads the base's DeletedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
 	}
 }
 

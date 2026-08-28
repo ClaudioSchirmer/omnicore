@@ -582,7 +582,7 @@ func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d
 	if err != nil || stamp.IsZero() {
 		return time.Time{}, err
 	}
-	return stamp, unarchiveBaseCascade(ctx, tx, d, base, sd, baseID, stamp)
+	return stamp, unarchiveBaseCascade(ctx, tx, d, base, sd, baseID)
 }
 
 // archiveBaseIfNoActiveRole archives the base + its native children once the role
@@ -689,9 +689,9 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 //	archive   → stamp `now` (the triggering role operation's one writeNow(), the
 //	            very value the role row and the role's own children carry) on the
 //	            base row and on every native child still ACTIVE
-//	unarchive → clear it from the base row and from the native children carrying
-//	            EXACTLY the base's archive stamp — never from a child that was
-//	            archived on its own before the base went down
+//	unarchive → clear it from the native children carrying EXACTLY the base's
+//	            archive stamp — read from the base row itself, which is why they
+//	            move BEFORE it does — and then from the base row
 //
 // Both are gated so they are idempotent (a no-op when already in the target
 // state). The BASE-ROW statement also bumps `revision = revision + 1` — a
@@ -718,24 +718,24 @@ func archiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableS
 	return nil
 }
 
-func unarchiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string, stamp time.Time) error {
-	sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
-		d.QuoteIdent(base.Table()), d.QuoteIdent(sd), baseRevisionBump(d, base),
-		d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(sd))
-	if err := tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID))); err != nil {
-		return err
-	}
+func unarchiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) error {
+	// The native children go FIRST: their statement reads the base's own
+	// DeletedAt to know which of them this archive put to sleep, and the base
+	// UPDATE below is what clears it (see unarchiveCascadeSQL).
 	for _, bc := range base.ChildSchemas() {
 		csd, ok := bc.DeletedAtColumn()
 		if !ok {
 			continue
 		}
-		if err := tx.Exec(ctx, unarchiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn()),
-			d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(stamp)); err != nil {
+		if err := tx.Exec(ctx, unarchiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn(), base.Table(), sd, base.IDColumn()),
+			d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
 	}
-	return nil
+	sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
+		d.QuoteIdent(base.Table()), d.QuoteIdent(sd), baseRevisionBump(d, base),
+		d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(sd))
+	return tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
 }
 
 // baseRevisionBump renders the base row's ", revision = revision + 1" tail,
