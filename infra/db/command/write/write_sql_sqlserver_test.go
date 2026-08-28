@@ -128,16 +128,17 @@ func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 	}
 }
 
-// TestChildCascadeSQL_SQLServer: the cascade's setExpr arrives from the caller
-// already resolved against the dialect (nowSetExpr → CURRENT_TIMESTAMP here).
+// TestChildCascadeSQL_SQLServer: both directions of the symmetric cascade, each
+// binding the operation's own instant — written by the archive, matched by the
+// restore.
 func TestChildCascadeSQL_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
 	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
 	if archive != "UPDATE [addresses] SET [deleted_at] = @p1 WHERE [user_id] = @p2 AND [deleted_at] IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", nullSetExpr(d), " IS NOT NULL")
-	if unarchive != "UPDATE [addresses] SET [deleted_at] = NULL WHERE [user_id] = @p1 AND [deleted_at] IS NOT NULL" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
+	if unarchive != "UPDATE [addresses] SET [deleted_at] = NULL WHERE [user_id] = @p1 AND [deleted_at] = @p2" {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

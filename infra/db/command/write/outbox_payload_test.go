@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,7 +19,7 @@ import (
 func TestBuildWritePayload_FlatInsertShape(t *testing.T) {
 	e := &builderTestEntity{Name: "alice"}
 	id := uuid.NewString()
-	p := buildWritePayload(builderTestSchema, e, nil, "INSERTED", testNow,
+	p := buildWritePayload(builderTestSchema, e, nil, "INSERTED", testNow, CascadeStamps{},
 		builderTestSchema.WriteFields(e), outboxMeta{ID: id})
 
 	if p["name"] != "alice" {
@@ -43,22 +44,22 @@ func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 	e := &builderTestEntity{Name: "a"}
 	meta := outboxMeta{ID: uuid.NewString()}
 
-	ins := buildWritePayload(schema, e, nil, "INSERTED", testNow, schema.WriteFields(e), meta)
+	ins := buildWritePayload(schema, e, nil, "INSERTED", testNow, CascadeStamps{}, schema.WriteFields(e), meta)
 	if ins["created_at"] != testNow || ins["updated_at"] != testNow {
 		t.Errorf("INSERTED must carry created_at + updated_at = the op stamp, got %v", ins)
 	}
-	upd := buildWritePayload(schema, e, nil, "UPDATED", testNow, schema.WriteFields(e), meta)
+	upd := buildWritePayload(schema, e, nil, "UPDATED", testNow, CascadeStamps{}, schema.WriteFields(e), meta)
 	if _, has := upd["created_at"]; has {
 		t.Errorf("UPDATED must NOT carry created_at (absent key = untouched on $set), got %v", upd)
 	}
 	if upd["updated_at"] != testNow {
 		t.Errorf("UPDATED must carry updated_at = the op stamp, got %v", upd)
 	}
-	arc := buildWritePayload(schema, e, nil, "ARCHIVED", testNow, schema.WriteFields(e), meta)
+	arc := buildWritePayload(schema, e, nil, "ARCHIVED", testNow, CascadeStamps{}, schema.WriteFields(e), meta)
 	if arc["deleted_at"] != testNow {
 		t.Errorf("ARCHIVED must carry the DeletedAt stamp, got %v", arc)
 	}
-	una := buildWritePayload(schema, e, nil, "UNARCHIVED", testNow, schema.WriteFields(e), meta)
+	una := buildWritePayload(schema, e, nil, "UNARCHIVED", testNow, CascadeStamps{}, schema.WriteFields(e), meta)
 	if v, has := una["deleted_at"]; !has || v != nil {
 		t.Errorf("UNARCHIVED must carry an explicit null DeletedAt, got %v", una)
 	}
@@ -75,7 +76,7 @@ func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 	root, _ := any(e).(domain.AggregateRootProvider)
 	baseID := deterministicBaseID("D1")
 
-	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "INSERTED", testNow, CascadeStamps{},
 		schema.WriteFields(e), outboxMeta{ID: uuid.NewString(), BaseID: baseID, BaseRevision: 7})
 
 	if p["name"] != "Ana" || p["document"] != "D1" {
@@ -101,37 +102,152 @@ func TestBuildWritePayload_SharedBaseRoleWithChildren(t *testing.T) {
 	}
 }
 
+// The UNARCHIVED payload reports the SAME set the restore statement wrote: the
+// child this root's archive put to sleep comes back with an explicit null, the
+// one archived on its own two hours earlier is left untouched ("noop"), so the
+// projected document and the relational rows cannot drift apart.
+func TestBuildWritePayload_UnarchiveRestoresOnlyTheCascadedChildren(t *testing.T) {
+	schema := bcRoleSchema(true)
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	cascade := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+
+	withRoot := domain.WithID(bcAddr{Street: "went down with the base"}, domain.NewID("a1"))
+	domain.SetManagedColumns(&withRoot, 1, nil, nil, &cascade)
+	own := cascade.Add(-2 * time.Hour)
+	onItsOwn := domain.WithID(bcAddr{Street: "archived on its own"}, domain.NewID("a2"))
+	domain.SetManagedColumns(&onItsOwn, 1, nil, nil, &own)
+
+	root, _ := any(e).(domain.AggregateRootProvider)
+	root.GetAggregateRoot().AggregateConstructor([]domain.AggregateValueObject{withRoot, onItsOwn})
+
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "UNARCHIVED", testNow, CascadeStamps{Base: cascade},
+		schema.WriteFields(e), outboxMeta{ID: uuid.NewString(), BaseID: deterministicBaseID("D1")})
+
+	items := p["_base_children"].(map[string]any)["bcAddr"].([]map[string]any)
+	if len(items) != 2 {
+		t.Fatalf("both loaded children must travel, got %v", items)
+	}
+	byID := map[string]map[string]any{}
+	for _, it := range items {
+		byID[it["id"].(domain.ID).Value()] = it
+	}
+	restored, untouched := byID["a1"], byID["a2"]
+	if restored == nil || untouched == nil {
+		t.Fatalf("children lost their identity in the payload: %v", items)
+	}
+	if restored["_op"] != "unarchive" {
+		t.Errorf("the child the root archived must be restored, got %v", restored)
+	}
+	if v, present := restored["deleted_at"]; !present || v != nil {
+		t.Errorf("a restore carries the explicit null the cascade wrote, got %v", restored)
+	}
+	if untouched["_op"] != "noop" {
+		t.Errorf("a child archived on its own must stay archived, got %v", untouched)
+	}
+	if _, present := untouched["deleted_at"]; present {
+		t.Errorf("an untouched child must not have its stamp rewritten, got %v", untouched)
+	}
+}
+
+// One verb, TWO instants. A role's own children come back from the ROLE's stamp
+// and a shared base's native children from the BASE's — which are the same value
+// only when the role that archived the base is the one being restored. Reporting
+// either segment against the other's stamp would describe rows that never moved.
+func TestBuildWritePayload_UnarchiveReadsBaseChildrenAgainstTheBaseStamp(t *testing.T) {
+	schema := bcRoleSchema(true)
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	roleStamp := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC) // this role went down here
+	baseStamp := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC) // the base only later, with the LAST role
+
+	withBase := domain.WithID(bcAddr{Street: "went down with the base"}, domain.NewID("a1"))
+	domain.SetManagedColumns(&withBase, 1, nil, nil, &baseStamp)
+	roleTimed := domain.WithID(bcAddr{Street: "carries the role's instant"}, domain.NewID("a2"))
+	domain.SetManagedColumns(&roleTimed, 1, nil, nil, &roleStamp)
+
+	root, _ := any(e).(domain.AggregateRootProvider)
+	root.GetAggregateRoot().AggregateConstructor([]domain.AggregateValueObject{withBase, roleTimed})
+
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "UNARCHIVED", testNow,
+		CascadeStamps{Own: roleStamp, Base: baseStamp},
+		schema.WriteFields(e), outboxMeta{ID: uuid.NewString(), BaseID: deterministicBaseID("D1")})
+
+	byID := map[string]map[string]any{}
+	for _, it := range p["_base_children"].(map[string]any)["bcAddr"].([]map[string]any) {
+		byID[it["id"].(domain.ID).Value()] = it
+	}
+	if op := byID["a1"]["_op"]; op != "unarchive" {
+		t.Errorf("a base child is restored from the BASE's stamp, got %v", byID["a1"])
+	}
+	if op := byID["a2"]["_op"]; op != "noop" {
+		t.Errorf("the role's instant says nothing about a base child, got %v", byID["a2"])
+	}
+}
+
+// An archive that leaves another role active does NOT take the shared identity
+// down, so its native children never moved — and the event must not claim they
+// did. The zero Base stamp is exactly that statement: no base transition.
+func TestBuildWritePayload_ArchiveWithoutBaseTransitionLeavesBaseChildrenAlone(t *testing.T) {
+	schema := bcRoleSchema(true)
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
+
+	addr := domain.WithID(bcAddr{Street: "still active under a live identity"}, domain.NewID("a1"))
+	root, _ := any(e).(domain.AggregateRootProvider)
+	root.GetAggregateRoot().AggregateConstructor([]domain.AggregateValueObject{addr})
+
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "ARCHIVED", testNow,
+		CascadeStamps{Own: now}, // Base zero: another role kept the identity up
+		schema.WriteFields(e), outboxMeta{ID: uuid.NewString(), BaseID: deterministicBaseID("D1")})
+
+	items := p["_base_children"].(map[string]any)["bcAddr"].([]map[string]any)
+	if len(items) != 1 || items[0]["_op"] != "noop" {
+		t.Errorf("no base transition → the base children are untouched, got %v", items)
+	}
+	if _, present := items[0]["deleted_at"]; present {
+		t.Errorf("an untouched base child must not be stamped by the event, got %v", items[0])
+	}
+}
+
 func TestChildOpName_Mapping(t *testing.T) {
-	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, "UPDATED", true); got != "insert" {
+	if got := childOpName(domain.OperationOf(domain.StatusAdded, domain.StatusAdded), false, "UPDATED", true, false); got != "insert" {
 		t.Errorf("new item → insert, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), false, "UPDATED", true); got != "update" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), false, "UPDATED", true, false); got != "update" {
 		t.Errorf("DB item changed → update, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), false, "UPDATED", true); got != "noop" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), false, "UPDATED", true, false); got != "noop" {
 		t.Errorf("untouched DB item → noop, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", true); got != "archive" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", true, false); got != "archive" {
 		t.Errorf("removed (archivable) → archive, got %q", got)
 	}
 	// The column decides, and nothing else does: a removed child that declares no
 	// DeletedAt reports the DELETE the persister issued — whether it is a role's
 	// own child or a shared base's native one.
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", false); got != "delete" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", false, false); got != "delete" {
 		t.Errorf("removed child without DeletedAt → delete, got %q", got)
 	}
 
 	// Soft verbs report the CASCADE the root statement performed, not the item's
-	// own status: every child row under the ParentID took the same transition.
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, "ARCHIVED", true); got != "archive" {
-		t.Errorf("archive cascades onto every child, got %q", got)
+	// own status: the row the statement reached takes the transition.
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, "ARCHIVED", true, true); got != "archive" {
+		t.Errorf("archive cascades onto the active children, got %q", got)
 	}
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", true); got != "unarchive" {
-		t.Errorf("unarchive restores every child, got %q", got)
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", true, true); got != "unarchive" {
+		t.Errorf("unarchive restores the children it archived, got %q", got)
 	}
 	// A child table with no DeletedAt takes no cascade at all.
-	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", false); got != "noop" {
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", false, false); got != "noop" {
 		t.Errorf("a child without DeletedAt is skipped by the cascade, got %q", got)
+	}
+	// And neither does a row the cascade's predicate did not reach: already
+	// archived when the root archived, or carrying a stamp that is not the one
+	// being undone. The statement left it alone, so the event must too.
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", true, false); got != "noop" {
+		t.Errorf("an already-archived child is skipped by the archive cascade, got %q", got)
+	}
+	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", true, false); got != "noop" {
+		t.Errorf("a child archived on its own is skipped by the restore, got %q", got)
 	}
 }
 
@@ -206,13 +322,13 @@ func TestBuildWritePayload_SiblingsMergeFlat(t *testing.T) {
 		Field("Name", "name").Sibling(sib)
 	un := "alice"
 	e := &sibTestEntity{Name: "Ana", UserName: &un}
-	p := buildWritePayload(schema, e, nil, "INSERTED", testNow, schema.WriteFields(e), outboxMeta{ID: "u1"})
+	p := buildWritePayload(schema, e, nil, "INSERTED", testNow, CascadeStamps{}, schema.WriteFields(e), outboxMeta{ID: "u1"})
 	if got, _ := p["user_name"].(*string); got == nil || *got != "alice" {
 		t.Errorf("sibling fields must merge flat, got %v", p)
 	}
 	// All-nil sibling → columns PRESENT with null values (removed-row marker).
 	e2 := &sibTestEntity{Name: "Bo"}
-	p2 := buildWritePayload(schema, e2, nil, "INSERTED", testNow, schema.WriteFields(e2), outboxMeta{ID: "u2"})
+	p2 := buildWritePayload(schema, e2, nil, "INSERTED", testNow, CascadeStamps{}, schema.WriteFields(e2), outboxMeta{ID: "u2"})
 	v, has := p2["user_name"]
 	if !has {
 		t.Fatalf("an all-nil sibling must still emit its columns (explicit nulls), got %v", p2)
@@ -236,7 +352,7 @@ func TestBuildWritePayload_ChildSiblingFieldsFlat(t *testing.T) {
 	domain.AddAggregateChild(e, bcAddr{Street: "Main"})
 	root, _ := any(e).(domain.AggregateRootProvider)
 
-	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "INSERTED", testNow,
+	p := buildWritePayload(schema, e, root.GetAggregateRoot(), "INSERTED", testNow, CascadeStamps{},
 		schema.WriteFields(e), outboxMeta{ID: "r1", Revision: 1, BaseID: deterministicBaseID("D9"), BaseRevision: 1})
 	items := p["_children"].(map[string]any)["bcAddr"].([]map[string]any)
 	if items[0]["street_copy"] != "Main" {

@@ -103,13 +103,9 @@ func TestChildCascadeSQL_Shared(t *testing.T) {
 	if archive != "UPDATE addresses SET deleted_at = $1 WHERE user_id = $2 AND deleted_at IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := childCascadeSQL(d, "addresses", "deleted_at", "user_id", "NULL", " IS NOT NULL")
-	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = $1 AND deleted_at IS NOT NULL" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
+	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = $1 AND deleted_at = $2" {
 		t.Errorf("unarchive cascade = %q", unarchive)
-	}
-	// nowSetExpr stays as the dialect-NOW counterpart for non-data-path callers.
-	if got := nowSetExpr(d); got != "NOW()" {
-		t.Errorf("nowSetExpr = %q, want NOW()", got)
 	}
 }
 

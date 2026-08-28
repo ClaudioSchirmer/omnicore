@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -247,12 +248,57 @@ func TestBoundWriter_MapErrRawPassThrough(t *testing.T) {
 	}
 }
 
+// ─── The restore's stamp read + its cascades ─────────────────────────────────
+
+// The unarchive reads the row's own archive stamp before it clears it; if that
+// read fails, the verb fails — it must never fall through to a cascade with no
+// discriminator (which would either restore nothing or, worse, everything).
+func TestUnarchive_StampReadErrorAborts(t *testing.T) {
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+
+	tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"SELECT deleted_at FROM aluno"}, nil)}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); !errors.Is(err, errBoom) {
+		t.Fatalf("expected the stamp read error, got %v", err)
+	}
+	if tx.committed {
+		t.Error("must not commit")
+	}
+}
+
+// A failing base-children restore rolls the whole verb back — the base row is
+// already active by then, so a swallowed error would leave the identity live
+// with its children still asleep.
+func TestUnarchive_BaseChildrenCascadeErrorAborts(t *testing.T) {
+	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
+	e.SetID(domain.NewID(uuid.NewString()))
+	un, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
+
+	archived := rowsArchivedAt(time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC))
+	tx := &recTx{count: 1, execErrSub: "UPDATE endereco SET deleted_at = NULL",
+		queryFn: func(sql string, args []any) (Rows, error) {
+			if strings.HasPrefix(sql, "SELECT deleted_at FROM") {
+				return archived(sql, args)
+			}
+			return &fakeRows{remaining: 0}, nil
+		}}
+	be := newFlatBE(&recBeginner{tx: tx})
+	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); !errors.Is(err, errRecExec) {
+		t.Fatalf("expected the base-children cascade error, got %v", err)
+	}
+	if tx.committed {
+		t.Error("must not commit")
+	}
+}
+
 // ─── SharedBase reactivation probe failures ──────────────────────────────────
 
 func TestSharedBaseReactivationProbeError(t *testing.T) {
 	t.Run("insert", func(t *testing.T) {
 		ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-		tx := &recTx{queryFn: scriptedQuery([]string{"ELSE 0 END FROM pessoa"}, nil)}
+		tx := &recTx{queryFn: scriptedQuery([]string{"SELECT deleted_at FROM pessoa"}, nil)}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Insert(newBuilderCtx(), ins, cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the reactivation probe error, got %v", err)
@@ -265,7 +311,7 @@ func TestSharedBaseReactivationProbeError(t *testing.T) {
 		e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		upd, _ := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
-		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"ELSE 0 END FROM pessoa"}, []string{"FROM aluno"})}
+		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"SELECT deleted_at FROM pessoa"}, []string{"FROM aluno"})}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Update(newBuilderCtx(), upd, cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the reactivation probe error, got %v", err)

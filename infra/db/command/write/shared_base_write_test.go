@@ -703,11 +703,13 @@ func TestUnarchiveRoleWithBase_SharedPKSkipsVeto(t *testing.T) {
 	if err := be.Unarchive(newBuilderCtx(), un, roleTestSchemaSharedPK(), firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	// The payload reads the base revision (SELECT revision FROM pessoa) —
-	// that is the only query allowed; the sibling veto probe (FROM aluno) must
-	// NOT run under the shared-ID model (the ID caps the table at one row).
+	// Two queries are expected: the restore's own archive-stamp read (SELECT
+	// deleted_at FROM aluno — the discriminator its child cascade binds) and the
+	// payload's base revision (FROM pessoa). The sibling VETO probe (SELECT 1
+	// FROM aluno) must NOT run under the shared-ID model: the ID caps the table
+	// at one row per identity, so there is no second active role to collide with.
 	for _, q := range probes {
-		if strings.Contains(q, "FROM aluno") {
+		if strings.HasPrefix(q, "SELECT 1 FROM aluno") {
 			t.Errorf("shared-ID unarchive must not probe for siblings (ID caps at one row), got %q", q)
 		}
 	}
@@ -753,8 +755,12 @@ func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
 	if err := be.vetoUnarchiveWithActiveSibling(newBuilderCtx(), tx, testPGDialect{}, noSD, src, "some-id", "Aluno"); err != nil {
 		t.Fatalf("no-DeletedAt veto must no-op, got %v", err)
 	}
-	if err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER", writeNow()); err != nil {
+	stamp, err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER", writeNow())
+	if err != nil {
 		t.Fatalf("a neutral event type must no-op, got %v", err)
+	}
+	if !stamp.IsZero() {
+		t.Errorf("a verb that drove no base lifecycle must answer the zero instant, got %v", stamp)
 	}
 }
 

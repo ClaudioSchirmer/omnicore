@@ -441,7 +441,8 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
         </tr>
         <tr>
             <td><code>DeletedAt(col)</code></td>
-            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = $now</code> / <code>col = NULL</code></td>
+            <td>the read scope-gate uses <code>col IS NULL</code>; Archive/Unarchive write <code>col = $now</code> / <code>col = NULL</code>.
+                <strong>The column needs sub-second precision</strong> — see the note below</td>
             <td>no scope-gate; Archive/Unarchive unavailable (boot check + runtime guard)</td>
         </tr>
         <tr>
@@ -468,6 +469,27 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     physical column — the full naming contract, including the Response-DTO trap this creates, is
     <a href="#table-schema~three-name-model">The three-name model</a>.
 </p>
+
+<div class="note">
+    <strong>The <code>DeletedAt</code> column must carry sub-second precision, and a root and its children must agree
+    on it.</strong> The stamp is not only a flag: it is the <em>identity of the archive operation</em>. One write mints
+    one instant and binds it on the root row AND on every child row its cascade reaches, so the unarchive can bring back
+    exactly those children — the ones carrying that instant — and leave a child archived on its own where it is
+    (<a href="#aggregate-persistence~unarchive-scope">What an unarchive brings back</a>). That discriminator is an
+    equality between two stored timestamps, so it is only as sharp as the column type.
+    <br><br>
+    Declare <code>TIMESTAMPTZ</code> / <code>TIMESTAMP(6)</code> (Postgres, Oracle), <code>DATETIME(6)</code> (MySQL),
+    <code>DATETIME2(6)</code> (SQL Server), <code>TEXT</code> holding RFC&nbsp;3339 (SQLite) — what the framework's own
+    migrations and the generator emit. Two shapes break the restore, both quietly:
+    <ul>
+        <li><strong>Second resolution</strong> (a bare MySQL <code>DATETIME</code>) folds two operations that happened
+            within the same second into one stamp, so a child archived on its own moments before the root would come
+            back with it.</li>
+        <li><strong>A child column coarser than the root's</strong> truncates the very instant it was given and stops
+            matching it, so the restore reaches nothing — it fails safe, but silently.</li>
+    </ul>
+    Nothing else in the framework depends on this precision: it is the archive cascade's discriminator, and only that.
+</div>
 
 <h3>Reading the managed columns back — the <code>domain.Managed</code> carrier</h3>
 <p>

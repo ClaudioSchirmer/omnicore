@@ -40,7 +40,7 @@ func BuildInsertEvent(ctx persistence.RequestContext, i domain.Insertable, id do
 		Kind:       "snapshot",
 		DateTime:   i.DateTime(),
 		Snapshot:   redactAuditSnapshot(schema, composedFieldValues(schema, i.Source())),
-		Children:   childrenOf(schema, i.Source(), "insert"),
+		Children:   childrenOf(schema, i.Source(), "insert", CascadeStamps{}),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -63,7 +63,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 		Kind:       "delta",
 		DateTime:   u.DateTime(),
 		Changes:    redactAuditChanges(schema, computeChanges(prev, cur, labels)),
-		Children:   childrenOf(schema, u.Source(), "update"),
+		Children:   childrenOf(schema, u.Source(), "update", CascadeStamps{}),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -80,7 +80,7 @@ func BuildUpdateEvent(ctx persistence.RequestContext, u domain.Updatable, schema
 // changed nothing keeps the bare transition shape it always had. Kind stays
 // "transition" either way: the verb IS a transition, the delta is what it
 // carried along.
-func BuildArchiveEvent(ctx persistence.RequestContext, a transitionSource, schema *TableSchema, auditClaims []string) audit.AuditEvent {
+func BuildArchiveEvent(ctx persistence.RequestContext, a transitionSource, schema *TableSchema, auditClaims []string, stamps CascadeStamps) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: a.EntityName(),
 		EntityID:   a.ID().Value(),
@@ -89,7 +89,7 @@ func BuildArchiveEvent(ctx persistence.RequestContext, a transitionSource, schem
 		Kind:       "transition",
 		DateTime:   a.DateTime(),
 		Changes:    transitionChanges(schema, a.Source()),
-		Children:   childrenOf(schema, a.Source(), "archive"),
+		Children:   childrenOf(schema, a.Source(), "archive", stamps),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -124,7 +124,7 @@ func transitionChanges(schema *TableSchema, src domain.Entity) []audit.FieldChan
 }
 
 // BuildUnarchiveEvent is the symmetric inverse of BuildArchiveEvent.
-func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, schema *TableSchema, auditClaims []string) audit.AuditEvent {
+func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, schema *TableSchema, auditClaims []string, stamps CascadeStamps) audit.AuditEvent {
 	ev := audit.AuditEvent{
 		EntityType: u.EntityName(),
 		EntityID:   u.ID().Value(),
@@ -133,7 +133,7 @@ func BuildUnarchiveEvent(ctx persistence.RequestContext, u domain.Unarchivable, 
 		Kind:       "transition",
 		DateTime:   u.DateTime(),
 		Changes:    transitionChanges(schema, u.Source()),
-		Children:   childrenOf(schema, u.Source(), "unarchive"),
+		Children:   childrenOf(schema, u.Source(), "unarchive", stamps),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -157,7 +157,7 @@ func BuildDeleteEvent(ctx persistence.RequestContext, d domain.Deletable, schema
 		Kind:       "snapshot",
 		DateTime:   d.DateTime(),
 		Snapshot:   redactAuditSnapshot(schema, snap),
-		Children:   childrenOf(schema, d.Source(), "delete"),
+		Children:   childrenOf(schema, d.Source(), "delete", CascadeStamps{}),
 	}
 	populateContext(&ev, ctx, auditClaims)
 	return ev
@@ -513,7 +513,12 @@ func computeChanges(prev, cur map[string]any, labelsByField map[string]string) [
 // childEventOf for the discrimination rules. The returned map is keyed by
 // the Go type name of the AggregateValueObject (e.g. "Address"); iteration
 // order over typeNames is sorted so the audit line is deterministic.
-func childrenOf(schema *TableSchema, src domain.Entity, verb string) map[string][]audit.ChildEvent {
+//
+// stamps carries the soft verbs' cascade instants — what the archive wrote, what
+// the unarchive undoes, one for the root's own children and one for a shared
+// base's native ones (see CascadeStamps) — and it is what makes the trail
+// describe the rows that actually moved. Zero (and ignored) on every other verb.
+func childrenOf(schema *TableSchema, src domain.Entity, verb string, stamps CascadeStamps) map[string][]audit.ChildEvent {
 	if src == nil || schema == nil {
 		return nil
 	}
@@ -540,10 +545,10 @@ func childrenOf(schema *TableSchema, src domain.Entity, verb string) map[string]
 		// is a role-native child or a SharedBase base-child (shared by every
 		// role); ChildSchema alone would miss base-children and emit op-only
 		// events with an empty snapshot.
-		child, _, _ := schema.ResolveAggregateChild(typeName)
+		child, fromBase, _ := schema.ResolveAggregateChild(typeName)
 		var entries []audit.ChildEvent
 		for _, it := range items {
-			entry, include := childEventOf(it, child, typeName, verb, prevByTypeID)
+			entry, include := childEventOf(it, child, typeName, verb, prevByTypeID, stamps.forChild(fromBase))
 			if !include {
 				continue
 			}
@@ -608,7 +613,9 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 // childEventOf builds a single audit.ChildEvent from the aggregate item + verb +
 // optional prior index. The second return is false when the item is not
 // observable for the given verb (e.g. Removed-status items on an Archive
-// cascade — those are already gone, the cascade doesn't apply to them).
+// cascade — those are already gone, the cascade doesn't apply to them; or, on
+// the soft verbs, a row the cascade's own predicate did not reach — cascade is
+// the instant that predicate turns on, see cascadeTouches).
 //
 // SQL-grounded vocabulary: every child op echoes the SQL fingerprint of the
 // row-level change, identical to the root verb vocabulary. Distinct SQL →
@@ -629,14 +636,19 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 //	             Removed → archived+snapshot (SQL is UPDATE deleted_at=NOW;
 //	             the row stays in the DB, recoverable via unarchive);
 //	             Constructor → skipped (untouched item, no SQL)
-//	archive    : non-Removed items → archived + snapshot
-//	unarchive  : non-Removed items → unarchived + snapshot
+//	archive    : items the cascade stamped (non-Removed, still active) →
+//	             archived + snapshot
+//	unarchive  : items the cascade restored (non-Removed, carrying the root's own
+//	             archive stamp) → unarchived + snapshot. A child archived on its
+//	             own before the root went down is NOT observable here, because
+//	             nothing happened to its row: it stays archived.
 //	delete     : non-Removed items → deleted + snapshot
 func childEventOf(
 	it domain.AggregateItem[domain.AggregateValueObject],
 	child *TableSchema,
 	typeName, verb string,
 	prevByTypeID map[string]map[string]map[string]any,
+	cascade time.Time,
 ) (audit.ChildEvent, bool) {
 	id := it.Item.GetID().Value()
 	prevFields := func() map[string]any {
@@ -676,12 +688,12 @@ func childEventOf(
 			return audit.ChildEvent{}, false
 		}
 	case "archive":
-		if it.CurrentStatus == domain.StatusRemoved {
+		if it.CurrentStatus == domain.StatusRemoved || !cascadeTouches(true, loadedDeletedAt(it.Item), cascade) {
 			return audit.ChildEvent{}, false
 		}
 		return audit.ChildEvent{ID: id, Op: "archived", Snapshot: currentFields()}, true
 	case "unarchive":
-		if it.CurrentStatus == domain.StatusRemoved {
+		if it.CurrentStatus == domain.StatusRemoved || !cascadeTouches(false, loadedDeletedAt(it.Item), cascade) {
 			return audit.ChildEvent{}, false
 		}
 		return audit.ChildEvent{ID: id, Op: "unarchived", Snapshot: currentFields()}, true

@@ -36,7 +36,7 @@ func TestBuildWritePayload_RedactsOnTheCopyOnly(t *testing.T) {
 	e := &builderTestEntity{Name: "alice", Email: "alice@x.com"}
 	bound := redactedTestSchema.WriteFields(e)
 
-	p := buildWritePayload(redactedTestSchema, e, nil, "INSERTED", testNow, bound,
+	p := buildWritePayload(redactedTestSchema, e, nil, "INSERTED", testNow, CascadeStamps{}, bound,
 		outboxMeta{ID: uuid.NewString()})
 
 	// The payload — and therefore the outbox row, the topic, every consuming
@@ -58,7 +58,7 @@ func TestBuildWritePayload_RedactsOnTheCopyOnly(t *testing.T) {
 
 func TestBuildWritePayload_UndeclaredSchemaIsUnaffected(t *testing.T) {
 	e := &builderTestEntity{Name: "alice", Email: "alice@x.com"}
-	p := buildWritePayload(builderTestSchema, e, nil, "INSERTED", testNow,
+	p := buildWritePayload(builderTestSchema, e, nil, "INSERTED", testNow, CascadeStamps{},
 		builderTestSchema.WriteFields(e), outboxMeta{ID: uuid.NewString()})
 	if p["email"] != "alice@x.com" {
 		t.Fatalf("a schema declaring no RedactedField must be untouched, got %v", p["email"])
@@ -140,7 +140,7 @@ func TestBuildInsertEvent_SnapshotIsRedacted(t *testing.T) {
 // and fully masked in the trail, from one declaration.
 func TestAxesAreIndependent(t *testing.T) {
 	e := &builderTestEntity{Name: "alice", Email: "alice@x.com"}
-	p := buildWritePayload(redactedTestSchema, e, nil, "INSERTED", testNow,
+	p := buildWritePayload(redactedTestSchema, e, nil, "INSERTED", testNow, CascadeStamps{},
 		redactedTestSchema.WriteFields(e), outboxMeta{ID: uuid.NewString()})
 	i, err := domain.GetInsertable(e, nil, "GetInsertable")
 	if err != nil {

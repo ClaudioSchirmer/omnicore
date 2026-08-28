@@ -558,8 +558,8 @@ func scriptedQuery(errSubs, foundSubs []string) func(string, []any) (Rows, error
 		}
 		for _, sub := range foundSubs {
 			if strings.Contains(sql, sub) {
-				// The 1/0 CASE projections (baseIsArchived, the natural-key
-				// guard) scan 1; other probes only need the row to exist.
+				// The 1/0 CASE projection (the natural-key guard) scans 1;
+				// other probes only need the row to exist.
 				return &fakeRows{remaining: 1, scan: func(dest []any) error {
 					if len(dest) == 1 {
 						if p, ok := dest[0].(*bool); ok {

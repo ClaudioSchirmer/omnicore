@@ -122,10 +122,11 @@
         row-lock-serialized last-writer-wins token — plus <code>base_purged</code> on the purging DELETED); and
         <code>_children</code>/<code>_base_children</code> groups, each item column-keyed with an <code>_op</code>
         verb. On a body verb that is the <code>OperationOf</code> categorization the persister executed
-        (insert/update/archive/delete/noop); on <code>ARCHIVED</code>/<code>UNARCHIVED</code> every item instead
-        reports the CASCADE the root statement performed — <code>archive</code> with the stamp the child UPDATE
-        bound, or <code>unarchive</code> with an explicit null — because the cascade is one set-based statement per
-        child table, not a per-item decision. <code>DELETED</code> keeps the historical structural keys (ID + shared-base ParentID) and only ADDS
+        (insert/update/archive/delete/noop); on <code>ARCHIVED</code>/<code>UNARCHIVED</code> an item instead
+        reports the CASCADE the root statement performed on ITS row — <code>archive</code> with the stamp the child
+        UPDATE bound, or <code>unarchive</code> with an explicit null — and <code>noop</code> when the statement's own
+        predicate did not reach it (already archived when the root archived; carrying a stamp that is not the one being
+        undone), because the cascade is one set-based statement per child table, not a per-item decision. <code>DELETED</code> keeps the historical structural keys (ID + shared-base ParentID) and only ADDS
         <code>_ids</code>. A SharedBase write emits NO separate base-table row anymore — the SyncEngine fans out to
         the other roles' documents from the role event's <code>_ids.base_id</code>; the one base-table event left is
         the orphan purge's <code>DELETED</code>. Keys starting with <code>_</code> are the framework's reserved
@@ -194,9 +195,9 @@
             </tr>
             <tr>
                 <td><code>unarchive</code> — cascade</td>
-                <td>the symmetric cascade: restores EVERY archived child of the root, including PUT-replace casualties</td>
-                <td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at IS NOT NULL</code></td>
-                <td><code>unarchived</code></td>
+                <td>the symmetric cascade: restores the children the root's OWN archive stamped, gated on the stamp the root row still carries. A child archived on its own — a PUT-replace casualty, a <code>RemoveAggregateChild</code> — carries a different instant and stays archived</td>
+                <td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at=$2</code></td>
+                <td><code>unarchived</code> (only for the rows it reached)</td>
             </tr>
             <tr>
                 <td><code>delete</code> — cascade</td>
@@ -353,7 +354,11 @@
         Each item now reports the cascade it took: <code>_op: "archive"</code> carrying the same stamp the child
         UPDATE bound, or <code>_op: "unarchive"</code> carrying an explicit null. Both are the same surgical
         edit — stamp the element's DeletedAt, leave every other field alone. A child table that declares no
-        DeletedAt takes no cascade and stays <code>noop</code>.
+        DeletedAt takes no cascade and stays <code>noop</code> — and so does a row the statement's predicate did not
+        reach, because the restore brings back only what the root's own archive put to sleep (see
+        <a href="#aggregate-persistence~unarchive-scope">What an unarchive brings back</a>). The event and the rows
+        therefore describe the same set, which is what keeps a live document and one rebuilt from the source in
+        agreement.
     </p>
     <div class="note">
         During a rolling upgrade a consumer running the previous binary does not know the

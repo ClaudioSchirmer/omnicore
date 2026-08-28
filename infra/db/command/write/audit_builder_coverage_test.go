@@ -2,6 +2,7 @@ package write
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -89,40 +90,40 @@ func TestChildEventOf_RemainingBranches(t *testing.T) {
 	prev := map[string]map[string]map[string]any{
 		"covChild": {"c1": {"Label": "old"}},
 	}
-	ev, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusChanged), child, "covChild", "update", prev)
+	ev, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusChanged), child, "covChild", "update", prev, time.Time{})
 	if !ok || ev.Op != "updated" {
 		t.Errorf("update/(Constructor,Changed) → %+v ok=%v, want updated", ev, ok)
 	}
 
 	// update + a DB item re-added (Constructor→Added) → updated (not inserted).
-	if ev, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusAdded), child, "covChild", "update", prev); !ok || ev.Op != "updated" {
+	if ev, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusAdded), child, "covChild", "update", prev, time.Time{}); !ok || ev.Op != "updated" {
 		t.Errorf("update/(Constructor,Added) → %+v ok=%v, want updated", ev, ok)
 	}
 
 	// update + a brand-new item (Added→Added) → inserted.
-	if ev, ok := childEventOf(mk2(domain.StatusAdded, domain.StatusAdded), child, "covChild", "update", nil); !ok || ev.Op != "inserted" {
+	if ev, ok := childEventOf(mk2(domain.StatusAdded, domain.StatusAdded), child, "covChild", "update", nil, time.Time{}); !ok || ev.Op != "inserted" {
 		t.Errorf("update/(Added,Added) → %+v ok=%v, want inserted", ev, ok)
 	}
 
 	// update + an untouched DB item (Constructor→Constructor) → skipped (no-op).
-	if _, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusConstructor), child, "covChild", "update", nil); ok {
+	if _, ok := childEventOf(mk2(domain.StatusConstructor, domain.StatusConstructor), child, "covChild", "update", nil, time.Time{}); ok {
 		t.Error("update/(Constructor,Constructor) should be skipped")
 	}
 
 	// archive + Removed → skipped.
-	if _, ok := childEventOf(mk(domain.StatusRemoved), child, "covChild", "archive", nil); ok {
+	if _, ok := childEventOf(mk(domain.StatusRemoved), child, "covChild", "archive", nil, time.Time{}); ok {
 		t.Error("archive/Removed should be skipped")
 	}
 	// unarchive + Removed → skipped.
-	if _, ok := childEventOf(mk(domain.StatusRemoved), child, "covChild", "unarchive", nil); ok {
+	if _, ok := childEventOf(mk(domain.StatusRemoved), child, "covChild", "unarchive", nil, time.Time{}); ok {
 		t.Error("unarchive/Removed should be skipped")
 	}
 	// delete + Removed → skipped.
-	if _, ok := childEventOf(mk(domain.StatusRemoved), child, "covChild", "delete", nil); ok {
+	if _, ok := childEventOf(mk(domain.StatusRemoved), child, "covChild", "delete", nil, time.Time{}); ok {
 		t.Error("delete/Removed should be skipped")
 	}
 	// unknown verb → skipped.
-	if _, ok := childEventOf(mk(domain.StatusAdded), child, "covChild", "bogus", nil); ok {
+	if _, ok := childEventOf(mk(domain.StatusAdded), child, "covChild", "bogus", nil, time.Time{}); ok {
 		t.Error("unknown verb should be skipped")
 	}
 }

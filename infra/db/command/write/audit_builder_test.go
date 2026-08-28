@@ -140,7 +140,7 @@ func TestBuildArchiveEvent_KindTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
 	}
-	ev := BuildArchiveEvent(newBuilderCtx(), ar, builderTestSchema, nil)
+	ev := BuildArchiveEvent(newBuilderCtx(), ar, builderTestSchema, nil, CascadeStamps{})
 
 	if ev.Verb != "archive" {
 		t.Errorf("Verb = %q", ev.Verb)
@@ -163,7 +163,7 @@ func TestBuildUnarchiveEvent_KindTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUnarchivable: %v", err)
 	}
-	ev := BuildUnarchiveEvent(newBuilderCtx(), un, builderTestSchema, nil)
+	ev := BuildUnarchiveEvent(newBuilderCtx(), un, builderTestSchema, nil, CascadeStamps{})
 	if ev.Verb != "unarchive" || ev.Kind != "transition" {
 		t.Errorf("verb=%q kind=%q want unarchive/transition", ev.Verb, ev.Kind)
 	}

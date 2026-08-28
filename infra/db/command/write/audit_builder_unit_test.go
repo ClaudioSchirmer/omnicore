@@ -48,17 +48,17 @@ func TestGoFieldValues_NonStructReturnsEmpty(t *testing.T) {
 }
 
 func TestChildrenOf_NilGuards(t *testing.T) {
-	if out := childrenOf(nil, &builderTestEntity{}, "insert"); out != nil {
+	if out := childrenOf(nil, &builderTestEntity{}, "insert", CascadeStamps{}); out != nil {
 		t.Errorf("nil schema must yield nil children, got %v", out)
 	}
-	if out := childrenOf(builderTestSchema, nil, "insert"); out != nil {
+	if out := childrenOf(builderTestSchema, nil, "insert", CascadeStamps{}); out != nil {
 		t.Errorf("nil src must yield nil children, got %v", out)
 	}
 }
 
 func TestChildrenOf_FlatEntityHasNoChildren(t *testing.T) {
 	// A non-aggregate entity is not an AggregateRootProvider → nil.
-	if out := childrenOf(builderTestSchema, &builderTestEntity{Name: "x"}, "insert"); out != nil {
+	if out := childrenOf(builderTestSchema, &builderTestEntity{Name: "x"}, "insert", CascadeStamps{}); out != nil {
 		t.Errorf("flat entity must yield nil children, got %v", out)
 	}
 }
@@ -73,7 +73,7 @@ func (n *nilRootProvider) GetAggregateRoot() *domain.AggregateRoot          { re
 func (n *nilRootProvider) AggregateChildren() []domain.AggregateValueObject { return nil }
 
 func TestChildrenOf_NilRootReturnsNil(t *testing.T) {
-	if out := childrenOf(builderTestSchema, &nilRootProvider{}, "insert"); out != nil {
+	if out := childrenOf(builderTestSchema, &nilRootProvider{}, "insert", CascadeStamps{}); out != nil {
 		t.Errorf("provider with nil root must yield nil children, got %v", out)
 	}
 }

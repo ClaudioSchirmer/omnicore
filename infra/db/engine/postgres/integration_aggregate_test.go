@@ -269,6 +269,104 @@ func TestPostgres_UnarchiveAggregate_RestoresArchivedChildren(t *testing.T) {
 	}
 }
 
+// The restore is scoped to the root's OWN archive. Against a real database this
+// is the whole round-trip of the discriminator: the archive binds one instant on
+// the root and on the children it reaches, the unarchive reads that instant back
+// out of the row and binds it again in the cascade's predicate. A child archived
+// on its own carries a different instant and must survive the root's return
+// exactly as it was.
+func TestPostgres_UnarchiveAggregate_LeavesIndependentlyArchivedChildren(t *testing.T) {
+	pg, cleanup := newTestPG(t)
+	defer cleanup()
+	createAggregateTables(t, pg)
+
+	root := &aggCustomer{Name: "U", Email: "u@x"}
+	domain.AddAggregateChild(root, aggChannel{Label: "with-the-root"})
+	domain.AddAggregateChild(root, aggChannel{Label: "on-its-own"})
+	ins, _ := domain.GetInsertable(root, nil, "GetInsertable")
+	res, err := pg.Insert(testCtx(), ins, aggCustomerSchema(), noHook)
+	if err != nil {
+		t.Fatalf("Insert aggregate: %v", err)
+	}
+	id := res.ID
+	withRoot := aggChannelIDByLabel(t, pg, "with-the-root")
+	onItsOwn := aggChannelIDByLabel(t, pg, "on-its-own")
+
+	// The second child is archived ON ITS OWN, through an ordinary update that
+	// drops it from the aggregate — its stamp is this operation's, not the root's.
+	loaded := &aggCustomer{Name: "U", Email: "u@x"}
+	loaded.SetID(id)
+	loaded.AggregateConstructor([]domain.AggregateValueObject{
+		domain.WithID(aggChannel{Label: "with-the-root"}, domain.NewID(withRoot)),
+		domain.WithID(aggChannel{Label: "on-its-own"}, domain.NewID(onItsOwn)),
+	})
+	upd, err := domain.GetUpdatable(loaded, func(c *aggCustomer) error {
+		domain.RemoveAggregateChild(c, domain.WithID(aggChannel{Label: "on-its-own"}, domain.NewID(onItsOwn)))
+		return nil
+	}, nil, "GetUpdatable")
+	if err != nil {
+		t.Fatalf("GetUpdatable: %v", err)
+	}
+	if _, err := pg.Update(testCtx(), upd, aggCustomerSchema(), noHook); err != nil {
+		t.Fatalf("Update (remove one child): %v", err)
+	}
+	if activeCount(t, pg, "agg_channels") != 1 {
+		t.Fatalf("the removed child should be archived, got %d active", activeCount(t, pg, "agg_channels"))
+	}
+
+	// Now the root goes down and comes back.
+	archived := &aggCustomer{Name: "U", Email: "u@x"}
+	archived.SetID(id)
+	archived.AggregateConstructor([]domain.AggregateValueObject{aggChannel{}})
+	arch, _ := domain.GetArchivable(archived, nil, "GetArchivable")
+	if err := pg.Archive(testCtx(), arch, aggCustomerSchema(), noHook); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if activeCount(t, pg, "agg_channels") != 0 {
+		t.Fatalf("the root's archive must take the active child with it, got %d active", activeCount(t, pg, "agg_channels"))
+	}
+
+	restored := &aggCustomer{Name: "U", Email: "u@x"}
+	restored.SetID(id)
+	restored.AggregateConstructor([]domain.AggregateValueObject{aggChannel{}})
+	una, _ := domain.GetUnarchivable(restored, nil, "GetUnarchivable")
+	if err := pg.Unarchive(testCtx(), una, aggCustomerSchema(), noHook); err != nil {
+		t.Fatalf("Unarchive aggregate: %v", err)
+	}
+
+	if activeCount(t, pg, "agg_customers") != 1 {
+		t.Error("expected the root to be unarchived")
+	}
+	if n := activeCount(t, pg, "agg_channels"); n != 1 {
+		t.Fatalf("exactly the child the root archived comes back, got %d active", n)
+	}
+	if label := activeChannelLabel(t, pg); label != "with-the-root" {
+		t.Errorf("the wrong child came back: %q — a child archived on its own must stay archived", label)
+	}
+}
+
+// aggChannelIDByLabel / activeChannelLabel read the child table directly: the ids
+// are minted by the write and the point of the assertion is WHICH row moved.
+func aggChannelIDByLabel(t *testing.T, engine *Postgres, label string) string {
+	t.Helper()
+	var id string
+	q := `SELECT id::text FROM agg_channels WHERE label = $1`
+	if err := engine.Pool().QueryRow(context.Background(), q, label).Scan(&id); err != nil {
+		t.Fatalf("aggChannelIDByLabel %q: %v", label, err)
+	}
+	return id
+}
+
+func activeChannelLabel(t *testing.T, engine *Postgres) string {
+	t.Helper()
+	var label string
+	q := `SELECT label FROM agg_channels WHERE deleted_at IS NULL`
+	if err := engine.Pool().QueryRow(context.Background(), q).Scan(&label); err != nil {
+		t.Fatalf("activeChannelLabel: %v", err)
+	}
+	return label
+}
+
 // --- deleteAggregate relies on ParentID CASCADE ----------------------------------
 
 func TestPostgres_DeleteAggregate_FKDeleteCascade(t *testing.T) {
