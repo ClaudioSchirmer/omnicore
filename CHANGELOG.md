@@ -11,6 +11,40 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-08-28
+
+### Changed
+
+- **BREAKING (behavior): `ChangeAggregateChild` refuses a replacement that takes
+  a business identity another ACTIVE child already holds.** The contract "at
+  most ONE active child per business identity" was enforced on the add path
+  only, while the change path wrote its replacement without looking at what it
+  collided with — so the one primitive able to break the invariant was the one
+  not checking it. The collision now answers `EntityAlreadyAddedNotification`
+  (`SemanticConflict` → 409), the same answer the add path gives, and the
+  collection is left untouched.
+
+  - **What did NOT change:** a replacement may still reshape the entry freely,
+    identity fields included — identity FINDS the entry, it does not freeze it,
+    and an aggregate keyed by a natural key (`Address` by
+    `Country+ZipCode+Street+Number`) edits exactly those fields through here.
+    Only the collision with a *different* active entry is refused. An entry
+    matching the replacement's identity that is already REMOVED does not
+    collide, mirroring the add path, where a matching removed entry
+    re-activates. The trusted load path (`AggregateConstructor`) stays
+    unguarded, so a collection that already holds duplicates still loads and can
+    be repaired.
+  - **Why it matters:** the four match sites (add/re-activate, change, remove,
+    the post-INSERT id write-back) all resolve "the entry that matches" through
+    `IsSameBusinessIdentity` and take the FIRST match, while an addressed-by-id
+    verb selects its target by row id. The two agree only while the identity is
+    unique. Once a change had produced a duplicate, a `DELETE …/{id}` resolved to
+    a sibling's row, a second `PUT …/{id}` dropped the sibling's entry from the
+    tracked collection (the outbox payload — and therefore every projection fed
+    by it — then carried one child twice and the other not at all), and a
+    full-body replace of the aggregate's own persisted state answered 409
+    because the re-add of the second duplicate hit the add path's guard.
+
 ## [0.62.0] - 2026-08-28
 
 ### Changed
