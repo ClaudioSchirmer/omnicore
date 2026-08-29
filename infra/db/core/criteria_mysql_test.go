@@ -1,4 +1,4 @@
-package read
+package core
 
 import (
 	"fmt"
@@ -92,9 +92,9 @@ func TestMySQLVisitor_Operators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sql, args, err := compileWhere(c.e, r, testMySQLDialect{}, nil)
+			sql, args, err := CompileWhere(c.e, r, testMySQLDialect{}, nil)
 			if err != nil {
-				t.Fatalf("compileWhere: %v", err)
+				t.Fatalf("CompileWhere: %v", err)
 			}
 			if sql != c.sql {
 				t.Errorf("sql = %q, want %q", sql, c.sql)
@@ -117,9 +117,9 @@ func TestMySQLVisitor_PositionalArgOrder(t *testing.T) {
 		criteria.In("Email", "x", "y"),
 		criteria.Gt("Age", 1),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testMySQLDialect{}, nil)
+	sql, args, err := CompileWhere(e, testResolver(), testMySQLDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	if want := "(`name` = ? AND `email` IN (?, ?) AND `age` > ?)"; sql != want {
 		t.Errorf("sql  = %q\nwant = %q", sql, want)
@@ -140,9 +140,9 @@ func TestMySQLVisitor_PositionalArgOrder(t *testing.T) {
 // keeps it a string) — the read-side mirror of the write-path id encoding.
 func TestMySQLVisitor_DomainIDArgEncodedToBinary(t *testing.T) {
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")
-	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID(u.String())), testResolver(), testMySQLDialect{}, nil)
+	_, args, err := CompileWhere(criteria.Eq("ID", domain.NewID(u.String())), testResolver(), testMySQLDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	b, ok := args[0].([]byte)
 	if !ok || len(b) != 16 {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 	"github.com/google/uuid"
 )
 
@@ -58,8 +59,11 @@ func loadedUpdatable(t *testing.T, revision int64) domain.Updatable {
 // ---------- statement shape ----------
 
 func TestBuildUpdate_PinsTheLoadedRevision(t *testing.T) {
-	sql, args := buildUpdate(testPGDialect{}, "users", "id", "u1",
+	sql, args, err := buildUpdate(testPGDialect{}, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID("u1")),
 		domain.Fields{"name": "Ana"}, []string{"updated_at"}, testNow, "revision", 7)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	want := "UPDATE users SET name = $1, updated_at = $2, revision = revision + 1 WHERE id = $3 AND revision = $4"
 	if sql != want {
@@ -71,8 +75,11 @@ func TestBuildUpdate_PinsTheLoadedRevision(t *testing.T) {
 }
 
 func TestBuildUpdate_UnguardedWhenEntityNeverCameFromTheLoader(t *testing.T) {
-	sql, args := buildUpdate(testPGDialect{}, "users", "id", "u1",
+	sql, args, err := buildUpdate(testPGDialect{}, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID("u1")),
 		domain.Fields{"name": "Ana"}, nil, testNow, "revision", 0)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	if strings.Contains(sql, "AND") {
 		t.Errorf("revision 0 means unknown provenance — the write must not be guarded: %q", sql)
@@ -85,8 +92,11 @@ func TestBuildUpdate_UnguardedWhenEntityNeverCameFromTheLoader(t *testing.T) {
 // A child row declares no revision of its own (the schema builder rejects it):
 // even handed a revision, the statement must stay unguarded.
 func TestBuildUpdate_UnguardedWithoutARevisionColumn(t *testing.T) {
-	sql, _ := buildUpdate(testPGDialect{}, "addresses", "id", "c1",
+	sql, _, err := buildUpdate(testPGDialect{}, idOnlyTarget("addresses", "id"), criteria.Eq("ID", domain.NewID("c1")),
 		domain.Fields{"street": "Main"}, nil, testNow, "", 7)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	if strings.Contains(sql, "AND") {
 		t.Errorf("a schema without a revision column has nothing to pin: %q", sql)

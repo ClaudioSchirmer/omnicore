@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // Sibling write helpers — the partition of one logical row across an owner table
@@ -79,7 +80,11 @@ func applySiblingUpdates(ctx context.Context, tx WriteTx, d Dialect, owner *Tabl
 			if partial {
 				continue
 			}
-			if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), owner.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+			sql, args, err := deleteSQL(d, idOnlyTarget(sib.Table(), owner.IDColumn()), criteria.Eq(idGoField, domain.NewID(id)))
+			if err != nil {
+				return err
+			}
+			if err := tx.Exec(ctx, sql, args...); err != nil {
 				return err
 			}
 			continue
@@ -96,7 +101,11 @@ func applySiblingUpdates(ctx context.Context, tx WriteTx, d Dialect, owner *Tabl
 // the owner row is deleted, in the same TX.
 func deleteSiblings(ctx context.Context, tx WriteTx, d Dialect, owner *TableSchema, id string) error {
 	for _, sib := range owner.Siblings() {
-		if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), owner.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+		sql, args, err := deleteSQL(d, idOnlyTarget(sib.Table(), owner.IDColumn()), criteria.Eq(idGoField, domain.NewID(id)))
+		if err != nil {
+			return err
+		}
+		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return err
 		}
 	}

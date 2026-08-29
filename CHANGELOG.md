@@ -11,6 +11,58 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-08-29
+
+### Added
+
+- **`DirectSchema` + `DirectRepository` — the query and write engine anchored on
+  a TABLE instead of an aggregate.** Until now the relational engine was
+  reachable through exactly one door: a repository bound to a `domain.Entity`.
+  A control table the service maintains by hand, a fact a business rule needs
+  (a count over an aggregate's child, an existence probe), or a single-table
+  write inside the current transaction had no supported path and meant
+  hand-written SQL against the neutral `Tx`, with placeholders, quoting and id
+  encoding re-derived per dialect.
+
+  - `core.NewDirectSchema[T](table)` produces the SAME `*TableSchema` every
+    other path consumes — one constructor more, alongside `NewTableSchema`,
+    `NewSiblingSchema`, `NewSharedBaseSchema` and `NewExternalSchema`. There is
+    no conversion step and no second engine: resolution, criteria compilation,
+    dialect rendering and the statement builders are the ones the aggregate path
+    uses.
+  - `read.NewDirectRepository[T](eng, schema)` reads with the loader's own
+    vocabulary (`FindOne`, `FindAll`, `Exists`, `Aggregate`, `AggregateBy`,
+    `WithJoins` on the root) and writes with `Insert`, `Update`, `UpdateOne`,
+    `Delete`, `DeleteOne`, `Archive`, `Unarchive`, `UpdateAll`, `DeleteAll`.
+    `write.Values` is keyed by Go field name, so no physical column name is
+    written above `infra/`. `InTx(core.Tx)` returns a copy bound to the
+    framework's open transaction.
+  - **The two axes.** The DOWNWARD composition an aggregate is — root plus
+    children, satellites and shared identity persisted as one unit — is gone: a
+    write is one statement against the anchor table. The SIDEWAYS one is
+    untouched: a read traverses its declared joins with the same reach and the
+    same rules an aggregate repository has.
+  - **What it deliberately does not do:** no outbox row (so a Direct write never
+    feeds a Mongo view), no audit event, no domain events, no revision guard, no
+    old-state snapshot, no cascade. `Child`, `Sibling` and `SharedBase` panic at
+    declaration; the repository anchors only on a Direct schema (an entity's
+    schema stays welcome as a join target); a write with an empty predicate is
+    refused, and the deliberate sweep has its own verb.
+  - Docs: new `DirectSchema` section under Infrastructure.
+
+### Changed
+
+- **The write statement builders take a criteria predicate instead of a
+  hardcoded `pk = ?`.** `buildUpdate`, `deleteSQL` and `archiveSQL` are internal,
+  so no consumer signature moves; what changes is that the entity write path is
+  now one CALLER of them, passing the primary-key predicate, rather than the
+  only shape they can render. The criteria compiler moved from
+  `infra/db/command/read` to `infra/db/core` to make that possible (`read`
+  imports `write`, so the compiler could not stay where it was) and its
+  placeholder numbering can now continue after a SET list. The SQL emitted for
+  every entity write is byte-identical on all four dialects, pinned by the
+  existing golden statement tests.
+
 ## [0.63.0] - 2026-08-28
 
 ### Changed

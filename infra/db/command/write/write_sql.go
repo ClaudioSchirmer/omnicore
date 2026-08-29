@@ -8,7 +8,15 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
+
+// idGoField is the Go field name the framework's identity resolves under — the
+// Entity contract fixes it and criteria.ByID uses the same spelling. Declared
+// here like the read backings declare it, rather than exported from core: it is
+// a constant of the contract, not a knob.
+const idGoField = "ID"
 
 // newWriteID mints the framework-authoritative id for a new row: a UUID v7
 // (time-ordered, so a clustered ID stays local) generated in Go on EVERY
@@ -35,6 +43,70 @@ func newWriteID() (string, error) {
 // are identical. Minted once per verb call and threaded down, never per
 // statement.
 func writeNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
+
+// writeTarget names the table a write statement runs against and how a criteria
+// field resolves on it. For every ordinary write both come from the SAME schema
+// (schemaTarget). A shared-ID SECONDARY table is the exception: a sibling
+// declares no id of its own — TableSchema.ID panics on it, because it BORROWS
+// the owner's — so the statement targets the sibling's table while the
+// framework's "ID" field resolves to the column that owns the identity
+// (idOnlyTarget).
+//
+// It exists because the statement builders below take a criteria predicate
+// rather than a hardcoded `pk = ?`: compiling that predicate needs a resolver,
+// and the resolver is not always the target table's own schema.
+type writeTarget struct {
+	table   string
+	resolve core.FieldResolver
+	idKind  func(string) core.IDKind
+}
+
+// schemaTarget targets a schema's table and resolves criteria fields through
+// that same schema — every field it maps, plus the managed slots and the
+// ParentID projection Resolve already answers.
+func schemaTarget(s *TableSchema) writeTarget {
+	return writeTarget{table: s.Table(), resolve: s.Resolve, idKind: s.IDKindOf}
+}
+
+// idOnlyTarget targets `table` and resolves the framework's "ID" field — and
+// nothing else — to idColumn. It is what a shared-ID secondary table needs, and
+// the narrowest resolver a by-id statement can be given: any other field name in
+// the predicate fails to resolve rather than binding something unintended.
+func idOnlyTarget(table, idColumn string) writeTarget {
+	return writeTarget{
+		table: table,
+		resolve: func(goField string) (core.ResolvedField, bool) {
+			if goField != idGoField {
+				return core.ResolvedField{}, false
+			}
+			return core.ResolvedField{Column: idColumn}, true
+		},
+		idKind: func(goField string) core.IDKind {
+			if goField == idGoField {
+				return core.IDValue
+			}
+			return core.IDNone
+		},
+	}
+}
+
+// compilePredicate renders the WHERE fragment for a write statement, numbering
+// its placeholders AFTER the `bound` arguments the statement already carries (a
+// SET list). A nil predicate is refused here, at the lowest level: an UPDATE or
+// DELETE with no WHERE is a full-table sweep, and no caller of these builders
+// ever means one — the deliberate sweep renders its own statement.
+func compilePredicate(d Dialect, t writeTarget, pred criteria.Expr, bound int) (string, []any, error) {
+	if pred == nil {
+		return "", nil, fmt.Errorf(
+			"db: a write statement on %q was built with no predicate — that is a full-table "+
+				"UPDATE/DELETE, which this path never emits", t.table)
+	}
+	where, args, err := core.CompileWhereQualifiedFrom(pred, t.resolve, d, t.idKind, core.ColQual{}, bound)
+	if err != nil {
+		return "", nil, err
+	}
+	return where, args, nil
+}
 
 // buildInsert renders the INSERT for the bound columns + the managed timestamp
 // columns (bound to the operation stamp `now`), with the Go-generated ID
@@ -99,7 +171,27 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 // it declares no revision of its own), a shared BASE (converged last-write-wins
 // on purpose, since several roles write it), or an entity that never came from
 // the loader.
-func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string, expectedRevision int64) (string, []any) {
+func buildUpdate(d Dialect, t writeTarget, pred criteria.Expr, fields domain.Fields, nowCols []string, now time.Time, revCol string, expectedRevision int64) (string, []any, error) {
+	sets, args := buildSet(d, fields, nowCols, now, revCol)
+	where, whereArgs, err := compilePredicate(d, t, pred, len(args))
+	if err != nil {
+		return "", nil, err
+	}
+	args = append(args, whereArgs...)
+	if revCol != "" && expectedRevision > 0 {
+		where += " AND " + d.QuoteIdent(revCol) + " = " + d.Placeholder(len(args)+1)
+		args = append(args, d.EncodeArg(expectedRevision))
+	}
+	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		d.QuoteIdent(t.table), strings.Join(sets, ", "), where)
+	return sql, args, nil
+}
+
+// buildSet renders the SET list shared by every UPDATE this package emits — the
+// bound columns, the managed timestamp columns stamped with the operation's
+// `now`, and the revision bump when the schema declares one — returning the
+// fragments and the arguments in placeholder order.
+func buildSet(d Dialect, fields domain.Fields, nowCols []string, now time.Time, revCol string) ([]string, []any) {
 	keys := SortedKeys(fields)
 	sets := make([]string, 0, len(keys)+len(nowCols)+1)
 	args := make([]any, 0, len(keys)+len(nowCols)+1)
@@ -118,17 +210,7 @@ func buildUpdate(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 		rc := d.QuoteIdent(revCol)
 		sets = append(sets, rc+" = "+rc+" + 1")
 	}
-	n++
-	where := d.QuoteIdent(pk) + " = " + d.Placeholder(n)
-	args = append(args, d.EncodeArg(domain.NewID(id)))
-	if revCol != "" && expectedRevision > 0 {
-		n++
-		where += " AND " + d.QuoteIdent(revCol) + " = " + d.Placeholder(n)
-		args = append(args, d.EncodeArg(expectedRevision))
-	}
-	sql := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
-		d.QuoteIdent(table), strings.Join(sets, ", "), where)
-	return sql, args
+	return sets, args
 }
 
 // rowExistsSQL renders the probe that splits a zero-row guarded UPDATE into its
@@ -148,19 +230,23 @@ func rowExistsSQL(d Dialect, table, pk string) string {
 // entity's full field set with the DeletedAt transition as one more column (see
 // softWrite), so the row's business state and the event that announces it can
 // never disagree.
-func archiveSQL(d Dialect, table, sdCol, pk, revCol string) string {
-	bump := ""
-	if revCol != "" {
-		rc := d.QuoteIdent(revCol)
-		bump = ", " + rc + " = " + rc + " + 1"
+func archiveSQL(d Dialect, t writeTarget, sdCol string, pred criteria.Expr, now time.Time, revCol string) (string, []any, error) {
+	sets, args := buildSet(d, domain.Fields{sdCol: now}, nil, now, revCol)
+	where, whereArgs, err := compilePredicate(d, t, pred, len(args))
+	if err != nil {
+		return "", nil, err
 	}
-	return fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s",
-		d.QuoteIdent(table), d.QuoteIdent(sdCol), d.Placeholder(1), bump, d.QuoteIdent(pk), d.Placeholder(2))
+	args = append(args, whereArgs...)
+	return fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		d.QuoteIdent(t.table), strings.Join(sets, ", "), where), args, nil
 }
 
-func deleteSQL(d Dialect, table, pk string) string {
-	return fmt.Sprintf("DELETE FROM %s WHERE %s = %s",
-		d.QuoteIdent(table), d.QuoteIdent(pk), d.Placeholder(1))
+func deleteSQL(d Dialect, t writeTarget, pred criteria.Expr) (string, []any, error) {
+	where, args, err := compilePredicate(d, t, pred, 0)
+	if err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("DELETE FROM %s WHERE %s", d.QuoteIdent(t.table), where), args, nil
 }
 
 // childDeleteSQL renders the hard-delete of every child row belonging to a root:

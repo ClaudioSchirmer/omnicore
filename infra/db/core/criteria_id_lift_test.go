@@ -1,4 +1,4 @@
-package read
+package core
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -17,23 +16,23 @@ import (
 // on a string-typed field is NEVER touched, whatever its shape: string fields
 // pair with text columns.
 
-func testIDKinds() func(string) core.IDKind {
-	kinds := map[string]core.IDKind{
-		"ID":        core.IDValue, // the managed ID slot — always identity
-		"BuyerID":   core.IDValue,
-		"PartnerID": core.IDPointer,
+func testIDKinds() func(string) IDKind {
+	kinds := map[string]IDKind{
+		"ID":        IDValue, // the managed ID slot — always identity
+		"BuyerID":   IDValue,
+		"PartnerID": IDPointer,
 	}
-	return func(f string) core.IDKind { return kinds[f] }
+	return func(f string) IDKind { return kinds[f] }
 }
 
-func liftResolver() core.FieldResolver {
+func liftResolver() FieldResolver {
 	m := map[string]string{
 		"ID": "id", "Name": "name",
 		"BuyerID": "buyer_id", "PartnerID": "partner_id",
 	}
-	return func(f string) (core.ResolvedField, bool) {
+	return func(f string) (ResolvedField, bool) {
 		c, ok := m[f]
-		return core.ResolvedField{Column: c}, ok
+		return ResolvedField{Column: c}, ok
 	}
 }
 
@@ -50,43 +49,43 @@ func TestIDLift_MySQL(t *testing.T) {
 	}
 
 	t.Run("bare-string probe on a domain.ID field binds as 16 bytes", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.Eq("BuyerID", u.String()), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Eq("BuyerID", u.String()), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		wantBytes(t, args[0])
 	})
 
 	t.Run("bare-string ID probe binds as 16 bytes (exclude-self parity)", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.Ne("ID", u.String()), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Ne("ID", u.String()), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		wantBytes(t, args[0])
 	})
 
 	t.Run("*string probe on a *domain.ID field binds as 16 bytes", func(t *testing.T) {
 		s := u.String()
-		_, args, err := compileWhere(criteria.Eq("PartnerID", &s), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Eq("PartnerID", &s), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		wantBytes(t, args[0])
 	})
 
 	t.Run("IN lifts every member", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.In("BuyerID", u.String(), u.String()), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.In("BuyerID", u.String(), u.String()), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		wantBytes(t, args[0])
 		wantBytes(t, args[1])
 	})
 
 	t.Run("uuid-shaped probe on a STRING field stays text", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.Eq("Name", u.String()), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Eq("Name", u.String()), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		if got, ok := args[0].(string); !ok || got != u.String() {
 			t.Fatalf("arg = %v (%T), want the untouched text", args[0], args[0])
@@ -94,9 +93,9 @@ func TestIDLift_MySQL(t *testing.T) {
 	})
 
 	t.Run("synthetic (non-uuid) id degrades to text inside the codec", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.Eq("BuyerID", "the-id"), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Eq("BuyerID", "the-id"), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		if got, ok := args[0].(string); !ok || got != "the-id" {
 			t.Fatalf("arg = %v (%T), want text (the column rejects, never the codec)", args[0], args[0])
@@ -104,9 +103,9 @@ func TestIDLift_MySQL(t *testing.T) {
 	})
 
 	t.Run("nil idKind resolver lifts nothing", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.Eq("BuyerID", u.String()), liftResolver(), d, nil)
+		_, args, err := CompileWhere(criteria.Eq("BuyerID", u.String()), liftResolver(), d, nil)
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		if got, ok := args[0].(string); !ok || got != u.String() {
 			t.Fatalf("arg = %v (%T), want text (no resolver, no lift)", args[0], args[0])
@@ -119,9 +118,9 @@ func TestIDLift_Postgres(t *testing.T) {
 	d := testPGDialect{}
 
 	t.Run("lifted probe resolves to its canonical text (pgx binds uuid as text)", func(t *testing.T) {
-		_, args, err := compileWhere(criteria.Eq("BuyerID", u.String()), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Eq("BuyerID", u.String()), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		if got, ok := args[0].(string); !ok || got != u.String() {
 			t.Fatalf("arg = %v (%T), want the canonical text", args[0], args[0])
@@ -130,9 +129,9 @@ func TestIDLift_Postgres(t *testing.T) {
 
 	t.Run("nil *string probe on a *domain.ID field binds SQL NULL", func(t *testing.T) {
 		var s *string
-		_, args, err := compileWhere(criteria.Eq("PartnerID", s), liftResolver(), d, testIDKinds())
+		_, args, err := CompileWhere(criteria.Eq("PartnerID", s), liftResolver(), d, testIDKinds())
 		if err != nil {
-			t.Fatalf("compileWhere: %v", err)
+			t.Fatalf("CompileWhere: %v", err)
 		}
 		if args[0] != nil {
 			t.Fatalf("arg = %v (%T), want nil (SQL NULL)", args[0], args[0])

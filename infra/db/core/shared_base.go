@@ -145,6 +145,7 @@ func (s *TableSchema) RevisionColumn() string { return s.revisionCol }
 // validated against THIS role's Go type (the base is type-less; each role
 // supplies the type to validate the shared columns against).
 func (s *TableSchema) SharedBase(base *TableSchema, parentIDColumn string) *TableSchema {
+	s.refuseVertical("SharedBase")
 	if s.secondary || s.isSharedBase {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): only a root/role schema may reference a SharedBase.", s.table))

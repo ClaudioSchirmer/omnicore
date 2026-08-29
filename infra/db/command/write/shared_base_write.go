@@ -11,6 +11,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // SharedBase (Modelagem 2 / Party-Role) write path. A ROLE schema that declares
@@ -303,7 +304,10 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -526,7 +530,11 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 				return err
 			}
 		}
-		return tx.Exec(ctx, deleteSQL(d, base.Table(), base.IDColumn()), d.EncodeArg(domain.NewID(baseID)))
+		sql, args, err := deleteSQL(d, schemaTarget(base), criteria.Eq(idGoField, domain.NewID(baseID)))
+		if err != nil {
+			return err
+		}
+		return tx.Exec(ctx, sql, args...)
 	}()
 	if err != nil {
 		if _, vetoed := d.IsForeignKeyViolation(err); vetoed {
@@ -857,7 +865,10 @@ func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect
 		// Unguarded on purpose: several roles converge on the shared identity and
 		// the base is last-write-wins by design — guarding it would turn an
 		// unrelated role's write into a conflict on this one.
-		sql, args := buildUpdate(d, base.Table(), base.IDColumn(), baseID, baseFields, base.UpdateNowColumns(), now, base.RevisionColumn(), 0)
+		sql, args, err := buildUpdate(d, schemaTarget(base), criteria.Eq(idGoField, domain.NewID(baseID)), baseFields, base.UpdateNowColumns(), now, base.RevisionColumn(), 0)
+		if err != nil {
+			return 0, err
+		}
 		if err := tx.Exec(ctx, sql, args...); err != nil {
 			return 0, err
 		}

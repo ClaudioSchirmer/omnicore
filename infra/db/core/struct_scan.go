@@ -307,6 +307,49 @@ func scanRowIntoStruct(row keyedRow, dst any, columns []string, byCol map[string
 	return composites.finalize()
 }
 
+// ScanRow scans a row shaped exactly like `columns` into dst's fields, with no
+// leading key and no trailing targets — the plain form, for a struct that
+// declares every column it reads as a field of its own.
+//
+// It is what a Direct read uses: a Direct schema requires an exported
+// `ID domain.ID`, so TableSchema.ScanPlan already lists the id column with the
+// rest and there is nothing left to read positionally. An aggregate root is the
+// other case — it carries its id privately in BaseEntity — and reads through
+// ScanLeadingKey instead.
+func ScanRow(row keyedRow, dst any, columns []string, byCol map[string]FieldPath) error {
+	return scanRowIntoStruct(row, dst, columns, byCol)
+}
+
+// ScanRowTrailing is ScanRow plus a tail of caller-owned scan targets appended
+// AFTER the struct's own columns — the declared read joins' columns, which
+// belong to another aggregate and land on fields this schema does not map. The
+// SELECT must list the columns in the same order: the schema's, then the
+// trailing ones.
+func ScanRowTrailing(row keyedRow, dst any, columns []string, byCol map[string]FieldPath, trailing ...any) error {
+	if len(trailing) == 0 {
+		return scanRowIntoStruct(row, dst, columns, byCol)
+	}
+	v := reflect.ValueOf(dst)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return fmt.Errorf("ScanRowTrailing: dst must be a non-nil pointer, got %T", dst)
+	}
+	v = v.Elem()
+	if v.Kind() != reflect.Struct {
+		return fmt.Errorf("ScanRowTrailing: dst must point to a struct, got %s", v.Kind())
+	}
+	fieldTargets, composites, err := buildScanTargets(v, columns, byCol, "ScanRowTrailing")
+	if err != nil {
+		return err
+	}
+	targets := make([]any, 0, len(columns)+len(trailing))
+	targets = append(targets, fieldTargets...)
+	targets = append(targets, trailing...)
+	if err := row.Scan(targets...); err != nil {
+		return err
+	}
+	return composites.finalize()
+}
+
 // keyedRow is satisfied by both the Postgres (pgx.Row/pgx.Rows) and MySQL
 // (*sql.Row/*sql.Rows) driver row types (Scan(dest ...any) error).
 type keyedRow interface {

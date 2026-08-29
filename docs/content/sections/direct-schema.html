@@ -1,0 +1,348 @@
+<h2>DirectSchema — the engine, anchored on a table instead of an aggregate</h2>
+<p>
+    The relational engine is reachable through exactly one door: an aggregate. Criteria in four dialects,
+    <code>COUNT</code>/<code>SUM</code>/<code>AVG</code>/<code>MIN</code>/<code>MAX</code>, <code>GROUP BY</code>,
+    existence probes, ordered windows, read joins — all of it hangs off a repository bound to a
+    <code>domain.Entity</code>. <strong>DirectSchema opens the same engine onto a plain table.</strong> The table is
+    the anchor and the write unit; <code>DirectRepository</code> reads and writes it with the vocabulary you already
+    know.
+</p>
+<p>
+    It is <strong>not a second engine</strong>. The reads run through the same <code>TableSchema.Resolve</code>, the same
+    criteria compiler, the same declared joins and the same aggregate DSL an <code>AggregateLoader</code> runs through;
+    the writes run through the same statement builders, the same dialect seam and the same generated identity the entity
+    write path uses. What is absent is what belongs to an aggregate — and the absence is the whole point.
+</p>
+
+<h3 id="the-two-axes">The two axes — what it drops, and what it keeps whole</h3>
+<p>
+    "One table" is the honest description of the WRITE and a misleading one for the READ, so it is worth separating the
+    two axes a repository can reach along.
+</p>
+<div class="grid-2">
+    <div class="card">
+        <strong>Vertical — dropped entirely.</strong>
+        <p>
+            An aggregate is a composition <em>downward</em>: a root plus its children, its 1:1 satellites and its shared
+            identity, persisted together in a single transaction with the outbox row, the audit event and the revision
+            guard that make the set one unit. A Direct write has none of it. One statement, one table, no cascade —
+            <code>Child</code>, <code>Sibling</code> and <code>SharedBase</code> are refused at declaration precisely so
+            the shape cannot promise what it will not do.
+        </p>
+    </div>
+    <div class="card">
+        <strong>Horizontal — kept whole.</strong>
+        <p>
+            A read reaches <em>sideways</em> through declared traversals: <code>read.InnerJoin</code> /
+            <code>read.LeftJoin</code> off the anchor, filling fields, answering predicates, ordering, and serving as
+            <code>GROUP BY</code> keys. That is the same reach an aggregate repository has, with the same rules, and
+            none of it is given up here. A Direct read can absolutely touch several tables; a Direct write never does.
+        </p>
+    </div>
+</div>
+<p>
+    So the defining property is not the number of tables in the statement — it is that <strong>there is no aggregate and
+    no entity</strong>. Nothing here has invariants the framework protects, a lifecycle it drives, or a read model it
+    feeds. What it has is a table, and an engine pointed at it.
+</p>
+
+<h3 id="why-it-exists">Why it exists</h3>
+<p>
+    <strong>Because not every table is a domain concept.</strong> A job queue, an import ledger, a lookup table, an
+    outbox of your own, a per-tenant counter: rows the service maintains by hand, with no invariant to protect, no
+    lifecycle to drive and no projection to feed. Modelling one as an entity means paying for machinery that describes
+    nothing about it — a root, rules, modes, a revision token, an outbox row nobody consumes, an audit trail of an
+    operational detail — and, worse, it tells the next reader that this table means more than it does.
+</p>
+<p>
+    <strong>And because a business rule usually wants a fact, not an entity.</strong> How many active children does this
+    aggregate have, does a row with this key already exist, what do they total over the window — questions whose answer
+    is a scalar. The aggregate DSL has answered them for a long time, and until now only for whoever held an entity's
+    repository.
+</p>
+<p>
+    Three shapes had no supported path, and each one pushed the developer to the same place: hand-written SQL against
+    the neutral transaction, re-deriving placeholders, identifier quoting and id encoding per dialect, with the Go
+    field names of the three-name model dropped along the way.
+</p>
+<ul>
+    <li><strong>A control table maintained by hand</strong> — a query, an insert, an update, a delete, and nothing
+        else.</li>
+    <li><strong>A fact taken from a table that belongs to someone else</strong> — counting an aggregate's children
+        without loading them, probing existence before a write, summing over a window inside a rule.</li>
+    <li><strong>A single-table write inside the current transaction</strong> — a control row stamped from a lifecycle
+        hook, which has to commit, or roll back, with the write that caused it.</li>
+</ul>
+<div class="box">
+    <strong>The reuse boundary, stated once.</strong>
+    <p>
+        A Direct repository <em>anchors</em> only on a Direct schema. An entity's schema is refused there — and is
+        entirely welcome as a join <em>target</em>, because a traversal only reads. That is how a control table joins
+        <code>users</code> through the very schema the <code>User</code> entity already declares, without any risk that
+        a criteria-keyed <code>DELETE</code> orphans a child or an <code>UPDATE</code> steps over the revision guard a
+        view depends on.
+    </p>
+</div>
+
+<h3 id="declaring-one">Declaring one</h3>
+<p>
+    Same <code>*TableSchema</code> every other path consumes, born from its own constructor. There is no conversion
+    step: the declaration <em>is</em> the descriptor the framework understands.
+</p>
+<pre><code>func ImportJobTable() *core.TableSchema {
+    return core.NewDirectSchema[ImportJob]("job_queue").
+        ID("id").                       // mandatory — identity stays domain.ID, as everywhere
+        Field("Status", "status").
+        Field("Source", "source").
+        Field("RunAt", "run_at").
+        Field("OwnerID", "owner_id").
+        DeletedAt("deleted_at").        // optional — enables the scope gate and Archive/Unarchive
+        CreatedAt("created_at").
+        UpdatedAt("updated_at")
+}</code></pre>
+<p>
+    The anchored struct <strong>must declare an exported <code>ID domain.ID</code></strong>. An aggregate root carries
+    its id privately in <code>BaseEntity</code> and the loader stamps it through <code>SetID</code>; a plain row has
+    neither, so the id is a field like any other and is scanned like any other column. Without it, a row read back
+    would carry no identity and could not be the target of the next write — silently.
+</p>
+<pre><code>type ImportJob struct {
+    ID       domain.ID   // mandatory
+    Status   string
+    Source   string
+    RunAt    time.Time
+    OwnerID  domain.ID
+
+    OwnerName string     // filled by a declared join, never persisted
+}</code></pre>
+
+<h3 id="how-it-differs-from-its-neighbours">How it differs from its neighbours</h3>
+<p>The framework has five schema constructors. They are told apart by two independent questions:</p>
+<table>
+    <thead>
+        <tr><th>Constructor</th><th>What it maps</th><th>Written?</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>NewTableSchema[T]</code></td><td>An entity's table — root of an aggregate, with children, siblings, a shared base and the revision guard available to it.</td><td>yes, through the aggregate path</td></tr>
+        <tr><td><code>NewSiblingSchema[T]</code></td><td>A 1:1 secondary table sharing its owner's primary key. No lifecycle of its own.</td><td>yes, by its owner</td></tr>
+        <tr><td><code>NewSharedBaseSchema</code></td><td>An identity table several role schemas deduplicate onto.</td><td>yes, by its roles</td></tr>
+        <tr><td><code>NewExternalSchema</code></td><td>An <em>upstream service's</em> columns, consumed as a view source. Type-less.</td><td>no — read only</td></tr>
+        <tr><td><code>NewDirectSchema[T]</code></td><td>A table of <em>this</em> database with no aggregate and no entity behind it. It is the write unit and the read anchor; a read may still traverse outward from it.</td><td>yes, directly</td></tr>
+    </tbody>
+</table>
+<div class="box">
+    <strong>Direct vs External — different axes, no overlap.</strong>
+    <p>
+        <code>NewExternalSchema</code> names <em>whose</em> the data is: another service's, read-only, a Mongo view
+        source. <code>NewDirectSchema</code> names <em>how</em> the data is modelled: a table with no aggregate over it — and it
+        is read <em>and</em> written, here, in this database.
+    </p>
+</div>
+
+<h3 id="the-repository">The repository</h3>
+<p>
+    The schema goes into the constructor and no row factory is needed: the schema is already anchored to the row type,
+    so the type is cross-checked at construction and a row is allocated by reflection. An entity needs its factory
+    because <code>BaseEntity</code> has to be initialized; a plain row has nothing to initialize.
+</p>
+<pre><code>jobs := read.NewDirectRepository[ImportJob](eng, ImportJobTable()).
+    WithJoins(
+        read.InnerJoin(userinfra.UserSchema()).On("owner_id").Field("OwnerName", "name"),
+    )</code></pre>
+<p>
+    <code>eng</code> is the <code>core.RelationalEngine</code> every repository in the service already receives.
+    <code>WithContextName</code> and <code>WithConstraints</code> chain onto it exactly as their counterparts sit on an
+    entity repository — a unique-constraint violation still surfaces as the typed notification rather than a raw driver
+    error.
+</p>
+<p>
+    The joins are declared here, on the repository, exactly as an aggregate repository declares them — same verbs, same
+    rules (an <code>InnerJoin</code> over a non-nullable key, a <code>LeftJoin</code> into a pointer, one foreign key
+    per traversal so two of them may reach the same table). The <code>…InChild</code> forms do not exist here for the
+    one reason that matters: there is no child.
+</p>
+
+<h3 id="writing">Writing</h3>
+<p>
+    <code>Values</code> is keyed by <strong>Go field name</strong>, resolved through the schema — no physical column
+    name is ever written above <code>infra/</code>. Every write runs inside a transaction (its own, or the caller's
+    under <code>InTx</code>), which is where the affected-row count comes from uniformly on every engine. Whatever the
+    read may traverse, <strong>a write touches the anchor table and nothing else</strong>: one statement, no cascade,
+    no second table.
+</p>
+<pre><code>id, err := jobs.Insert(ctx, write.Values{"Status": "pending", "RunAt": t, "OwnerID": owner})
+
+n, err := jobs.Update(ctx, write.Values{"Status": "expired"},
+    criteria.Where(criteria.And(
+        criteria.Eq("Status", "pending"),
+        criteria.Lt("RunAt", cutoff),
+    )))
+
+err = jobs.UpdateOne(ctx, write.Values{"Status": "failed"}, criteria.ByID(id))
+
+n, err = jobs.Delete(ctx, criteria.Where(criteria.Lt("RunAt", ninetyDaysAgo)))
+err = jobs.DeleteOne(ctx, criteria.ByID(id))
+
+n, err = jobs.Archive(ctx, criteria.Where(criteria.Eq("Source", src)))
+n, err = jobs.Unarchive(ctx, criteria.Where(criteria.Eq("Source", src)))
+
+n, err = jobs.UpdateAll(ctx, write.Values{"Status": "cancelled"})   // the deliberate sweep
+n, err = jobs.DeleteAll(ctx)</code></pre>
+<p>
+    <code>Insert</code> returns the identity the framework minted (UUID v7), so the caller is never left without it.
+    <code>UpdateOne</code>/<code>DeleteOne</code> fail unless exactly one row was affected: zero rows raises the same
+    typed <code>RecordNotFound</code> an entity write raises when its row is gone, and more than one is refused with
+    nothing committed.
+</p>
+
+<h3 id="reading">Reading</h3>
+<pre><code>job, err := jobs.FindOne(ctx, criteria.ByID(id))
+job.ID            // scanned like any other column
+job.OwnerName     // came from users.name through the InnerJoin
+
+list, err := jobs.FindAll(ctx, criteria.
+    Where(criteria.And(
+        criteria.In("Status", "pending", "retrying"),
+        criteria.Contains("Source", "2026-08"),
+        criteria.Eq("OwnerName", "acme"),   // a JOIN field in the predicate
+    )).
+    OrderBy("RunAt").
+    OrderByDesc("AttemptCount").
+    Limit(50).
+    Offset(100))
+
+archived, err := jobs.FindAll(ctx, criteria.Where(nil).OnlyArchived().OrderBy("RunAt"))
+
+ok, err := jobs.Exists(ctx, criteria.Where(criteria.Eq("Source", src)))
+
+total    := read.Count()
+attempts := read.SumInt("AttemptCount")
+err = jobs.Aggregate(ctx, criteria.Where(criteria.Eq("Status", "pending")), total, attempts)
+
+groups, err := jobs.AggregateBy(ctx, crit, read.By("Status"), read.Count())</code></pre>
+<p>
+    The vocabulary is the loader's own — <code>read.Count</code>, <code>read.SumInt</code>, <code>read.By</code>,
+    <code>read.GroupResult</code> are the same constructors, not new ones. Nothing is added on top: there is no
+    <code>FindByID</code> and no <code>Count</code> shortcut, because on the aggregate side both exist only as adapters
+    to a port (<code>domain.Reader[T]</code>, the view layer's reader) and neither is engine vocabulary. The canonical
+    spellings are <code>FindOne(ctx, criteria.ByID(id))</code> and <code>Aggregate(ctx, q, read.Count())</code>.
+</p>
+
+<h3 id="inside-the-current-transaction">Inside the current transaction</h3>
+<p>
+    <code>InTx</code> returns a <em>copy</em> of the repository bound to the framework's open transaction, so its reads
+    see that transaction's uncommitted rows and its writes commit — or roll back — with it. The repository built once at
+    boot is never mutated by one request.
+</p>
+<pre><code>func (h *ImportHandler) beforeCommit(ctx *configuration.AppContext, tx persistence.TxHandle, id domain.ID) error {
+    _, err := h.jobs.InTx(core.UnwrapTx(tx)).Insert(ctx, write.Values{
+        "Status": "pending", "Source": "user:" + id.Value(), "OwnerID": id,
+    })
+    return err
+}</code></pre>
+
+<h3 id="counting-an-aggregates-children">Counting an aggregate's children</h3>
+<p>
+    A child table gets its own Direct schema. The filter costs nothing extra: <code>Resolve</code> already answers
+    <code>ParentID</code>, exactly as it answers <code>CreatedAt</code>, <code>UpdatedAt</code> and
+    <code>DeletedAt</code>.
+</p>
+<pre><code>func UserPhoneTable() *core.TableSchema {
+    return core.NewDirectSchema[UserPhoneRow]("user_phones").
+        ID("id").
+        ParentID("user_id").
+        Field("Number", "number").
+        DeletedAt("deleted_at")
+}
+
+total := read.Count()
+err := phones.Aggregate(ctx, criteria.Where(criteria.Eq("ParentID", userID)), total)</code></pre>
+
+<h3 id="restrictions">The restrictions — each one, and why</h3>
+<table>
+    <thead>
+        <tr><th>Refused</th><th>Where it fails</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><code>Child</code>, <code>Sibling</code>, <code>SharedBase</code> on the schema</td>
+            <td>Panic at <strong>declaration</strong>, naming the call</td>
+            <td>These compose DOWNWARD, and that is the aggregate's job: root and children persisted together, in one
+                transaction, with the outbox row, the audit event and the revision guard that make an aggregate an
+                aggregate. A Direct write has none of those by design, so declaring the shape here would promise
+                something it cannot keep. Reaching SIDEWAYS is untouched — that is what the joins are for.</td>
+        </tr>
+        <tr>
+            <td>An entity/sibling/shared-base/external schema as the repository's <strong>anchor</strong></td>
+            <td>Panic at construction</td>
+            <td>One rule, no ambiguity — and no risk of a criteria-keyed <code>DELETE</code> orphaning children or an
+                <code>UPDATE</code> stepping over the revision guard a view depends on. As a <em>join target</em> the
+                same schema is welcome: a traversal only reads.</td>
+        </tr>
+        <tr>
+            <td>A schema with no <code>ID(column)</code>, or a row type with no <code>ID domain.ID</code></td>
+            <td>Panic at declaration / construction</td>
+            <td>Identity is not optional and is not inferred. Without the field, a row read back has no identity.</td>
+        </tr>
+        <tr>
+            <td><code>"ID"</code> inside <code>Values</code></td>
+            <td>Error before any statement</td>
+            <td>Identity is minted by the framework (UUID v7) and <em>returned</em> by <code>Insert</code>. One origin,
+                everywhere.</td>
+        </tr>
+        <tr>
+            <td><code>"CreatedAt"</code> / <code>"UpdatedAt"</code> / <code>"DeletedAt"</code> inside <code>Values</code></td>
+            <td>Error before any statement</td>
+            <td>The framework stamps the timestamps from the operation's own instant, and the archive transition has its
+                own verbs — writing the column directly would bypass them.</td>
+        </tr>
+        <tr>
+            <td>A write with an <strong>empty predicate</strong> (<code>criteria.Where(nil)</code>)</td>
+            <td>Error before any statement, on every write verb</td>
+            <td>A criteria assembled conditionally that came out empty would become a full-table sweep, and the call
+                site would not show it. The deliberate sweep has its own verb — <code>UpdateAll</code> /
+                <code>DeleteAll</code> — which says so where it is read.</td>
+        </tr>
+        <tr>
+            <td>A scope on the criteria handed to <code>Archive</code>/<code>Unarchive</code></td>
+            <td>Error</td>
+            <td>The verb <em>is</em> the scope: archive gates on active rows, unarchive on archived ones. Accepting a
+                second declaration would mean silently ignoring one of them.</td>
+        </tr>
+        <tr>
+            <td>A second match on <code>FindOne</code></td>
+            <td>Error (a <code>LIMIT 2</code> probe)</td>
+            <td>The contract is "expected one"; picking a row silently hides a developer mistake.</td>
+        </tr>
+        <tr>
+            <td>Joins into a child (<code>InnerJoinInChild</code> / <code>LeftJoinInChild</code>)</td>
+            <td>Not offered</td>
+            <td>There is no child. The reach here is horizontal — the root's own traversals — and that is all a table
+                has.</td>
+        </tr>
+    </tbody>
+</table>
+
+<h3 id="what-it-does-not-do">What it does not do — and what that costs</h3>
+<div class="box warn">
+    <strong>No outbox row, no audit event, no domain events, no revision guard, no old-state snapshot, no cascade, no
+    lifecycle hooks.</strong>
+    <p>
+        A Direct write is a SQL command, not an aggregate write. The consequences are concrete and worth stating
+        plainly: <strong>a Direct write never feeds a Mongo view</strong> (no outbox row means no CDC, no projection),
+        it leaves <strong>no audit trail</strong>, and it carries <strong>no optimistic concurrency</strong> — two
+        concurrent updates are last-writer-wins. <code>Update</code> and <code>Delete</code> are multi-row and report a
+        count; there is no 404/409 split beyond the <code>…One</code> verbs' not-found.
+    </p>
+</div>
+<p>
+    <strong>Where it must not be used:</strong> anything with business rules, a lifecycle, events, or a projected read
+    model. That is an entity, and the aggregate repository is its home. Reaching for a Direct repository there trades
+    every guarantee the write path makes for a shortcut.
+</p>
+<p>
+    What it <em>does</em> keep, because it goes down the same funnel: the criteria vocabulary in every dialect, the
+    single field-resolution surface, the declared read joins with their full reach, the archived scope gate, the
+    framework-generated identity, the typed unique-violation notification, and the transaction. The horizontal axis is
+    untouched; only the vertical one is gone.
+</p>

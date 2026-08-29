@@ -1,19 +1,18 @@
-package read
+package core
 
 import (
 	"strings"
 	"testing"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
-func testResolver() core.FieldResolver {
+func testResolver() FieldResolver {
 	m := map[string]string{"ID": "id", "Email": "email", "Name": "name", "Age": "age", "Phone": "phone"}
-	return func(f string) (core.ResolvedField, bool) {
+	return func(f string) (ResolvedField, bool) {
 		c, ok := m[f]
-		return core.ResolvedField{Column: c}, ok
+		return ResolvedField{Column: c}, ok
 	}
 }
 
@@ -40,9 +39,9 @@ func TestPgVisitor_Operators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sql, args, err := compileWhere(c.e, r, testPGDialect{}, nil)
+			sql, args, err := CompileWhere(c.e, r, testPGDialect{}, nil)
 			if err != nil {
-				t.Fatalf("compileWhere: %v", err)
+				t.Fatalf("CompileWhere: %v", err)
 			}
 			if sql != c.sql {
 				t.Errorf("sql = %q, want %q", sql, c.sql)
@@ -60,9 +59,9 @@ func TestPgVisitor_NestingAndPrecedence(t *testing.T) {
 		criteria.Or(criteria.Eq("Email", "a@x"), criteria.Eq("Email", "b@x")),
 		criteria.Not(criteria.IsNull("Phone")),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testPGDialect{}, nil)
+	sql, args, err := CompileWhere(e, testResolver(), testPGDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	want := "(name = $1 AND (email = $2 OR email = $3) AND NOT (phone IS NULL))"
 	if sql != want {
@@ -74,14 +73,14 @@ func TestPgVisitor_NestingAndPrecedence(t *testing.T) {
 }
 
 func TestPgVisitor_NilWhereIsEmpty(t *testing.T) {
-	sql, args, err := compileWhere(nil, testResolver(), testPGDialect{}, nil)
+	sql, args, err := CompileWhere(nil, testResolver(), testPGDialect{}, nil)
 	if err != nil || sql != "" || args != nil {
 		t.Errorf("nil where: sql=%q args=%v err=%v", sql, args, err)
 	}
 }
 
 func TestPgVisitor_UnknownFieldErrors(t *testing.T) {
-	if _, _, err := compileWhere(criteria.Eq("Nope", "x"), testResolver(), testPGDialect{}, nil); err == nil {
+	if _, _, err := CompileWhere(criteria.Eq("Nope", "x"), testResolver(), testPGDialect{}, nil); err == nil {
 		t.Fatal("expected unknown-field error")
 	}
 }
@@ -92,7 +91,7 @@ func TestPgVisitor_UnknownFieldErrors(t *testing.T) {
 // matching MongoDB's $in:[] / $nin:[] semantics so the relational and Mongo read
 // paths agree (previously this returned an error → 500).
 func TestPgVisitor_ZeroValueInMatchesNothing(t *testing.T) {
-	sql, args, err := compileWhere(criteria.In("Name"), testResolver(), testPGDialect{}, nil)
+	sql, args, err := CompileWhere(criteria.In("Name"), testResolver(), testPGDialect{}, nil)
 	if err != nil {
 		t.Fatalf("empty In must not error, got %v", err)
 	}
@@ -103,7 +102,7 @@ func TestPgVisitor_ZeroValueInMatchesNothing(t *testing.T) {
 		t.Errorf("empty In takes no args, got %v", args)
 	}
 
-	sql, _, err = compileWhere(criteria.Nin("Name"), testResolver(), testPGDialect{}, nil)
+	sql, _, err = CompileWhere(criteria.Nin("Name"), testResolver(), testPGDialect{}, nil)
 	if err != nil {
 		t.Fatalf("empty Nin must not error, got %v", err)
 	}
@@ -114,24 +113,24 @@ func TestPgVisitor_ZeroValueInMatchesNothing(t *testing.T) {
 
 func TestPgVisitor_CardinalityErrors(t *testing.T) {
 	// Hand-built Comparisons violating per-operator cardinality.
-	if _, _, err := compileWhere(criteria.Comparison{Field: "Name", Op: criteria.OpEq}, testResolver(), testPGDialect{}, nil); err == nil {
+	if _, _, err := CompileWhere(criteria.Comparison{Field: "Name", Op: criteria.OpEq}, testResolver(), testPGDialect{}, nil); err == nil {
 		t.Error("expected error: eq with zero values")
 	}
-	if _, _, err := compileWhere(criteria.Comparison{Field: "Phone", Op: criteria.OpIsNull, Values: []any{"x"}}, testResolver(), testPGDialect{}, nil); err == nil {
+	if _, _, err := CompileWhere(criteria.Comparison{Field: "Phone", Op: criteria.OpIsNull, Values: []any{"x"}}, testResolver(), testPGDialect{}, nil); err == nil {
 		t.Error("expected error: isnull with values")
 	}
 }
 
 func TestPgVisitor_EmptyLogicalErrors(t *testing.T) {
-	if _, _, err := compileWhere(criteria.And(), testResolver(), testPGDialect{}, nil); err == nil {
+	if _, _, err := CompileWhere(criteria.And(), testResolver(), testPGDialect{}, nil); err == nil {
 		t.Error("expected error: And with no operands")
 	}
 }
 
 func TestPgVisitor_DomainIDArgUnwrapped(t *testing.T) {
-	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID("the-id")), testResolver(), testPGDialect{}, nil)
+	_, args, err := CompileWhere(criteria.Eq("ID", domain.NewID("the-id")), testResolver(), testPGDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	if len(args) != 1 || args[0] != "the-id" {
 		t.Errorf("args = %v, want [\"the-id\"] (domain.ID unwrapped via Value())", args)
@@ -144,9 +143,9 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 		criteria.In("Email", "x", "y"),
 		criteria.Gt("Age", 1),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testPGDialect{}, nil)
+	sql, args, err := CompileWhere(e, testResolver(), testPGDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	want := "(name = $1 AND email IN ($2, $3) AND age > $4)"
 	if sql != want {
@@ -159,86 +158,86 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 
 func TestScopeGate(t *testing.T) {
 	std := NewExternalSchema("t").DeletedAt("deleted_at")
-	if scopeGate(criteria.ScopeActive, std, testPGDialect{}, "") != "deleted_at IS NULL" {
+	if ScopeGate(criteria.ScopeActive, std, testPGDialect{}, "") != "deleted_at IS NULL" {
 		t.Error("active")
 	}
-	if scopeGate(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
+	if ScopeGate(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
 		t.Error("include")
 	}
-	if scopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "deleted_at IS NOT NULL" {
+	if ScopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "deleted_at IS NOT NULL" {
 		t.Error("only")
 	}
 	// Renamed DeletedAt column flows through the gate.
 	renamed := NewExternalSchema("t").DeletedAt("removed_at")
-	if scopeGate(criteria.ScopeActive, renamed, testPGDialect{}, "") != "removed_at IS NULL" {
+	if ScopeGate(criteria.ScopeActive, renamed, testPGDialect{}, "") != "removed_at IS NULL" {
 		t.Error("renamed DeletedAt column")
 	}
 	// No DeletedAt declared → no gate under any scope.
 	off := NewExternalSchema("t")
-	if scopeGate(criteria.ScopeActive, off, testPGDialect{}, "") != "" || scopeGate(criteria.ScopeOnlyArchived, off, testPGDialect{}, "") != "" {
+	if ScopeGate(criteria.ScopeActive, off, testPGDialect{}, "") != "" || ScopeGate(criteria.ScopeOnlyArchived, off, testPGDialect{}, "") != "" {
 		t.Error("disabled DeletedAt must yield no gate")
 	}
 }
 
 func TestChildScopeFilter(t *testing.T) {
 	std := NewExternalSchema("t").DeletedAt("deleted_at")
-	if childScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "") != "AND deleted_at IS NULL" {
+	if ChildScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "") != "AND deleted_at IS NULL" {
 		t.Error("active children gated")
 	}
-	if childScopeFilter(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
+	if ChildScopeFilter(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
 		t.Error("include: children unfiltered")
 	}
-	if childScopeFilter(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "" {
+	if ChildScopeFilter(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "" {
 		t.Error("only: children unfiltered (cascade visibility)")
 	}
 }
 
 // Under a JOIN that brings a second archivable table into scope (a role's
-// SharedBase in scopeGate, or the role in the base-child loader), the
+// SharedBase in ScopeGate, or the role in the base-child loader), the
 // DeletedAt column must be table-qualified so the bare reference is not
 // ambiguous (SQLSTATE 42702) — the same disambiguation the leading ID already
 // gets. With an empty qualifier the output stays bare (single-table path).
 func TestScopeGate_QualifiedUnderJoin(t *testing.T) {
 	std := NewExternalSchema("t").DeletedAt("deleted_at")
-	if got := scopeGate(criteria.ScopeActive, std, testPGDialect{}, "users"); got != "users.deleted_at IS NULL" {
+	if got := ScopeGate(criteria.ScopeActive, std, testPGDialect{}, "users"); got != "users.deleted_at IS NULL" {
 		t.Errorf("qualified active gate = %q, want users.deleted_at IS NULL", got)
 	}
-	if got := scopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "users"); got != "users.deleted_at IS NOT NULL" {
+	if got := ScopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "users"); got != "users.deleted_at IS NOT NULL" {
 		t.Errorf("qualified archived gate = %q", got)
 	}
-	if got := childScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "addresses"); got != "AND addresses.deleted_at IS NULL" {
+	if got := ChildScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "addresses"); got != "AND addresses.deleted_at IS NULL" {
 		t.Errorf("qualified base-child filter = %q, want AND addresses.deleted_at IS NULL", got)
 	}
 }
 
 func TestCompileOrder(t *testing.T) {
 	r := testResolver()
-	s, err := compileOrder([]criteria.OrderField{{Field: "Name"}, {Field: "Email", Desc: true}}, r, testPGDialect{})
+	s, err := CompileOrder([]criteria.OrderField{{Field: "Name"}, {Field: "Email", Desc: true}}, r, testPGDialect{})
 	if err != nil {
-		t.Fatalf("compileOrder: %v", err)
+		t.Fatalf("CompileOrder: %v", err)
 	}
 	if s != "ORDER BY name ASC, email DESC" {
 		t.Errorf("order = %q", s)
 	}
-	if got, _ := compileOrder(nil, r, testPGDialect{}); got != "" {
+	if got, _ := CompileOrder(nil, r, testPGDialect{}); got != "" {
 		t.Errorf("empty order = %q, want \"\"", got)
 	}
-	if _, err := compileOrder([]criteria.OrderField{{Field: "Nope"}}, r, testPGDialect{}); err == nil {
+	if _, err := CompileOrder([]criteria.OrderField{{Field: "Nope"}}, r, testPGDialect{}); err == nil {
 		t.Error("expected unknown order-field error")
 	}
 }
 
 func TestBuildWhereClause(t *testing.T) {
-	if got := buildWhereClause("a = $1", "deleted_at IS NULL"); got != "WHERE a = $1 AND deleted_at IS NULL" {
+	if got := BuildWhereClause("a = $1", "deleted_at IS NULL"); got != "WHERE a = $1 AND deleted_at IS NULL" {
 		t.Errorf("both = %q", got)
 	}
-	if got := buildWhereClause("", "deleted_at IS NULL"); got != "WHERE deleted_at IS NULL" {
+	if got := BuildWhereClause("", "deleted_at IS NULL"); got != "WHERE deleted_at IS NULL" {
 		t.Errorf("gate only = %q", got)
 	}
-	if got := buildWhereClause("a = $1", ""); got != "WHERE a = $1" {
+	if got := BuildWhereClause("a = $1", ""); got != "WHERE a = $1" {
 		t.Errorf("where only = %q", got)
 	}
-	if got := buildWhereClause("", ""); got != "" {
+	if got := BuildWhereClause("", ""); got != "" {
 		t.Errorf("none = %q", got)
 	}
 }

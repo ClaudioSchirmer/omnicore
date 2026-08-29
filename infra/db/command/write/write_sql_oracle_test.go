@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // testOracleDialect is the :n-placeholder, quoted-uppercase, RAW(16) sibling
@@ -100,7 +101,10 @@ func TestBuildInsert_Oracle(t *testing.T) {
 func TestBuildUpdate_Oracle(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testOracleDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
+	sql, args, err := buildUpdate(testOracleDialect{}, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(id)), fields, []string{"updated_at"}, testNow, "", 0)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	want := `UPDATE "USERS" SET "EMAIL" = :1, "NAME" = :2, "UPDATED_AT" = :3 WHERE "ID" = :4`
 	if sql != want {
@@ -119,10 +123,18 @@ func TestBuildUpdate_Oracle(t *testing.T) {
 // expression (SYSTIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	if err != nil {
+		t.Fatalf("archiveSQL: %v", err)
+	}
+	if got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := deleteSQL(d, "users", "id"); got != `DELETE FROM "USERS" WHERE "ID" = :1` {
+	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
+	if err != nil {
+		t.Fatalf("deleteSQL: %v", err)
+	}
+	if got != `DELETE FROM "USERS" WHERE "ID" = :1` {
 		t.Errorf("deleteSQL = %q", got)
 	}
 	if got := childDeleteSQL(d, "addresses", "user_id"); got != `DELETE FROM "ADDRESSES" WHERE "USER_ID" = :1` {

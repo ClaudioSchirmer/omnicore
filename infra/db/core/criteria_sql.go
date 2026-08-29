@@ -1,11 +1,10 @@
-package read
+package core
 
 import (
 	"fmt"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
-	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -13,23 +12,29 @@ import (
 // args. Unexported — the developer never constructs or sees it. Identifiers
 // pass through validIdentifier (columns are framework/TableSchema-derived, never
 // user input); values are parameterized; domain.ID args are unwrapped to their
-// string value. The Go-field → column lookup is core.FieldResolver (built from
-// the TableSchema in the core foundation); idKind is the field's identity
-// typing (core.TableSchema.IDKindOf, derived from the Go struct), so a probe
+// string value. The Go-field → column lookup is FieldResolver (built from
+// the TableSchema by whichever statement is being compiled); idKind is the field's identity
+// typing (TableSchema.IDKindOf, derived from the Go struct), so a probe
 // against a domain.ID-typed field binds in the dialect's native id form even
 // when the caller hands a bare string.
 type sqlVisitor struct {
-	resolve core.FieldResolver
+	resolve FieldResolver
 	dialect Dialect
-	idKind  func(goField string) core.IDKind // nil = no id lifting
+	idKind  func(goField string) IDKind // nil = no id lifting
 	// qual carries how this statement must qualify the columns it renders —
-	// see colQual.
-	qual colQual
+	// see ColQual.
+	qual ColQual
+	// base is how many arguments the statement has ALREADY bound before this
+	// predicate. A SELECT binds nothing first and leaves it 0; an UPDATE binds
+	// its SET list first, so the WHERE must continue that numbering instead of
+	// restarting at 1 — on a positional dialect a restart silently binds the
+	// wrong values.
+	base int
 	sb   strings.Builder
 	args []any
 }
 
-// colQual is the qualification a statement needs for the columns it renders,
+// ColQual is the qualification a statement needs for the columns it renders,
 // decided by what is in its FROM.
 //
 // Two independent triggers, because two different things become ambiguous:
@@ -48,32 +53,32 @@ type sqlVisitor struct {
 //     byte-identical.
 //
 // The zero value is the single-table default: nothing qualified.
-type colQual struct {
-	owner       bool
-	idCol       string
-	idQualifier string
+type ColQual struct {
+	Owner       bool
+	IDCol       string
+	IDQualifier string
 }
 
-// qualifyCol renders a resolved field as the SQL identifier the statement needs.
+// QualifyCol renders a resolved field as the SQL identifier the statement needs.
 //
 // Qualification is decided by WHERE the column lives, not by which column it is.
 // A joined aggregate always carries a qualifier — its columns share a namespace
 // with nobody, so an unqualified "name" could belong to either side. The anchor,
 // its siblings and its shared base carry the table they live on whenever a
-// declared join is in the FROM (colQual.owner): the schema's bijection makes
+// declared join is in the FROM (ColQual.owner): the schema's bijection makes
 // their names unique across the NODE, and says nothing about the foreign
 // namespace a join drags in. Without a declared join they stay bare, except the
 // anchor's own id under a 1:1 join, which the joined table also has.
-func qualifyCol(rf core.ResolvedField, q colQual, dialect Dialect) string {
+func QualifyCol(rf ResolvedField, q ColQual, dialect Dialect) string {
 	col := dialect.QuoteIdent(rf.Column)
 	if rf.Qualifier != "" {
 		return dialect.QuoteIdent(rf.Qualifier) + "." + col
 	}
-	if q.owner && rf.Schema != nil {
+	if q.Owner && rf.Schema != nil {
 		return dialect.QuoteIdent(rf.Schema.Table()) + "." + col
 	}
-	if q.idQualifier != "" && rf.Column == q.idCol {
-		return q.idQualifier + "." + col
+	if q.IDQualifier != "" && rf.Column == q.IDCol {
+		return q.IDQualifier + "." + col
 	}
 	return col
 }
@@ -88,12 +93,12 @@ func qualifyCol(rf core.ResolvedField, q colQual, dialect Dialect) string {
 func (v *sqlVisitor) place(goField string, val any) string {
 	if v.idKind != nil {
 		switch v.idKind(goField) {
-		case core.IDValue, core.IDPointer:
+		case IDValue, IDPointer:
 			val = liftIDProbe(val)
 		}
 	}
 	v.args = append(v.args, v.dialect.EncodeArg(val))
-	return v.dialect.Placeholder(len(v.args))
+	return v.dialect.Placeholder(v.base + len(v.args))
 }
 
 // liftIDProbe lifts a bare probe value into the identity type: string →
@@ -119,7 +124,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 	if !ok {
 		return fmt.Errorf("criteria: unknown field %q (not a persisted field of the entity)", c.Field)
 	}
-	col := qualifyCol(rf, v.qual, v.dialect)
+	col := QualifyCol(rf, v.qual, v.dialect)
 
 	switch c.Op {
 	case criteria.OpIsNull:
@@ -236,28 +241,40 @@ func (v *sqlVisitor) VisitNot(n criteria.Negation) error {
 	return nil
 }
 
-// compileWhere renders the predicate into a SQL fragment + ordered args. A nil
+// CompileWhere renders the predicate into a SQL fragment + ordered args. A nil
 // predicate yields an empty fragment (no WHERE).
-func compileWhere(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, idKind func(string) core.IDKind) (string, []any, error) {
-	return compileWhereQualified(e, resolve, dialect, idKind, colQual{})
+func CompileWhere(e criteria.Expr, resolve FieldResolver, dialect Dialect, idKind func(string) IDKind) (string, []any, error) {
+	return CompileWhereQualified(e, resolve, dialect, idKind, ColQual{})
 }
 
-// compileWhereQualified is compileWhere with the qualification the statement's
+// CompileWhereQualified is CompileWhere with the qualification the statement's
 // FROM demands — every anchor-side column under a declared read join, the anchor
-// id alone under a 1:1 sibling/shared-base LEFT JOIN. A zero colQual makes it
-// identical to compileWhere.
-func compileWhereQualified(e criteria.Expr, resolve core.FieldResolver, dialect Dialect, idKind func(string) core.IDKind, qual colQual) (string, []any, error) {
+// id alone under a 1:1 sibling/shared-base LEFT JOIN. A zero ColQual makes it
+// identical to CompileWhere.
+func CompileWhereQualified(e criteria.Expr, resolve FieldResolver, dialect Dialect, idKind func(string) IDKind, qual ColQual) (string, []any, error) {
+	return CompileWhereQualifiedFrom(e, resolve, dialect, idKind, qual, 0)
+}
+
+// CompileWhereQualifiedFrom is CompileWhereQualified with the placeholder
+// numbering continuing AFTER base arguments the statement already bound.
+//
+// A SELECT binds nothing before its WHERE, so it passes 0 and the numbering
+// starts at 1 — every read goes through that form. An UPDATE binds its SET list
+// first: on a positional dialect ($1, $2, …) a WHERE that restarted at 1 would
+// reuse the SET's placeholders and bind the wrong values, silently. The returned
+// args are the WHERE's own, in order, to be appended after the caller's.
+func CompileWhereQualifiedFrom(e criteria.Expr, resolve FieldResolver, dialect Dialect, idKind func(string) IDKind, qual ColQual, base int) (string, []any, error) {
 	if e == nil {
 		return "", nil, nil
 	}
-	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind, qual: qual}
+	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind, qual: qual, base: base}
 	if err := e.Accept(v); err != nil {
 		return "", nil, err
 	}
 	return v.sb.String(), v.args, nil
 }
 
-// scopeGate returns the DeletedAt condition for the scope on the source's
+// ScopeGate returns the DeletedAt condition for the scope on the source's
 // resolved DeletedAt column ("" = no gate). A source with DeletedAt
 // disabled has no marker column, so every scope yields no gate.
 // qualifier is the table-qualified prefix (already quoted) to prepend to the
@@ -265,7 +282,7 @@ func compileWhereQualified(e criteria.Expr, resolve core.FieldResolver, dialect 
 // query JOINs another archivable table (a role's SharedBase, whose own
 // deleted_at would otherwise make the bare column reference ambiguous), matching
 // how the leading ID is qualified under the same joins.
-func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
+func ScopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
 	col, ok := schema.DeletedAtColumn()
 	if !ok {
 		return ""
@@ -284,16 +301,16 @@ func scopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier
 	}
 }
 
-// childScopeFilter maps the scope to the trailing child filter clause on the
+// ChildScopeFilter maps the scope to the trailing child filter clause on the
 // child source's DeletedAt column: active children are gated on
 // <col> IS NULL; under any archived scope children load unfiltered so the
 // unarchive cascade sees every child via AllAggregateItems(). A child with
 // DeletedAt disabled is never gated.
-// qualifier follows the same rule as scopeGate's: pass the (quoted) owning table
+// qualifier follows the same rule as ScopeGate's: pass the (quoted) owning table
 // when the child query JOINs another archivable table — as the base-child
 // loader does (base child JOINed to the role, both carrying deleted_at) — and ""
 // for a single-table child SELECT where the bare column is unambiguous.
-func childScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
+func ChildScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
 	col, ok := schema.DeletedAtColumn()
 	if !ok {
 		return ""
@@ -308,17 +325,17 @@ func childScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qu
 	return ""
 }
 
-// compileOrder renders the ORDER BY clause ("" when no order). Each field is
+// CompileOrder renders the ORDER BY clause ("" when no order). Each field is
 // resolved + validated like the predicate columns.
-func compileOrder(order []criteria.OrderField, resolve core.FieldResolver, dialect Dialect) (string, error) {
-	return compileOrderQualified(order, resolve, dialect, colQual{})
+func CompileOrder(order []criteria.OrderField, resolve FieldResolver, dialect Dialect) (string, error) {
+	return CompileOrderQualified(order, resolve, dialect, ColQual{})
 }
 
-// compileOrderQualified is compileOrder with the qualification the statement's
-// FROM demands (see compileWhereQualified) — so an ORDER BY on a column the
+// CompileOrderQualified is CompileOrder with the qualification the statement's
+// FROM demands (see CompileWhereQualified) — so an ORDER BY on a column the
 // joined aggregate also has, and the id tiebreak under a 1:1 join, are both
-// unambiguous. A zero colQual makes it identical to compileOrder.
-func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
+// unambiguous. A zero ColQual makes it identical to CompileOrder.
+func CompileOrderQualified(order []criteria.OrderField, resolve FieldResolver, dialect Dialect, qual ColQual) (string, error) {
 	if len(order) == 0 {
 		return "", nil
 	}
@@ -328,7 +345,7 @@ func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolv
 		if !ok {
 			return "", fmt.Errorf("criteria: unknown order field %q", o.Field)
 		}
-		col := qualifyCol(rf, qual, dialect)
+		col := QualifyCol(rf, qual, dialect)
 		if o.Desc {
 			parts[i] = col + " DESC"
 		} else {
@@ -338,9 +355,9 @@ func compileOrderQualified(order []criteria.OrderField, resolve core.FieldResolv
 	return "ORDER BY " + strings.Join(parts, ", "), nil
 }
 
-// buildWhereClause joins the predicate fragment and the scope gate with AND,
+// BuildWhereClause joins the predicate fragment and the scope gate with AND,
 // prefixing "WHERE " when anything is present.
-func buildWhereClause(where, gate string) string {
+func BuildWhereClause(where, gate string) string {
 	parts := make([]string, 0, 2)
 	if where != "" {
 		parts = append(parts, where)

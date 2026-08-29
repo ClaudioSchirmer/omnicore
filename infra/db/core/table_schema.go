@@ -46,6 +46,15 @@ type TableSchema struct {
 
 	children map[string]*TableSchema // aggregate child schemas, keyed by Go type name
 
+	// direct marks a schema built with NewDirectSchema: ONE table with no
+	// aggregate and no domain entity behind it — a control table the service
+	// maintains by hand, or an aggregate's child addressed as a plain table to
+	// take a fact from it. It is what a DirectRepository anchors on, and it is
+	// refused everywhere vertical composition is declared (Child, Sibling,
+	// SharedBase), because assembling several tables into one write is the
+	// aggregate's job and this shape deliberately does not do it.
+	direct bool
+
 	// secondary marks a sibling schema (built with NewSiblingSchema): a private
 	// secondary table that shares its owner's primary key (1:1), carries a
 	// disjoint subset of the SAME Go type's fields, and has no lifecycle of its
@@ -205,6 +214,84 @@ func NewSiblingSchema[T any](table string) *TableSchema {
 	return s
 }
 
+// NewDirectSchema starts a DIRECT schema for table over Go type T: a table with
+// no aggregate and no domain entity over it. It is the map a DirectRepository
+// anchors on — a control table the service writes and queries by hand, or an
+// aggregate's child addressed as a plain table to count or sum over it.
+//
+// The table is the WRITE unit and the READ anchor, and those are different
+// reaches. A write is one statement against this table and nothing else. A read
+// is anchored here and may traverse SIDEWAYS as far as the repository's declared
+// joins go — the same horizontal reach an aggregate repository has. What is
+// dropped is the DOWNWARD composition (children, 1:1 satellites, a shared
+// identity), which is what an aggregate is and what this deliberately is not.
+//
+// It is the SAME *TableSchema every other path consumes, born from a different
+// constructor: there is no conversion step and no second engine behind it. The
+// criteria compiler, Resolve, ScanPlan, WriteFields and the statement builders
+// are the ones the aggregate path uses.
+//
+// What it declares like any other schema: ID (mandatory — identity stays
+// domain.ID as everywhere else), Field, and optionally DeletedAt / CreatedAt /
+// UpdatedAt. What it must NOT declare — each panics at declaration, where the
+// mistake was written:
+//
+//   - Child / Sibling / SharedBase — vertical composition belongs to the
+//     aggregate, which persists the whole shape in one transaction with the
+//     outbox, the audit trail and the revision guard this path deliberately has
+//     none of.
+//
+// What it does not need: Revision (there is no optimistic guard without a
+// loaded entity) and Modes() (there is no entity to declare them).
+//
+// The anchored type MUST expose an exported `ID domain.ID` field: a plain row
+// has no SetID, so without it a row read back would carry no identity and could
+// not be the target of the next write. It is scanned like any other column.
+//
+// Contrast with NewExternalSchema, the other constructor without an entity
+// behind it: External names WHOSE the data is (an upstream service's columns,
+// read-only, a Mongo view source). Direct names HOW the data is modelled (one
+// table, no aggregate) and is read AND written, here, in this database.
+func NewDirectSchema[T any](table string) *TableSchema {
+	s := NewTableSchema[T](table)
+	s.direct = true
+	return s
+}
+
+// AnchoredType is the Go struct this schema was built over (NewTableSchema[T] /
+// NewDirectSchema[T]), nil for a type-less one (NewExternalSchema, a shared base
+// before a role resolves it). A repository cross-checks it against its own type
+// parameter so one schema serves one row type.
+func (s *TableSchema) AnchoredType() reflect.Type {
+	if s == nil {
+		return nil
+	}
+	return s.typ
+}
+
+// IsDirect reports whether this schema was built with NewDirectSchema — one
+// table, no aggregate. A DirectRepository accepts nothing else as its anchor;
+// a join TARGET is unconstrained, since a traversal only reads.
+func (s *TableSchema) IsDirect() bool { return s != nil && s.direct }
+
+// refuseVertical panics when a DIRECT schema is handed a vertical composition
+// declaration. verb names the call, so the message points at the line that has
+// to change rather than at the schema in the abstract.
+func (s *TableSchema) refuseVertical(verb string) {
+	if !s.direct {
+		return
+	}
+	panic(fmt.Sprintf(
+		"infra.NewDirectSchema(%s): %s composes tables DOWNWARD, and a Direct schema does not. "+
+			"A root and its children are persisted together, in one transaction, with the outbox row, "+
+			"the audit event and the revision guard that make an aggregate an aggregate; a Direct write "+
+			"is one statement against this table and has none of those by design. (Reaching SIDEWAYS is "+
+			"unaffected: declare read.InnerJoin/LeftJoin on the repository.) Declare the shape with "+
+			"NewTableSchema and a repository over the entity, or map the other table as its own Direct schema.",
+		s.table, verb,
+	))
+}
+
 // NewExternalSchema starts a type-less schema for a Mongo view source whose
 // physical columns belong to an upstream service (consumed via query.JoinUpstream). Field
 // declarations carry logical Go names (consumed by the composite view's
@@ -356,7 +443,33 @@ func (s *TableSchema) ID(column string) *TableSchema {
 	if s.typ != nil {
 		s.idIndex = exportedFieldIndex(s.typ, idGoField)
 	}
+	if s.direct {
+		s.requireIDField()
+	}
 	return s
+}
+
+// requireIDField enforces the Direct schema's one extra rule about the anchored
+// type: an exported `ID domain.ID` field. An aggregate root carries its id
+// privately in BaseEntity and the loader stamps it through SetID; a plain row
+// has neither, so the id has to be a field like the others or a row read back
+// would come out with no identity — unable to be the target of the next write,
+// and silently so.
+func (s *TableSchema) requireIDField() {
+	fail := func(why string) {
+		panic(fmt.Sprintf(
+			"infra.NewDirectSchema(%s): %s must declare an exported field `ID domain.ID` — %s. "+
+				"A Direct row has no SetID: the id is scanned like any other column, so without the "+
+				"field a row read back carries no identity.",
+			s.table, s.typ, why,
+		))
+	}
+	if s.idIndex < 0 {
+		fail("it has no exported ID field")
+	}
+	if got := s.typ.Field(s.idIndex).Type; got != reflect.TypeOf(domain.ID{}) {
+		fail(fmt.Sprintf("its ID field is %s, not domain.ID", got))
+	}
 }
 
 // ParentID declares the child's foreign-key column referencing the root. Child only.
@@ -661,6 +774,7 @@ func (s *TableSchema) UpdatedAt(col string) *TableSchema {
 // persister injects the root id into that column on every child write — so a
 // child without an ParentID is rejected here at construction.
 func (s *TableSchema) Child(child *TableSchema) *TableSchema {
+	s.refuseVertical("Child")
 	if s.secondary {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): a sibling cannot own children — declare aggregate children on the "+
@@ -767,6 +881,7 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 // lifecycle. The column/field partition (no overlap with the owner or another
 // sibling) is checked at WithSchema via ValidateSiblings (order-independent).
 func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
+	s.refuseVertical("Sibling")
 	if s.secondary {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): a sibling cannot have a sibling — siblings are flat slices of ONE "+

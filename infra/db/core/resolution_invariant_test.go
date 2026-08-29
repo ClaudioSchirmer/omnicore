@@ -24,6 +24,13 @@ import (
 
 // readPaths are the trees that answer a READ. A name resolved there must go
 // through Resolve, so both backings admit the same set.
+//
+// The criteria compiler used to live in db/command/read and now lives HERE, in
+// core, so that the write statements can key on a criteria too. That does not
+// weaken this rule and the list did not need a new entry: the compiler resolves
+// nothing itself — it consumes a FieldResolver its caller built — so the trees
+// that answer a read are still the two below, and they are still where a name
+// gets turned into a column.
 var readPaths = []string{
 	"db/query",
 	"db/command/read",
