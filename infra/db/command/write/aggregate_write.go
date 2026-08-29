@@ -8,6 +8,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // The aggregate-aware write path, written once on BaseEngine. Guarantees
@@ -92,7 +93,10 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -202,7 +206,11 @@ func (b *BaseEngine) hardDelete(
 			return err
 		}
 	}
-	if err := tx.Exec(ctx, deleteSQL(d, schema.Table(), schema.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+	rootDelete, rootArgs, err := deleteSQL(d, schemaTarget(schema), criteria.Eq(idGoField, domain.NewID(id)))
+	if err != nil {
+		return err
+	}
+	if err := tx.Exec(ctx, rootDelete, rootArgs...); err != nil {
 		return err
 	}
 	// SharedBase (M2): if this is a role whose shared identity is now orphaned,
@@ -318,11 +326,19 @@ func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 		return fmt.Errorf("db: cannot delete child %q without id", child.Table())
 	}
 	for _, sib := range child.Siblings() {
-		if err := tx.Exec(ctx, deleteSQL(d, sib.Table(), child.IDColumn()), d.EncodeArg(domain.NewID(id))); err != nil {
+		sibDelete, sibArgs, err := deleteSQL(d, idOnlyTarget(sib.Table(), child.IDColumn()), criteria.Eq(idGoField, domain.NewID(id)))
+		if err != nil {
+			return err
+		}
+		if err := tx.Exec(ctx, sibDelete, sibArgs...); err != nil {
 			return err
 		}
 	}
-	return tx.Exec(ctx, deleteSQL(d, child.Table(), child.IDColumn()), d.EncodeArg(domain.NewID(id)))
+	childDelete, childArgs, err := deleteSQL(d, schemaTarget(child), criteria.Eq(idGoField, domain.NewID(id)))
+	if err != nil {
+		return err
+	}
+	return tx.Exec(ctx, childDelete, childArgs...)
 }
 
 // insertChild persists one Added child and returns the ID it minted — the
@@ -354,7 +370,10 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	fields := child.WriteFields(item)
 	// Unguarded on purpose: a child declares no revision — the OWNER's guarded
 	// UPDATE already proved nobody moved the aggregate under this write.
-	sql, args := buildUpdate(d, child.Table(), child.IDColumn(), id, fields, child.UpdateNowColumns(), now, "", 0)
+	sql, args, err := buildUpdate(d, schemaTarget(child), criteria.Eq(idGoField, domain.NewID(id)), fields, child.UpdateNowColumns(), now, "", 0)
+	if err != nil {
+		return err
+	}
 	if err := execExpectingRow(ctx, tx, d, sql, args, child.Table(), child.Table(), child.IDColumn(), id, 0); err != nil {
 		return err
 	}
@@ -371,8 +390,11 @@ func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema
 	if id == "" {
 		return fmt.Errorf("db: cannot archive child %q without id", child.Table())
 	}
-	return tx.Exec(ctx, archiveSQL(d, child.Table(), sdCol, child.IDColumn(), ""),
-		d.EncodeArg(now), d.EncodeArg(domain.NewID(id)))
+	sql, args, err := archiveSQL(d, schemaTarget(child), sdCol, criteria.Eq(idGoField, domain.NewID(id)), now, "")
+	if err != nil {
+		return err
+	}
+	return tx.Exec(ctx, sql, args...)
 }
 
 // undeclaredChildErr is the loud error when an aggregate child type has no

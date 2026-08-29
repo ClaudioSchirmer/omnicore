@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // testMySQLDialect is the `?`-placeholder, backtick-quoting, BINARY(16) twin of
@@ -100,7 +101,10 @@ func TestBuildInsert_MySQL(t *testing.T) {
 func TestBuildUpdate_MySQL(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testMySQLDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
+	sql, args, err := buildUpdate(testMySQLDialect{}, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(id)), fields, []string{"updated_at"}, testNow, "", 0)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	want := "UPDATE `users` SET `email` = ?, `name` = ?, `updated_at` = ? WHERE `id` = ?"
 	if sql != want {
@@ -119,10 +123,18 @@ func TestBuildUpdate_MySQL(t *testing.T) {
 
 func TestArchiveUnarchiveDelete_MySQL(t *testing.T) {
 	d := testMySQLDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE `users` SET `deleted_at` = ? WHERE `id` = ?" {
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	if err != nil {
+		t.Fatalf("archiveSQL: %v", err)
+	}
+	if got != "UPDATE `users` SET `deleted_at` = ? WHERE `id` = ?" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM `users` WHERE `id` = ?" {
+	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
+	if err != nil {
+		t.Fatalf("deleteSQL: %v", err)
+	}
+	if got != "DELETE FROM `users` WHERE `id` = ?" {
 		t.Errorf("deleteSQL = %q", got)
 	}
 	if got := childDeleteSQL(d, "addresses", "user_id"); got != "DELETE FROM `addresses` WHERE `user_id` = ?" {

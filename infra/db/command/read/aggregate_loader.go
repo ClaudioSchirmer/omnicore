@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -32,27 +31,23 @@ import (
 //	    return loader.FindOne(context.Background(), criteria.ByID(id))
 //	}
 type AggregateLoader[T domain.Entity] struct {
-	eng         RelationalEngine
-	newEntity   func() T
-	contextName string
-	schema      *TableSchema
-	// joins are the READ-ONLY traversals this aggregate may reach across —
-	// declared on the repository, validated against the schema at construction,
-	// and inert until a read actually uses one. See join.go.
-	joins []Join
-	// joinsDeclared records that WithJoins already ran, so a second call is
-	// refused rather than silently validated against its own argument alone. A
-	// flag rather than len(joins) > 0: the rule is "declare them once", and a
-	// first call that happened to declare nothing must not turn that into
-	// "declare them once, unless the first time was empty".
-	joinsDeclared bool
+	// directCore carries everything a read can answer WITHOUT an entity: the
+	// schema, the engine, the declared traversals, the criteria compilation, the
+	// existence probe and the aggregate DSL. What stays here is the part that is
+	// genuinely about T — hydrating the aggregate (children, siblings, shared
+	// base), stamping the id and the old-state snapshot.
+	directCore
+	newEntity func() T
 }
 
 // NewAggregateLoader initializes a loader over a RelationalEngine. Every read
 // runs through the engine's neutral Querier + Dialect, so the loader works on any
 // backend without a driver type ever surfacing.
 func NewAggregateLoader[T domain.Entity](eng RelationalEngine, newEntity func() T) *AggregateLoader[T] {
-	return &AggregateLoader[T]{eng: eng, newEntity: newEntity}
+	return &AggregateLoader[T]{
+		directCore: directCore{eng: eng, name: TypeName[T]()},
+		newEntity:  newEntity,
+	}
 }
 
 // WithContextName overrides the default. When not called, contextName is
@@ -60,16 +55,8 @@ func NewAggregateLoader[T domain.Entity](eng RelationalEngine, newEntity func() 
 // for a custom magic pattern (legacy schema, two Repositories over the same
 // entity, etc.).
 func (l *AggregateLoader[T]) WithContextName(name string) *AggregateLoader[T] {
-	l.contextName = name
+	l.name = name
 	return l
-}
-
-// effectiveContextName returns contextName if set; otherwise derives it from T.
-func (l *AggregateLoader[T]) effectiveContextName() string {
-	if l.contextName != "" {
-		return l.contextName
-	}
-	return TypeName[T]()
 }
 
 // WithSchema attaches the repository's TableSchema (root + child schemas) so the
@@ -86,59 +73,11 @@ func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T]
 // naming a column, a child or a Go field that does not exist panics at
 // construction, never on the first request. Call WithSchema first.
 //
-// It takes the WHOLE set and may be called ONCE. The rules that make a set of
-// joins coherent are cross-declaration — one foreign key reaches one table, one
-// Go field receives one column — so they can only be checked against every
-// traversal at the same time. A second call would validate its own argument
-// against a schema that says nothing about what the first call already claimed,
-// and the collision would surface as a duplicate SQL alias on the first read, or
-// as two scan targets writing the same struct field in silence. Declaring all of
-// them in one call is what makes "validated at construction" true.
+// It takes the WHOLE set and may be called ONCE — see directCore.declareJoins,
+// which both this loader and a Direct repository declare through.
 func (l *AggregateLoader[T]) WithJoins(bindings ...*JoinBinding) *AggregateLoader[T] {
-	if l.joinsDeclared {
-		panic(fmt.Sprintf(
-			"read.WithJoins[%s]: called twice — a loader declares its traversals ONCE, in one call. "+
-				"The rules that keep them coherent (one foreign key reaches one table, one Go field "+
-				"receives one column) span the whole set, so a second call cannot be checked against "+
-				"the first: merge every read.InnerJoin/LeftJoin/...InChild into a single WithJoins(...).",
-			l.effectiveContextName()))
-	}
-	l.joinsDeclared = true
-	joins := make([]Join, 0, len(bindings))
-	for _, b := range bindings {
-		if b == nil {
-			continue
-		}
-		joins = append(joins, b.build())
-	}
-	validateJoins(l.effectiveContextName(), l.schema, joins)
-	l.joins = append(l.joins, joins...)
+	l.declareJoins(bindings...)
 	return l
-}
-
-// Joins exposes the declared traversals. A read model built over this loader
-// reads them to know which fields it can serve beyond the schema's own.
-func (l *AggregateLoader[T]) Joins() []Join { return l.joins }
-
-// JoinFields names the Go fields the declared joins add, keyed by the table they
-// land on — the root's for a root join, the child's for a child join. A read
-// model over this loader consults it to know what it can serve beyond the
-// TableSchema; the fields themselves are ordinary fields of the loaded entity.
-func (l *AggregateLoader[T]) JoinFields() map[string][]string {
-	if len(l.joins) == 0 {
-		return nil
-	}
-	out := map[string][]string{}
-	for _, j := range l.joins {
-		table := l.schema.Table()
-		if j.Child != nil {
-			table = j.Child.Table()
-		}
-		for _, f := range j.Fields {
-			out[table] = append(out[table], f.GoField)
-		}
-	}
-	return out
 }
 
 // FindOne loads exactly one aggregate matching the criteria — root + children,
@@ -163,12 +102,12 @@ func (l *AggregateLoader[T]) FindOne(ctx context.Context, q *criteria.Query) (T,
 		return *new(T), err
 	}
 	if len(entities) == 0 {
-		return *new(T), domain.NotFoundError(l.effectiveContextName(), "criteria", "")
+		return *new(T), domain.NotFoundError(l.contextName(), "criteria", "")
 	}
 	if len(entities) > 1 {
 		return *new(T), fmt.Errorf(
 			"AggregateLoader[%s].FindOne: criteria matched more than one row — use FindAll or a more specific criterion",
-			l.effectiveContextName(),
+			l.contextName(),
 		)
 	}
 	if err := l.hydrateSiblings(ctx, entities, ids); err != nil {
@@ -215,124 +154,6 @@ func (l *AggregateLoader[T]) FindAll(ctx context.Context, q *criteria.Query) ([]
 	return entities, nil
 }
 
-// Exists reports whether at least one root matches the criteria, under the same
-// scope gate as FindOne/FindAll (active rows by default; the Query's scope can
-// include archived). It compiles to an indexed existence probe — SELECT 1 …
-// LIMIT 1 — and hydrates NOTHING: this is the primitive for uniqueness
-// pre-checks and cardinality guards on the write path, where loading whole
-// aggregates to answer a yes/no question would waste the request's latency.
-// The ID is addressable as the fixed Go-side field "ID" (exclude-self checks:
-// And(Eq("Field", v), Not(Eq("ID", id)))); criteria may reference sibling and
-// shared-base fields — the same LEFT JOINs FindAll uses apply.
-func (l *AggregateLoader[T]) Exists(ctx context.Context, q *criteria.Query) (bool, error) {
-	fromJoin, clause, args, err := l.compileFilter(q)
-	if err != nil {
-		return false, err
-	}
-	return l.probeExists(ctx, fromJoin+clause, args...)
-}
-
-// compileFilter renders the shared front-half of a root query — FROM (+ the
-// sibling/shared-base LEFT JOINs the criteria pulled in) and the WHERE clause
-// (predicate + scope gate) with its ordered args. The probe/aggregate methods
-// reuse exactly the resolution and gating semantics of findRoots without its
-// SELECT/scan machinery.
-func (l *AggregateLoader[T]) compileFilter(q *criteria.Query) (fromJoin, clause string, args []any, err error) {
-	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
-	return l.compileFilterJoins(q, joins)
-}
-
-// idKindResolver reports the identity typing of a criteria field across the
-// SAME resolution surface resolverRecordingJoins walks — the anchor schema, then its
-// siblings, then the shared base, then the DECLARED ROOT JOINS. The kind is
-// derived from the Go struct (TableSchema.IDKindOf — the field TYPE is the
-// declaration), so a bare-string probe on a domain.ID-typed field binds in the
-// dialect's native id form; the managed ID slot ("ID") is always IDValue via the
-// anchor. A type-less shared base derives nothing and answers IDNone for its own
-// fields.
-//
-// The join leg is what keeps a traversal's fields honest in a predicate. A join
-// field is addressable in a criteria, and one that maps an IDENTITY column of the
-// target is declared on this side as a plain string (a join field carries no
-// domain type) — so nothing about the FIELD says "identity" and the probe would
-// bind as text. On mysql, sqlserver and oracle the column is BINARY(16)/RAW(16),
-// and a text probe against it matches NOTHING, silently. The typing therefore
-// comes from where it is declared: the TARGET's schema. Only root joins are
-// consulted, because a child join is load-only and never reaches a predicate.
-func (l *AggregateLoader[T]) idKindResolver() func(string) core.IDKind {
-	anchor := l.schema
-	sibs := anchor.Siblings()
-	base, _, hasBase := anchor.SharedBaseRef()
-	joins := rootJoins(l.joins)
-	return func(goField string) core.IDKind {
-		if k := anchor.IDKindOf(goField); k != core.IDNone {
-			return k
-		}
-		for _, sib := range sibs {
-			if k := sib.IDKindOf(goField); k != core.IDNone {
-				return k
-			}
-		}
-		if hasBase {
-			if k := base.IDKindOf(goField); k != core.IDNone {
-				return k
-			}
-		}
-		for _, j := range joins {
-			for _, f := range j.Fields {
-				if f.GoField == goField {
-					return targetIDKindOf(j, f)
-				}
-			}
-		}
-		return core.IDNone
-	}
-}
-
-// compileFilterJoins is compileFilter with a caller-owned joins accumulator, so
-// an aggregate method can resolve its aggregated field through the SAME joins
-// (a sibling field pulls its LEFT JOIN whether it appears in the predicate or
-// in the SELECT aggregate).
-func (l *AggregateLoader[T]) compileFilterJoins(q *criteria.Query, joins *joinedTables) (fromJoin, clause string, args []any, err error) {
-	if q == nil {
-		q = criteria.Where(nil)
-	}
-	resolve := l.resolverRecordingJoins(joins)
-	dialect := l.eng.Dialect()
-
-	// A DECLARED read join is known before any resolution (it is on the loader,
-	// not discovered from the criteria), so the owner qualification is decided
-	// up front — the single pass below already emits it.
-	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
-	where, args, err := compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
-	if err != nil {
-		return "", "", nil, err
-	}
-	rootQualifier := ""
-	if joins.any() {
-		rootQualifier = dialect.QuoteIdent(l.schema.Table())
-		// Qualify the anchor id under the 1:1 join so a predicate mixing the id
-		// and a sibling/base field (e.g. an exclude-self uniqueness probe) is
-		// unambiguous — see findRoots for the full rationale. Only a sibling/base
-		// join needs this second pass: it is discovered DURING resolution, so the
-		// first pass could not know about it.
-		qual.idCol, qual.idQualifier = l.schema.IDColumn(), rootQualifier
-		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
-		if err != nil {
-			return "", "", nil, err
-		}
-	}
-	clause = buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
-	if clause != "" {
-		// Leading separator so callers can append fromJoin+clause directly — a
-		// dialect may render the table unquoted, and "tableWHERE" lexes as one
-		// identifier.
-		clause = " " + clause
-	}
-	fromJoin = dialect.QuoteIdent(l.schema.Table()) + l.joinClause(joins, dialect)
-	return fromJoin, clause, args, nil
-}
-
 // findRoots compiles the criteria into a root SELECT and scans the matched
 // roots, recovering each row's id (FindOne/FindAll do not know the id a priori).
 // limitOverride > 0 replaces the Query's limit (FindOne uses 2).
@@ -347,19 +168,19 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	// so it is LEFT JOINed below. Sibling columns are unique across the node
 	// (the schema's bijection), so they stay unqualified and unambiguous; only
 	// the shared ID is qualified (in the JOIN ON + the SELECT leading key).
-	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
+	joins := newJoinedTables(l.joins)
 	resolve := l.resolverRecordingJoins(joins)
 	dialect := l.eng.Dialect()
 
 	// The owner qualification (every anchor-side column carries its own table) is
 	// a static property of the loader — a declared join is always in the FROM —
 	// so it is decided before the first compile, not discovered from the criteria.
-	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
-	where, args, err := compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
+	qual := core.ColQual{Owner: len(rootJoins(l.joins)) > 0}
+	where, args, err := core.CompileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
 	if err != nil {
 		return nil, nil, err
 	}
-	orderSQL, err := compileOrderQualified(q.OrderFields(), resolve, dialect, qual)
+	orderSQL, err := core.CompileOrderQualified(q.OrderFields(), resolve, dialect, qual)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -373,17 +194,17 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		// so a bare "id" in the predicate or the ORDER BY … , id tiebreak is
 		// ambiguous. Recompile WHERE/ORDER with the anchor id qualified (every
 		// other column is unique across the node, so only the id needs it).
-		qual.idCol, qual.idQualifier = l.schema.IDColumn(), rootQualifier
-		where, args, err = compileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
+		qual.IDCol, qual.IDQualifier = l.schema.IDColumn(), rootQualifier
+		where, args, err = core.CompileWhereQualified(q.Condition(), resolve, dialect, l.idKindResolver(), qual)
 		if err != nil {
 			return nil, nil, err
 		}
-		orderSQL, err = compileOrderQualified(q.OrderFields(), resolve, dialect, qual)
+		orderSQL, err = core.CompileOrderQualified(q.OrderFields(), resolve, dialect, qual)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	clause := buildWhereClause(where, scopeGate(q.Scope(), l.schema, dialect, rootQualifier))
+	clause := core.BuildWhereClause(where, core.ScopeGate(q.Scope(), l.schema, dialect, rootQualifier))
 	limit := q.LimitValue()
 	offset := q.OffsetValue()
 	if limitOverride > 0 {
@@ -400,7 +221,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		return nil, nil, fmt.Errorf(
 			"AggregateLoader[%s]: schema declares no columns — %T exposes no persisted fields. "+
 				"Declare them with TableSchema.Field(...)",
-			l.effectiveContextName(), sample,
+			l.contextName(), sample,
 		)
 	}
 	// When the criteria referenced a sibling field, LEFT JOIN those tables so the
@@ -438,7 +259,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err := l.eng.Querier().Query(ctx, sql, args...)
+	rows, err := l.rows().Query(ctx, sql, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -535,7 +356,7 @@ func applyWindow(d Dialect, sql string, limit, offset int64, orderSQL string) (s
 // hydrateChildren loads + attaches children for the given roots: one batched
 // SELECT per child type (WHERE fk IN (...)), grouped by ParentID in memory.
 // Child rows honor the scope the same way
-// the root gate does — see childScopeFilter (active → deleted_at IS NULL; any
+// the root gate does — see core.ChildScopeFilter (active → deleted_at IS NULL; any
 // archived scope → unfiltered, so the unarchive cascade sees every child via
 // AllAggregateItems()).
 func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, ids []string, scope criteria.Scope) error {
@@ -569,7 +390,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		if len(childCols) == 0 {
 			return fmt.Errorf(
 				"AggregateLoader[%s] child %q: schema declares no columns",
-				l.effectiveContextName(), typeName,
+				l.contextName(), typeName,
 			)
 		}
 		placeholders := make([]string, len(rootIDs))
@@ -585,7 +406,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		ms := newChildManagedScan(child)
 		cJoins := childJoinsOf(l.joins, child.Table())
 		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, scope, dialect, ms.cols, cJoins)
-		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
+		rows, err := l.rows().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
@@ -684,7 +505,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 		if len(bcCols) == 0 {
 			return fmt.Errorf(
 				"AggregateLoader[%s] base child %q: schema declares no columns",
-				l.effectiveContextName(), bc.GoType().Name())
+				l.contextName(), bc.GoType().Name())
 		}
 		bcTbl := d.QuoteIdent(bc.Table())
 		// SELECT role.pk (leading key → groups by aggregate) + base-child columns +
@@ -702,8 +523,8 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 			" JOIN " + roleTbl + " ON " + bcTbl + "." + d.QuoteIdent(bc.ParentIDColumn()) + " = " + roleTbl + "." + roleFK +
 			// bcTbl-qualified: the JOIN to the role table brings a second deleted_at
 			// into scope, so the base-child's active gate must name its own table.
-			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + childScopeFilter(scope, bc, d, bcTbl)
-		rows, err := l.eng.Querier().Query(ctx, sql, qargs...)
+			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + core.ChildScopeFilter(scope, bc, d, bcTbl)
+		rows, err := l.rows().Query(ctx, sql, qargs...)
 		if err != nil {
 			return err
 		}
@@ -754,7 +575,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	nkGo, ok := base.GoOf(nkCol)
 	if !ok {
 		return fresh, false, fmt.Errorf(
-			"AggregateLoader[%s]: shared base natural key %q has no Go field", l.effectiveContextName(), nkCol)
+			"AggregateLoader[%s]: shared base natural key %q has no Go field", l.contextName(), nkCol)
 	}
 	nkVal := goStringFieldValue(fresh, nkGo)
 	if nkVal == "" {
@@ -768,7 +589,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	}
 	sql := d.ApplyLimit("SELECT "+sel+" FROM "+d.QuoteIdent(base.Table())+
 		" WHERE "+d.QuoteIdent(nkCol)+" = "+d.Placeholder(1), 1)
-	rows, err := l.eng.Querier().Query(ctx, sql, nkVal)
+	rows, err := l.rows().Query(ctx, sql, nkVal)
 	if err != nil {
 		return fresh, false, err
 	}
@@ -802,7 +623,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	}
 	if roleExists {
 		return fresh, false, core.SingleNotificationError(
-			l.effectiveContextName(), l.schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
+			l.contextName(), l.schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
 	}
 	if err := l.loadBaseChildrenConstructor(ctx, newE, base, baseID); err != nil {
 		return fresh, false, err
@@ -825,22 +646,6 @@ func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID
 		where += " AND " + d.QuoteIdent(sd) + " IS NULL"
 	}
 	return l.probeExists(ctx, d.QuoteIdent(l.schema.Table())+where, d.EncodeArg(domain.NewID(baseID)))
-}
-
-// probeExists executes the shared existence probe — SELECT 1 over the given
-// FROM/WHERE tail, capped at one row via the dialect, true when any row comes
-// back. The single execution home for the public criteria-level Exists and the
-// internal column-level probes.
-func (l *AggregateLoader[T]) probeExists(ctx context.Context, fromWhere string, args ...any) (bool, error) {
-	rows, err := l.eng.Querier().Query(ctx, l.eng.Dialect().ApplyLimit("SELECT 1 FROM "+fromWhere, 1), args...)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	if rows.Next() {
-		return true, nil
-	}
-	return false, rows.Err()
 }
 
 // loadBaseChildrenConstructor loads the shared base's native children by the base
@@ -874,7 +679,7 @@ func (l *AggregateLoader[T]) loadBaseChildrenConstructor(ctx context.Context, ne
 		}
 		sql := "SELECT " + sel + " FROM " + d.QuoteIdent(bc.Table()) +
 			" WHERE " + bcFK + " = " + d.Placeholder(1)
-		rows, err := l.eng.Querier().Query(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
+		rows, err := l.rows().Query(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
 		if err != nil {
 			return err
 		}
@@ -970,7 +775,7 @@ func (l *AggregateLoader[T]) hydrateSiblings(ctx context.Context, entities []T, 
 
 func (l *AggregateLoader[T]) scanSiblingInto(ctx context.Context, sql, id string, ent T, sibCols []string, sibByCol map[string]core.FieldPath) error {
 	dialect := l.eng.Dialect()
-	rows, err := l.eng.Querier().Query(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
+	rows, err := l.rows().Query(ctx, sql, dialect.EncodeArg(domain.NewID(id)))
 	if err != nil {
 		return err
 	}
@@ -1012,114 +817,6 @@ func (j *joinedTables) any() bool {
 // the same table (bill_to and ship_to both to customers) — the FK is what tells
 // them apart, and WithJoins guarantees it is unique per owner.
 func joinAlias(j Join) string { return "j_" + j.FKColumn }
-
-// resolverRecordingJoins resolves a criteria Go field to its column and records the 1:1
-// join the answer implies, so compileFilterJoins emits the matching LEFT JOIN.
-//
-// The resolution itself is core.TableSchema.Resolve — the ONE surface every
-// read path consults, so this loader admits exactly the names a Mongo view of
-// the same schema admits. What is left here is the part that IS this backing's
-// business: turning "the column lives on that sibling / on the shared base"
-// into a JOIN. Deriving the bookkeeping FROM the resolution is the point — the
-// two used to be separate walks, and a name the walks disagreed about produced
-// a WHERE against a table the FROM never joined.
-//
-// Sibling and base columns are unique vs the anchor (the schema bijection), so
-// they stay unqualified; only the shared ID is ambiguous under a join, and
-// findRoots/compileFilterJoins qualify it to the anchor table — so a criteria
-// may freely mix the ID and a specialization field.
-//
-// A name the SCHEMA does not answer may still be a field of a declared join
-// (WithJoins). Those resolve LAST — the schema always wins, so declaring a join
-// can never change the meaning of a name the entity already had — and they come
-// back qualified by the join's alias, because a joined aggregate shares no
-// namespace with the anchor.
-func (l *AggregateLoader[T]) resolverRecordingJoins(j *joinedTables) core.FieldResolver {
-	return func(goField string) (core.ResolvedField, bool) {
-		if r, ok := l.schema.Resolve(goField); ok {
-			switch r.Owner {
-			case core.OwnerSibling:
-				j.siblings[r.Schema.Table()] = r.Schema
-			case core.OwnerSharedBase:
-				if _, fk, has := l.schema.SharedBaseRef(); has {
-					j.base, j.baseFK = r.Schema, fk
-				}
-			}
-			return r, true
-		}
-		return l.resolveDeclaredJoin(j, goField)
-	}
-}
-
-// resolveDeclaredJoin answers a Go field name declared by a ROOT join, recording
-// the traversal so joinClause emits it. Child joins are load-only and are not
-// offered here: filtering the root by a field of a 1:N child is a pushdown a
-// single root SELECT cannot express.
-func (l *AggregateLoader[T]) resolveDeclaredJoin(j *joinedTables, goField string) (core.ResolvedField, bool) {
-	for _, dj := range l.joins {
-		if dj.Child != nil {
-			continue
-		}
-		for _, f := range dj.Fields {
-			if f.GoField != goField {
-				continue
-			}
-			return core.ResolvedField{
-				Column:    f.Column,
-				Schema:    dj.Target,
-				Owner:     core.OwnerJoin,
-				Qualifier: joinAlias(dj),
-			}, true
-		}
-	}
-	return core.ResolvedField{}, false
-}
-
-// joinClause renders a LEFT JOIN per referenced sibling (shared ID) and the
-// shared base (role ParentID → base ID), ordered deterministically. Empty when the
-// criteria referenced no specialization field.
-func (l *AggregateLoader[T]) joinClause(j *joinedTables, dialect Dialect) string {
-	if len(j.siblings) == 0 && j.base == nil && len(rootJoins(l.joins)) == 0 {
-		return ""
-	}
-	anchor := dialect.QuoteIdent(l.schema.Table())
-	pk := dialect.QuoteIdent(l.schema.IDColumn())
-	var sb strings.Builder
-	tables := make([]string, 0, len(j.siblings))
-	for t := range j.siblings {
-		tables = append(tables, t)
-	}
-	sort.Strings(tables)
-	for _, t := range tables {
-		st := dialect.QuoteIdent(t)
-		sb.WriteString(" LEFT JOIN " + st + " ON " + anchor + "." + pk + " = " + st + "." + pk)
-	}
-	if j.base != nil {
-		bt := dialect.QuoteIdent(j.base.Table())
-		sb.WriteString(" LEFT JOIN " + bt + " ON " + bt + "." + dialect.QuoteIdent(j.base.IDColumn()) +
-			" = " + anchor + "." + dialect.QuoteIdent(j.baseFK))
-	}
-	// Declared joins (WithJoins), each under its own alias so two traversals to
-	// the SAME table stay distinct. Emitted in declaration order, which is the
-	// order the SELECT list and the scan targets follow.
-	//
-	// The alias follows the table with NO "AS": that keyword is optional before a
-	// TABLE alias in standard SQL and Oracle rejects it outright (ORA-02000),
-	// while every other backend accepts the bare form. Column aliases are a
-	// different position with a different rule — the dialects that write one keep
-	// their AS.
-	for _, dj := range rootJoins(l.joins) {
-		verb := " LEFT JOIN "
-		if dj.Kind == JoinInner {
-			verb = " INNER JOIN "
-		}
-		qa := dialect.QuoteIdent(joinAlias(dj))
-		sb.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " " + qa +
-			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
-			" = " + anchor + "." + dialect.QuoteIdent(dj.FKColumn))
-	}
-	return sb.String()
-}
 
 // rootJoins is the declared traversals that hang off the root, in declaration
 // order — the order the FROM, the SELECT list and the scan targets all follow, so
@@ -1247,7 +944,7 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 	ct := dialect.QuoteIdent(child.Table())
 	sibs := child.Siblings()
 	if len(sibs) == 0 && len(joins) == 0 {
-		childFilter := childScopeFilter(scope, child, dialect, "")
+		childFilter := core.ChildScopeFilter(scope, child, dialect, "")
 		sel := dialect.QuoteIdent(fkCol) + ", " + strings.Join(quoteIdentifiers(childCols, dialect), ", ")
 		for _, c := range trailingCols {
 			sel += ", " + dialect.QuoteIdent(c)
@@ -1259,7 +956,7 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 	// Something else IS in the FROM: the child's own deleted_at is ambiguous the
 	// moment a join target carries one too (deleted_at/created_at/updated_at are
 	// the framework's OWN columns — every archivable entity has them).
-	childFilter := childScopeFilter(scope, child, dialect, ct)
+	childFilter := core.ChildScopeFilter(scope, child, dialect, ct)
 	pk := dialect.QuoteIdent(child.IDColumn())
 	sel := ct + "." + dialect.QuoteIdent(fkCol)
 	for _, c := range childCols {

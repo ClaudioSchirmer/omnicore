@@ -70,6 +70,24 @@ type ExecQuerier interface {
 	Exec(ctx context.Context, sql string, args ...any) error
 }
 
+// ExecCount runs a statement on the framework's open transaction and reports
+// how many rows it affected.
+//
+// It exists for the same reason Exec below does: the neutral Tx handed to in-TX
+// code carries Exec but not the count, while every engine's transaction adapter
+// implements ExecCount already (WriteTx demands it). A Tx that cannot count is a
+// programming error at the composition root, not a runtime condition — hence the
+// error names the type rather than degrading silently.
+func ExecCount(tx Tx, ctx context.Context, sql string, args ...any) (int64, error) {
+	c, ok := tx.(interface {
+		ExecCount(ctx context.Context, sql string, args ...any) (int64, error)
+	})
+	if !ok {
+		return 0, fmt.Errorf("db.ExecCount: Tx %T does not report affected rows", tx)
+	}
+	return c.ExecCount(ctx, sql, args...)
+}
+
 // Exec runs a control-plane statement through a Querier that can execute one.
 // The framework's own subsystems call this instead of holding an ExecQuerier,
 // so the read port stays read-only wherever it is passed around and the widening

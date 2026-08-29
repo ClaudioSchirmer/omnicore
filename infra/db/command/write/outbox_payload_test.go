@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // White-box coverage of the outbox payload builder: the one shape every
@@ -275,8 +276,11 @@ func TestSharedBaseUpdate_BumpsRevisionInOneStatement(t *testing.T) {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").
 		Field("Name", "name").Field("Document", "document").NaturalID("document")
 	baseID := deterministicBaseID("D1")
-	sql, args := buildUpdate(testPGDialect{}, base.Table(), base.IDColumn(), baseID,
+	sql, args, err := buildUpdate(testPGDialect{}, schemaTarget(base), criteria.Eq("ID", domain.NewID(baseID)),
 		domain.Fields{"name": "Ana"}, base.UpdateNowColumns(), testNow, base.RevisionColumn(), 0)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 	want := "UPDATE pessoa SET name = $1, revision = revision + 1 WHERE id = $2"
 	if sql != want {
 		t.Fatalf("sql = %q, want %q", sql, want)

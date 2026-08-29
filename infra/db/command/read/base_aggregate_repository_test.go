@@ -46,7 +46,7 @@ func TestBaseAggregateRepository_ContextNameSharedDerivation(t *testing.T) {
 	// The embedded BaseRepository's own context-name derivation is covered by the
 	// write package's base_repository_context_name_test; here we assert the read
 	// loader (db) shares the same T-derived name.
-	if got := bar.Loader.effectiveContextName(); got != "barTestEntity" {
+	if got := bar.Loader.contextName(); got != "barTestEntity" {
 		t.Errorf("Loader derived from T = %q, got %q", "barTestEntity", got)
 	}
 }

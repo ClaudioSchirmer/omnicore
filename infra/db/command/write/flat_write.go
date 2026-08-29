@@ -7,6 +7,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // The flat write path, written once on BaseEngine and promoted onto every
@@ -113,7 +114,10 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), entity.ID().Value(), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -288,7 +292,10 @@ func (b *BaseEngine) softWrite(
 		return err
 	}
 	rev := loadedRevision(src)
-	sql, args := buildUpdate(d, schema.Table(), schema.IDColumn(), id, fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, domain.NewID(id)), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	if err != nil {
+		return err
+	}
 	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), hctx.EntityType, schema.IDColumn(), id, rev); err != nil {
 		return err
 	}

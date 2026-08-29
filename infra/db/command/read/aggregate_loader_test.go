@@ -66,22 +66,22 @@ func TestAggregateLoader_WithSchema_DrivesChildren(t *testing.T) {
 func TestAggregateLoader_FluentSettersChain(t *testing.T) {
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
 		WithContextName("AggLoaderTest")
-	if l.contextName != "AggLoaderTest" {
-		t.Errorf("contextName = %q, want %q", l.contextName, "AggLoaderTest")
+	if l.contextName() != "AggLoaderTest" {
+		t.Errorf("contextName = %q, want %q", l.contextName(), "AggLoaderTest")
 	}
 }
 
 func TestAggregateLoader_EffectiveContextName_ExplicitWins(t *testing.T) {
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity).
 		WithContextName("AdminEnt")
-	if got := l.effectiveContextName(); got != "AdminEnt" {
+	if got := l.contextName(); got != "AdminEnt" {
 		t.Errorf("explicit override must win, got %q", got)
 	}
 }
 
 func TestAggregateLoader_EffectiveContextName_DerivedFromT(t *testing.T) {
 	l := NewAggregateLoader[*aggLoaderTestEntity](nil, newAggLoaderTestEntity)
-	if got := l.effectiveContextName(); got != "aggLoaderTestEntity" {
+	if got := l.contextName(); got != "aggLoaderTestEntity" {
 		t.Errorf("expected derived name %q, got %q", "aggLoaderTestEntity", got)
 	}
 }

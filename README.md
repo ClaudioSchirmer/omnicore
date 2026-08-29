@@ -37,6 +37,7 @@ Each row links to its manual page.
 | Sealed domain | `ValidEntity` only produced by `domain`; boundaries checked at compile time | [architecture](https://claudioschirmer.github.io/omnicore/#architecture) |
 | Aggregate persistence | Root + children in one write; universal symmetric archive/unarchive cascade | [aggregate-persistence](https://claudioschirmer.github.io/omnicore/#aggregate-persistence) |
 | Transactional outbox | Domain rows + outbox row + audit row in a single `pgx.Tx` | [write lifecycle](https://claudioschirmer.github.io/omnicore/#lifecycle-map) |
+| Tables without an aggregate | `core.NewDirectSchema[T]` + `read.NewDirectRepository[T]` point the same criteria engine, read joins and aggregate DSL at a table with no entity over it — a control table, or an aggregate's child counted as a fact. The read keeps its full horizontal reach; the write is one statement against the anchor table, with no outbox, audit, revision guard or cascade | [direct-schema](https://claudioschirmer.github.io/omnicore/#direct-schema) |
 | Audit | One event per write; `snapshot` / `delta` / `transition` bodies; DB + slog routing; optional framework-served read endpoint over the trail | [audit](https://claudioschirmer.github.io/omnicore/#audit) |
 
 ### Read side (CQRS)

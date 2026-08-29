@@ -7,6 +7,50 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.64.0</span><span class="release-date">August 29, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>DirectSchema and DirectRepository: the query and write engine anchored on a
+                TABLE instead of an aggregate.</strong> The relational engine was reachable
+                through exactly one door — a repository bound to a <code>domain.Entity</code>. A control table the
+                service maintains by hand, a fact a business rule needs (a count over an aggregate's child, an existence
+                probe), or a single-table write inside the current transaction had no supported path and meant
+                hand-written SQL against the neutral <code>Tx</code>, with placeholders, quoting and id encoding
+                re-derived per dialect. See <a href="#direct-schema">DirectSchema</a>.
+                <ul>
+                    <li><code>core.NewDirectSchema[T](table)</code> produces the SAME <code>*TableSchema</code> every
+                        other path consumes — one constructor more, beside <code>NewTableSchema</code>,
+                        <code>NewSiblingSchema</code>, <code>NewSharedBaseSchema</code> and
+                        <code>NewExternalSchema</code>. No conversion step and no second engine: resolution, criteria
+                        compilation, dialect rendering and the statement builders are the ones the aggregate path uses.</li>
+                    <li><code>read.NewDirectRepository[T](eng, schema)</code> reads with the loader's own vocabulary
+                        (<code>FindOne</code>, <code>FindAll</code>, <code>Exists</code>, <code>Aggregate</code>,
+                        <code>AggregateBy</code>, <code>WithJoins</code> on the root) and writes with
+                        <code>Insert</code>, <code>Update</code>, <code>UpdateOne</code>, <code>Delete</code>,
+                        <code>DeleteOne</code>, <code>Archive</code>, <code>Unarchive</code>, <code>UpdateAll</code>,
+                        <code>DeleteAll</code>. <code>write.Values</code> is keyed by Go field name, so no physical
+                        column name is written above <code>infra/</code>; <code>InTx</code> binds a copy to the
+                        framework's open transaction.</li>
+                    <li>The TWO AXES: the downward composition an aggregate is — root plus children, satellites and
+                        shared identity persisted as one unit — is gone, so a write is one statement against the
+                        anchor table and <code>Child</code>/<code>Sibling</code>/<code>SharedBase</code> panic at
+                        declaration; the sideways one is untouched, so a read traverses its declared joins with the
+                        same reach an aggregate repository has.</li>
+                    <li>What it deliberately does NOT do: no outbox row (a Direct write never feeds a Mongo view), no
+                        audit event, no domain events, no revision guard, no old-state snapshot, no cascade.
+                        <code>Child</code>, <code>Sibling</code> and <code>SharedBase</code> panic at declaration; the
+                        repository anchors only on a Direct schema (an entity's schema stays welcome as a join target);
+                        a write with an empty predicate is refused, and the deliberate sweep has its own verb.</li>
+                </ul>
+            </li>
+            <li><strong>Changed</strong> — <strong>the write statement builders take a criteria predicate instead of a
+                hardcoded <code>pk = ?</code>.</strong> They are internal, so no consumer signature moves; what changes
+                is that the entity write path is now one CALLER of them, passing the primary-key predicate, rather than
+                the only shape they can render. The criteria compiler moved into the core foundation to make that
+                possible, and its placeholder numbering can continue after a SET list. The SQL emitted for every entity
+                write is byte-identical on all four dialects, pinned by the existing golden statement tests.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.63.0</span><span class="release-date">August 28, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a change to an aggregate child may no

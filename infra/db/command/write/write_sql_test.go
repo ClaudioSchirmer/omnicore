@@ -8,6 +8,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // testNow is the fixed operation stamp the builder tests bind — asserting the
@@ -22,6 +23,11 @@ var testNow = time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 // contract, exercised by the MySQL integration suite. The verb orchestration
 // (flat_write.go / aggregate_write.go) is covered end-to-end by the integration
 // + e2e suites against real databases.
+
+// testArchiveID is the id the by-id statement tests key their predicate on —
+// any well-formed value; the assertions are about the rendered statement, not
+// about which row it names.
+const testArchiveID = "33333333-3333-3333-3333-333333333333"
 
 func TestBuildInsert_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "alice", "email": "a@x"}
@@ -52,7 +58,10 @@ func TestBuildInsert_Shared(t *testing.T) {
 func TestBuildUpdate_Shared(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testPGDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
+	sql, args, err := buildUpdate(testPGDialect{}, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(id)), fields, []string{"updated_at"}, testNow, "", 0)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	want := "UPDATE users SET email = $1, name = $2, updated_at = $3 WHERE id = $4"
 	if sql != want {
@@ -75,10 +84,18 @@ func TestWriteNow_UTCMicrosecond(t *testing.T) {
 
 func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 	d := testPGDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	if err != nil {
+		t.Fatalf("archiveSQL: %v", err)
+	}
+	if got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM users WHERE id = $1" {
+	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
+	if err != nil {
+		t.Fatalf("deleteSQL: %v", err)
+	}
+	if got != "DELETE FROM users WHERE id = $1" {
 		t.Errorf("deleteSQL = %q", got)
 	}
 	if got := childDeleteSQL(d, "addresses", "user_id"); got != "DELETE FROM addresses WHERE user_id = $1" {
@@ -113,9 +130,10 @@ func TestChildCascadeSQL_Shared(t *testing.T) {
 // a programmable rows-affected count — enough to drive execExpectingRow's 404
 // mapping without a live database.
 type fakeWriteTx struct {
-	n       int64
-	execErr error
-	lastSQL string
+	n         int64
+	execErr   error
+	lastSQL   string
+	committed bool
 }
 
 func (t *fakeWriteTx) Exec(_ context.Context, sql string, _ ...any) error {
@@ -131,7 +149,7 @@ func (t *fakeWriteTx) ExecCount(_ context.Context, sql string, _ ...any) (int64,
 }
 func (t *fakeWriteTx) Query(context.Context, string, ...any) (Rows, error) { return nil, nil }
 func (t *fakeWriteTx) QueryRow(context.Context, string, ...any) Row        { return nil }
-func (t *fakeWriteTx) Commit(context.Context) error                        { return nil }
+func (t *fakeWriteTx) Commit(context.Context) error                        { t.committed = true; return nil }
 func (t *fakeWriteTx) Rollback(context.Context) error                      { return nil }
 func (t *fakeWriteTx) Handle() persistence.TxHandle                        { return nil }
 func (t *fakeWriteTx) Dialect() Dialect                                    { return testPGDialect{} }

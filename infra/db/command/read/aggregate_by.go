@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -100,7 +101,7 @@ func GroupResult[S AggregateSpec](g *Group, template S) S {
 // backend's default). Order/limit on the Query are ignored, exactly like
 // Aggregate. The passed specs are templates and carry NO result after the
 // call; per-group values live on the returned Groups (via GroupResult).
-func (l *AggregateLoader[T]) AggregateBy(ctx context.Context, q *criteria.Query, by *GroupBy, specs ...AggregateSpec) ([]*Group, error) {
+func (c *directCore) AggregateBy(ctx context.Context, q *criteria.Query, by *GroupBy, specs ...AggregateSpec) ([]*Group, error) {
 	if by == nil || len(by.fields) == 0 {
 		return nil, fmt.Errorf("AggregateBy: at least one grouping field is required (Aggregate is the ungrouped form)")
 	}
@@ -114,18 +115,18 @@ func (l *AggregateLoader[T]) AggregateBy(ctx context.Context, q *criteria.Query,
 			}
 		}
 	}
-	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
-	resolve := l.resolverRecordingJoins(joins)
-	dialect := l.eng.Dialect()
+	joins := newJoinedTables(c.joins)
+	resolve := c.resolverRecordingJoins(joins)
+	dialect := c.eng.Dialect()
 
-	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
+	qual := core.ColQual{Owner: len(rootJoins(c.joins)) > 0}
 	keyCols := make([]string, len(by.fields))
 	for i, f := range by.fields {
 		rf, ok := resolve(f)
 		if !ok {
 			return nil, fmt.Errorf("AggregateBy: unknown grouping field %q (not a persisted field of the entity)", f)
 		}
-		keyCols[i] = qualifyCol(rf, qual, dialect)
+		keyCols[i] = core.QualifyCol(rf, qual, dialect)
 	}
 	exprs := make([]string, len(specs))
 	for i, s := range specs {
@@ -135,12 +136,12 @@ func (l *AggregateLoader[T]) AggregateBy(ctx context.Context, q *criteria.Query,
 		}
 		exprs[i] = e
 	}
-	fromJoin, clause, args, err := l.compileFilterJoins(q, joins)
+	fromJoin, clause, args, err := c.compileFilterJoins(q, joins)
 	if err != nil {
 		return nil, err
 	}
 	keyList := strings.Join(keyCols, ", ")
-	rows, err := l.eng.Querier().Query(ctx,
+	rows, err := c.rows().Query(ctx,
 		"SELECT "+keyList+", "+strings.Join(exprs, ", ")+" FROM "+fromJoin+clause+
 			" GROUP BY "+keyList+" ORDER BY "+keyList, args...)
 	if err != nil {

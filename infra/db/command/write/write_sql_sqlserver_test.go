@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
 // testSQLServerDialect is the @pN-placeholder, bracket-quoting, BINARY(16)
@@ -98,7 +99,10 @@ func TestBuildInsert_SQLServer(t *testing.T) {
 func TestBuildUpdate_SQLServer(t *testing.T) {
 	fields := domain.Fields{"name": "bob", "email": "b@x"}
 	id := "22222222-2222-2222-2222-222222222222"
-	sql, args := buildUpdate(testSQLServerDialect{}, "users", "id", id, fields, []string{"updated_at"}, testNow, "", 0)
+	sql, args, err := buildUpdate(testSQLServerDialect{}, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(id)), fields, []string{"updated_at"}, testNow, "", 0)
+	if err != nil {
+		t.Fatalf("buildUpdate: %v", err)
+	}
 
 	want := "UPDATE [users] SET [email] = @p1, [name] = @p2, [updated_at] = @p3 WHERE [id] = @p4"
 	if sql != want {
@@ -117,10 +121,18 @@ func TestBuildUpdate_SQLServer(t *testing.T) {
 // expression (CURRENT_TIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
-	if got := archiveSQL(d, "users", "deleted_at", "id", ""); got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	if err != nil {
+		t.Fatalf("archiveSQL: %v", err)
+	}
+	if got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
-	if got := deleteSQL(d, "users", "id"); got != "DELETE FROM [users] WHERE [id] = @p1" {
+	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
+	if err != nil {
+		t.Fatalf("deleteSQL: %v", err)
+	}
+	if got != "DELETE FROM [users] WHERE [id] = @p1" {
 		t.Errorf("deleteSQL = %q", got)
 	}
 	if got := childDeleteSQL(d, "addresses", "user_id"); got != "DELETE FROM [addresses] WHERE [user_id] = @p1" {

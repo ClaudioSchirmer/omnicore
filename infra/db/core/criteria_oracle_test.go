@@ -1,4 +1,4 @@
-package read
+package core
 
 import (
 	"fmt"
@@ -94,9 +94,9 @@ func TestOracleVisitor_Operators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sql, args, err := compileWhere(c.e, r, testOracleDialect{}, nil)
+			sql, args, err := CompileWhere(c.e, r, testOracleDialect{}, nil)
 			if err != nil {
-				t.Fatalf("compileWhere: %v", err)
+				t.Fatalf("CompileWhere: %v", err)
 			}
 			if sql != c.sql {
 				t.Errorf("sql = %q, want %q", sql, c.sql)
@@ -118,9 +118,9 @@ func TestOracleVisitor_PlaceholderNumbering(t *testing.T) {
 		criteria.In("Email", "x", "y"),
 		criteria.Gt("Age", 1),
 	)
-	sql, args, err := compileWhere(e, testResolver(), testOracleDialect{}, nil)
+	sql, args, err := CompileWhere(e, testResolver(), testOracleDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	if want := `("NAME" = :1 AND "EMAIL" IN (:2, :3) AND "AGE" > :4)`; sql != want {
 		t.Errorf("sql  = %q\nwant = %q", sql, want)
@@ -142,9 +142,9 @@ func TestOracleVisitor_PlaceholderNumbering(t *testing.T) {
 // identical to the MySQL/SQL Server contract.
 func TestOracleVisitor_DomainIDArgEncodedToRaw(t *testing.T) {
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")
-	_, args, err := compileWhere(criteria.Eq("ID", domain.NewID(u.String())), testResolver(), testOracleDialect{}, nil)
+	_, args, err := CompileWhere(criteria.Eq("ID", domain.NewID(u.String())), testResolver(), testOracleDialect{}, nil)
 	if err != nil {
-		t.Fatalf("compileWhere: %v", err)
+		t.Fatalf("CompileWhere: %v", err)
 	}
 	b, ok := args[0].([]byte)
 	if !ok || len(b) != 16 {

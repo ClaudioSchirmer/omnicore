@@ -34,8 +34,8 @@ import (
 type AggregateSpec interface {
 	// expr renders the SELECT expression, resolving the spec's Go field into
 	// its column (recording any sibling/shared-base join on the resolver) and
-	// qualifying it the way the statement's FROM demands (colQual).
-	expr(resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error)
+	// qualifying it the way the statement's FROM demands (core.ColQual).
+	expr(resolve core.FieldResolver, dialect Dialect, qual core.ColQual) (string, error)
 	// absorb receives the scalar as the driver delivered it (nil = SQL NULL,
 	// i.e. no row matched) and writes the spec's typed result.
 	absorb(v any) error
@@ -56,7 +56,9 @@ type CountAgg struct {
 // row count is the root count.
 func Count() *CountAgg { return &CountAgg{} }
 
-func (c *CountAgg) expr(core.FieldResolver, Dialect, colQual) (string, error) { return "COUNT(*)", nil }
+func (c *CountAgg) expr(core.FieldResolver, Dialect, core.ColQual) (string, error) {
+	return "COUNT(*)", nil
+}
 
 func (c *CountAgg) fresh() AggregateSpec { return &CountAgg{} }
 
@@ -97,7 +99,7 @@ func MinInt(goField string) *IntAgg { return &IntAgg{fn: "MIN", field: goField} 
 // MaxInt requests the largest value of an integer goField — MAX, exact.
 func MaxInt(goField string) *IntAgg { return &IntAgg{fn: "MAX", field: goField} }
 
-func (a *IntAgg) expr(resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
+func (a *IntAgg) expr(resolve core.FieldResolver, dialect Dialect, qual core.ColQual) (string, error) {
 	return aggExpr(a.fn, a.field, resolve, dialect, qual)
 }
 
@@ -142,7 +144,7 @@ func Min(goField string) *FloatAgg { return &FloatAgg{fn: "MIN", field: goField}
 // Max requests the largest value of a fractional goField as float64.
 func Max(goField string) *FloatAgg { return &FloatAgg{fn: "MAX", field: goField} }
 
-func (a *FloatAgg) expr(resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
+func (a *FloatAgg) expr(resolve core.FieldResolver, dialect Dialect, qual core.ColQual) (string, error) {
 	return aggExpr(a.fn, a.field, resolve, dialect, qual)
 }
 
@@ -162,18 +164,18 @@ func (a *FloatAgg) absorb(v any) error {
 }
 
 // aggExpr renders one aggregate call over a resolved field. The column goes
-// through qualifyCol — the same rendering the WHERE, the ORDER BY and
+// through core.QualifyCol — the same rendering the WHERE, the ORDER BY and
 // AggregateBy's grouping keys use — because a FROM holding a declared read join
 // makes BOTH sides ambiguous: two joined aggregates may both have a "nome", and
 // so may the anchor. The anchor id needs no special handling here (an aggregate
 // never names it: Count renders COUNT(*)), so the qual the caller passes carries
 // only the owner rule.
-func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect, qual colQual) (string, error) {
+func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect, qual core.ColQual) (string, error) {
 	rf, ok := resolve(goField)
 	if !ok {
 		return "", fmt.Errorf("aggregate: unknown field %q (not a persisted field of the entity)", goField)
 	}
-	return fn + "(" + qualifyCol(rf, qual, dialect) + ")", nil
+	return fn + "(" + core.QualifyCol(rf, qual, dialect) + ")", nil
 }
 
 // Aggregate executes ONE SELECT computing every requested spec over the same
@@ -184,14 +186,14 @@ func aggExpr(fn, goField string, resolve core.FieldResolver, dialect Dialect, qu
 // over scalar facts (cardinality caps, totals, thresholds) — loading whole
 // aggregates to answer a scalar question is the anti-pattern it exists to
 // kill. Order/limit on the Query are ignored (they don't apply to aggregates).
-func (l *AggregateLoader[T]) Aggregate(ctx context.Context, q *criteria.Query, specs ...AggregateSpec) error {
+func (c *directCore) Aggregate(ctx context.Context, q *criteria.Query, specs ...AggregateSpec) error {
 	if len(specs) == 0 {
 		return fmt.Errorf("Aggregate: at least one aggregate spec is required")
 	}
-	joins := &joinedTables{siblings: map[string]*TableSchema{}, hasDeclared: len(rootJoins(l.joins)) > 0}
-	resolve := l.resolverRecordingJoins(joins)
-	dialect := l.eng.Dialect()
-	qual := colQual{owner: len(rootJoins(l.joins)) > 0}
+	joins := newJoinedTables(c.joins)
+	resolve := c.resolverRecordingJoins(joins)
+	dialect := c.eng.Dialect()
+	qual := core.ColQual{Owner: len(rootJoins(c.joins)) > 0}
 	exprs := make([]string, len(specs))
 	for i, s := range specs {
 		e, err := s.expr(resolve, dialect, qual)
@@ -200,11 +202,11 @@ func (l *AggregateLoader[T]) Aggregate(ctx context.Context, q *criteria.Query, s
 		}
 		exprs[i] = e
 	}
-	fromJoin, clause, args, err := l.compileFilterJoins(q, joins)
+	fromJoin, clause, args, err := c.compileFilterJoins(q, joins)
 	if err != nil {
 		return err
 	}
-	rows, err := l.eng.Querier().Query(ctx,
+	rows, err := c.rows().Query(ctx,
 		"SELECT "+strings.Join(exprs, ", ")+" FROM "+fromJoin+clause, args...)
 	if err != nil {
 		return err

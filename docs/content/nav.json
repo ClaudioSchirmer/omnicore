@@ -137,6 +137,10 @@
         "label": "TableSchema"
       },
       {
+        "id": "direct-schema",
+        "label": "DirectSchema"
+      },
+      {
         "id": "views",
         "label": "Views"
       },
