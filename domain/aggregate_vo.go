@@ -80,8 +80,10 @@ type AggregateValueObject interface {
 	//	}
 	//
 	// Contract: at most ONE active child per identity — a second active child
-	// with the same identity is rejected as a duplicate (the framework enforces
-	// this via the add path). When the aggregate's notion of identity is simply
+	// with the same identity is rejected as a duplicate. The framework enforces
+	// it on both mutating paths: the add refuses an item whose identity is
+	// already active, and the change refuses a replacement that would take an
+	// identity another active entry holds. When the aggregate's notion of identity is simply
 	// "every business field", delegate to domain.IsSameByBusinessFields(a, other).
 	IsSameBusinessIdentity(other AggregateValueObject) bool
 }

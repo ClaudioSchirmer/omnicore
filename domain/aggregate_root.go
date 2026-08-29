@@ -97,6 +97,21 @@ func (ar *AggregateRoot) addAggregateItem(item AggregateValueObject) {
 
 // changeAggregateItem replaces an existing item with a new one (status
 // CHANGED). Unchecked against the declared set.
+//
+// The replacement is free to change the entry's business identity — identity
+// FINDS the entry, it does not freeze it, and an aggregate whose identity is a
+// natural key (Address by Country+ZipCode+Street+Number) edits those very
+// fields through here. What it may NOT do is take an identity another ACTIVE
+// entry already holds: "at most ONE active child per business identity" is the
+// contract every match site resolves "the entry that matches" through, and this
+// is the only primitive that writes a value capable of breaking it. A collision
+// is answered with EntityAlreadyAddedNotification — the same answer the add
+// path gives the same contract — and nothing is written.
+//
+// A REMOVED entry does not collide: it is on its way out, exactly as it does
+// not collide on the add path (where a matching removed entry re-activates).
+// The trusted load path (AggregateConstructor) stays unguarded on purpose, so a
+// collection that already holds duplicates still loads and can be repaired.
 func (ar *AggregateRoot) changeAggregateItem(original, replacement AggregateValueObject) {
 	if !ar.isAggregateItemValid(original) || !ar.isAggregateItemValid(replacement) {
 		return
@@ -105,19 +120,38 @@ func (ar *AggregateRoot) changeAggregateItem(original, replacement AggregateValu
 	key := classNameOf(original)
 	list := ar.aggregates[key]
 
+	// One pass: the entry addressed by original, and the first ACTIVE entry
+	// other than it that already holds the replacement's identity.
+	target, collision := -1, -1
 	for i, entry := range list {
-		if entry.item.IsSameBusinessIdentity(original) {
-			list[i].item = replacement
-			list[i].currentStatus = StatusChanged
-			ar.aggregates[key] = list
-			return
+		if target < 0 && entry.item.IsSameBusinessIdentity(original) {
+			target = i
+			continue
+		}
+		if collision < 0 && entry.currentStatus != StatusRemoved &&
+			entry.item.IsSameBusinessIdentity(replacement) {
+			collision = i
 		}
 	}
 
-	ar.AddNotificationMessage(NotificationMessage{
-		FieldName:    key,
-		Notification: EntityDoesNotExistNotification{},
-	})
+	if target < 0 {
+		ar.AddNotificationMessage(NotificationMessage{
+			FieldName:    key,
+			Notification: EntityDoesNotExistNotification{},
+		})
+		return
+	}
+	if collision >= 0 {
+		ar.AddNotificationMessage(NotificationMessage{
+			FieldName:    key,
+			Notification: EntityAlreadyAddedNotification{},
+		})
+		return
+	}
+
+	list[target].item = replacement
+	list[target].currentStatus = StatusChanged
+	ar.aggregates[key] = list
 }
 
 // removeAggregateItem marks an item as REMOVED. Unchecked.
@@ -373,6 +407,12 @@ func AddAggregateChild(root AggregateRootProvider, item AggregateValueObject) {
 
 // ChangeAggregateChild replaces an item with a new one (status CHANGED) after
 // checking both original and replacement against root.AggregateChildren().
+//
+// The replacement may reshape the entry freely, identity fields included — with
+// one exception: it may not take a business identity another ACTIVE child of the
+// collection already holds. That collision is rejected with
+// EntityAlreadyAddedNotification (SemanticConflict → 409), the same answer
+// AddAggregateChild gives, and the collection is left untouched.
 func ChangeAggregateChild(root AggregateRootProvider, original, replacement AggregateValueObject) {
 	ensureRootInit(root)
 	if !isAllowedChild(root, original) {

@@ -7,6 +7,36 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.63.0</span><span class="release-date">August 28, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a change to an aggregate child may no
+                longer take a business identity another ACTIVE child already holds.</strong> The contract
+                <em>at most ONE active child per business identity</em> was enforced on the add path only, while
+                <code>ChangeAggregateChild</code> wrote its replacement without looking at what it collided with — so the
+                one primitive able to break the invariant was the one not checking it. A collision now answers
+                <code>EntityAlreadyAddedNotification</code> (<code>SemanticConflict</code> → 409), the same answer the
+                add path gives, and the collection is left untouched. See
+                <a href="#aggregate-persistence~child-identity">Child identity</a>.
+                <ul>
+                    <li>What did NOT change: a replacement may still reshape the entry freely, identity fields included
+                        — identity finds the entry, it does not freeze it, and an aggregate keyed by a natural key
+                        (<code>Address</code> by <code>Country+ZipCode+Street+Number</code>) edits exactly those fields
+                        through here. An entry matching the replacement's identity that is already REMOVED does not
+                        collide, mirroring the add path where a matching removed entry re-activates, and the trusted
+                        load path (<code>AggregateConstructor</code>) stays unguarded so a collection that already
+                        holds duplicates still loads and can be repaired.</li>
+                    <li>Why it matters: an addressed-by-id verb selects its target by ROW ID while the primitive
+                        re-finds it by BUSINESS IDENTITY, and the two agree only while the identity is unique. Once a
+                        change had produced a duplicate, a remove addressed at one row resolved to the other, a second
+                        change dropped a sibling's entry from the tracked collection — the outbox payload, and every
+                        projection fed by it, then carried one child twice and the other not at all — and a full-body
+                        replace of the aggregate's own persisted state answered 409 when the second duplicate reached
+                        the add path's guard.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.62.0</span><span class="release-date">August 28, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>unarchiving a root restores only the
