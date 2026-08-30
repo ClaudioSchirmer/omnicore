@@ -76,6 +76,17 @@ with `1.0.0`.
 
 ### Fixed
 
+- **A shared BASE's stamped column was written to the row but never onto the
+  role's struct.** `ApplyStamps` walked the schema's own resolved index path, and
+  a base has no struct of its own — its fields are resolved against each ROLE's
+  type at `.SharedBase(...)` time and the path is stored on the role's link. So
+  the base's field carried no usable path, the write-back was silently skipped,
+  and the entity the caller kept holding — and the audit event, which reads the
+  struct — reported the OLD value while the row held the new one. Affected the
+  original `Stamp` too, on every base since the family shipped; nothing caught it
+  because no test covered the base seat. A type-less base now resolves the
+  write-back by Go NAME, which is exactly what its own path resolution does.
+
 - **A stamped COUNTER on a Direct write reached Insert / Update / UpdateAll as a
   stamped TIME.** Those three paths appended every resolved stamp column to the
   "bind the operation's instant" list, so a counter column was bound a

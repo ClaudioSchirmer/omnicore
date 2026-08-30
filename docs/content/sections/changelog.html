@@ -28,6 +28,11 @@
                         the write, naming <code>StampEmpty</code>.</li>
                 </ul>
                 See <a href="#table-schema">TableSchema</a>.</li>
+            <li><strong>Fixed</strong> — <strong>a shared BASE's stamped column was written to the row but never
+                onto the role's struct</strong>, so the entity the caller kept holding — and the audit event, which
+                reads the struct — reported the OLD value while the row held the new one. It affected the original
+                <code>Stamp</code> too, on every base since the family shipped. A type-less base now resolves the
+                write-back by Go name, which is what its own path resolution already does.</li>
             <li><strong>Fixed</strong> — <strong>a stamped COUNTER on a Direct write reached Insert / Update /
                 UpdateAll as a stamped TIME</strong>, binding a <code>time.Time</code> into the counter column and
                 failing at the database. Only <code>Upsert</code> split the two kinds; all four verbs now resolve

@@ -1660,12 +1660,41 @@ func (s *TableSchema) ApplyStamps(e any, reqs []domain.StampRequest, now time.Ti
 		if !ok || !f.stamped {
 			continue
 		}
-		target := f.path.TargetIn(v)
+		target := s.stampTargetIn(v, f)
 		if !target.IsValid() || !target.CanSet() {
 			continue
 		}
 		applyStampTo(target, r.Op, now)
 	}
+}
+
+// stampTargetIn locates the struct field a stamped column writes back into.
+//
+// A type-anchored schema resolved that at declaration and carries the index
+// path. A SHARED BASE has no struct of its own — its fields are resolved against
+// each ROLE's type at .SharedBase(...) time, and the resolved path is stored on
+// the ROLE's link, not here — so the base's own field carries no usable path and
+// the write-back is done by GO NAME instead.
+//
+// By name is not a weaker rule: a base's non-composite field resolves by exactly
+// that at declaration (exportedFieldIndex on the role's type), and a stamped
+// field is never a composite value object — it is *time.Time or int64. It goes
+// through the SAME index lookup so the two cannot drift: a PROMOTED field would
+// satisfy a bare FieldByName and not the declaration, which rejects it (a role
+// must carry every shared-base field as its own), and a write-back that reached
+// further than the declaration would be writing somewhere nothing ever mapped.
+func (s *TableSchema) stampTargetIn(v reflect.Value, f schemaField) reflect.Value {
+	if !s.isSharedBase {
+		return f.path.TargetIn(v)
+	}
+	if v.Kind() != reflect.Struct {
+		return reflect.Value{}
+	}
+	idx := exportedFieldIndex(v.Type(), f.goName)
+	if idx < 0 {
+		return reflect.Value{}
+	}
+	return v.Field(idx)
 }
 
 // applyStampTo writes back onto the struct what the statement is about to write

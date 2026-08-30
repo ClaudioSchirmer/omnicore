@@ -813,3 +813,318 @@ func TestStampClearing_PayloadStatesEachValue(t *testing.T) {
 		t.Errorf("a reset counter states 0, got %v", out["count"])
 	}
 }
+
+// ─── the clearing verbs on EVERY seat the family can be declared on ──────────
+//
+// StampedTimeField/StampedCounterField are declarable on five kinds of writing
+// schema: the flat/aggregate ROOT, an aggregate CHILD, a shared-base ROLE, the
+// shared BASE itself, and a Direct schema. The verbs are resolved by a different
+// function on three of those paths — stampedCols, stampedChildCols and
+// claimStampedCols — so "it works on Direct" proves nothing about the rest.
+
+// clearedOrder is a ROOT carrying one of each stamped kind, the counter in its
+// nullable form so both verbs reach both kinds.
+type clearedOrder struct {
+	domain.BaseEntity
+	Status  string
+	PaidAt  *time.Time
+	Touches *int64
+}
+
+func (o *clearedOrder) EntityName() string { return "Order" }
+
+func clearedOrderSchema() *TableSchema {
+	return core.NewTableSchema[*clearedOrder]("orders").
+		ID("id").
+		Field("Status", "status").
+		StampedTimeField("PaidAt", "paid_at").
+		StampedCounterField("Touches", "touches").
+		UpdatedAt("updated_at")
+}
+
+// SEAT 1 — the ROOT, through stampedCols.
+func TestStampClearing_OnTheRoot(t *testing.T) {
+	schema := clearedOrderSchema()
+	now := testStamp()
+	paid, touches := now, int64(7)
+	o := &clearedOrder{Status: "PAID", PaidAt: &paid, Touches: &touches}
+	o.StampNull("PaidAt")
+	o.StampEmpty("Touches")
+
+	plan, err := stampedCols(schema, o, schema.UpdateNowColumns(), now)
+	if err != nil {
+		t.Fatalf("stampedCols: %v", err)
+	}
+	if len(plan.nullCols) != 1 || plan.nullCols[0] != "paid_at" {
+		t.Fatalf("the cleared time must reach the null bucket, got %+v", plan)
+	}
+	if len(plan.zeroCounters) != 1 || plan.zeroCounters[0] != "touches" {
+		t.Fatalf("the reset counter must reach the zero bucket, got %+v", plan)
+	}
+	// The write-back: the entity the caller keeps holding, and the audit event
+	// that reads the struct, must agree with the row.
+	if o.PaidAt != nil {
+		t.Errorf("StampNull must clear the field on the root, got %v", o.PaidAt)
+	}
+	if o.Touches == nil || *o.Touches != 0 {
+		t.Errorf("StampEmpty must zero the field on the root, got %v", o.Touches)
+	}
+	sets, _ := buildSetWithCounters(testPGDialect{}, domain.Fields{"status": "PAID"}, plan, now, "")
+	joined := strings.Join(sets, ", ")
+	if !strings.Contains(joined, "paid_at = NULL") || !strings.Contains(joined, "touches = 0") {
+		t.Fatalf("the root UPDATE must carry both clears, got %s", joined)
+	}
+}
+
+// SEAT 2 — an aggregate CHILD, through stampedChildCols. Its whole difficulty is
+// the write-back: a child travels as an interface holding a struct VALUE, so it
+// happens through the aggregate map.
+type clearedLine struct {
+	domain.Managed
+	Label     string
+	ShippedAt *time.Time
+	Picks     *int64
+}
+
+func (l clearedLine) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
+	return domain.IsSameByBusinessFields(l, other)
+}
+func (clearedLine) CollectionName() string                            { return "Lines" }
+func (clearedLine) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func clearedLineSchema() *TableSchema {
+	return core.NewTableSchema[clearedLine]("order_lines").
+		ID("id").
+		ParentID("order_id").
+		Field("Label", "label").
+		StampedTimeField("ShippedAt", "shipped_at").
+		StampedCounterField("Picks", "picks")
+}
+
+func TestStampClearing_OnAnAggregateChild(t *testing.T) {
+	schema := clearedLineSchema()
+	now := testStamp()
+	shipped, picks := now, int64(4)
+	line := clearedLine{Label: "widget", ShippedAt: &shipped, Picks: &picks}
+	line.StampNull("ShippedAt")
+	line.StampEmpty("Picks")
+
+	root := &domain.AggregateRoot{}
+	root.AggregateConstructor([]domain.AggregateValueObject{line})
+
+	plan, err := stampedChildCols(schema, root, line, nil, now)
+	if err != nil {
+		t.Fatalf("stampedChildCols: %v", err)
+	}
+	if len(plan.nullCols) != 1 || len(plan.zeroCounters) != 1 {
+		t.Fatalf("both verbs must reach the child's plan, got %+v", plan)
+	}
+	// The write-back lands in the aggregate MAP — the copy the audit event's
+	// children block and the outbox snapshot read.
+	got, ok := trackedClearedLine(t, root)
+	if !ok {
+		t.Fatal("the child must still be tracked in the aggregate map")
+	}
+	if got.ShippedAt != nil {
+		t.Errorf("StampNull must clear the child's field in the map, got %v", got.ShippedAt)
+	}
+	if got.Picks == nil || *got.Picks != 0 {
+		t.Errorf("StampEmpty must zero the child's field in the map, got %v", got.Picks)
+	}
+}
+
+// A child that only CLEARS still writes back. The old condition was "there is a
+// time column bound to the instant", which a clear-only request does not
+// satisfy — the write-back would have been skipped and the map kept the stale
+// value while the row was cleared.
+func TestStampClearing_ChildWithNoFilledTimeStillWritesBack(t *testing.T) {
+	schema := clearedLineSchema()
+	now := testStamp()
+	shipped := now
+	line := clearedLine{Label: "only-clear", ShippedAt: &shipped}
+	line.StampNull("ShippedAt")
+
+	root := &domain.AggregateRoot{}
+	root.AggregateConstructor([]domain.AggregateValueObject{line})
+	if _, err := stampedChildCols(schema, root, line, nil, now); err != nil {
+		t.Fatalf("stampedChildCols: %v", err)
+	}
+	got, _ := trackedClearedLine(t, root)
+	if got.ShippedAt != nil {
+		t.Fatalf("a clear-only child request must still write back, got %v", got.ShippedAt)
+	}
+}
+
+// SEATS 3 and 4 — a shared-base ROLE and the BASE itself, through
+// claimStampedCols. One entity's requests are split across two schemas, and a
+// name meant for one is not a mistake to the other.
+type clearedMember struct {
+	domain.BaseEntity
+	Name      string
+	Document  string
+	MemberRef string
+	JoinedAt  *time.Time // the ROLE's stamped time
+	Visits    *int64     // the ROLE's stamped counter
+	VerifiedAt *time.Time // the BASE's stamped time
+	Seen       *int64     // the BASE's stamped counter
+}
+
+func (e *clearedMember) EntityName() string { return "Member" }
+
+func clearedMemberSchemas() (role, base *TableSchema) {
+	base = core.NewSharedBaseSchema("people").
+		Revision("revision").
+		ID("id").
+		Field("Name", "name").
+		Field("Document", "document").
+		NaturalID("document").
+		StampedTimeField("VerifiedAt", "verified_at").
+		StampedCounterField("Seen", "seen")
+	role = core.NewTableSchema[*clearedMember]("members").
+		ID("id").
+		Field("MemberRef", "member_ref").
+		StampedTimeField("JoinedAt", "joined_at").
+		StampedCounterField("Visits", "visits").
+		SharedBase(base, "person_id")
+	return role, base
+}
+
+func TestStampClearing_SplitsAcrossRoleAndBase(t *testing.T) {
+	role, base := clearedMemberSchemas()
+	now := testStamp()
+	joined, verified := now, now
+	visits, seen := int64(3), int64(9)
+	m := &clearedMember{
+		Name: "Ana", Document: "D1", MemberRef: "R1",
+		JoinedAt: &joined, Visits: &visits, VerifiedAt: &verified, Seen: &seen,
+	}
+	m.StampNull("JoinedAt")     // role, time
+	m.StampEmpty("Visits")      // role, counter
+	m.StampNull("VerifiedAt")   // base, time
+	m.StampEmpty("Seen")        // base, counter
+
+	// The ROLE claims its two and hands the base's back — unclaimed here is not a
+	// mistake, it is the other schema's business.
+	rolePlan, leftover, err := claimStampedCols(role, m, role.UpdateNowColumns(), now)
+	if err != nil {
+		t.Fatalf("claimStampedCols(role): %v", err)
+	}
+	if len(rolePlan.nullCols) != 1 || rolePlan.nullCols[0] != "joined_at" {
+		t.Fatalf("the role must claim its cleared time, got %+v", rolePlan)
+	}
+	if len(rolePlan.zeroCounters) != 1 || rolePlan.zeroCounters[0] != "visits" {
+		t.Fatalf("the role must claim its reset counter, got %+v", rolePlan)
+	}
+	if len(leftover) != 2 {
+		t.Fatalf("the base's two names must come back for the base, got %v", leftover)
+	}
+
+	// The BASE claims the rest, and nothing is left over.
+	basePlan, stillLeft, err := claimStampedCols(base, m, base.UpdateNowColumns(), now)
+	if err != nil {
+		t.Fatalf("claimStampedCols(base): %v", err)
+	}
+	if len(basePlan.nullCols) != 1 || basePlan.nullCols[0] != "verified_at" {
+		t.Fatalf("the base must claim its cleared time, got %+v", basePlan)
+	}
+	if len(basePlan.zeroCounters) != 1 || basePlan.zeroCounters[0] != "seen" {
+		t.Fatalf("the base must claim its reset counter, got %+v", basePlan)
+	}
+	if len(stillLeft) != 2 {
+		t.Fatalf("the role's two names must come back for the role, got %v", stillLeft)
+	}
+
+	// Between them the whole entity is cleared — both schemas wrote back onto the
+	// SAME struct, each for its own fields.
+	if m.JoinedAt != nil || m.VerifiedAt != nil {
+		t.Errorf("both cleared times must be nil, got %v / %v", m.JoinedAt, m.VerifiedAt)
+	}
+	if m.Visits == nil || *m.Visits != 0 || m.Seen == nil || *m.Seen != 0 {
+		t.Errorf("both reset counters must be 0, got %v / %v", m.Visits, m.Seen)
+	}
+}
+
+// The int64 refusal has to fire on every seat, not only on Direct — the check
+// lives on the schema, and each seat is a different schema.
+func TestStampNull_RefusedOnAPlainCounterOnEverySeat(t *testing.T) {
+	type plainRoot struct {
+		domain.BaseEntity
+		Status string
+		Count  int64
+	}
+	rootSchema := core.NewTableSchema[*plainRoot]("proot").ID("id").
+		Field("Status", "status").StampedCounterField("Count", "count")
+	r := &plainRoot{}
+	r.StampNull("Count")
+	if _, err := stampedCols(rootSchema, r, nil, testStamp()); err == nil ||
+		!strings.Contains(err.Error(), "StampEmpty") {
+		t.Fatalf("the root seat must refuse and name StampEmpty, got %v", err)
+	}
+
+	childSchema := core.NewTableSchema[plainCountLine]("plines").ID("id").ParentID("root_id").
+		Field("Label", "label").StampedCounterField("Count", "count")
+	line := plainCountLine{Label: "x"}
+	line.StampNull("Count")
+	if _, err := stampedChildCols(childSchema, nil, line, nil, testStamp()); err == nil ||
+		!strings.Contains(err.Error(), "StampEmpty") {
+		t.Fatalf("the child seat must refuse and name StampEmpty, got %v", err)
+	}
+}
+
+// trackedClearedLine reads the ONE child the aggregate map tracks — the copy
+// post-write readers see, which is where a child's write-back has to land.
+func trackedClearedLine(t *testing.T, root *domain.AggregateRoot) (clearedLine, bool) {
+	t.Helper()
+	for _, items := range root.AllAggregateItems() {
+		for _, it := range items {
+			got, ok := it.Item.(clearedLine)
+			if !ok {
+				t.Fatalf("unexpected item type %T", it.Item)
+			}
+			return got, true
+		}
+	}
+	return clearedLine{}, false
+}
+
+// plainCountLine is a CHILD whose counter is the plain int64 form — the one
+// StampNull has nowhere to land in.
+type plainCountLine struct {
+	domain.Managed
+	Label string
+	Count int64
+}
+
+func (l plainCountLine) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
+	return domain.IsSameByBusinessFields(l, other)
+}
+func (plainCountLine) CollectionName() string                            { return "Plines" }
+func (plainCountLine) BuildRules(string, domain.Service, *domain.Rules) {}
+
+// A SHARED BASE's stamped column writes back onto the role's struct, with EVERY
+// verb — the original Stamp included.
+//
+// It used to write the column and skip the struct. ApplyStamps walked the
+// schema's own resolved index path, and a base has no struct of its own: its
+// fields are resolved against each ROLE's type at .SharedBase(...) time and the
+// path is stored on the ROLE's link. So the base's field carried no usable path,
+// the write-back was silently skipped, and the entity the caller kept holding —
+// and the audit event, which reads the struct — reported the OLD value while the
+// row held the new one. Nothing caught it because no test covered the base seat.
+func TestStampedBase_WritesBackOntoTheRoleStruct(t *testing.T) {
+	_, base := clearedMemberSchemas()
+	now := testStamp()
+	m := &clearedMember{Name: "Ana", Document: "D1", MemberRef: "R1"}
+	m.Stamp("VerifiedAt")
+
+	plan, _, err := claimStampedCols(base, m, base.UpdateNowColumns(), now)
+	if err != nil {
+		t.Fatalf("claimStampedCols: %v", err)
+	}
+	if len(plan.requestedTimes) != 1 || plan.requestedTimes[0] != "verified_at" {
+		t.Fatalf("the base must claim its own column, got %+v", plan)
+	}
+	if m.VerifiedAt == nil || !m.VerifiedAt.Equal(now) {
+		t.Fatalf("the base's stamp must land on the role's struct, got %v", m.VerifiedAt)
+	}
+}
