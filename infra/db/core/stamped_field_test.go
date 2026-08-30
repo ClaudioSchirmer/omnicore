@@ -231,12 +231,22 @@ func TestStampedCounterField_SharedBaseDefersItsOwnTypeCheck(t *testing.T) {
 	}
 	NewTableSchema[*goodRole]("members").ID("id").SharedBase(base(), "person_id")
 
+	// A counter that must also be able to say "no count at all" is declared
+	// *int64, and the base defers that check to the role exactly the same way.
+	type nullableRole struct {
+		ID         domain.ID
+		Document   string
+		VerifiedAt *time.Time
+		SeenCount  *int64
+	}
+	NewTableSchema[*nullableRole]("nullable_members").ID("id").SharedBase(base(), "person_id")
+
 	// And the counter's own check still fires when the role types it wrong.
 	type badRole struct {
 		ID         domain.ID
 		Document   string
 		VerifiedAt *time.Time
-		SeenCount  *int64 // a counter is never a pointer
+		SeenCount  int32 // a counter is int64 or *int64, never another width
 	}
 	defer func() {
 		r := recover()
@@ -259,7 +269,7 @@ func TestApplyStamps_GuardsSkipInsteadOfFailing(t *testing.T) {
 
 	// The happy path: a settable pointer field takes the instant.
 	o := &stampDeclOrder{}
-	s.ApplyStamps(o, []string{"PaidAt"}, now)
+	s.ApplyStamps(o, []domain.StampRequest{{Field: "PaidAt"}}, now)
 	if o.PaidAt == nil || !o.PaidAt.Equal(now) {
 		t.Fatalf("the stamped field must carry the instant, got %v", o.PaidAt)
 	}
@@ -273,14 +283,14 @@ func TestApplyStamps_GuardsSkipInsteadOfFailing(t *testing.T) {
 
 	// A non-pointer target is not addressable, so there is nothing to set. The
 	// statement was still built correctly, so this is a skip, not an error.
-	s.ApplyStamps(stampDeclOrder{}, []string{"PaidAt"}, now) // must not panic
-	s.ApplyStamps((*stampDeclOrder)(nil), []string{"PaidAt"}, now)
-	s.ApplyStamps(nil, []string{"PaidAt"}, now)
+	s.ApplyStamps(stampDeclOrder{}, []domain.StampRequest{{Field: "PaidAt"}}, now) // must not panic
+	s.ApplyStamps((*stampDeclOrder)(nil), []domain.StampRequest{{Field: "PaidAt"}}, now)
+	s.ApplyStamps(nil, []domain.StampRequest{{Field: "PaidAt"}}, now)
 
 	// A name the schema does not declare stamped is skipped here too — the
 	// REFUSAL belongs to StampColumns, which runs before this.
 	q := &stampDeclOrder{Status: "NEW"}
-	s.ApplyStamps(q, []string{"Status", "Nope"}, now)
+	s.ApplyStamps(q, []domain.StampRequest{{Field: "Status"}, {Field: "Nope"}}, now)
 	if q.Status != "NEW" {
 		t.Fatalf("a plain field must not be written by the write-back, got %q", q.Status)
 	}
@@ -296,7 +306,7 @@ func TestApplyStamps_LeavesCountersAlone(t *testing.T) {
 	}
 	s := NewTableSchema[*counted]("hits").ID("id").StampedCounterField("TotalCount", "total_count")
 	c := &counted{TotalCount: 7}
-	s.ApplyStamps(c, []string{"TotalCount"}, time.Now())
+	s.ApplyStamps(c, []domain.StampRequest{{Field: "TotalCount"}}, time.Now())
 	if c.TotalCount != 7 {
 		t.Fatalf("a counter must not be written back, got %d", c.TotalCount)
 	}

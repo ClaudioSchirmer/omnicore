@@ -226,8 +226,8 @@ func TestDirectStamp_MarkerAsksForTheColumn(t *testing.T) {
 	if _, bound := fields["paid_at"]; bound {
 		t.Fatal("the marker must never become a bound value")
 	}
-	if len(stamps) != 1 || stamps[0] != "paid_at" {
-		t.Fatalf("want the stamped column requested, got %v", stamps)
+	if len(stamps.requestedTimes) != 1 || stamps.requestedTimes[0] != "paid_at" {
+		t.Fatalf("want the stamped column requested, got %v", stamps.requestedTimes)
 	}
 	if fields["status"] != "PAID" {
 		t.Fatalf("ordinary values still bind, got %v", fields["status"])
@@ -288,7 +288,6 @@ func TestStampedField_ValueIsWrittenBackOntoTheEntity(t *testing.T) {
 		t.Fatal("the entity starts with no stamp")
 	}
 	plan, err := stampedCols(schema, o, schema.UpdateNowColumns(), now)
-	stamped := plan.payload
 	if err != nil {
 		t.Fatalf("stampedCols: %v", err)
 	}
@@ -300,7 +299,7 @@ func TestStampedField_ValueIsWrittenBackOntoTheEntity(t *testing.T) {
 	}
 	// And the payload sees it, even though WriteFields deliberately never emits
 	// a stamped column.
-	payload := withStamps(schema.WriteFields(o), stamped, now)
+	payload := withStamps(schema.WriteFields(o), plan, now)
 	if got, ok := payload["paid_at"]; !ok || got != now {
 		t.Fatalf("the payload must carry the stamped column, got %v (present=%v)", got, ok)
 	}
@@ -310,7 +309,7 @@ func TestStampedField_ValueIsWrittenBackOntoTheEntity(t *testing.T) {
 // pass has the same rule, for the same reason.
 func TestStampedField_PayloadCopyDoesNotTouchTheBoundMap(t *testing.T) {
 	fields := domain.Fields{"status": "PAID"}
-	out := withStamps(fields, []string{"paid_at"}, testStamp())
+	out := withStamps(fields, stampPlan{requestedTimes: []string{"paid_at"}, payload: []string{"paid_at"}}, testStamp())
 	if _, leaked := fields["paid_at"]; leaked {
 		t.Fatal("the payload view must be a copy, never the bound map")
 	}
@@ -353,7 +352,7 @@ func TestStampedChild_RequestSurvivesTheValueCopy(t *testing.T) {
 
 	var avo domain.AggregateValueObject = line // the way writeChildren receives it
 	got := domain.RequestedStamps(avo)
-	if len(got) != 1 || got[0] != "ShippedAt" {
+	if len(got) != 1 || got[0].Field != "ShippedAt" {
 		t.Fatalf("a child's request must be readable through the interface, got %v", got)
 	}
 }
@@ -440,12 +439,26 @@ func countedSchema() *TableSchema {
 		StampedCounterField("TotalCount", "total_count")
 }
 
-// A counter is int64, not a pointer: a row that was just created has counted one
-// thing, so there is no absence for nil to describe.
+// A counter is int64 — or *int64 when it must also be able to say "no count at
+// all", which is the only thing StampNull can land in. Any other width is
+// refused: int64 is what the framework increments on every engine.
+func TestStampedCounter_AcceptsBothInt64Forms(t *testing.T) {
+	type plain struct {
+		ID    domain.ID
+		Count int64
+	}
+	type nullable struct {
+		ID    domain.ID
+		Count *int64
+	}
+	core.NewDirectSchema[plain]("c1").ID("id").StampedCounterField("Count", "count")
+	core.NewDirectSchema[nullable]("c2").ID("id").StampedCounterField("Count", "count")
+}
+
 func TestStampedCounter_RequiresInt64(t *testing.T) {
 	type bad struct {
 		ID    domain.ID
-		Count *int64
+		Count int32
 	}
 	defer func() {
 		r := recover()
@@ -464,7 +477,7 @@ func TestStampedCounter_RequiresInt64(t *testing.T) {
 func TestStampedCounter_InsertBindsOne(t *testing.T) {
 	schema := countedSchema()
 	sql, args := buildInsertWithCounters(testPGDialect{}, schema.Table(), schema.IDColumn(), "018f0000-0000-7000-8000-000000000001",
-		domain.Fields{"label": "x"}, nil, []string{"total_count"}, testStamp(), "")
+		domain.Fields{"label": "x"}, stampPlan{counters: []string{"total_count"}}, testStamp(), "")
 	if !strings.Contains(sql, "total_count") {
 		t.Fatalf("the counter must be in the INSERT: %s", sql)
 	}
@@ -483,7 +496,7 @@ func TestStampedCounter_InsertBindsOne(t *testing.T) {
 // written back, which would lose one of two concurrent increments silently.
 func TestStampedCounter_UpdateIncrementsServerSide(t *testing.T) {
 	sets, args := buildSetWithCounters(testPGDialect{}, domain.Fields{"label": "x"},
-		nil, []string{"total_count"}, testStamp(), "")
+		stampPlan{counters: []string{"total_count"}}, testStamp(), "")
 	joined := strings.Join(sets, ", ")
 	if !strings.Contains(joined, "total_count = total_count + 1") {
 		t.Fatalf("the counter must be a server-side increment, got %s", joined)
@@ -569,5 +582,234 @@ func TestStampedChild_CounterIsSeparatedFromTheInstant(t *testing.T) {
 	}
 	if len(plan.counters) != 1 || plan.counters[0] != "pick_count" {
 		t.Fatalf("the counter column, got %v", plan.counters)
+	}
+}
+
+// ─── the clearing verbs: StampNull and StampEmpty ────────────────────────────
+
+// clearedSchema declares one of each stamped kind, with the counter in its
+// NULLABLE form so both verbs reach both kinds.
+type clearedRow struct {
+	ID    domain.ID
+	Label string
+	PaidAt *time.Time
+	Count  *int64
+}
+
+func clearedSchema() *core.TableSchema {
+	return core.NewDirectSchema[clearedRow]("cleared").
+		ID("id").
+		Field("Label", "label").
+		StampedTimeField("PaidAt", "paid_at").
+		StampedCounterField("Count", "count")
+}
+
+// StampNull is a literal in the statement: nothing is bound for it, so there is
+// no argument order to get wrong.
+func TestStampNull_EmitsTheLiteralOnBothKinds(t *testing.T) {
+	_, plan, err := resolveValues(clearedSchema(), Values{
+		"Label": "x", "PaidAt": StampNull, "Count": StampNull,
+	})
+	if err != nil {
+		t.Fatalf("resolveValues: %v", err)
+	}
+	sets, args := buildSetWithCounters(testPGDialect{}, domain.Fields{"label": "x"}, plan, testStamp(), "")
+	joined := strings.Join(sets, ", ")
+	if !strings.Contains(joined, "paid_at = NULL") || !strings.Contains(joined, "count = NULL") {
+		t.Fatalf("both kinds must be nulled by literal, got %s", joined)
+	}
+	if len(args) != 1 {
+		t.Fatalf("a NULL binds nothing, got args %v", args)
+	}
+}
+
+// StampEmpty says it differently per kind, and deliberately: a counter's zero is
+// a literal, a time's is bound because how an instant is written is the
+// dialect's.
+func TestStampEmpty_ZeroesEachKindItsOwnWay(t *testing.T) {
+	_, plan, err := resolveValues(clearedSchema(), Values{
+		"Label": "x", "PaidAt": StampEmpty, "Count": StampEmpty,
+	})
+	if err != nil {
+		t.Fatalf("resolveValues: %v", err)
+	}
+	sets, args := buildSetWithCounters(testPGDialect{}, domain.Fields{"label": "x"}, plan, testStamp(), "")
+	joined := strings.Join(sets, ", ")
+	if !strings.Contains(joined, "count = 0") {
+		t.Fatalf("a counter's zero is a literal, got %s", joined)
+	}
+	if !strings.Contains(joined, "paid_at = $") {
+		t.Fatalf("a time's zero binds, got %s", joined)
+	}
+	var zeroBound bool
+	for _, a := range args {
+		if tv, ok := a.(time.Time); ok && tv.IsZero() {
+			zeroBound = true
+		}
+	}
+	if !zeroBound {
+		t.Fatalf("the zero instant must be the bound value, got %v", args)
+	}
+}
+
+// The three verbs are distinct requests on one column, and the LAST one wins:
+// a rule that stamps and a later rule that clears describe one outcome.
+func TestStampVerbs_LastRequestWins(t *testing.T) {
+	e := &clearedEntity{}
+	e.Stamp("PaidAt")
+	e.StampNull("PaidAt")
+	got := domain.RequestedStamps(e)
+	if len(got) != 1 || got[0].Op != domain.StampToNull {
+		t.Fatalf("the last verb must win on one request, got %v", got)
+	}
+	e.StampEmpty("PaidAt")
+	if got = domain.RequestedStamps(e); len(got) != 1 || got[0].Op != domain.StampToEmpty {
+		t.Fatalf("and again, got %v", got)
+	}
+}
+
+type clearedEntity struct {
+	domain.BaseEntity
+	PaidAt *time.Time
+}
+
+func (e *clearedEntity) Modes() []domain.EntityMode { return []domain.EntityMode{domain.ModeUpdate} }
+func (e *clearedEntity) BuildRules(string, domain.Service, *domain.Rules) {}
+
+// A plain int64 counter has no absence to write, and the refusal says which verb
+// does what the caller meant.
+func TestStampNull_RefusedOnANonNullableCounter(t *testing.T) {
+	type plain struct {
+		ID    domain.ID
+		Label string
+		Count int64
+	}
+	schema := core.NewDirectSchema[plain]("plainc").ID("id").
+		Field("Label", "label").StampedCounterField("Count", "count")
+
+	_, _, err := resolveValues(schema, Values{"Label": "x", "Count": StampNull})
+	if err == nil || !strings.Contains(err.Error(), "StampEmpty") {
+		t.Fatalf("StampNull on an int64 counter must be refused and name StampEmpty, got %v", err)
+	}
+	// …and StampEmpty on the very same field is fine.
+	if _, _, err := resolveValues(schema, Values{"Label": "x", "Count": StampEmpty}); err != nil {
+		t.Fatalf("StampEmpty must reach a plain counter: %v", err)
+	}
+}
+
+// On an INSERT a clearing verb is honoured too: the statement a reader sees
+// matches what was asked, rather than relying on the column's DEFAULT.
+func TestStampClearing_ReachesTheInsert(t *testing.T) {
+	_, plan, err := resolveValues(clearedSchema(), Values{
+		"Label": "x", "PaidAt": StampNull, "Count": StampEmpty,
+	})
+	if err != nil {
+		t.Fatalf("resolveValues: %v", err)
+	}
+	sql, _ := buildInsertWithCounters(testPGDialect{}, "cleared", "id",
+		"018f0000-0000-7000-8000-000000000001", domain.Fields{"label": "x"}, plan, testStamp(), "")
+	if !strings.Contains(sql, "NULL") || !strings.Contains(sql, "0") {
+		t.Fatalf("the INSERT must state both clears: %s", sql)
+	}
+}
+
+// The write-back is what the audit event and the caller's own entity read, so a
+// cleared column has to read as cleared on the struct too.
+func TestStampClearing_WritesBackOntoTheStruct(t *testing.T) {
+	schema := clearedSchema()
+	now := testStamp()
+	paid := now
+	count := int64(7)
+	row := &clearedRow{PaidAt: &paid, Count: &count}
+
+	schema.ApplyStamps(row, []domain.StampRequest{
+		{Field: "PaidAt", Op: domain.StampToNull},
+		{Field: "Count", Op: domain.StampToNull},
+	}, now)
+	if row.PaidAt != nil || row.Count != nil {
+		t.Fatalf("StampNull must clear both on the struct, got %v / %v", row.PaidAt, row.Count)
+	}
+
+	schema.ApplyStamps(row, []domain.StampRequest{
+		{Field: "PaidAt", Op: domain.StampToEmpty},
+		{Field: "Count", Op: domain.StampToEmpty},
+	}, now)
+	if row.PaidAt == nil || !row.PaidAt.IsZero() {
+		t.Fatalf("StampEmpty must land the zero instant, got %v", row.PaidAt)
+	}
+	if row.Count == nil || *row.Count != 0 {
+		t.Fatalf("StampEmpty must land 0, got %v", row.Count)
+	}
+}
+
+// A stamped COUNTER on a Direct write reaches the statement as a counter on
+// every verb, not only on Upsert.
+//
+// It used to reach Insert/Update/UpdateAll as a TIME: those paths appended every
+// resolved stamp column to the "bind the operation's instant" list, so a counter
+// column was bound a time.Time and the statement failed at the database. Only
+// Upsert built its own plan and split the two kinds, which is why the defect
+// stayed invisible — nothing asked a counter of the other three verbs.
+func TestStampedCounter_DirectInsertAndUpdateTreatItAsACounter(t *testing.T) {
+	type row struct {
+		ID    domain.ID
+		Label string
+		Count int64
+	}
+	schema := core.NewDirectSchema[row]("counted_direct").ID("id").
+		Field("Label", "label").StampedCounterField("Count", "count")
+
+	_, plan, err := resolveValues(schema, Values{"Label": "x", "Count": Stamp})
+	if err != nil {
+		t.Fatalf("resolveValues: %v", err)
+	}
+	if len(plan.counters) != 1 || plan.counters[0] != "count" {
+		t.Fatalf("the counter must land in the counter bucket, got %+v", plan)
+	}
+	if len(plan.requestedTimes) != 0 {
+		t.Fatalf("a counter is never bound to the instant, got %v", plan.requestedTimes)
+	}
+
+	sql, args := buildInsertWithCounters(testPGDialect{}, "counted_direct", "id",
+		"018f0000-0000-7000-8000-000000000001", domain.Fields{"label": "x"}, plan, testStamp(), "")
+	if !strings.Contains(sql, "count") {
+		t.Fatalf("the counter must be in the INSERT: %s", sql)
+	}
+	for _, a := range args {
+		if _, isTime := a.(time.Time); isTime {
+			t.Fatalf("a counter must never be bound an instant, args = %v", args)
+		}
+	}
+
+	sets, _ := buildSetWithCounters(testPGDialect{}, domain.Fields{"label": "x"}, plan, testStamp(), "")
+	if joined := strings.Join(sets, ", "); !strings.Contains(joined, "count = count + 1") {
+		t.Fatalf("the UPDATE must increment server-side, got %s", joined)
+	}
+}
+
+// The payload states what each bucket actually wrote. A cleared column reporting
+// the operation's instant would tell the projection the opposite of the row.
+func TestStampClearing_PayloadStatesEachValue(t *testing.T) {
+	plan := stampPlan{
+		requestedTimes: []string{"paid_at"},
+		nullCols:       []string{"canceled_at"},
+		zeroTimes:      []string{"reset_at"},
+		zeroCounters:   []string{"count"},
+	}
+	plan.payload = []string{"paid_at", "canceled_at", "reset_at", "count"}
+	now := testStamp()
+	out := withStamps(domain.Fields{"status": "X"}, plan, now)
+
+	if out["paid_at"] != now {
+		t.Errorf("a filled time states the instant, got %v", out["paid_at"])
+	}
+	if v, ok := out["canceled_at"]; !ok || v != nil {
+		t.Errorf("a cleared column states the absence, got %v (present=%v)", v, ok)
+	}
+	if tv, ok := out["reset_at"].(time.Time); !ok || !tv.IsZero() {
+		t.Errorf("a reset time states the zero instant, got %v", out["reset_at"])
+	}
+	if out["count"] != int64(0) {
+		t.Errorf("a reset counter states 0, got %v", out["count"])
 	}
 }

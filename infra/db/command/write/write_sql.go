@@ -125,7 +125,7 @@ func compilePredicate(d Dialect, t writeTarget, pred criteria.Expr, bound int) (
 // Postgres, BINARY(16) on MySQL. No RETURNING: the id AND the timestamps are
 // known up front.
 func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
-	return buildInsertWithCounters(d, table, pk, id, fields, nowCols, nil, now, revCol)
+	return buildInsertWithCounters(d, table, pk, id, fields, stampPlan{nowCols: nowCols}, now, revCol)
 }
 
 // buildInsertWithCounters is buildInsert plus the stamped COUNTER columns, which
@@ -133,7 +133,8 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 // thing. They bind as ordinary arguments here (there is no existing value to add
 // to yet); only on an UPDATE or an upsert conflict do they become the
 // server-side `col = col + 1`.
-func buildInsertWithCounters(d Dialect, table, pk, id string, fields domain.Fields, nowCols, counterCols []string, now time.Time, revCol string) (string, []any) {
+func buildInsertWithCounters(d Dialect, table, pk, id string, fields domain.Fields, plan stampPlan, now time.Time, revCol string) (string, []any) {
+	nowCols, counterCols := plan.nowCols, plan.counters
 	keys := SortedKeys(fields)
 	cols := make([]string, 0, len(keys)+1+len(nowCols))
 	phs := make([]string, 0, len(keys)+1+len(nowCols))
@@ -162,6 +163,24 @@ func buildInsertWithCounters(d Dialect, table, pk, id string, fields domain.Fiel
 		n++
 		phs = append(phs, d.Placeholder(n))
 		args = append(args, int64(1))
+	}
+	// A clearing verb on an INSERT says the same thing it says on an UPDATE: the
+	// column is written, with the framework's value rather than the caller's. On a
+	// fresh row NULL is what the column would have held anyway — asking for it is
+	// still honoured, so the statement a reader sees matches the request.
+	for _, nc := range plan.nullCols {
+		cols = append(cols, d.QuoteIdent(nc))
+		phs = append(phs, "NULL")
+	}
+	for _, zc := range plan.zeroCounters {
+		cols = append(cols, d.QuoteIdent(zc))
+		phs = append(phs, "0")
+	}
+	for _, zt := range plan.zeroTimes {
+		cols = append(cols, d.QuoteIdent(zt))
+		n++
+		phs = append(phs, d.Placeholder(n))
+		args = append(args, d.EncodeArg(time.Time{}))
 	}
 	if revCol != "" {
 		// A fresh row starts its commit-order token at 1 — appended here so the
@@ -203,7 +222,7 @@ func buildUpdate(d Dialect, t writeTarget, pred criteria.Expr, fields domain.Fie
 // columns and the server-side counters in one argument, so a caller cannot pass
 // one and forget the other.
 func buildUpdatePlan(d Dialect, t writeTarget, pred criteria.Expr, fields domain.Fields, plan stampPlan, now time.Time, revCol string, expectedRevision int64) (string, []any, error) {
-	sets, args := buildSetWithCounters(d, fields, plan.nowCols, plan.counters, now, revCol)
+	sets, args := buildSetWithCounters(d, fields, plan, now, revCol)
 	where, whereArgs, err := compilePredicate(d, t, pred, len(args))
 	if err != nil {
 		return "", nil, err
@@ -223,7 +242,7 @@ func buildUpdatePlan(d Dialect, t writeTarget, pred criteria.Expr, fields domain
 // `now`, and the revision bump when the schema declares one — returning the
 // fragments and the arguments in placeholder order.
 func buildSet(d Dialect, fields domain.Fields, nowCols []string, now time.Time, revCol string) ([]string, []any) {
-	return buildSetWithCounters(d, fields, nowCols, nil, now, revCol)
+	return buildSetWithCounters(d, fields, stampPlan{nowCols: nowCols}, now, revCol)
 }
 
 // buildSetWithCounters is buildSet plus the stamped COUNTER columns. A counter
@@ -231,7 +250,8 @@ func buildSet(d Dialect, fields domain.Fields, nowCols []string, now time.Time, 
 // SERVER under the row's lock — and for the same reason: two writers that both
 // read the value in Go and both wrote back read+1 would lose one of the two
 // increments, and neither would notice.
-func buildSetWithCounters(d Dialect, fields domain.Fields, nowCols, counterCols []string, now time.Time, revCol string) ([]string, []any) {
+func buildSetWithCounters(d Dialect, fields domain.Fields, plan stampPlan, now time.Time, revCol string) ([]string, []any) {
+	nowCols, counterCols := plan.nowCols, plan.counters
 	keys := SortedKeys(fields)
 	sets := make([]string, 0, len(keys)+len(nowCols)+len(counterCols)+1)
 	args := make([]any, 0, len(keys)+len(nowCols)+1)
@@ -249,6 +269,20 @@ func buildSetWithCounters(d Dialect, fields domain.Fields, nowCols, counterCols 
 	for _, cc := range counterCols {
 		c := d.QuoteIdent(cc)
 		sets = append(sets, c+" = "+c+" + 1")
+	}
+	// The three clearing verbs. NULL and the counter's 0 are literals — no value
+	// travels for them, so nothing can be bound wrong; a time's zero binds like
+	// any other instant, because how an instant is written is the dialect's.
+	for _, nc := range plan.nullCols {
+		sets = append(sets, d.QuoteIdent(nc)+" = NULL")
+	}
+	for _, zc := range plan.zeroCounters {
+		sets = append(sets, d.QuoteIdent(zc)+" = 0")
+	}
+	for _, zt := range plan.zeroTimes {
+		n++
+		sets = append(sets, d.QuoteIdent(zt)+" = "+d.Placeholder(n))
+		args = append(args, d.EncodeArg(time.Time{}))
 	}
 	if revCol != "" {
 		rc := d.QuoteIdent(revCol)
@@ -419,8 +453,59 @@ func requireDeletedAt(s *TableSchema, entityName string) (string, error) {
 type stampPlan struct {
 	nowCols  []string
 	counters []string
-	payload  []string
+	// nullCols are the stamped columns this write CLEARS — `col = NULL`. The
+	// absence is the framework's own value, known before the statement runs, so
+	// unlike a counter's increment it is written back onto the entity too.
+	nullCols []string
+	// zeroTimes and zeroCounters are the stamped columns this write RESETS to the
+	// declared type's zero. They are two buckets rather than one because the
+	// statement says it differently: a time binds the zero instant as an argument
+	// (the dialect owns how an instant is encoded), a counter is the literal 0.
+	zeroTimes    []string
+	zeroCounters []string
+	// requestedTimes are the stamped TIME columns a request asked to FILL, kept
+	// apart from nowCols (which also holds the verb's own managed timestamps)
+	// because only the requested ones belong in the payload.
+	requestedTimes []string
+	payload        []string
 }
+
+// splitStamps turns the claims the schema resolved into the buckets a statement
+// renders, preserving declaration order within each. It is the ONE place a verb
+// becomes a piece of SQL, so the insert path, the update path and the upsert's
+// conflict clause cannot disagree about what a verb means.
+func (p *stampPlan) splitStamps(claims []core.ClaimedStamp) {
+	for _, c := range claims {
+		switch {
+		case c.Op == domain.StampToNull:
+			p.nullCols = append(p.nullCols, c.Column)
+		case c.Op == domain.StampToEmpty && c.Counter:
+			p.zeroCounters = append(p.zeroCounters, c.Column)
+		case c.Op == domain.StampToEmpty:
+			p.zeroTimes = append(p.zeroTimes, c.Column)
+		case c.Counter:
+			p.counters = append(p.counters, c.Column)
+		default:
+			p.requestedTimes = append(p.requestedTimes, c.Column)
+		}
+	}
+	// The payload states what the framework KNOWS it wrote. A filled time, a
+	// cleared column and a reset one all qualify; a counter's increment does not
+	// (its new value is the server's and is never read back).
+	p.payload = append(append(append(append([]string{},
+		p.requestedTimes...), p.nullCols...), p.zeroTimes...), p.zeroCounters...)
+	// A requested time joins the verb's own managed timestamps: both are bound to
+	// the SAME instant, and one statement dates everything it touches alike.
+	if len(p.requestedTimes) > 0 {
+		p.nowCols = append(append(make([]string, 0, len(p.nowCols)+len(p.requestedTimes)),
+			p.nowCols...), p.requestedTimes...)
+	}
+}
+
+// writesBack reports whether this plan has a value the framework can put back on
+// the struct — everything except a bare counter increment, whose new value is the
+// server's and is never read back.
+func (p *stampPlan) writesBack() bool { return len(p.payload) > 0 }
 
 // stampedCols resolves the stamped columns a write requested — the Go field
 // names the domain accumulated through domain.Managed.Stamp, translated through
@@ -457,19 +542,17 @@ func claimStampedCols(schema *TableSchema, src any, nowCols []string, now time.T
 	plan := stampPlan{nowCols: nowCols}
 	asked := domain.RequestedStamps(src)
 	if !schema.HasStampedFields() {
-		return plan, asked, nil
+		return plan, domain.StampFields(asked), nil
 	}
-	cols, unclaimed := schema.ClaimStampColumns(asked)
-	if len(cols) == 0 {
+	claimed, unclaimed, err := schema.ClaimStampRequests(asked)
+	if err != nil {
+		return stampPlan{}, nil, err
+	}
+	if len(claimed) == 0 {
 		return plan, unclaimed, nil
 	}
-	times, counters := schema.StampedCounterColumns(cols)
+	plan.splitStamps(claimed)
 	schema.ApplyStamps(src, asked, now)
-	if len(times) > 0 {
-		out := make([]string, 0, len(nowCols)+len(times))
-		plan.nowCols = append(append(out, nowCols...), times...)
-	}
-	plan.counters, plan.payload = counters, times
 	return plan, unclaimed, nil
 }
 
@@ -488,25 +571,20 @@ func stampedChildCols(child *TableSchema, root *domain.AggregateRoot, item domai
 		return plan, nil
 	}
 	asked := domain.RequestedStamps(item)
-	cols, err := child.StampColumns(asked)
+	claimed, err := child.StampRequestColumns(asked)
 	if err != nil {
 		return stampPlan{}, err
 	}
-	if len(cols) == 0 {
+	if len(claimed) == 0 {
 		return plan, nil
 	}
-	times, counters := child.StampedCounterColumns(cols)
-	if root != nil && len(times) > 0 {
+	plan.splitStamps(claimed)
+	if root != nil && plan.writesBack() {
 		domain.ApplyToAggregateItem(root, item, func(ptr any) bool {
 			child.ApplyStamps(ptr, asked, now)
 			return true
 		})
 	}
-	if len(times) > 0 {
-		out := make([]string, 0, len(nowCols)+len(times))
-		plan.nowCols = append(append(out, nowCols...), times...)
-	}
-	plan.counters, plan.payload = counters, times
 	return plan, nil
 }
 
@@ -514,16 +592,28 @@ func stampedChildCols(child *TableSchema, root *domain.AggregateRoot, item domai
 // plus the stamped ones the statement filled. The copy is deliberate — fields is
 // the very map the DML binds, and the payload must never reach back into it (the
 // redaction pass has the same rule, for the same reason).
-func withStamps(fields domain.Fields, stamped []string, now time.Time) domain.Fields {
-	if len(stamped) == 0 {
+func withStamps(fields domain.Fields, plan stampPlan, now time.Time) domain.Fields {
+	if len(plan.payload) == 0 {
 		return fields
 	}
-	out := make(domain.Fields, len(fields)+len(stamped))
+	out := make(domain.Fields, len(fields)+len(plan.payload))
 	for k, v := range fields {
 		out[k] = v
 	}
-	for _, c := range stamped {
+	// Each bucket states the value the STATEMENT wrote, not a single instant for
+	// all of them: a cleared column that reported `now` here would tell the
+	// projection the opposite of what the row holds.
+	for _, c := range plan.requestedTimes {
 		out[c] = now
+	}
+	for _, c := range plan.nullCols {
+		out[c] = nil
+	}
+	for _, c := range plan.zeroTimes {
+		out[c] = time.Time{}
+	}
+	for _, c := range plan.zeroCounters {
+		out[c] = int64(0)
 	}
 	return out
 }

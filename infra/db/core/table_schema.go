@@ -717,15 +717,46 @@ func (s *TableSchema) StampedCounterField(goName, column string) *TableSchema {
 var stampedCounterType = reflect.TypeOf(int64(0))
 
 func mustStampedCounterType(table, goName string, ft reflect.Type) {
-	if ft == stampedCounterType {
+	if ft == stampedCounterType || ft == nullableStampedCounterType {
 		return
 	}
 	panic(fmt.Sprintf(
-		"infra.TableSchema(%s): stamped counter %q is typed %s — a counter is declared int64. It always "+
-			"has a value (a row that was just created has counted one thing), so it is never a pointer, and "+
-			"int64 is the width the framework increments on every engine.",
+		"infra.TableSchema(%s): stamped counter %q is typed %s — a counter is declared int64, or *int64 "+
+			"when it must also be able to say \"no count at all\". int64 is the width the framework "+
+			"increments on every engine; the pointer form adds nothing to the increment and only widens what "+
+			"the field can hold, which is what StampNull needs (a plain int64 has no absence to write).",
 		table, goName, ft,
 	))
+}
+
+// nullableStampedCounterType is the counter form that can hold an ABSENCE. The
+// increment is identical on both — `col = col + 1` is the server's, not the
+// field's — so the pointer buys exactly one thing: somewhere for StampNull to
+// land. A schema that never clears its counter keeps declaring int64 and reads
+// the same as it always did.
+var nullableStampedCounterType = reflect.TypeOf((*int64)(nil))
+
+// StampedFieldAcceptsNull reports whether the field can hold the absence
+// StampNull writes: a stamped time always can (*time.Time), a stamped counter
+// only when declared *int64. It is what the write path consults before it lets a
+// request become `col = NULL`, so a plain int64 is refused with a message rather
+// than scanned into on the next read.
+//
+// A type-less schema (a shared base before its roles bind) answers true: there
+// is no struct to disprove it against, and the role's own schema is where the
+// field is checked.
+func (s *TableSchema) StampedFieldAcceptsNull(goName string) bool {
+	f, ok := s.byGo[goName]
+	if !ok || !f.stamped {
+		return false
+	}
+	if !f.stampedCounter {
+		return true // a stamped time is *time.Time by declaration
+	}
+	if s.typ == nil {
+		return true
+	}
+	return s.typ.Field(f.path[0]).Type == nullableStampedCounterType
 }
 
 // IsStampedCounter reports whether goName is a stamped COUNTER (as opposed to a
@@ -1512,6 +1543,72 @@ func (s *TableSchema) ClaimStampColumns(goFields []string) (cols, unclaimed []st
 	return cols, unclaimed
 }
 
+// ClaimedStamp is one resolved stamp request: the column this schema claimed for
+// it, WHAT the statement is to put there, and which kind of stamped column it is
+// — everything the statement builders need, with the verb still attached to the
+// column it belongs to.
+type ClaimedStamp struct {
+	Column  string
+	Op      domain.StampOp
+	Counter bool
+}
+
+// ClaimStampRequests is ClaimStampColumns with the verb carried through: it
+// claims the requests this schema declares, in DECLARATION order (the order the
+// statement's columns follow), and reports the names it does not know so a
+// caller that can see every schema in the operation decides whether that is a
+// mistake.
+//
+// It is also where the one type rule a verb can break is enforced: StampNull
+// writes an absence, and a counter declared int64 has nowhere to put one. The
+// refusal names StampEmpty, which is the verb that zeroes it — the schema knows
+// the declared type, and this is the first moment the type and the verb meet.
+func (s *TableSchema) ClaimStampRequests(reqs []domain.StampRequest) (claimed []ClaimedStamp, unclaimed []string, err error) {
+	if len(reqs) == 0 {
+		return nil, nil, nil
+	}
+	want := make(map[string]domain.StampOp, len(reqs))
+	for _, r := range reqs {
+		want[r.Field] = r.Op
+	}
+	claimed = make([]ClaimedStamp, 0, len(reqs))
+	for _, f := range s.fields {
+		op, asked := want[f.goName]
+		if !f.stamped || !asked {
+			continue
+		}
+		delete(want, f.goName)
+		if op == domain.StampToNull && !s.StampedFieldAcceptsNull(f.goName) {
+			return nil, nil, fmt.Errorf(
+				"db: StampNull on %q (table %q) — the field is int64 and a plain int64 has no absence to "+
+					"write. Declare it *int64 and the column nullable, or use StampEmpty to reset it to 0",
+				f.goName, s.table)
+		}
+		claimed = append(claimed, ClaimedStamp{Column: f.column, Op: op, Counter: f.stampedCounter})
+	}
+	for _, r := range reqs {
+		if _, still := want[r.Field]; still {
+			unclaimed = append(unclaimed, r.Field)
+			delete(want, r.Field) // a name repeated in the request is reported once
+		}
+	}
+	return claimed, unclaimed, nil
+}
+
+// StampRequestColumns is ClaimStampRequests for a write where ONE schema owns
+// the whole request: anything it did not claim is a mistake, since there is no
+// sibling schema for the name to have belonged to.
+func (s *TableSchema) StampRequestColumns(reqs []domain.StampRequest) ([]ClaimedStamp, error) {
+	claimed, unclaimed, err := s.ClaimStampRequests(reqs)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.RefuseUnclaimedStamps(unclaimed); err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
 // RefuseUnclaimedStamps turns the names no schema claimed into the diagnostic
 // the caller sees. Two mistakes reach here and each gets its own sentence: a
 // name that is not a field at all (a typo), and one that IS mapped but plain —
@@ -1549,8 +1646,8 @@ func (s *TableSchema) RefuseUnclaimedStamps(goFields []string) error {
 // field is skipped rather than reported, because the statement has already been
 // built correctly — the row is right either way, and refusing here would fail a
 // good write over a reporting detail.
-func (s *TableSchema) ApplyStamps(e any, goFields []string, now time.Time) {
-	if len(goFields) == 0 {
+func (s *TableSchema) ApplyStamps(e any, reqs []domain.StampRequest, now time.Time) {
+	if len(reqs) == 0 {
 		return
 	}
 	v := reflect.ValueOf(e)
@@ -1558,17 +1655,52 @@ func (s *TableSchema) ApplyStamps(e any, goFields []string, now time.Time) {
 		return
 	}
 	v = v.Elem()
-	for _, g := range goFields {
-		f, ok := s.byGo[g]
+	for _, r := range reqs {
+		f, ok := s.byGo[r.Field]
 		if !ok || !f.stamped {
 			continue
 		}
 		target := f.path.TargetIn(v)
-		if !target.IsValid() || !target.CanSet() || target.Type() != stampedTimeType {
+		if !target.IsValid() || !target.CanSet() {
 			continue
 		}
-		stamp := now
-		target.Set(reflect.ValueOf(&stamp))
+		applyStampTo(target, r.Op, now)
+	}
+}
+
+// applyStampTo writes back onto the struct what the statement is about to write
+// into the column, so the entity the caller keeps holding — and the audit event,
+// which reads the STRUCT — report the same thing the row does.
+//
+// A counter is deliberately absent from the FILL case: its new value is the
+// server's (`col = col + 1`) and the framework does not read it back, so there is
+// nothing honest to write here. Null and empty are different — those values are
+// the framework's own, known before the statement runs.
+func applyStampTo(target reflect.Value, op domain.StampOp, now time.Time) {
+	switch target.Type() {
+	case stampedTimeType:
+		switch op {
+		case domain.StampToNull:
+			target.Set(reflect.Zero(stampedTimeType))
+		case domain.StampToEmpty:
+			zero := time.Time{}
+			target.Set(reflect.ValueOf(&zero))
+		default:
+			stamp := now
+			target.Set(reflect.ValueOf(&stamp))
+		}
+	case stampedCounterType:
+		if op == domain.StampToEmpty {
+			target.SetInt(0)
+		}
+	case nullableStampedCounterType:
+		switch op {
+		case domain.StampToNull:
+			target.Set(reflect.Zero(nullableStampedCounterType))
+		case domain.StampToEmpty:
+			zero := int64(0)
+			target.Set(reflect.ValueOf(&zero))
+		}
 	}
 }
 

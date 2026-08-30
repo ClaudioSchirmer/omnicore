@@ -251,7 +251,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 			return domain.WriteResult{}, err
 		}
 	}
-	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, roleFields, rolePlan.nowCols, rolePlan.counters, now, schema.RevisionColumn())
+	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, roleFields, rolePlan, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -277,7 +277,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// SyncEngine fans out to the OTHER roles' read models from THIS event — the
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(roleFields, rolePlan.payload, now),
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(roleFields, rolePlan, now),
 			outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now), BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -380,7 +380,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	// ONE outbox row per write (see insertWithBase): the payload carries the
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(roleFields, rolePlan.payload, now),
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(roleFields, rolePlan, now),
 			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, CreatedAt: ownCreatedAt, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -933,7 +933,7 @@ func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect
 		}
 		return readBaseRevision(ctx, tx, d, base, baseID)
 	}
-	sql, args := buildInsertWithCounters(d, base.Table(), base.IDColumn(), baseID, baseFields, insertPlan.nowCols, insertPlan.counters, now, base.RevisionColumn())
+	sql, args := buildInsertWithCounters(d, base.Table(), base.IDColumn(), baseID, baseFields, insertPlan, now, base.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return 0, err
 	}

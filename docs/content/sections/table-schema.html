@@ -560,10 +560,56 @@ o.Stamp("TotalCount")                             // same request, either way</c
     It counts <strong>per row</strong>: one row's counter counts that row's own events and never interacts with
     another's. That is what makes it portable on every engine (<code>col = col + 1</code>, evaluated under the row's
     lock) and what makes it <em>not</em> a sequence — a shared generator handing out values unique across a whole table
-    (an invoice number) needs a <code>SEQUENCE</code> object MySQL and SQLite do not have. Declared <code>int64</code>,
-    never a pointer: a row that was just created has counted one thing, so there is no absence for nil to describe.
+    (an invoice number) needs a <code>SEQUENCE</code> object MySQL and SQLite do not have. Declared <code>int64</code>
+    — or <code>*int64</code> when the column must also be able to say <em>no count at all</em>, which is the only shape
+    <code>StampNull</code> can land in; the increment is identical on both, since it is the server's.
     It binds 1 on an INSERT and becomes the server-side increment on an UPDATE — computed by the database precisely so
     two writers that both read the value and both wrote back read+1 cannot lose one of the increments silently.
+</p>
+
+<h3>Clearing a stamped column — <code>StampNull</code> and <code>StampEmpty</code></h3>
+<p>
+    A fact can un-happen. An order stops being paid, a member stops being verified, a retry budget is refilled — and
+    <code>Stamp</code> alone cannot say any of it, because it only ever writes forward. Two more verbs complete the
+    family, on <strong>both</strong> channels and <strong>both</strong> kinds of stamped column:
+</p>
+<pre><code>// entity side — the domain owns WHETHER, the framework owns the value
+o.StampNull("PaidAt")        // paid_at  = NULL
+o.StampEmpty("TotalCount")   // total_count = 0
+
+// Direct side — the same request through the only channel that path has
+_, err := jobs.Update(ctx, write.Values{
+    "Status":    "pending",
+    "StartedAt": write.StampNull,    // the job is no longer running
+    "Attempts":  write.StampEmpty,   // the retry budget is refilled
+}, q)</code></pre>
+<p>
+    <strong>They are not two spellings of one thing.</strong> <code>StampNull</code> writes an
+    <em>absence</em>; <code>StampEmpty</code> writes the declared type's <em>zero</em> — <code>0</code> for a counter,
+    the zero instant for a time. A zero is a value, so it reaches a column declared <code>NOT NULL</code>, which is
+    exactly where an absence cannot go; and on a counter it is the difference between <em>counted nothing</em> and
+    <em>has no count</em>.
+</p>
+<div class="box">
+    <strong>The year-1 instant is deliberate, and it is not the thing a <code>*time.Time</code> guards against.</strong>
+    A stamped time is a pointer so an <em>unstamped</em> fact reads as absent rather than as midnight of year 1. That
+    rule is about an accident. <code>StampEmpty</code> is an explicit reset — the caller asked for the type's zero, and
+    on a <code>NOT NULL</code> timestamp column it is the only reset there is.
+</div>
+<div class="box">
+    <strong>What each verb needs.</strong> <code>StampNull</code> needs a field that can hold an absence: a stamped time
+    always can, a stamped counter only when declared <code>*int64</code>. Asking it of a plain <code>int64</code> is
+    refused by the write, naming <code>StampEmpty</code> as the verb that zeroes it — the schema knows the declared
+    type, so the mistake is caught before a statement exists. <code>StampEmpty</code> needs nothing: every stamped
+    field has a zero.
+</div>
+<p>
+    Everything else about them is what <code>Stamp</code> already established. They are <strong>requests</strong>: a
+    column no verb named is left out of the statement entirely, so nothing is cleared by omission. Requesting the same
+    field twice with <em>different</em> verbs is one request — the <strong>last one wins</strong>, because a rule that
+    stamps a fact and a later rule that clears it are describing one outcome. And unlike a counter's increment, a
+    cleared or reset value <em>is</em> written back onto the entity and into the outbox payload: it is the framework's
+    own value, known before the statement runs, so there is something honest to state.
 </p>
 <p>
     A counter is deliberately absent from the outbox payload and from the write-back onto the entity: its new value is

@@ -13,6 +13,34 @@ with `1.0.0`.
 
 ### Added
 
+- **The stamped family can now CLEAR a column: `StampNull` and `StampEmpty`, on
+  both channels and both kinds.** `Stamp` only ever wrote forward, so a fact that
+  UN-happens — an order that stops being paid, a retry budget that is refilled —
+  had no verb at all. The entity side gains `o.StampNull("PaidAt")` /
+  `o.StampEmpty("TotalCount")`; the Direct side gains the matching markers
+  `write.StampNull` / `write.StampEmpty`, through the same Values channel
+  `write.Stamp` uses.
+
+  They are not two spellings of one thing. `StampNull` writes an ABSENCE;
+  `StampEmpty` writes the declared type's ZERO — 0 for a counter, the zero
+  instant for a time. A zero is a value, so it reaches a column declared NOT NULL,
+  where an absence cannot go; on a counter it is the difference between "counted
+  nothing" and "has no count".
+
+  Both are requests, like `Stamp`: a column no verb named is left out of the
+  statement, so nothing is cleared by omission. Naming one field with two
+  different verbs is one request and the LAST one wins. Unlike a counter's
+  increment, a cleared or reset value IS written back onto the entity and into the
+  outbox payload — it is the framework's own value, known before the statement
+  runs. All four verb paths carry them: Insert, Update, UpdateAll and the Upsert
+  conflict clause.
+
+- **`StampedCounterField` now accepts `*int64` as well as `int64`.** The pointer
+  form adds nothing to the increment (that is the server's either way) and only
+  widens what the field can hold, which is what `StampNull` needs — a plain
+  `int64` has no absence to write, and asking it is refused by the write with a
+  message naming `StampEmpty`.
+
 - **A read join may now CHAIN: `read.LeftJoin(...).Then(read.InnerJoin(...))`,
   with no depth limit.** A declared traversal used to reach exactly one aggregate;
   `Then` continues it from that aggregate to the next, and from there onward. A
@@ -46,6 +74,25 @@ with `1.0.0`.
   `read.DirectRepository` when the reach is only ever read. A `DirectRepository`
   itself never logs one, at any depth — it has no write path to charge.
 
+### Fixed
+
+- **A stamped COUNTER on a Direct write reached Insert / Update / UpdateAll as a
+  stamped TIME.** Those three paths appended every resolved stamp column to the
+  "bind the operation's instant" list, so a counter column was bound a
+  `time.Time` and the statement failed at the database. Only `Upsert` built its
+  own plan and split the two kinds, which is why nothing caught it — no test or
+  suite had ever asked a counter of the other three verbs. All four now resolve
+  through one plan.
+
+### Changed
+
+- **breaking** — `domain.RequestedStamps` returns `[]domain.StampRequest` (the
+  field name plus the verb) instead of `[]string`, and
+  `TableSchema.ApplyStamps` takes the same. A stamp request now carries WHAT it
+  asks for, and the two seams that read it had to widen with it rather than fork.
+  `domain.StampFields` reduces a request slice back to the names, which is what
+  every schema-side resolution still takes. Only a consumer that reads the raw
+  request list is affected; nothing on the declaration or the calling side moved.
 
 ## [0.65.0] - 2026-08-30
 

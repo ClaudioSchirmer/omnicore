@@ -9,6 +9,33 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
         <ul>
+            <li><strong>Added</strong> — <strong>the stamped family can now CLEAR a column:
+                <code>StampNull</code> and <code>StampEmpty</code>, on both channels and both kinds.</strong>
+                <code>Stamp</code> only ever wrote forward, so a fact that UN-happens — an order that stops being paid,
+                a retry budget that is refilled — had no verb at all. The entity side gains
+                <code>o.StampNull(...)</code> / <code>o.StampEmpty(...)</code>; the Direct side gains
+                <code>write.StampNull</code> / <code>write.StampEmpty</code> through the same Values channel.
+                <ul>
+                    <li>They are not two spellings of one thing. <code>StampNull</code> writes an ABSENCE;
+                        <code>StampEmpty</code> writes the declared type's ZERO — <code>0</code> for a counter, the zero
+                        instant for a time. A zero is a value, so it reaches a <code>NOT NULL</code> column, where an
+                        absence cannot go.</li>
+                    <li>Both are requests: a column no verb named is left out of the statement, so nothing is cleared by
+                        omission. Two different verbs on one field is one request and the LAST wins. Unlike a counter's
+                        increment, a cleared or reset value IS written back onto the entity and into the payload.</li>
+                    <li><code>StampedCounterField</code> now accepts <code>*int64</code> as well as <code>int64</code> —
+                        the shape <code>StampNull</code> needs. Asking it of a plain <code>int64</code> is refused by
+                        the write, naming <code>StampEmpty</code>.</li>
+                </ul>
+                See <a href="#table-schema">TableSchema</a>.</li>
+            <li><strong>Fixed</strong> — <strong>a stamped COUNTER on a Direct write reached Insert / Update /
+                UpdateAll as a stamped TIME</strong>, binding a <code>time.Time</code> into the counter column and
+                failing at the database. Only <code>Upsert</code> split the two kinds; all four verbs now resolve
+                through one plan.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <code>domain.RequestedStamps</code> returns
+                <code>[]domain.StampRequest</code> (field plus verb) instead of <code>[]string</code>, and
+                <code>TableSchema.ApplyStamps</code> takes the same. <code>domain.StampFields</code> reduces a request
+                slice back to the names. Only a consumer that reads the raw request list is affected.</li>
             <li><strong>Added</strong> — <strong>a read join may now CHAIN:
                 <code>read.LeftJoin(...).Then(read.InnerJoin(...))</code>, with no depth limit.</strong> A hop's
                 <code>.On(...)</code> names a foreign key of the PREVIOUS target; its <code>.Field(...)</code> lands on
