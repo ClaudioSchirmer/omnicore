@@ -31,6 +31,12 @@ func (pgDialect) ILikeClause(col, ph string) string   { return col + " ILIKE " +
 func (pgDialect) LikeClause(col, ph string) string    { return col + " LIKE " + ph }
 func (pgDialect) NowExpr() string                     { return "NOW()" }
 
+// UTCNowExpr is the transaction instant rebased to UTC. NOW() is a timestamptz
+// (microsecond precision) that a driver renders in the session time zone; the
+// AT TIME ZONE cast makes the reading independent of how the connection was
+// configured, which is what a fleet-wide clock has to be.
+func (pgDialect) UTCNowExpr() string { return "NOW() AT TIME ZONE 'UTC'" }
+
 // ApplyLimit caps a complete SELECT at n rows — the native tail clause on
 // Postgres.
 func (pgDialect) ApplyLimit(sql string, n int) string {

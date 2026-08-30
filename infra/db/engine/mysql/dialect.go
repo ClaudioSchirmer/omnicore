@@ -43,6 +43,12 @@ func (mysqlDialect) LikeClause(col, ph string) string {
 
 func (mysqlDialect) NowExpr() string { return "NOW()" }
 
+// UTCNowExpr is UTC_TIMESTAMP(6) — UTC by definition (never the session time
+// zone) and with the explicit (6) that NOW() lacks: a bare NOW()/UTC_TIMESTAMP
+// carries ZERO fractional digits on MySQL, which would round every operation's
+// stamp to the whole second.
+func (mysqlDialect) UTCNowExpr() string { return "UTC_TIMESTAMP(6)" }
+
 // ApplyLimit caps a complete SELECT at n rows — the native tail clause on
 // MySQL.
 func (mysqlDialect) ApplyLimit(sql string, n int) string {

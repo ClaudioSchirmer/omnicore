@@ -11,7 +11,7 @@ const fakePEM = "x"
 // on top of — no `auth:` block, so Mode defaults to disabled and each test
 // controls exactly the auth shape it needs.
 const baseYAMLNoAuth = `service: test
-relational: { dialect: postgres, dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x", clock: app }
 mongo: { uri: "mongodb://x", database: "v" }
 transport:
   endpoints: ["k:1"]

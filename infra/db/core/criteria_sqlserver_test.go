@@ -53,7 +53,8 @@ func (testSQLServerDialect) ILikeClause(col, ph string) string {
 func (testSQLServerDialect) LikeClause(col, ph string) string {
 	return col + " LIKE " + ph + " COLLATE Latin1_General_BIN"
 }
-func (testSQLServerDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }
+func (testSQLServerDialect) NowExpr() string    { return "CURRENT_TIMESTAMP" }
+func (testSQLServerDialect) UTCNowExpr() string { return "SYSUTCDATETIME()" }
 func (testSQLServerDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("SELECT TOP %d %s", n, sql[len("SELECT "):])
 }

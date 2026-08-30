@@ -100,6 +100,22 @@ relational:                              # the relational backend — system of 
                                          # auto-created; tuning pragmas may be appended ("file:app.db?_pragma=journal_mode(WAL)");
                                          # the factory FORCES foreign_keys(ON) + case_sensitive_like(ON). ":memory:" is RAM-only,
                                          # ephemeral (one pinned connection IS the database). sqlite is single-writer MVP/single-node.
+  clock: db                              # MANDATORY — db | app. NO default, like dialect and dsn: which clock a service's
+                                         # history is written against is an operator's declaration, and an absent value
+                                         # aborts boot. It governs the instant stamped on the managed timestamp columns —
+                                         # createdAt, updatedAt and the archive/unarchive deletedAt stamp.
+                                         #   db  — read from the relational backend, ONE reading per write transaction.
+                                         #         Every replica then shares one clock: the app clock is a per-POD clock,
+                                         #         and two replicas drifting apart stamp rows out of order with nothing in
+                                         #         the write path able to notice. Costs one extra round-trip per write TX.
+                                         #         (On sqlite the engine is embedded, so the database clock IS the process
+                                         #         clock — the setting is honored, it just buys no fleet-wide agreement.)
+                                         #   app — read from the writing process (time.Now().UTC()). No round-trip, and
+                                         #         correct exactly as far as the fleet's clock discipline is.
+                                         # Either way the stamp is minted ONCE per operation and bound as an ordinary
+                                         # argument — never a NOW() inside the DML — so every statement of one write
+                                         # (root, children, siblings, base cascade) carries the SAME instant and the value
+                                         # is known before COMMIT: outbox payload, audit event and response all agree.
   pool:                                  # OPTIONAL — connection-pool bounds, applied to whichever engine is selected.
     maxOpenConns: 0                      # cap on total open connections. unset -> max(4, NumCPU) (mirrors pgxpool's own
                                          # default, so postgres is unchanged; bounds mysql/sqlserver/oracle, whose database/sql

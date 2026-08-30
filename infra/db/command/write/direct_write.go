@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
@@ -23,7 +24,143 @@ import (
 //     own instant when the schema declares them.
 //   - "DeletedAt" — the archive transition has its own verbs (Archive /
 //     Unarchive); writing the column directly would bypass them.
+//
+// A STAMPED column (TableSchema.StampedTimeField) sits between the two: the
+// caller may ask for it but not dictate it, so its slot takes the Stamp marker
+// below and refuses a real value.
 type Values map[string]any
+
+// stampMarker is the type of Stamp. It is a distinct, unexported type carrying
+// no data, so it can never be confused with a value a caller meant to bind and
+// so no other package can forge one.
+type stampMarker struct{}
+
+// Stamp is the marker a Direct write puts in a Values slot to ask the framework
+// to FILL that column. It is the Direct half of TableSchema.StampedTimeField —
+// what domain.Managed.Stamp is on the entity side, expressed through the only
+// channel this path has: an entity write takes an entity and can accumulate the
+// request on it, a Direct write takes a map, so the request rides in the map.
+//
+// HOW TO USE IT. Declare the column on the Direct schema, then mark its slot on
+// the write that decides the moment:
+//
+//	func JobTable() *core.TableSchema {
+//	    return core.NewDirectSchema[JobRow]("job_queue").
+//	        ID("id").
+//	        Field("Status", "status").
+//	        StampedTimeField("StartedAt", "started_at").   // *time.Time, nullable column
+//	        UpdatedAt("updated_at")
+//	}
+//
+//	// the WHEN is the call site's; the value is still not its own
+//	_, err := jobs.Update(ctx, write.Values{
+//	    "Status":    "running",
+//	    "StartedAt": write.Stamp,
+//	}, criteria.Where(criteria.Eq("Status", "pending")))
+//
+// It works on every write verb that binds columns — Insert, Update, UpdateOne
+// and UpdateAll — and the slot is keyed by GO FIELD NAME, like every other
+// Values key. One statement over a hundred rows dates all of them with the SAME
+// instant, which is a reason to prefer it over a time.Now() the caller computes.
+//
+// The caller owns the WHEN, the framework owns the value: the write operation's
+// own authoritative instant, read from the clock the service declared
+// (relational.clock). A column left out of Values is left out of the statement,
+// so an already-stamped row keeps what it had.
+//
+// What it may mark is what the schema declared with StampedTimeField — a plain
+// field is refused, since its value comes from Values and stamping it would mean
+// nothing. Binding a time.Time into a stamped slot is refused too: the point of
+// the field is that its value is not the caller's to choose.
+//
+// It carries no type of its own on purpose. What the marker FILLS is the
+// schema's declaration to make — a stamped time column today, whatever the
+// family grows into later — so the call site never has to change when it does.
+var Stamp = stampMarker{}
+
+// insertOnlyValue wraps a value a caller wants bound when the row is CREATED and
+// left alone when an Upsert finds one already there.
+type insertOnlyValue struct{ v any }
+
+// OnInsert marks a Values slot as insert-only: the value binds on the INSERT and
+// the column is absent from the conflict clause, so an existing row keeps
+// whatever it had.
+//
+//	w.Upsert(ctx, write.Values{
+//	    "Identity":        id,
+//	    "WindowStartedAt": write.OnInsert(t0),   // set when the window opened
+//	    "TotalCount":      write.Stamp,          // counted on every write
+//	}, write.OnConflict("Identity"))
+//
+// It exists because an upsert has three things a column can be, not two: bound
+// on both paths (an ordinary value), filled by the framework (write.Stamp), or
+// established once and never revised — a window's start, a first-seen instant, a
+// creation-time attribution. Without it that third kind would be overwritten on
+// every conflict by the value the caller happened to compute this time.
+//
+// Outside Upsert it is refused: on a plain Insert every column is insert-only
+// already, and on an Update there is no insert path for it to mean anything.
+func OnInsert(v any) any { return insertOnlyValue{v: v} }
+
+// UpsertOption configures one Upsert. Options carry what the STATEMENT needs and
+// the schema cannot know: which key decides "already there", and what an upsert
+// does to a row that is archived.
+type UpsertOption func(*upsertConfig)
+
+type upsertConfig struct {
+	conflictGo   []string
+	archive      archivePolicy
+	archiveGiven bool
+}
+
+// archivePolicy is what an Upsert does to the archive column of a row it finds.
+type archivePolicy int
+
+const (
+	archiveKeep archivePolicy = iota
+	archiveUnarchive
+)
+
+// OnConflict names the fields whose values decide whether the row already
+// exists — by GO FIELD NAME, like every other name above infra. It is declared
+// per call rather than on the schema because one table legitimately has more
+// than one way to be conflicted on, and because four of the five engines take
+// the key on the statement itself.
+//
+// MySQL IS THE EXCEPTION, and it cannot be emulated: ON DUPLICATE KEY UPDATE
+// fires on ANY unique key the row violates, not on the one named here. On a
+// table with a single unique key the behavior is identical everywhere; with more
+// than one, MySQL may resolve a conflict the other engines would have let fail.
+// Declare one unique key per upserted table and the difference disappears.
+func OnConflict(goFields ...string) UpsertOption {
+	return func(c *upsertConfig) { c.conflictGo = goFields }
+}
+
+// UnarchiveOnConflict brings an archived row back to life when the upsert lands
+// on one: deleted_at is set to NULL in the conflict clause.
+//
+// Note what it does NOT do: the row's other columns are updated by the same
+// rules as any conflict, so counters CONTINUE from where they were rather than
+// restarting. An upsert that must start over needs the old row deleted, not
+// archived.
+func UnarchiveOnConflict() UpsertOption {
+	return func(c *upsertConfig) { c.archive, c.archiveGiven = archiveUnarchive, true }
+}
+
+// KeepArchiveStateOnConflict leaves the archive column exactly as it is —
+// whatever it is. Most conflicts land on live rows, and those stay live; a
+// conflict that lands on an ARCHIVED row updates it while it stays archived, and
+// therefore stays invisible to every read.
+//
+// That second half is the reason this must be declared rather than defaulted. An
+// upsert is the one write that cannot be archive-gated: INSERT ... ON CONFLICT
+// has no WHERE for its conflict target, so an archived row still occupies the
+// unique key and still absorbs the write. Choosing it deliberately is
+// reasonable — a forensic counter that must keep counting after the subject was
+// retired — but it is not a choice the framework may make on someone's behalf.
+func KeepArchiveStateOnConflict() UpsertOption {
+	return func(c *upsertConfig) { c.archive, c.archiveGiven = archiveKeep, true }
+}
 
 // managedByVerb names the slots a Direct write may not bind directly, with what
 // owns each one. Keyed by the Go name Values would spell.
@@ -38,23 +175,50 @@ var managedByVerb = map[string]string{
 // builders bind, through the schema's OWN resolution — the same surface a
 // criteria field resolves through, so a name works in a filter exactly where it
 // works in a write.
-func resolveValues(schema *TableSchema, v Values) (domain.Fields, error) {
+func resolveValues(schema *TableSchema, v Values) (domain.Fields, []string, error) {
 	if len(v) == 0 {
-		return nil, fmt.Errorf("db: a Direct write needs at least one value — an empty Values binds no column")
+		return nil, nil, fmt.Errorf("db: a Direct write needs at least one value — an empty Values binds no column")
 	}
 	out := make(domain.Fields, len(v))
+	var asked []string
 	for goField, val := range v {
 		if why, managed := managedByVerb[goField]; managed {
-			return nil, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
+			return nil, nil, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
+		}
+		if _, marked := val.(stampMarker); marked {
+			// The marker never becomes a bound value: it names a column for the
+			// stamp list, which StampColumns then validates against the schema.
+			asked = append(asked, goField)
+			continue
 		}
 		rf, ok := schema.Resolve(goField)
 		if !ok {
-			return nil, fmt.Errorf("db: unknown field %q on table %q — declare it with TableSchema.Field(...)",
+			return nil, nil, fmt.Errorf("db: unknown field %q on table %q — declare it with TableSchema.Field(...)",
 				goField, schema.Table())
+		}
+		if schema.IsStampedField(goField) {
+			return nil, nil, fmt.Errorf(
+				"db: %q on table %q is a stamped field — its value is the framework's (the write operation's "+
+					"instant), never the caller's. Pass write.Stamp to ask for it: Values{%q: write.Stamp}",
+				goField, schema.Table(), goField)
 		}
 		out[rf.Column] = val
 	}
-	return out, nil
+	// Validate what was ASKED before judging the shape of the write: a marker on
+	// a plain field is a mistake about that field, and saying so beats telling
+	// the caller their write has no substance when the substance is the very key
+	// they got wrong.
+	stamps, err := schema.StampColumns(asked)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil, fmt.Errorf(
+			"db: a Direct write on %q asked only for stamps — a write has to change something the caller "+
+				"decided; a stamp records WHEN that happened, it is not the change itself",
+			schema.Table())
+	}
+	return out, stamps, nil
 }
 
 // DirectWriter is the write half of a Direct repository: INSERT/UPDATE/DELETE
@@ -82,6 +246,11 @@ type DirectWriter struct {
 	// tx is the caller's OPEN transaction when the repository was bound with
 	// InTx; nil means each write opens and commits its own.
 	tx core.Tx
+	// clock is the declared instant source (relational.clock), recovered from
+	// the engine at construction exactly as the WriteBeginner is. A Direct write
+	// stamps the same managed columns an entity write does, so it reads the same
+	// clock; an engine that does not carry one leaves ClockApp, the zero value.
+	clock core.ClockMode
 }
 
 // NewDirectWriter binds the write half to an engine and a Direct schema. The
@@ -95,7 +264,19 @@ func NewDirectWriter(eng RelationalEngine, schema *TableSchema, name string) *Di
 				"every Direct write runs in one, exactly as an entity write does",
 			schema.Table(), eng))
 	}
-	return &DirectWriter{eng: eng, beginner: b, schema: schema, name: name}
+	w := &DirectWriter{eng: eng, beginner: b, schema: schema, name: name}
+	if c, ok := any(eng).(interface{ ClockMode() core.ClockMode }); ok {
+		w.clock = c.ClockMode()
+	}
+	return w
+}
+
+// now mints this write's authoritative instant, read through the transaction the
+// statement will run in — the caller's under InTx, the framework-owned one
+// otherwise. Same contract as the entity path: one reading per statement, bound
+// as an ordinary argument.
+func (w *DirectWriter) now(ctx context.Context, tx Tx) (time.Time, error) {
+	return writeNow(ctx, tx, w.clock)
 }
 
 // BindTx returns a copy of this writer running inside tx instead of opening its
@@ -125,7 +306,7 @@ func (w *DirectWriter) Schema() *TableSchema { return w.schema }
 // (UUID v7, like every other insert in the framework). Values never carries
 // "ID"; the returned id is how the caller keeps it.
 func (w *DirectWriter) Insert(ctx context.Context, v Values) (domain.ID, error) {
-	fields, err := resolveValues(w.schema, v)
+	fields, stamps, err := resolveValues(w.schema, v)
 	if err != nil {
 		return domain.ID{}, err
 	}
@@ -133,9 +314,15 @@ func (w *DirectWriter) Insert(ctx context.Context, v Values) (domain.ID, error) 
 	if err != nil {
 		return domain.ID{}, err
 	}
-	sql, args := buildInsert(w.eng.Dialect(), w.schema.Table(), w.schema.IDColumn(), id, fields,
-		w.schema.InsertNowColumns(), writeNow(), "")
-	if _, err := w.run(ctx, sql, args); err != nil {
+	if _, err := w.run(ctx, func(tx Tx) (string, []any, error) {
+		now, err := w.now(ctx, tx)
+		if err != nil {
+			return "", nil, err
+		}
+		sql, args := buildInsert(tx.Dialect(), w.schema.Table(), w.schema.IDColumn(), id, fields,
+			append(w.schema.InsertNowColumns(), stamps...), now, "")
+		return sql, args, nil
+	}); err != nil {
 		return domain.ID{}, err
 	}
 	return domain.NewID(id), nil
@@ -145,65 +332,57 @@ func (w *DirectWriter) Insert(ctx context.Context, v Values) (domain.ID, error) 
 // how many were affected. The Query's archived scope gates the statement like it
 // gates a read: by default only active rows are touched.
 func (w *DirectWriter) Update(ctx context.Context, v Values, q *criteria.Query) (int64, error) {
-	sql, args, err := w.updateStmt(v, q)
-	if err != nil {
-		return 0, err
-	}
-	return w.run(ctx, sql, args)
+	return w.run(ctx, w.updateStmt(ctx, v, q))
 }
 
 // updateStmt renders the UPDATE both Update and UpdateOne execute. They differ
 // only in what they do with the affected-row count, never in what they emit.
-func (w *DirectWriter) updateStmt(v Values, q *criteria.Query) (string, []any, error) {
-	fields, err := resolveValues(w.schema, v)
-	if err != nil {
-		return "", nil, err
+func (w *DirectWriter) updateStmt(ctx context.Context, v Values, q *criteria.Query) func(Tx) (string, []any, error) {
+	return func(tx Tx) (string, []any, error) {
+		fields, stamps, err := resolveValues(w.schema, v)
+		if err != nil {
+			return "", nil, err
+		}
+		pred, err := w.predicate(q)
+		if err != nil {
+			return "", nil, err
+		}
+		now, err := w.now(ctx, tx)
+		if err != nil {
+			return "", nil, err
+		}
+		return buildUpdate(tx.Dialect(), schemaTarget(w.schema), pred, fields,
+			append(w.schema.UpdateNowColumns(), stamps...), now, "", 0)
 	}
-	pred, err := w.predicate(q)
-	if err != nil {
-		return "", nil, err
-	}
-	return buildUpdate(w.eng.Dialect(), schemaTarget(w.schema), pred, fields,
-		w.schema.UpdateNowColumns(), writeNow(), "", 0)
 }
 
 // UpdateOne is Update for a criteria the caller believes names exactly one row.
 // Zero rows is a typed RecordNotFound; more than one is refused, and because the
 // statement runs in a transaction the rows it already touched are rolled back.
 func (w *DirectWriter) UpdateOne(ctx context.Context, v Values, q *criteria.Query) error {
-	sql, args, err := w.updateStmt(v, q)
-	if err != nil {
-		return err
-	}
-	return w.runExpectingOne(ctx, sql, args, "UpdateOne")
+	return w.runExpectingOne(ctx, w.updateStmt(ctx, v, q), "UpdateOne")
 }
 
 // Delete removes every row matching the criteria — one statement against one
 // table, no cascade — and returns how many were removed.
 func (w *DirectWriter) Delete(ctx context.Context, q *criteria.Query) (int64, error) {
-	sql, args, err := w.deleteStmt(q)
-	if err != nil {
-		return 0, err
-	}
-	return w.run(ctx, sql, args)
+	return w.run(ctx, w.deleteStmt(q))
 }
 
 // deleteStmt renders the DELETE both Delete and DeleteOne execute.
-func (w *DirectWriter) deleteStmt(q *criteria.Query) (string, []any, error) {
-	pred, err := w.predicate(q)
-	if err != nil {
-		return "", nil, err
+func (w *DirectWriter) deleteStmt(q *criteria.Query) func(Tx) (string, []any, error) {
+	return func(tx Tx) (string, []any, error) {
+		pred, err := w.predicate(q)
+		if err != nil {
+			return "", nil, err
+		}
+		return deleteSQL(tx.Dialect(), schemaTarget(w.schema), pred)
 	}
-	return deleteSQL(w.eng.Dialect(), schemaTarget(w.schema), pred)
 }
 
 // DeleteOne is Delete for a criteria the caller believes names exactly one row.
 func (w *DirectWriter) DeleteOne(ctx context.Context, q *criteria.Query) error {
-	sql, args, err := w.deleteStmt(q)
-	if err != nil {
-		return err
-	}
-	return w.runExpectingOne(ctx, sql, args, "DeleteOne")
+	return w.runExpectingOne(ctx, w.deleteStmt(q), "DeleteOne")
 }
 
 // Archive stamps the DeletedAt column on every ACTIVE row matching the criteria.
@@ -219,23 +398,91 @@ func (w *DirectWriter) Unarchive(ctx context.Context, q *criteria.Query) (int64,
 	return w.transition(ctx, q, false)
 }
 
+// Upsert writes one row, keyed on the fields OnConflict names rather than on the
+// identity: it inserts when nothing matches that key, and updates the row that
+// does — in one statement, so two callers racing on the same key cannot both
+// decide the row is missing.
+//
+//	w.Upsert(ctx, write.Values{
+//	    "Identity":        id,
+//	    "IdentityKind":    kind,
+//	    "Outcome":         "FAILURE",
+//	    "TotalCount":      write.Stamp,          // += 1 on both paths
+//	    "WindowStartedAt": write.OnInsert(t0),   // set once, never revised
+//	    "LastAt":          write.Stamp,          // the operation's instant
+//	    "LastIP":          ip,                   // overwritten on conflict
+//	}, write.OnConflict("Identity", "IdentityKind", "Outcome"),
+//	   write.KeepArchiveStateOnConflict())
+//
+// Each Values slot says what happens on a conflict, and the four cases are the
+// four kinds of column an upsert has: an ordinary value is overwritten;
+// write.Stamp is filled by the framework (the operation's instant for a stamped
+// TIME column, `col = col + 1` for a stamped COUNTER, computed server-side under
+// the row's lock so two racing increments cannot collapse into one); OnInsert is
+// established on creation and never revised; and the conflict key itself is
+// insert-only by definition — it is the thing that matched.
+//
+// It returns only an error. A row count would have to mean the same on every
+// backend and it does not: MySQL reports 2 for a conflicting upsert and 1 for an
+// inserting one, while the others report 1 for both. Reporting which path ran
+// would need a RETURNING/OUTPUT clause MySQL has no equivalent for, so the
+// framework declines to invent an answer.
+//
+// A schema declaring DeletedAt MUST also declare what an upsert does to the
+// archive column — UnarchiveOnConflict or KeepArchiveStateOnConflict — because
+// this is the one write that cannot be archive-gated (see those two).
+func (w *DirectWriter) Upsert(ctx context.Context, v Values, opts ...UpsertOption) error {
+	var cfg upsertConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	plan, err := w.upsertPlan(v, cfg)
+	if err != nil {
+		return err
+	}
+	// The identity is minted like every other Direct insert; on the conflict path
+	// it is simply not used — the row that matched keeps the id it already has,
+	// which is why Upsert returns no id.
+	id, err := newWriteID()
+	if err != nil {
+		return err
+	}
+	_, err = w.run(ctx, func(tx Tx) (string, []any, error) {
+		now, err := w.now(ctx, tx)
+		if err != nil {
+			return "", nil, err
+		}
+		return w.renderUpsert(tx.Dialect(), plan, id, now)
+	})
+	return err
+}
+
 // UpdateAll binds the given values on EVERY row of the table, archived ones
 // included. It is the deliberate sweep the empty-predicate refusal points at:
 // the verb, not a filter that happened to come out empty, is what says so.
 func (w *DirectWriter) UpdateAll(ctx context.Context, v Values) (int64, error) {
-	fields, err := resolveValues(w.schema, v)
+	fields, stamps, err := resolveValues(w.schema, v)
 	if err != nil {
 		return 0, err
 	}
-	d := w.eng.Dialect()
-	sets, args := buildSet(d, fields, w.schema.UpdateNowColumns(), writeNow(), "")
-	return w.run(ctx, fmt.Sprintf("UPDATE %s SET %s", d.QuoteIdent(w.schema.Table()), strings.Join(sets, ", ")), args)
+	return w.run(ctx, func(tx Tx) (string, []any, error) {
+		now, err := w.now(ctx, tx)
+		if err != nil {
+			return "", nil, err
+		}
+		d := tx.Dialect()
+		sets, args := buildSet(d, fields, append(w.schema.UpdateNowColumns(), stamps...), now, "")
+		return fmt.Sprintf("UPDATE %s SET %s", d.QuoteIdent(w.schema.Table()), strings.Join(sets, ", ")), args, nil
+	})
 }
 
 // DeleteAll empties the table — every row, archived ones included.
 func (w *DirectWriter) DeleteAll(ctx context.Context) (int64, error) {
-	d := w.eng.Dialect()
-	return w.run(ctx, "DELETE FROM "+d.QuoteIdent(w.schema.Table()), nil)
+	return w.run(ctx, func(tx Tx) (string, []any, error) {
+		return "DELETE FROM " + tx.Dialect().QuoteIdent(w.schema.Table()), nil, nil
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -301,18 +548,19 @@ func (w *DirectWriter) transition(ctx context.Context, q *criteria.Query, archiv
 			"db: %s on %q sets the archived scope itself — the verb IS the scope, so the criteria must not declare one",
 			verb, w.schema.Table())
 	}
-	now := writeNow()
-	var stamp any
-	if archive {
-		stamp = now
-	}
-	sql, args, err := buildUpdate(w.eng.Dialect(), schemaTarget(w.schema),
-		gated(q.Condition(), scope, w.schema), domain.Fields{sdCol: stamp},
-		w.schema.UpdateNowColumns(), now, "", 0)
-	if err != nil {
-		return 0, err
-	}
-	return w.run(ctx, sql, args)
+	return w.run(ctx, func(tx Tx) (string, []any, error) {
+		now, err := w.now(ctx, tx)
+		if err != nil {
+			return "", nil, err
+		}
+		var stamp any
+		if archive {
+			stamp = now
+		}
+		return buildUpdate(tx.Dialect(), schemaTarget(w.schema),
+			gated(q.Condition(), scope, w.schema), domain.Fields{sdCol: stamp},
+			w.schema.UpdateNowColumns(), now, "", 0)
+	})
 }
 
 // runExpectingOne executes a statement that must affect exactly one row, and
@@ -332,7 +580,7 @@ func (w *DirectWriter) transition(ctx context.Context, q *criteria.Query, archiv
 // The id column carries the notification's field, with an empty value: the
 // statement was keyed on a predicate, not on a primary key, and rendering the
 // bound values into a message that may be logged is not worth the diagnosis.
-func (w *DirectWriter) runExpectingOne(ctx context.Context, sql string, args []any, verb string) error {
+func (w *DirectWriter) runExpectingOne(ctx context.Context, build func(Tx) (string, []any, error), verb string) error {
 	outcome := func(n int64) error {
 		switch {
 		case n == 0:
@@ -345,6 +593,10 @@ func (w *DirectWriter) runExpectingOne(ctx context.Context, sql string, args []a
 	}
 
 	if w.tx != nil {
+		sql, args, err := build(w.tx)
+		if err != nil {
+			return err
+		}
 		n, err := core.ExecCount(w.tx, ctx, sql, args...)
 		if err != nil {
 			return w.mapErr(err)
@@ -357,6 +609,10 @@ func (w *DirectWriter) runExpectingOne(ctx context.Context, sql string, args []a
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	sql, args, err := build(tx)
+	if err != nil {
+		return err
+	}
 	n, err := tx.ExecCount(ctx, sql, args...)
 	if err != nil {
 		return w.mapErr(err)
@@ -372,8 +628,19 @@ func (w *DirectWriter) runExpectingOne(ctx context.Context, sql string, args []a
 // framework-owned one otherwise. Opening a transaction for a single statement is
 // what makes the count available uniformly across engines — and what lets
 // expectOne refuse a too-wide criteria with nothing committed.
-func (w *DirectWriter) run(ctx context.Context, sql string, args []any) (int64, error) {
+//
+// The statement arrives as a BUILDER rather than as finished SQL because a
+// managed timestamp may have to be read from the database itself
+// (relational.clock: db): the transaction has to exist before the statement can
+// be rendered, so the builder runs with the live transaction in hand. It also
+// keeps the resolver/dialect the statement is compiled against the one belonging
+// to the transaction that will execute it.
+func (w *DirectWriter) run(ctx context.Context, build func(Tx) (string, []any, error)) (int64, error) {
 	if w.tx != nil {
+		sql, args, err := build(w.tx)
+		if err != nil {
+			return 0, err
+		}
 		n, err := core.ExecCount(w.tx, ctx, sql, args...)
 		return n, w.mapErr(err)
 	}
@@ -382,6 +649,10 @@ func (w *DirectWriter) run(ctx context.Context, sql string, args []any) (int64, 
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	sql, args, err := build(tx)
+	if err != nil {
+		return 0, err
+	}
 	n, err := tx.ExecCount(ctx, sql, args...)
 	if err != nil {
 		return 0, w.mapErr(err)
@@ -399,4 +670,172 @@ func (w *DirectWriter) mapErr(err error) error {
 		return err
 	}
 	return TranslateUniqueViolation(w.eng.Dialect(), err, w.name, w.constraints)
+}
+
+// upsertPlan is a Values map resolved for one upsert: which columns bind what,
+// and what each one does when the row already exists. Every refusal is raised
+// while building it — before a transaction is opened — so a rejected call costs
+// nothing.
+//
+// It exists apart from resolveValues because an upsert reads the same map with a
+// wider vocabulary: OnInsert means nothing on the other verbs, and there a
+// stamped column rides the managed-column channel instead of a conflict clause.
+type upsertPlan struct {
+	bound      domain.Fields // ordinary values — overwritten on conflict
+	insertOnly domain.Fields // established on creation, never revised
+	times      []string      // stamped time columns — bound to the operation's instant
+	counters   []string      // stamped counters — 1 on insert, col + 1 on conflict
+	keyCols    []string      // the conflict target, in declaration order
+	keyed      map[string]bool
+	unarchive  bool
+	sdCol      string
+}
+
+func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error) {
+	table := w.schema.Table()
+	if len(cfg.conflictGo) == 0 {
+		return upsertPlan{}, fmt.Errorf(
+			"db: an Upsert on %q needs write.OnConflict(...) — the key that decides whether the row already "+
+				"exists is the statement's whole premise, and the framework will not guess it from the schema",
+			table)
+	}
+	sdCol, hasDeletedAt := w.schema.DeletedAtColumn()
+	if hasDeletedAt && !cfg.archiveGiven {
+		return upsertPlan{}, fmt.Errorf(
+			"db: an Upsert on %q must declare what it does to an ARCHIVED row — write.UnarchiveOnConflict() "+
+				"or write.KeepArchiveStateOnConflict(). Every other write verb is gated on deleted_at IS NULL, "+
+				"but an upsert cannot be: its conflict target takes no WHERE, so an archived row still holds "+
+				"the unique key and still absorbs the write. Unarchiving and updating-while-invisible are both "+
+				"defensible; picking one on your behalf is not",
+			table)
+	}
+	if len(v) == 0 {
+		return upsertPlan{}, fmt.Errorf("db: an Upsert on %q needs at least one value", table)
+	}
+
+	plan := upsertPlan{
+		bound:      domain.Fields{},
+		insertOnly: domain.Fields{},
+		unarchive:  cfg.archive == archiveUnarchive,
+		sdCol:      sdCol,
+	}
+
+	// The conflict key resolves through the schema like any other name. Its
+	// columns are insert-only by definition — they are what matched — so they are
+	// tracked here and skipped when the conflict clause is assembled.
+	isKey := make(map[string]bool, len(cfg.conflictGo))
+	for _, g := range cfg.conflictGo {
+		rf, ok := w.schema.Resolve(g)
+		if !ok {
+			return upsertPlan{}, fmt.Errorf(
+				"db: Upsert on %q — unknown conflict field %q; declare it with TableSchema.Field(...)", table, g)
+		}
+		if _, present := v[g]; !present {
+			return upsertPlan{}, fmt.Errorf(
+				"db: Upsert on %q — the conflict field %q carries no value; the key a row is matched on has to "+
+					"be part of the row being written", table, g)
+		}
+		isKey[rf.Column] = true
+		plan.keyCols = append(plan.keyCols, rf.Column)
+	}
+
+	var asked []string
+	for goField, val := range v {
+		if why, managed := managedByVerb[goField]; managed {
+			return upsertPlan{}, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
+		}
+		if _, marked := val.(stampMarker); marked {
+			asked = append(asked, goField)
+			continue
+		}
+		rf, ok := w.schema.Resolve(goField)
+		if !ok {
+			return upsertPlan{}, fmt.Errorf(
+				"db: unknown field %q on table %q — declare it with TableSchema.Field(...)", goField, table)
+		}
+		if w.schema.IsStampedField(goField) {
+			return upsertPlan{}, fmt.Errorf(
+				"db: %q on table %q is a stamped field — its value is the framework's, never the caller's. "+
+					"Pass write.Stamp to ask for it: Values{%q: write.Stamp}", goField, table, goField)
+		}
+		if only, insertScoped := val.(insertOnlyValue); insertScoped {
+			plan.insertOnly[rf.Column] = only.v
+			continue
+		}
+		plan.bound[rf.Column] = val
+	}
+
+	stamps, err := w.schema.StampColumns(asked)
+	if err != nil {
+		return upsertPlan{}, err
+	}
+	plan.times, plan.counters = w.schema.StampedCounterColumns(stamps)
+	// The key columns stay in `bound` — they are written on the INSERT like any
+	// other value. keyed records them so the CONFLICT clause can skip them:
+	// assigning a column the row was MATCHED on is a no-op at best, and on the
+	// MERGE dialects assigning a join key is an error.
+	plan.keyed = isKey
+	return plan, nil
+}
+
+// renderUpsert turns the resolved plan into the statement and its arguments.
+// It runs inside the transaction because a stamped time column binds the
+// operation's instant, and under relational.clock: db that instant is read from
+// the very transaction the statement will run in.
+func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now time.Time) (string, []any, error) {
+	boundKeys := SortedKeys(plan.bound)
+	insertKeys := SortedKeys(plan.insertOnly)
+
+	cols := make([]string, 0, 1+len(boundKeys)+len(insertKeys)+len(plan.times)+len(plan.counters))
+	args := make([]any, 0, cap(cols))
+
+	cols = append(cols, w.schema.IDColumn())
+	args = append(args, d.EncodeArg(domain.NewID(id)))
+	for _, c := range boundKeys {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(plan.bound[c]))
+	}
+	for _, c := range insertKeys {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(plan.insertOnly[c]))
+	}
+	for _, c := range plan.times {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(now))
+	}
+	for _, c := range plan.counters {
+		// A fresh row has counted one thing.
+		cols = append(cols, c)
+		args = append(args, int64(1))
+	}
+	// The managed timestamps ride the INSERT like they do on every other verb.
+	for _, c := range w.schema.InsertNowColumns() {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(now))
+	}
+
+	sets := make([]UpsertSet, 0, len(cols))
+	for _, c := range boundKeys {
+		if plan.keyed[c] {
+			continue
+		}
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	for _, c := range plan.times {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	for _, c := range plan.counters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetBump})
+	}
+	// updated_at is already in the INSERT list, bound to this same instant, so
+	// the conflict path takes it from the proposed row rather than binding a
+	// second argument — one value, one placeholder, no ordering to get wrong.
+	// created_at is deliberately absent: a row's creation is not revised.
+	for _, c := range w.schema.UpdateNowColumns() {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	if plan.unarchive {
+		sets = append(sets, UpsertSet{Col: plan.sdCol, Mode: core.UpsertSetExpr, Expr: "NULL"})
+	}
+	return d.BuildUpsert(w.schema.Table(), cols, plan.keyCols, sets), args, nil
 }

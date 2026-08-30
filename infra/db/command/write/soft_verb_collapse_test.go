@@ -236,7 +236,7 @@ func TestArchive_AuditRecordsTheDeltaItPersisted(t *testing.T) {
 	e := loadedTenant(t, "trial", 7)
 	a, _ := domain.GetArchivable(e, nil, "GetArchivable")
 
-	ev := BuildArchiveEvent(newBuilderCtx(), a, tenantSchema, nil, CascadeStamps{Own: writeNow()})
+	ev := BuildArchiveEvent(newBuilderCtx(), a, tenantSchema, nil, CascadeStamps{Own: testStamp()})
 
 	if ev.Kind != "transition" {
 		t.Errorf("the verb is still a transition, got kind %q", ev.Kind)
@@ -259,7 +259,7 @@ func TestArchive_AuditStaysBareWhenNothingChanged(t *testing.T) {
 	domain.CaptureOld(e)
 	a, _ := domain.GetArchivable(e, nil, "GetArchivable")
 
-	ev := BuildArchiveEvent(newBuilderCtx(), a, tenantSchema, nil, CascadeStamps{Own: writeNow()})
+	ev := BuildArchiveEvent(newBuilderCtx(), a, tenantSchema, nil, CascadeStamps{Own: testStamp()})
 
 	if len(ev.Changes) != 0 {
 		t.Errorf("a pure transition must carry no Changes block, got %+v", ev.Changes)
@@ -414,7 +414,7 @@ func TestUpdate_WithoutTheRequest_StaysAPlainUpdate(t *testing.T) {
 func TestUpdate_CompletedAsArchive_AuditsAsArchive(t *testing.T) {
 	upd := seatUpdatable(t, 0)
 
-	ev := BuildArchiveEvent(newBuilderCtx(), upd, seatSchema, nil, CascadeStamps{Own: writeNow()})
+	ev := BuildArchiveEvent(newBuilderCtx(), upd, seatSchema, nil, CascadeStamps{Own: testStamp()})
 
 	if ev.Verb != "archive" || ev.Kind != "transition" {
 		t.Errorf("verb/kind = %q/%q, want archive/transition", ev.Verb, ev.Kind)

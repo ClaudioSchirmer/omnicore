@@ -53,6 +53,12 @@ func (sqlserverDialect) LikeClause(col, ph string) string {
 
 func (sqlserverDialect) NowExpr() string { return "CURRENT_TIMESTAMP" }
 
+// UTCNowExpr is SYSUTCDATETIME() — a datetime2 in UTC. CURRENT_TIMESTAMP is
+// the legacy datetime type: server-local AND rounded to ~3.33 ms, so it can
+// neither carry a fleet's clock nor hold the microseconds the entity columns
+// (DATETIME2(6)) are declared with.
+func (sqlserverDialect) UTCNowExpr() string { return "SYSUTCDATETIME()" }
+
 // ApplyLimit caps a complete SELECT at n rows — on SQL Server the cap is a
 // SELECT-head TOP, not a tail clause, so the statement head is rewritten (this
 // is exactly why Dialect.ApplyLimit receives the whole statement). The tail

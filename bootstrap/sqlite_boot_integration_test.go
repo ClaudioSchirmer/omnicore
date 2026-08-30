@@ -26,6 +26,7 @@ func sqliteBootConfig(t *testing.T, dbPath, migrationsDir string) *Config {
 	cfg := &Config{Service: "sqlite-boot-probe"}
 	cfg.Relational.Dialect = dialectSQLite
 	cfg.Relational.DSN = "file:" + dbPath
+	cfg.Relational.Clock = "app"
 	// No mongo.uri, no transport.* — the infra-free posture.
 	cfg.Migrations.Dir = migrationsDir
 	cfg.Migrations.AutoRun = AutoRunTrue

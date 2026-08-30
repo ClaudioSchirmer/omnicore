@@ -88,6 +88,23 @@ type Dialect interface {
 	// "NOW()" on both Postgres and MySQL; each engine supplies its native form,
 	// so shared code never bakes in a dialect-specific function name.
 	NowExpr() string
+	// UTCNowExpr renders the engine's SQL expression for the current instant in
+	// UTC, at the highest sub-second precision the engine offers. It is the
+	// source of the write operation's authoritative stamp under
+	// relational.clock: db (core.NowFrom), read ONCE per write transaction and
+	// then bound as an ordinary argument.
+	//
+	// It is deliberately NOT NowExpr. NowExpr is the bookkeeping stamp of the
+	// framework's own control-plane rows (outbox, the failure ledgers), where
+	// server-timezone parity across engines was the goal and second granularity
+	// is harmless. Neither property survives contact with entity data: NowExpr
+	// is MySQL's NOW(), which carries ZERO fractional digits, and SQL Server's
+	// CURRENT_TIMESTAMP, which is server-local and rounds to ~3.33 ms. A managed
+	// timestamp that inherited either would silently lose the precision the
+	// archive/unarchive discriminator compares on, and would mix timezones
+	// across a fleet. This expression fixes both axes: always UTC, always the
+	// engine's finest resolution.
+	UTCNowExpr() string
 	// ApplyLimit caps a complete SELECT statement at n rows, rendered in the
 	// dialect's native position: Postgres and MySQL append ` LIMIT n`; an
 	// engine whose cap is not a tail clause (e.g. a SELECT-head TOP) rewrites

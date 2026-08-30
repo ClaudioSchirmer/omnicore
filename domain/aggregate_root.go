@@ -223,23 +223,74 @@ func (ar *AggregateRoot) AssignAggregateItemID(item AggregateValueObject, id str
 }
 
 // withItemID returns a copy of item with its id set through the promoted
-// domain.Managed.SetID. Value-object items are plain structs (change tracking
-// depends on it); a non-struct reports false. Every AVO embeds Managed, so the
-// SetID assertion on the addressable copy always succeeds.
+// domain.Managed.SetID. Every AVO embeds Managed, so the SetID assertion on the
+// addressable copy always succeeds.
 func withItemID(item AggregateValueObject, id string) (AggregateValueObject, bool) {
+	return withItemMutation(item, func(ptr any) bool {
+		s, ok := ptr.(interface{ SetID(ID) })
+		if ok {
+			s.SetID(NewID(id))
+		}
+		return ok
+	})
+}
+
+// withItemMutation is the copy-mutate-return dance every write-back onto an
+// aggregate child needs: an item travels as an interface holding a struct VALUE,
+// which is not addressable, so nothing can be set on it in place. This
+// materializes an addressable copy, hands mutate a POINTER to it, and returns
+// the result as an AggregateValueObject.
+//
+// Value-object items are plain structs — change tracking depends on it — so a
+// non-struct reports false, as does a mutate that could not do its job.
+func withItemMutation(item AggregateValueObject, mutate func(ptr any) bool) (AggregateValueObject, bool) {
 	t := reflect.TypeOf(item)
 	if t == nil || t.Kind() != reflect.Struct {
 		return nil, false
 	}
 	v := reflect.New(t).Elem()
 	v.Set(reflect.ValueOf(item))
-	s, ok := v.Addr().Interface().(interface{ SetID(ID) })
-	if !ok {
+	if !mutate(v.Addr().Interface()) {
 		return nil, false
 	}
-	s.SetID(NewID(id))
 	out, ok := v.Interface().(AggregateValueObject)
 	return out, ok
+}
+
+// ApplyToAggregateItem writes a framework-decided value back onto a TRACKED
+// aggregate child, the same way AssignAggregateItemID writes back a minted id:
+// the copy in the aggregate map is what every post-write reader sees (the audit
+// event's children block, the outbox snapshot, a FromEntity projection), so a
+// value the persister decided has to land there or those readers would describe
+// the child as it was BEFORE the write that changed it.
+//
+// mutate receives a POINTER to an addressable copy and reports whether it could
+// act; the entry is matched by IsSameBusinessIdentity against the
+// pre-mutation value, exactly as the id write-back matches. Returns false when
+// the item is not tracked — callers treat that as "no write-back possible",
+// never an error.
+//
+// It is the seam infra reaches for when a stamped field on a child has to carry
+// the operation's instant: which fields those are is schema knowledge, so the
+// decision stays in infra and only the copy-back dance lives here.
+func ApplyToAggregateItem(ar *AggregateRoot, item AggregateValueObject, mutate func(ptr any) bool) bool {
+	if ar == nil || item == nil || ar.aggregates == nil {
+		return false
+	}
+	next, ok := withItemMutation(item, mutate)
+	if !ok {
+		return false
+	}
+	key := classNameOf(item)
+	list := ar.aggregates[key]
+	for i, entry := range list {
+		if entry.item.IsSameBusinessIdentity(item) {
+			list[i].item = next
+			ar.aggregates[key] = list
+			return true
+		}
+	}
+	return false
 }
 
 func (ar *AggregateRoot) AllAggregateItems() map[string][]AggregateItem[AggregateValueObject] {

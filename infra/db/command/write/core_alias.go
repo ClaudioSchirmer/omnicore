@@ -23,12 +23,15 @@ type (
 	OrphanPolicy     = core.OrphanPolicy
 	RoleRef          = core.RoleRef
 	Redactor         = core.Redactor
+	ClockMode        = core.ClockMode
 )
 
 const (
 	UpsertSetNew           = core.UpsertSetNew
 	DeleteWhenUnreferenced = core.DeleteWhenUnreferenced
 	KeepOrphan             = core.KeepOrphan
+	ClockApp               = core.ClockApp
+	ClockDB                = core.ClockDB
 )
 
 var (

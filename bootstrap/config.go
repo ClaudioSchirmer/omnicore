@@ -152,6 +152,30 @@ type Config struct {
 		Dialect string `yaml:"dialect"`
 		DSN     string `yaml:"dsn"`
 
+		// Clock declares WHERE a write operation reads the instant it stamps
+		// its managed timestamp columns with — created_at, updated_at and the
+		// archive/unarchive deleted_at stamp:
+		//
+		//   db  — from this relational backend, once per write transaction.
+		//         Every replica of the service then shares ONE clock, which is
+		//         the point: the app clock is a per-POD clock, and two replicas
+		//         drifting apart stamp rows out of order with nothing in the
+		//         write path able to notice. Costs one extra round-trip per
+		//         write transaction.
+		//   app — from the writing process (time.Now().UTC()). No round-trip,
+		//         and correct exactly as far as the fleet's clock discipline is.
+		//
+		// MANDATORY, with no default, like dialect and dsn: which clock a
+		// service's history is written against is an operator's declaration,
+		// and a framework that picked one silently would be choosing whose
+		// timestamps to trust. Boot aborts when it is absent.
+		//
+		// Either way the stamp is minted ONCE per operation and bound as an
+		// ordinary argument, so every statement of one write carries the same
+		// instant and the value is known before COMMIT — the outbox payload,
+		// the audit event and the response all agree.
+		Clock string `yaml:"clock"`
+
 		// Pool bounds the relational connection pool, applied uniformly to
 		// whichever engine is selected. Each field is a pointer so "unset"
 		// (nil → framework default) is distinct from an explicit 0. Omit the
@@ -997,6 +1021,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Relational.DSN == "" {
 		missing = append(missing, "relational.dsn")
+	}
+	if c.Relational.Clock == "" {
+		missing = append(missing, "relational.clock (\"db\" or \"app\")")
 	}
 	// mongo.* and transport.* are OPTIONAL — each infrastructure is opt-out by its
 	// own config block (see yaml-reference.html). Omitting mongo.uri boots without

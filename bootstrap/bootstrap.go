@@ -520,9 +520,14 @@ func buildDeps(cfg *Config) (Deps, error) {
 			"endpoint", tracingCfg.Endpoint)
 	}
 
+	clock, err := core.ParseClockMode(cfg.Relational.Clock)
+	if err != nil {
+		return Deps{}, fmt.Errorf("bootstrap: %w", err)
+	}
 	eng, err := core.NewEngine(cfg.Relational.Dialect, ctx, core.EngineConfig{
 		DSN:     cfg.Relational.DSN,
 		Tracing: tracingCfg.Instruments(tracing.SubPgx),
+		Clock:   clock,
 		Pool: core.PoolConfig{
 			MaxOpenConns:    *cfg.Relational.Pool.MaxOpenConns,
 			MaxIdleConns:    *cfg.Relational.Pool.MaxIdleConns,
@@ -532,7 +537,8 @@ func buildDeps(cfg *Config) (Deps, error) {
 	if err != nil {
 		return Deps{}, fmt.Errorf("bootstrap: database connect: %w", err)
 	}
-	logger.Info("database connected", "dialect", cfg.Relational.Dialect, "dsn", redact(cfg.Relational.DSN))
+	logger.Info("database connected", "dialect", cfg.Relational.Dialect, "dsn", redact(cfg.Relational.DSN),
+		"clock", clock.String())
 
 	// Mongo is CONDITIONAL on cfg.Mongo.URI (each infrastructure is opt-out by its
 	// own config block — see yaml-reference.html). An empty uri is the infra-free

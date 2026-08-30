@@ -186,6 +186,15 @@ err = jobs.DeleteOne(ctx, criteria.ByID(id))
 n, err = jobs.Archive(ctx, criteria.Where(criteria.Eq("Source", src)))
 n, err = jobs.Unarchive(ctx, criteria.Where(criteria.Eq("Source", src)))
 
+err = jobs.Upsert(ctx, write.Values{                    // keyed on a conflict target,
+    "Source":     src,                                  // not on the identity
+    "Outcome":    "FAILURE",
+    "TotalCount": write.Stamp,                          // += 1, server-side
+    "FirstSeen":  write.OnInsert(t),                    // set once, never revised
+    "LastAt":     write.Stamp,                          // the operation's instant
+    "LastIP":     ip,                                   // overwritten on conflict
+}, write.OnConflict("Source", "Outcome"), write.KeepArchiveStateOnConflict())
+
 n, err = jobs.UpdateAll(ctx, write.Values{"Status": "cancelled"})   // the deliberate sweep
 n, err = jobs.DeleteAll(ctx)</code></pre>
 <p>
@@ -193,6 +202,53 @@ n, err = jobs.DeleteAll(ctx)</code></pre>
     <code>UpdateOne</code>/<code>DeleteOne</code> fail unless exactly one row was affected: zero rows raises the same
     typed <code>RecordNotFound</code> an entity write raises when its row is gone, and more than one is refused with
     nothing committed.
+</p>
+<p>
+    <strong><code>Upsert</code> is the one write keyed on something other than the identity</strong>: it inserts when
+    nothing matches the key <code>write.OnConflict(...)</code> names, and updates the row that does — in one statement,
+    so two callers racing on the same key cannot both decide the row is missing. Each <code>Values</code> slot declares
+    what happens on a conflict, and the four cases are the four kinds of column an upsert has:
+</p>
+<table>
+    <thead><tr><th>Slot</th><th>On insert</th><th>On conflict</th></tr></thead>
+    <tbody>
+        <tr><td>an ordinary value</td><td>bound</td><td>overwritten with the proposed value</td></tr>
+        <tr><td><code>write.Stamp</code> on a <a href="#table-schema">stamped</a> TIME column</td><td>the operation's instant</td><td>the operation's instant</td></tr>
+        <tr><td><code>write.Stamp</code> on a <a href="#table-schema">stamped</a> COUNTER (<code>StampedCounterField</code>)</td><td><code>1</code></td><td><code>col = col + 1</code>, computed server-side</td></tr>
+        <tr><td><code>write.OnInsert(v)</code></td><td>bound</td><td><strong>untouched</strong> — established once, never revised</td></tr>
+        <tr><td>the conflict key itself</td><td>bound</td><td>untouched — it is the thing that matched</td></tr>
+    </tbody>
+</table>
+<p>
+    The key is named <strong>per call</strong>, by Go field name, because one table legitimately has more than one way
+    to be conflicted on and four of the five engines take the key on the statement itself. <strong>MySQL is the
+    exception, and it cannot be emulated</strong>: <code>ON DUPLICATE KEY UPDATE</code> fires on ANY unique key the row
+    violates, not the one named here. On a table with a single unique key the behavior is identical everywhere; with
+    more than one, MySQL may resolve a conflict the other engines would have let fail. Declare one unique key per
+    upserted table and the difference disappears.
+</p>
+<p>
+    A schema declaring <code>DeletedAt</code> <strong>must</strong> also declare
+    <code>write.UnarchiveOnConflict()</code> (the conflict clause sets <code>deleted_at = NULL</code>) or
+    <code>write.KeepArchiveStateOnConflict()</code> (it does not touch the column). This is the one write that cannot
+    be archive-gated — <code>INSERT … ON CONFLICT</code> has no <code>WHERE</code> for its conflict target, so an
+    archived row still holds the unique key and still absorbs the write, invisibly to every read. Both answers are
+    defensible, so neither is a default. Note that unarchiving does <em>not</em> reset anything: counters continue from
+    where they were, so a flow that must start over needs the old row deleted, not archived.
+</p>
+<p>
+    A stamped COUNTER (<code>StampedCounterField</code>, declared on the schema like any other column) is what makes an
+    upsert able to <em>count</em>: the increment is <code>col = col + 1</code> evaluated by the server under the row's
+    lock, so two callers landing on the same key at the same moment cannot both read the old value and both write back
+    the same number. It counts per ROW, never across the table — a shared generator handing out values unique to the
+    whole table is a sequence, which is a different thing MySQL and SQLite have no portable form of. Its new value is
+    the server's and the framework does not read it back, so the counter is absent from the outbox payload; nothing
+    downstream suffers, because a Direct write feeds no view in the first place.
+</p>
+<p>
+    It returns only an <code>error</code>. A row count would have to mean the same thing on every backend and it does
+    not — MySQL reports 2 for a conflicting upsert and 1 for an inserting one, while the others report 1 for both — and
+    reporting which path ran would need a <code>RETURNING</code>/<code>OUTPUT</code> clause MySQL has no equivalent for.
 </p>
 
 <h3 id="reading">Reading</h3>
@@ -295,6 +351,34 @@ err := phones.Aggregate(ctx, criteria.Where(criteria.Eq("ParentID", userID)), to
             <td>Error before any statement</td>
             <td>The framework stamps the timestamps from the operation's own instant, and the archive transition has its
                 own verbs — writing the column directly would bypass them.</td>
+        </tr>
+        <tr>
+            <td>An <code>Upsert</code> with no <code>write.OnConflict(...)</code></td>
+            <td>Error before any statement</td>
+            <td>The key that decides whether the row already exists is the statement's whole premise; the framework
+                will not guess it from the schema.</td>
+        </tr>
+        <tr>
+            <td>An <code>Upsert</code> on a schema declaring <code>DeletedAt</code>, with no archive policy</td>
+            <td>Error before any statement</td>
+            <td>Every other verb is gated on <code>deleted_at IS NULL</code>; an upsert cannot be, because its conflict
+                target takes no <code>WHERE</code> — an archived row still holds the unique key and still absorbs the
+                write. Declare <code>write.UnarchiveOnConflict()</code> or
+                <code>write.KeepArchiveStateOnConflict()</code>: both are defensible, so neither is a default.</td>
+        </tr>
+        <tr>
+            <td>A real value in a <strong>stamped</strong> slot of <code>Values</code></td>
+            <td>Error before any statement</td>
+            <td>A stamped column's value is the framework's, never the caller's — the write operation's instant for a
+                stamped TIME column, the server-side increment for a stamped COUNTER. The diagnostic teaches the
+                marker: pass <code>write.Stamp</code> to ask for it.</td>
+        </tr>
+        <tr>
+            <td><code>write.Stamp</code> on a <strong>plain</strong> field, or a write carrying <em>only</em> stamps</td>
+            <td>Error before any statement</td>
+            <td>A plain field takes its value from <code>Values</code>, so stamping it would silently do nothing. And a
+                stamp records WHEN something happened — it is not the something: a write with no other column has no
+                change to date.</td>
         </tr>
         <tr>
             <td>A write with an <strong>empty predicate</strong> (<code>criteria.Where(nil)</code>)</td>

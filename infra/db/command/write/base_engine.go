@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	appaudit "github.com/ClaudioSchirmer/omnicore/application/audit"
 	"github.com/ClaudioSchirmer/omnicore/application/persistence"
@@ -33,6 +34,14 @@ type BaseEngine struct {
 	logger      *slog.Logger
 	auditClaims []string
 	publisher   events.Publisher
+
+	// clock selects where each write operation reads its authoritative instant
+	// from — the process (ClockApp) or the relational backend (ClockDB). The
+	// composition root resolves relational.clock and hands it to the engine,
+	// which calls SetClock once at construction. The zero value is ClockApp,
+	// which is what a directly-constructed engine (tests, fixtures) gets and
+	// what the framework did before the source became declarable.
+	clock core.ClockMode
 
 	// Engine-scoped shared-base registry (M2). A base's role registry naturally
 	// lives on the *TableSchema instance NewSharedBaseSchema returned — which would
@@ -117,6 +126,25 @@ func (b *BaseEngine) effectiveReferencingRoles(base *TableSchema) []RoleRef {
 // engine calls it once at construction (e.g. p.SetBeginner(p)); the write
 // orchestration then opens transactions through it without naming a driver.
 func (b *BaseEngine) SetBeginner(wb WriteBeginner) { b.beginner = wb }
+
+// SetClock declares where write operations read their authoritative instant
+// from. Each engine calls it once at construction from the resolved
+// relational.clock; the write orchestration then mints every operation's stamp
+// through it without naming a source.
+func (b *BaseEngine) SetClock(mode core.ClockMode) { b.clock = mode }
+
+// ClockMode is the declared instant source. A DirectWriter — which embeds no
+// BaseEngine — recovers it from the engine through this method, the same way it
+// recovers the WriteBeginner.
+func (b *BaseEngine) ClockMode() core.ClockMode { return b.clock }
+
+// now mints the authoritative instant of one write operation, read through the
+// OPEN transaction so that under ClockDB the reading and the rows it stamps
+// belong to the same transaction. Every verb calls it exactly once, right after
+// Begin, and threads the value down.
+func (b *BaseEngine) now(ctx context.Context, tx Tx) (time.Time, error) {
+	return writeNow(ctx, tx, b.clock)
+}
 
 // HookContext describes the slot the persister is about to fire — consumed only
 // by the observability slog.Warn emitted on a hook error (verb, hookSlot,

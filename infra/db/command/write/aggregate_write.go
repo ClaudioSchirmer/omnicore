@@ -32,20 +32,28 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	now := writeNow()
-
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps (see
+	// BaseEngine.now / relational.clock).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	hctx := HookContext{Verb: "Insert", EntityType: entity.EntityName()}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, rootFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
+	plan, err := stampedCols(schema, src, schema.InsertNowColumns(), now)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, rootFields, plan.nowCols, plan.counters, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -56,7 +64,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, rootFields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(rootFields, plan.payload, now), outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -79,21 +87,29 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	root, _ := entity.AggregateInfo()
 	src := entity.Source()
 	rootFields := schema.WriteFields(src)
-	now := writeNow()
-
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps (see
+	// BaseEngine.now / relational.clock).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	hctx := HookContext{Verb: "Update", EntityType: entity.EntityName()}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), rootFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	plan, err := stampedCols(schema, src, schema.UpdateNowColumns(), now)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	sql, args, err := buildUpdatePlan(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), rootFields, plan, now, schema.RevisionColumn(), rev)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -111,7 +127,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, rootFields, meta)); err != nil {
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(rootFields, plan.payload, now), meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -164,13 +180,17 @@ func (b *BaseEngine) hardDelete(
 	buildPurgeEvent func(baseID string) audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
-	now := writeNow()
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps.
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return err
+	}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return err
@@ -284,7 +304,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 		for _, it := range items {
 			switch domain.OperationOf(it.OriginalStatus, it.CurrentStatus) {
 			case domain.OpInsert:
-				childID, err := insertChild(ctx, tx, d, child, it.Item, fkID, now)
+				childID, err := insertChild(ctx, tx, d, child, root, it.Item, fkID, now)
 				if err != nil {
 					return err
 				}
@@ -293,7 +313,7 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 				// built after this loop) see the child as persisted, id included.
 				root.AssignAggregateItemID(it.Item, childID)
 			case domain.OpUpdate:
-				if err := updateChild(ctx, tx, d, child, it.Item, now); err != nil {
+				if err := updateChild(ctx, tx, d, child, root, it.Item, now); err != nil {
 					return err
 				}
 			case domain.OpDelete:
@@ -343,14 +363,21 @@ func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 
 // insertChild persists one Added child and returns the ID it minted — the
 // caller writes that id back into the aggregate map (AssignAggregateItemID).
-func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, rootID string, now time.Time) (string, error) {
+func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, root *domain.AggregateRoot, item domain.AggregateValueObject, rootID string, now time.Time) (string, error) {
 	fields := child.WriteFields(item)
 	fields[child.ParentIDColumn()] = domain.NewID(rootID) // ParentID to the root, dialect-encoded by buildInsert
 	childID, err := newWriteID()
 	if err != nil {
 		return "", err
 	}
-	sql, args := buildInsert(d, child.Table(), child.IDColumn(), childID, fields, child.InsertNowColumns(), now, "")
+	// A child carries stamp requests exactly as a root does: it embeds
+	// domain.Managed, and the value the domain handed to the aggregate map
+	// travels with whatever its rule asked for.
+	plan, err := stampedChildCols(child, root, item, child.InsertNowColumns(), now)
+	if err != nil {
+		return "", err
+	}
+	sql, args := buildInsertWithCounters(d, child.Table(), child.IDColumn(), childID, fields, plan.nowCols, plan.counters, now, "")
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return "", err
 	}
@@ -362,15 +389,19 @@ func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	return childID, nil
 }
 
-func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, now time.Time) error {
+func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, root *domain.AggregateRoot, item domain.AggregateValueObject, now time.Time) error {
 	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot update child %q without id", child.Table())
 	}
 	fields := child.WriteFields(item)
+	plan, err := stampedChildCols(child, root, item, child.UpdateNowColumns(), now)
+	if err != nil {
+		return err
+	}
 	// Unguarded on purpose: a child declares no revision — the OWNER's guarded
 	// UPDATE already proved nobody moved the aggregate under this write.
-	sql, args, err := buildUpdate(d, schemaTarget(child), criteria.Eq(idGoField, domain.NewID(id)), fields, child.UpdateNowColumns(), now, "", 0)
+	sql, args, err := buildUpdatePlan(d, schemaTarget(child), criteria.Eq(idGoField, domain.NewID(id)), fields, plan, now, "", 0)
 	if err != nil {
 		return err
 	}

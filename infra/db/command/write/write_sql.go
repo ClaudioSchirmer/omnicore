@@ -1,6 +1,7 @@
 package write
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -32,17 +33,25 @@ func newWriteID() (string, error) {
 }
 
 // writeNow mints the single authoritative timestamp of one write operation.
-// Managed columns (created_at/updated_at and the DeletedAt stamp) are
-// application-clock values bound as ordinary arguments — the same move the ids
-// made with the Go-minted UUID v7: no dialect NOW() expression in the data DML,
-// so every statement of one operation (root, children, siblings, base cascade)
-// carries the SAME instant, known in Go before COMMIT (the outbox payload can
-// therefore carry it too). UTC, truncated to microseconds — the precision every
-// supported backend stores (timestamptz / DATETIME(6) / DATETIME2(6) /
-// TIMESTAMP(6)) — so the value bound here and the value the composer reads back
-// are identical. Minted once per verb call and threaded down, never per
-// statement.
-func writeNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
+// Managed columns (created_at/updated_at and the DeletedAt stamp) are bound as
+// ordinary arguments — the same move the ids made with the Go-minted UUID v7:
+// no dialect NOW() expression in the data DML, so every statement of one
+// operation (root, children, siblings, base cascade) carries the SAME instant,
+// known in Go before COMMIT (the outbox payload can therefore carry it too).
+// UTC, truncated to microseconds — the precision every supported backend stores
+// (timestamptz / DATETIME(6) / DATETIME2(6) / TIMESTAMP(6)) — so the value bound
+// here and the value the composer reads back are identical. Minted once per verb
+// call and threaded down, never per statement.
+//
+// WHERE the instant is read from is the operator's declaration
+// (relational.clock): the writing process under ClockApp, the database itself
+// under ClockDB — one clock for a whole fleet, at the cost of one round-trip per
+// write TX. Because the reading rides the OPEN transaction, the mint moved from
+// "before Begin" to "just after it"; everything downstream is unchanged, since
+// the value is still a Go time.Time bound as an argument.
+func writeNow(ctx context.Context, tx Tx, clock ClockMode) (time.Time, error) {
+	return core.NowFrom(ctx, tx, clock)
+}
 
 // writeTarget names the table a write statement runs against and how a criteria
 // field resolves on it. For every ordinary write both come from the SAME schema
@@ -116,6 +125,15 @@ func compilePredicate(d Dialect, t writeTarget, pred criteria.Expr, bound int) (
 // Postgres, BINARY(16) on MySQL. No RETURNING: the id AND the timestamps are
 // known up front.
 func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols []string, now time.Time, revCol string) (string, []any) {
+	return buildInsertWithCounters(d, table, pk, id, fields, nowCols, nil, now, revCol)
+}
+
+// buildInsertWithCounters is buildInsert plus the stamped COUNTER columns, which
+// a fresh row starts at 1 — the row that creates the identity has counted one
+// thing. They bind as ordinary arguments here (there is no existing value to add
+// to yet); only on an UPDATE or an upsert conflict do they become the
+// server-side `col = col + 1`.
+func buildInsertWithCounters(d Dialect, table, pk, id string, fields domain.Fields, nowCols, counterCols []string, now time.Time, revCol string) (string, []any) {
 	keys := SortedKeys(fields)
 	cols := make([]string, 0, len(keys)+1+len(nowCols))
 	phs := make([]string, 0, len(keys)+1+len(nowCols))
@@ -138,6 +156,12 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 		n++
 		phs = append(phs, d.Placeholder(n))
 		args = append(args, d.EncodeArg(now))
+	}
+	for _, cc := range counterCols {
+		cols = append(cols, d.QuoteIdent(cc))
+		n++
+		phs = append(phs, d.Placeholder(n))
+		args = append(args, int64(1))
 	}
 	if revCol != "" {
 		// A fresh row starts its commit-order token at 1 — appended here so the
@@ -172,7 +196,14 @@ func buildInsert(d Dialect, table, pk, id string, fields domain.Fields, nowCols 
 // on purpose, since several roles write it), or an entity that never came from
 // the loader.
 func buildUpdate(d Dialect, t writeTarget, pred criteria.Expr, fields domain.Fields, nowCols []string, now time.Time, revCol string, expectedRevision int64) (string, []any, error) {
-	sets, args := buildSet(d, fields, nowCols, now, revCol)
+	return buildUpdatePlan(d, t, pred, fields, stampPlan{nowCols: nowCols}, now, revCol, expectedRevision)
+}
+
+// buildUpdatePlan is buildUpdate over a resolved stampPlan — the instant-bound
+// columns and the server-side counters in one argument, so a caller cannot pass
+// one and forget the other.
+func buildUpdatePlan(d Dialect, t writeTarget, pred criteria.Expr, fields domain.Fields, plan stampPlan, now time.Time, revCol string, expectedRevision int64) (string, []any, error) {
+	sets, args := buildSetWithCounters(d, fields, plan.nowCols, plan.counters, now, revCol)
 	where, whereArgs, err := compilePredicate(d, t, pred, len(args))
 	if err != nil {
 		return "", nil, err
@@ -192,8 +223,17 @@ func buildUpdate(d Dialect, t writeTarget, pred criteria.Expr, fields domain.Fie
 // `now`, and the revision bump when the schema declares one — returning the
 // fragments and the arguments in placeholder order.
 func buildSet(d Dialect, fields domain.Fields, nowCols []string, now time.Time, revCol string) ([]string, []any) {
+	return buildSetWithCounters(d, fields, nowCols, nil, now, revCol)
+}
+
+// buildSetWithCounters is buildSet plus the stamped COUNTER columns. A counter
+// is rendered exactly like the revision bump — `col = col + 1`, computed by the
+// SERVER under the row's lock — and for the same reason: two writers that both
+// read the value in Go and both wrote back read+1 would lose one of the two
+// increments, and neither would notice.
+func buildSetWithCounters(d Dialect, fields domain.Fields, nowCols, counterCols []string, now time.Time, revCol string) ([]string, []any) {
 	keys := SortedKeys(fields)
-	sets := make([]string, 0, len(keys)+len(nowCols)+1)
+	sets := make([]string, 0, len(keys)+len(nowCols)+len(counterCols)+1)
 	args := make([]any, 0, len(keys)+len(nowCols)+1)
 	n := 0
 	for _, k := range keys {
@@ -205,6 +245,10 @@ func buildSet(d Dialect, fields domain.Fields, nowCols []string, now time.Time, 
 		n++
 		sets = append(sets, d.QuoteIdent(nc)+" = "+d.Placeholder(n))
 		args = append(args, d.EncodeArg(now))
+	}
+	for _, cc := range counterCols {
+		c := d.QuoteIdent(cc)
+		sets = append(sets, c+" = "+c+" + 1")
 	}
 	if revCol != "" {
 		rc := d.QuoteIdent(revCol)
@@ -360,4 +404,126 @@ func requireDeletedAt(s *TableSchema, entityName string) (string, error) {
 		)
 	}
 	return col, nil
+}
+
+// stampPlan is what one write's stamp requests resolve into: the columns bound
+// to the operation's instant (the verb's managed timestamps plus every stamped
+// TIME column asked for), the counter columns rendered server-side as
+// `col = col + 1`, and the subset the payload has to be told about.
+//
+// Counters are deliberately absent from payload. Their new value is computed by
+// the SERVER and the framework does not read it back, so there is no honest
+// value to put in the payload or on the entity — and stating the old one, or a
+// guessed old+1, would be worse than saying nothing. The projection is
+// unaffected: the SyncEngine re-reads the row.
+type stampPlan struct {
+	nowCols  []string
+	counters []string
+	payload  []string
+}
+
+// stampedCols resolves the stamped columns a write requested — the Go field
+// names the domain accumulated through domain.Managed.Stamp, translated through
+// the schema — and splits them by what filling each one MEANS.
+//
+// It also writes the instant back onto the entity for the TIME columns. The
+// audit event reads its values from the STRUCT, and the caller keeps holding
+// this entity after the write — without the write-back both would report the
+// field as still empty on the very write that filled it.
+//
+// A schema with no stamped field never allocates: the requests cannot mean
+// anything and are not read. A request naming a field the schema did not declare
+// stamped is an error here — the domain asks by Go name and cannot see the
+// schema, so this is the first moment the two meet.
+func stampedCols(schema *TableSchema, src any, nowCols []string, now time.Time) (stampPlan, error) {
+	plan, unclaimed, err := claimStampedCols(schema, src, nowCols, now)
+	if err != nil {
+		return stampPlan{}, err
+	}
+	// One schema owns the whole request here, so anything it did not claim is a
+	// mistake — there is no sibling schema for the name to have belonged to.
+	if err := schema.RefuseUnclaimedStamps(unclaimed); err != nil {
+		return stampPlan{}, err
+	}
+	return plan, nil
+}
+
+// claimStampedCols is stampedCols for a write where MORE THAN ONE schema shares
+// the entity's requests — a shared-base role writes its own row and the base's,
+// and a name meant for one is not a mistake to the other. It claims what this
+// schema declares and reports the rest, leaving the refusal to a caller that can
+// see every schema in the operation.
+func claimStampedCols(schema *TableSchema, src any, nowCols []string, now time.Time) (stampPlan, []string, error) {
+	plan := stampPlan{nowCols: nowCols}
+	asked := domain.RequestedStamps(src)
+	if !schema.HasStampedFields() {
+		return plan, asked, nil
+	}
+	cols, unclaimed := schema.ClaimStampColumns(asked)
+	if len(cols) == 0 {
+		return plan, unclaimed, nil
+	}
+	times, counters := schema.StampedCounterColumns(cols)
+	schema.ApplyStamps(src, asked, now)
+	if len(times) > 0 {
+		out := make([]string, 0, len(nowCols)+len(times))
+		plan.nowCols = append(append(out, nowCols...), times...)
+	}
+	plan.counters, plan.payload = counters, times
+	return plan, unclaimed, nil
+}
+
+// stampedChildCols is stampedCols for an aggregate CHILD. It differs in one
+// thing only, and that thing is the whole reason it exists: a child travels as
+// an interface holding a struct VALUE, which is not addressable, so the
+// write-back cannot happen in place. The value is written back into the
+// AGGREGATE MAP instead — the copy every post-write reader sees — through the
+// same seam the minted child id already uses.
+//
+// root may be nil (a child written outside an aggregate root): the statement is
+// still stamped correctly, only the write-back is skipped.
+func stampedChildCols(child *TableSchema, root *domain.AggregateRoot, item domain.AggregateValueObject, nowCols []string, now time.Time) (stampPlan, error) {
+	plan := stampPlan{nowCols: nowCols}
+	if !child.HasStampedFields() {
+		return plan, nil
+	}
+	asked := domain.RequestedStamps(item)
+	cols, err := child.StampColumns(asked)
+	if err != nil {
+		return stampPlan{}, err
+	}
+	if len(cols) == 0 {
+		return plan, nil
+	}
+	times, counters := child.StampedCounterColumns(cols)
+	if root != nil && len(times) > 0 {
+		domain.ApplyToAggregateItem(root, item, func(ptr any) bool {
+			child.ApplyStamps(ptr, asked, now)
+			return true
+		})
+	}
+	if len(times) > 0 {
+		out := make([]string, 0, len(nowCols)+len(times))
+		plan.nowCols = append(append(out, nowCols...), times...)
+	}
+	plan.counters, plan.payload = counters, times
+	return plan, nil
+}
+
+// withStamps returns the payload's view of the written columns: the bound fields
+// plus the stamped ones the statement filled. The copy is deliberate — fields is
+// the very map the DML binds, and the payload must never reach back into it (the
+// redaction pass has the same rule, for the same reason).
+func withStamps(fields domain.Fields, stamped []string, now time.Time) domain.Fields {
+	if len(stamped) == 0 {
+		return fields
+	}
+	out := make(domain.Fields, len(fields)+len(stamped))
+	for k, v := range fields {
+		out[k] = v
+	}
+	for _, c := range stamped {
+		out[c] = now
+	}
+	return out
 }

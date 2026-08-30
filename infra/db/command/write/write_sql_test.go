@@ -72,13 +72,72 @@ func TestBuildUpdate_Shared(t *testing.T) {
 	}
 }
 
-func TestWriteNow_UTCMicrosecond(t *testing.T) {
-	now := writeNow()
+func TestWriteNow_AppClock_UTCMicrosecond(t *testing.T) {
+	now, err := writeNow(context.Background(), &fakeWriteTx{}, ClockApp)
+	if err != nil {
+		t.Fatalf("writeNow: %v", err)
+	}
 	if now.Location() != time.UTC {
-		t.Errorf("writeNow() location = %v, want UTC", now.Location())
+		t.Errorf("writeNow location = %v, want UTC", now.Location())
 	}
 	if now.Truncate(time.Microsecond) != now {
-		t.Errorf("writeNow() = %v, want microsecond-truncated", now)
+		t.Errorf("writeNow = %v, want microsecond-truncated", now)
+	}
+}
+
+// The app clock must NOT touch the transaction: a service that declared
+// relational.clock: app pays no round-trip, and that is the whole difference
+// between the two modes.
+func TestWriteNow_AppClock_IssuesNoQuery(t *testing.T) {
+	tx := &fakeWriteTx{}
+	if _, err := writeNow(context.Background(), tx, ClockApp); err != nil {
+		t.Fatalf("writeNow: %v", err)
+	}
+	if tx.lastQuerySQL != "" {
+		t.Errorf("app clock queried the database: %q", tx.lastQuerySQL)
+	}
+}
+
+func TestWriteNow_DBClock_ReadsDialectExpression(t *testing.T) {
+	want := time.Date(2026, 3, 4, 5, 6, 7, 891011000, time.UTC)
+	tx := &fakeWriteTx{clockVal: want}
+	got, err := writeNow(context.Background(), tx, ClockDB)
+	if err != nil {
+		t.Fatalf("writeNow: %v", err)
+	}
+	if wantSQL := "SELECT " + (testPGDialect{}).UTCNowExpr(); tx.lastQuerySQL != wantSQL {
+		t.Errorf("clock statement = %q, want %q", tx.lastQuerySQL, wantSQL)
+	}
+	if !got.Equal(want) {
+		t.Errorf("clock = %v, want %v", got, want)
+	}
+	if got.Location() != time.UTC || got.Truncate(time.Microsecond) != got {
+		t.Errorf("clock = %v, want UTC and microsecond-truncated", got)
+	}
+}
+
+// A textual timestamp (SQLite, MySQL without parseTime) decodes just like a
+// native time.Time — the reading rides the same coercion the read-back side uses.
+func TestWriteNow_DBClock_TextualDriverValue(t *testing.T) {
+	tx := &fakeWriteTx{clockVal: "2026-03-04 05:06:07.891"}
+	got, err := writeNow(context.Background(), tx, ClockDB)
+	if err != nil {
+		t.Fatalf("writeNow: %v", err)
+	}
+	if want := time.Date(2026, 3, 4, 5, 6, 7, 891000000, time.UTC); !got.Equal(want) {
+		t.Errorf("clock = %v, want %v", got, want)
+	}
+}
+
+// The clock is load-bearing: a failed reading must abort the write, never fall
+// back to the process clock the operator declined.
+func TestWriteNow_DBClock_ErrorsPropagate(t *testing.T) {
+	boom := errors.New("conn reset")
+	if _, err := writeNow(context.Background(), &fakeWriteTx{clockErr: boom}, ClockDB); !errors.Is(err, boom) {
+		t.Fatalf("clock error should propagate, got %v", err)
+	}
+	if _, err := writeNow(context.Background(), &fakeWriteTx{clockVal: 42}, ClockDB); err == nil {
+		t.Fatal("an undecodable clock value should be an error, not a zero time")
 	}
 }
 
@@ -134,6 +193,29 @@ type fakeWriteTx struct {
 	execErr   error
 	lastSQL   string
 	committed bool
+	// clockVal/clockErr script the single-column QueryRow the ClockDB reading
+	// runs; lastQuerySQL records the statement it issued.
+	clockVal     any
+	clockErr     error
+	lastQuerySQL string
+}
+
+// scriptedRow is the one-column Row the clock reading scans.
+type scriptedRow struct {
+	val any
+	err error
+}
+
+func (r scriptedRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) == 1 {
+		if p, ok := dest[0].(*any); ok {
+			*p = r.val
+		}
+	}
+	return nil
 }
 
 func (t *fakeWriteTx) Exec(_ context.Context, sql string, _ ...any) error {
@@ -148,11 +230,14 @@ func (t *fakeWriteTx) ExecCount(_ context.Context, sql string, _ ...any) (int64,
 	return t.n, nil
 }
 func (t *fakeWriteTx) Query(context.Context, string, ...any) (Rows, error) { return nil, nil }
-func (t *fakeWriteTx) QueryRow(context.Context, string, ...any) Row        { return nil }
-func (t *fakeWriteTx) Commit(context.Context) error                        { t.committed = true; return nil }
-func (t *fakeWriteTx) Rollback(context.Context) error                      { return nil }
-func (t *fakeWriteTx) Handle() persistence.TxHandle                        { return nil }
-func (t *fakeWriteTx) Dialect() Dialect                                    { return testPGDialect{} }
+func (t *fakeWriteTx) QueryRow(_ context.Context, sql string, _ ...any) Row {
+	t.lastQuerySQL = sql
+	return scriptedRow{val: t.clockVal, err: t.clockErr}
+}
+func (t *fakeWriteTx) Commit(context.Context) error   { t.committed = true; return nil }
+func (t *fakeWriteTx) Rollback(context.Context) error { return nil }
+func (t *fakeWriteTx) Handle() persistence.TxHandle   { return nil }
+func (t *fakeWriteTx) Dialect() Dialect               { return testPGDialect{} }
 
 func TestExecExpectingRow_Mapping(t *testing.T) {
 	ctx := context.Background()
@@ -175,3 +260,8 @@ func TestExecExpectingRow_Mapping(t *testing.T) {
 		t.Fatalf("driver error should pass through, got %v", err)
 	}
 }
+
+// testStamp is the operation instant a test needs when it is only feeding a
+// builder, not exercising the clock: the app-clock shape, minted without a
+// transaction.
+func testStamp() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }

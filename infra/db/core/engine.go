@@ -97,7 +97,19 @@ type EngineConfig struct {
 	DSN     string
 	Tracing bool
 	Pool    PoolConfig
+	// Clock declares where a write operation reads its authoritative instant
+	// from — the writing process or this backend (relational.clock). It is
+	// applied by NewEngine to whichever engine the dialect selects, so no
+	// engine constructor carries a clock option of its own.
+	Clock ClockMode
 }
+
+// clockCarrier is the seam NewEngine applies EngineConfig.Clock through. Every
+// engine satisfies it by embedding write.BaseEngine, which owns the write
+// orchestration the setting governs; core cannot name that package (write
+// imports core), so the capability is asserted structurally — the same shape
+// WriteBeginner is resolved with.
+type clockCarrier interface{ SetClock(ClockMode) }
 
 // EngineFactory builds a RelationalEngine for one dialect. Registered by each
 // engine package in init(), each behind its own build tag (postgres under
@@ -129,5 +141,26 @@ func NewEngine(dialect string, ctx context.Context, cfg EngineConfig) (Relationa
 	if !ok {
 		return nil, fmt.Errorf("db: no relational engine registered for dialect %q (build with the engine's build tag?)", dialect)
 	}
-	return f(ctx, cfg)
+	eng, err := f(ctx, cfg)
+	// A factory that produced nothing (an error, or the no-op factory a registry
+	// test registers) has nothing to configure — return it as it came.
+	if err != nil || eng == nil {
+		return eng, err
+	}
+	// The declared clock is applied HERE rather than through a per-engine
+	// option, so the five constructors stay unaware of it and a new engine
+	// inherits the setting by embedding the write orchestration. An engine that
+	// cannot take it is refused rather than silently left on the process clock:
+	// relational.clock is mandatory, and honoring it only sometimes would be the
+	// worst of both.
+	c, ok := any(eng).(clockCarrier)
+	if !ok {
+		eng.Close()
+		return nil, fmt.Errorf(
+			"db: the %q engine (%T) cannot take a clock source — relational.clock is declared for every "+
+				"service and an engine that ignores it would stamp from the process clock without saying so",
+			dialect, eng)
+	}
+	c.SetClock(cfg.Clock)
+	return eng, nil
 }
