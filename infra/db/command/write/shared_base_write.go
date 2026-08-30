@@ -88,6 +88,13 @@ func sharedBaseValues(base *TableSchema, src domain.Entity) (domain.Fields, stri
 	var nk string
 	for _, goName := range base.GoFields() {
 		col, _ := base.ColumnOf(goName)
+		// A STAMPED column is never read from the entity — the framework owns its
+		// value and the statement binds it separately. This is the type-less
+		// twin of the same skip writeFields makes on an anchored schema; without
+		// it the column would be emitted twice in one INSERT.
+		if base.IsStampedField(goName) {
+			continue
+		}
 		// The base is type-less, so a value-object shared field is unwrapped by
 		// value here (the same seam writeFields uses for a typed schema): the
 		// underlying scalar binds, a nil nullable VO becomes SQL NULL.

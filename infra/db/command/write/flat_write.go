@@ -315,7 +315,14 @@ func (b *BaseEngine) softWrite(
 		return err
 	}
 	rev := loadedRevision(src)
-	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, domain.NewID(id)), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	// An archive or an unarchive is a WRITE, so a rule may date it like any
+	// other: the transition and the stamp land on the same statement, carrying
+	// the same instant the DeletedAt column just took.
+	plan, err := stampedCols(schema, src, schema.UpdateNowColumns(), now)
+	if err != nil {
+		return err
+	}
+	sql, args, err := buildUpdatePlan(d, schemaTarget(schema), criteria.Eq(idGoField, domain.NewID(id)), fields, plan, now, schema.RevisionColumn(), rev)
 	if err != nil {
 		return err
 	}
