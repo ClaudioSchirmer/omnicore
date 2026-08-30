@@ -162,6 +162,11 @@ type schemaField struct {
 	// so a write that did not ask for it leaves the column out of the statement
 	// entirely and an already-stamped row keeps what it had.
 	stamped bool
+
+	// stampedCounter narrows stamped: the framework's value for this column is
+	// the EXISTING row's value plus one, not the operation's instant. Same
+	// contract otherwise — the caller asks, the framework decides.
+	stampedCounter bool
 }
 
 // IDKind classifies a persisted field's identity typing, derived from its Go
@@ -627,17 +632,11 @@ func (s *TableSchema) StampedTimeField(goName, column string) *TableSchema {
 			s.table, goName, column,
 		))
 	}
-	if s.typ == nil {
-		why := "an external schema (NewExternalSchema) maps an UPSTREAM service's columns for the read side " +
-			"and never writes, so there is no write to stamp on"
-		if s.isSharedBase {
-			why = "a shared base (NewSharedBaseSchema) has no Go type of its own — it is written by whichever " +
-				"role touches the identity, so there is no entity to carry the Stamp request. Declare the " +
-				"stamped field on the ROLE schema, whose entity owns the rule that decides the moment"
-		}
+	if s.typ == nil && !s.isSharedBase {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): StampedTimeField(%q, %q) is refused — %s.",
-			s.table, goName, column, why,
+			"infra.NewExternalSchema(%s): StampedTimeField(%q, %q) is refused — an external schema maps an "+
+				"UPSTREAM service's columns for the read side and never writes, so there is no write to stamp on.",
+			s.table, goName, column,
 		))
 	}
 	// Declare it as an ordinary field first — every name/column guard, the type
@@ -646,12 +645,109 @@ func (s *TableSchema) StampedTimeField(goName, column string) *TableSchema {
 	// schema keeps of it.
 	s.declareField(goName, column, redactedFieldSpec{})
 	fd := s.fields[len(s.fields)-1]
-	mustStampedTimeType(s.table, goName, s.typ.Field(fd.path[0]).Type)
+	// A SHARED BASE is type-less, so there is no struct to check the declaration
+	// against yet. Its Go names resolve against each ROLE's struct at
+	// .SharedBase(...) time — which is where the type check runs for a base,
+	// exactly as it already does for the base's other fields.
+	if s.typ != nil {
+		mustStampedTimeType(s.table, goName, s.typ.Field(fd.path[0]).Type)
+	}
 	fd.stamped = true
 	s.fields[len(s.fields)-1] = fd
 	s.byGo[fd.goName] = fd
 	s.byCol[fd.column] = fd
 	return s
+}
+
+// StampedCounterField declares a per-row counter the framework increments. It is
+// the second member of the stamped family, and the split from StampedTimeField
+// is the shape of the value, not the mechanism: the caller asks with the same
+// marker (domain.Managed.Stamp / write.Stamp), the schema decides what filling
+// the column MEANS.
+//
+//	StampedTimeField("LastAt", "last_at")            // fills with the instant
+//	StampedCounterField("TotalCount", "total_count") // fills with existing + 1
+//
+// PER ROW, not per table. `total_count` on one row counts that row's own events;
+// another row counts its own, and the two never interact. That is what makes it
+// portable on every engine (`col = col + 1`, evaluated under the row's lock) and
+// what makes it NOT a sequence: a sequence is a shared generator handing out
+// values unique across the whole table (an invoice number), which needs a
+// SEQUENCE object that MySQL and SQLite do not have. Two different problems, two
+// different names.
+//
+// The Go field is int64 — a counter always has a value, starting at 1 on the row
+// that creates it, so there is nothing a pointer would say. On an INSERT the
+// column binds 1; on an UPDATE and on an upsert conflict it becomes
+// `col = col + 1`, computed by the server so two concurrent writers cannot read
+// the same value and both write back the same increment.
+//
+// Refused exactly where StampedTimeField is: an external schema never writes.
+func (s *TableSchema) StampedCounterField(goName, column string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO stamped fields — the sibling row is a 1:1 slice "+
+				"of the OWNER's row and carries no framework-owned columns of its own. Declare "+
+				"StampedCounterField(%q, %q) on the owner.",
+			s.table, goName, column,
+		))
+	}
+	if s.typ == nil && !s.isSharedBase {
+		panic(fmt.Sprintf(
+			"infra.NewExternalSchema(%s): StampedCounterField(%q, %q) is refused — an external schema maps an "+
+				"UPSTREAM service's columns for the read side and never writes, so there is no write to count on.",
+			s.table, goName, column,
+		))
+	}
+	s.declareField(goName, column, redactedFieldSpec{})
+	fd := s.fields[len(s.fields)-1]
+	if s.typ != nil {
+		mustStampedCounterType(s.table, goName, s.typ.Field(fd.path[0]).Type)
+	}
+	fd.stamped, fd.stampedCounter = true, true
+	s.fields[len(s.fields)-1] = fd
+	s.byGo[fd.goName] = fd
+	s.byCol[fd.column] = fd
+	return s
+}
+
+// stampedCounterType is what a counter must be declared as. Unlike a stamped
+// time it is NOT a pointer: a counter always has a value — a row that was just
+// created has counted one thing — so there is no absence for nil to describe.
+var stampedCounterType = reflect.TypeOf(int64(0))
+
+func mustStampedCounterType(table, goName string, ft reflect.Type) {
+	if ft == stampedCounterType {
+		return
+	}
+	panic(fmt.Sprintf(
+		"infra.TableSchema(%s): stamped counter %q is typed %s — a counter is declared int64. It always "+
+			"has a value (a row that was just created has counted one thing), so it is never a pointer, and "+
+			"int64 is the width the framework increments on every engine.",
+		table, goName, ft,
+	))
+}
+
+// IsStampedCounter reports whether goName is a stamped COUNTER (as opposed to a
+// stamped time) — what a write path asks to decide between binding the
+// operation's instant and emitting the server-side increment.
+func (s *TableSchema) IsStampedCounter(goName string) bool {
+	f, ok := s.byGo[goName]
+	return ok && f.stampedCounter
+}
+
+// StampedCounterColumns splits the columns StampColumns resolved into the two
+// kinds, preserving declaration order: the ones filled with the operation's
+// instant, and the ones filled with the existing value plus one.
+func (s *TableSchema) StampedCounterColumns(cols []string) (times, counters []string) {
+	for _, c := range cols {
+		if f, ok := s.byCol[c]; ok && f.stampedCounter {
+			counters = append(counters, c)
+			continue
+		}
+		times = append(times, c)
+	}
+	return times, counters
 }
 
 // stampedTimeType is what a stamped field must be declared as. The pointer is
@@ -935,15 +1031,6 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): aggregate child %q declares Revision(%q) — a child row is guarded by its "+
 				"owner's revision; drop the call.", s.table, child.table, child.revisionCol))
-	}
-	if child.HasStampedFields() {
-		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): aggregate child %q declares a stamped field — a child is a VALUE in the "+
-				"aggregate map, so a rule calling item.Stamp(...) would mutate a copy and the request would be "+
-				"silently lost (the same reason the framework writes child ids back through "+
-				"AssignAggregateItemID rather than letting the domain set them). Declare the stamped field on "+
-				"the ROOT, or model the moment as a plain child field the root's rule fills.",
-			s.table, child.table))
 	}
 	if !child.hasPKDeclared() {
 		panic(fmt.Sprintf(
@@ -1383,6 +1470,25 @@ func (s *TableSchema) WriteFields(e any) domain.Fields { return s.writeFields(e)
 // Stamp on a field that is mapped but plain (which would otherwise silently do
 // nothing, since a plain field takes its value from the struct).
 func (s *TableSchema) StampColumns(goFields []string) ([]string, error) {
+	cols, unclaimed := s.ClaimStampColumns(goFields)
+	if err := s.RefuseUnclaimedStamps(unclaimed); err != nil {
+		return nil, err
+	}
+	return cols, nil
+}
+
+// ClaimStampColumns is StampColumns split in two, for the writes where ONE
+// entity's requests are shared by MORE THAN ONE schema: a shared-base role
+// carries the requests for its own columns AND for the base's, and neither
+// schema can tell a name meant for the other from a typo on its own.
+//
+// So this half only CLAIMS: it returns the columns this schema declares stamped
+// (in declaration order, so the SQL is stable) and hands back the names it does
+// not recognize. The caller collects the leftovers from every schema the
+// operation writes and refuses only what NOBODY claimed —
+// RefuseUnclaimedStamps does that, keeping a typo as loud as it is on a
+// single-schema write.
+func (s *TableSchema) ClaimStampColumns(goFields []string) (cols, unclaimed []string) {
 	if len(goFields) == 0 {
 		return nil, nil
 	}
@@ -1390,30 +1496,41 @@ func (s *TableSchema) StampColumns(goFields []string) ([]string, error) {
 	for _, g := range goFields {
 		want[g] = true
 	}
-	out := make([]string, 0, len(goFields))
+	cols = make([]string, 0, len(goFields))
 	for _, f := range s.fields {
 		if f.stamped && want[f.goName] {
-			out = append(out, f.column)
+			cols = append(cols, f.column)
 			delete(want, f.goName)
 		}
 	}
 	for _, g := range goFields {
-		if !want[g] {
-			continue
+		if want[g] {
+			unclaimed = append(unclaimed, g)
+			delete(want, g) // a name repeated in the request is reported once
 		}
+	}
+	return cols, unclaimed
+}
+
+// RefuseUnclaimedStamps turns the names no schema claimed into the diagnostic
+// the caller sees. Two mistakes reach here and each gets its own sentence: a
+// name that is not a field at all (a typo), and one that IS mapped but plain —
+// which would otherwise stamp nothing at all, silently.
+func (s *TableSchema) RefuseUnclaimedStamps(goFields []string) error {
+	for _, g := range goFields {
 		if f, mapped := s.byGo[g]; mapped {
-			return nil, fmt.Errorf(
+			return fmt.Errorf(
 				"db: %s.Stamp(%q) — %q is a plain field on table %q, so its value comes from the entity and "+
 					"stamping it would do nothing. Declare it with StampedTimeField(%q, %q) to hand its value "+
 					"to the framework",
 				s.table, g, g, s.table, g, f.column)
 		}
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"db: %s.Stamp(%q) — table %q declares no stamped field %q. Stamped fields are declared with "+
 				"StampedTimeField(goName, column); check the spelling of the Go field name",
 			s.table, g, s.table, g)
 	}
-	return out, nil
+	return nil
 }
 
 // ApplyStamps writes the instant the statement bound back onto the entity, for

@@ -215,10 +215,21 @@ func (s *TableSchema) SharedBase(base *TableSchema, parentIDColumn string) *Tabl
 			// write path unwraps it, the read path reconstructs via the role's
 			// field type) — same rule as Field() on a type-anchored schema.
 			ft, _ := path.TypeIn(s.typ)
-			if _, u, ok := valueObjectField(ft); ok {
-				mustSupportedFieldType(base.table, f.goName, u)
-			} else {
-				mustSupportedFieldType(base.table, f.goName, ft)
+			switch {
+			case f.stampedCounter:
+				// A stamped field's type is FIXED, not merely persistable, and
+				// the two kinds fix different types. The base had no struct to
+				// check against at declaration, so both checks land here, on the
+				// first role that anchors the type.
+				mustStampedCounterType(base.table, f.goName, ft)
+			case f.stamped:
+				mustStampedTimeType(base.table, f.goName, ft)
+			default:
+				if _, u, ok := valueObjectField(ft); ok {
+					mustSupportedFieldType(base.table, f.goName, u)
+				} else {
+					mustSupportedFieldType(base.table, f.goName, ft)
+				}
 			}
 			scanCols = append(scanCols, f.column)
 			scanByCol[f.column] = path
@@ -331,6 +342,12 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 			diverges("the value object behind field "+f.goName,
 				compositeOrigin(f), compositeOrigin(other))
 		}
+		// Whether a column is STAMPED decides who owns its value — the framework
+		// or the entity — so two declarations disagreeing on it would make the
+		// behavior depend on which instance the write path happened to hold.
+		if f.stamped != other.stamped {
+			diverges("field "+f.goName, stampedOrPlain(f.stamped), stampedOrPlain(other.stamped))
+		}
 	}
 	if len(a.children) != len(b.children) {
 		diverges("the native-children count", fmt.Sprintf("%d", len(a.children)), fmt.Sprintf("%d", len(b.children)))
@@ -345,4 +362,12 @@ func AssertSharedBaseEquivalent(a, b *TableSchema) {
 				ac.table+"/"+ac.parentIDColumn+"/"+ac.deletedAt, bc.table+"/"+bc.parentIDColumn+"/"+bc.deletedAt)
 		}
 	}
+}
+
+// stampedOrPlain renders a field's stamped flag for the equivalence diagnostic.
+func stampedOrPlain(stamped bool) string {
+	if stamped {
+		return "stamped (StampedTimeField)"
+	}
+	return "plain (Field)"
 }

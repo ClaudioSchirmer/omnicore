@@ -190,7 +190,13 @@ func SetManagedColumns(target any, revision int64, createdAt, updatedAt, deleted
 // and infra never names the carrier type.
 type stampCarrier interface{ requestedStamps() []string }
 
-func (m *Managed) requestedStamps() []string { return m.stamps }
+// requestedStamps takes a VALUE receiver, unlike every mutating method on this
+// carrier. That is what lets an aggregate CHILD be read: children travel through
+// the aggregate map as AggregateValueObject — an interface holding a struct
+// VALUE, which is not addressable and therefore satisfies no pointer-receiver
+// interface. Reading does not mutate, so the value receiver costs nothing and
+// makes root, child and base-child all answerable through one seam.
+func (m Managed) requestedStamps() []string { return m.stamps }
 
 // RequestedStamps returns the stamped fields target asked the framework to fill
 // on this write, by Go field name, in request order — the write path's read of

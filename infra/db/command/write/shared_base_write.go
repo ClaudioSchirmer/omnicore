@@ -204,7 +204,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 				"(SharedBaseInsertCommandHandler, or repo.LoadForSharedBaseInsert in a manual handler) before "+
 				"Insert; a blind insert would duplicate the shared identity's native data", entity.EntityName())
 	}
-	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, basePreExisted, now)
+	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, src, baseID, baseFields, basePreExisted, now)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -232,11 +232,19 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		}
 		id = nid
 	}
-	roleNowCols, roleStamped, err := stampedCols(schema, src, schema.InsertNowColumns(), now)
+	rolePlan, roleUnclaimed, err := claimStampedCols(schema, src, schema.InsertNowColumns(), now)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, roleFields, roleNowCols, now, schema.RevisionColumn())
+	// A role's entity carries the requests for BOTH tables, so a name is only a
+	// mistake when NEITHER schema declares it. The base claims its own below; the
+	// refusal is over what is left after both.
+	if _, baseLeft := base.ClaimStampColumns(roleUnclaimed); len(baseLeft) > 0 {
+		if err := schema.RefuseUnclaimedStamps(baseLeft); err != nil {
+			return domain.WriteResult{}, err
+		}
+	}
+	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, roleFields, rolePlan.nowCols, rolePlan.counters, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -262,7 +270,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// SyncEngine fans out to the OTHER roles' read models from THIS event — the
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(roleFields, roleStamped, now),
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(roleFields, rolePlan.payload, now),
 			outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now), BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -316,11 +324,19 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	roleNowCols, roleStamped, err := stampedCols(schema, src, schema.UpdateNowColumns(), now)
+	rolePlan, roleUnclaimed, err := claimStampedCols(schema, src, schema.UpdateNowColumns(), now)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), roleFields, roleNowCols, now, schema.RevisionColumn(), rev)
+	// A role's entity carries the requests for BOTH tables, so a name is only a
+	// mistake when NEITHER schema declares it. The base claims its own below; the
+	// refusal is over what is left after both.
+	if _, baseLeft := base.ClaimStampColumns(roleUnclaimed); len(baseLeft) > 0 {
+		if err := schema.RefuseUnclaimedStamps(baseLeft); err != nil {
+			return domain.WriteResult{}, err
+		}
+	}
+	sql, args, err := buildUpdatePlan(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), roleFields, rolePlan, now, schema.RevisionColumn(), rev)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -338,7 +354,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	}
 	// The base always exists here (we are updating an existing role, whose ParentID
 	// references it), so this is always the UPDATE branch.
-	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, baseID, baseFields, true, now)
+	baseRev, err := b.upsertSharedBase(ctx, tx, d, base, src, baseID, baseFields, true, now)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -357,7 +373,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	// ONE outbox row per write (see insertWithBase): the payload carries the
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(roleFields, roleStamped, now),
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(roleFields, rolePlan.payload, now),
 			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, CreatedAt: ownCreatedAt, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -876,12 +892,32 @@ func baseExists(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, b
 // value is read back in-TX and returned so the caller stamps it on the outbox
 // payload (_ids.base_revision) — the deterministic last-writer-wins token of
 // every read-model write of base data.
-func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) (int64, error) {
+func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, src domain.Entity, baseID string, baseFields domain.Fields, baseExists bool, now time.Time) (int64, error) {
+	// The base is type-less, but its columns map to the ROLE's Go fields (that is
+	// how sharedBaseValues reads them), so the role entity is what carries a stamp
+	// request for a base column. src is nil on the paths that write the base with
+	// no entity behind them — the lifecycle convergence — and those simply request
+	// nothing, which leaves the column out of the statement.
+	insertPlan := stampPlan{nowCols: base.InsertNowColumns()}
+	updatePlan := stampPlan{nowCols: base.UpdateNowColumns()}
+	if src != nil {
+		var err error
+		// Claim, never refuse: the entity's requests are shared with the ROLE's
+		// schema, and a name meant for the role is not a mistake here. The role's
+		// verb refuses what NEITHER schema claimed (see upsertSharedBase's
+		// callers), which keeps a typo as loud as on a single-schema write.
+		if insertPlan, _, err = claimStampedCols(base, src, insertPlan.nowCols, now); err != nil {
+			return 0, err
+		}
+		if updatePlan, _, err = claimStampedCols(base, src, updatePlan.nowCols, now); err != nil {
+			return 0, err
+		}
+	}
 	if baseExists {
 		// Unguarded on purpose: several roles converge on the shared identity and
 		// the base is last-write-wins by design — guarding it would turn an
 		// unrelated role's write into a conflict on this one.
-		sql, args, err := buildUpdate(d, schemaTarget(base), criteria.Eq(idGoField, domain.NewID(baseID)), baseFields, base.UpdateNowColumns(), now, base.RevisionColumn(), 0)
+		sql, args, err := buildUpdatePlan(d, schemaTarget(base), criteria.Eq(idGoField, domain.NewID(baseID)), baseFields, updatePlan, now, base.RevisionColumn(), 0)
 		if err != nil {
 			return 0, err
 		}
@@ -890,7 +926,7 @@ func (b *BaseEngine) upsertSharedBase(ctx context.Context, tx WriteTx, d Dialect
 		}
 		return readBaseRevision(ctx, tx, d, base, baseID)
 	}
-	sql, args := buildInsert(d, base.Table(), base.IDColumn(), baseID, baseFields, base.InsertNowColumns(), now, base.RevisionColumn())
+	sql, args := buildInsertWithCounters(d, base.Table(), base.IDColumn(), baseID, baseFields, insertPlan.nowCols, insertPlan.counters, now, base.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return 0, err
 	}

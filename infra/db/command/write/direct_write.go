@@ -78,6 +78,90 @@ type stampMarker struct{}
 // family grows into later — so the call site never has to change when it does.
 var Stamp = stampMarker{}
 
+// insertOnlyValue wraps a value a caller wants bound when the row is CREATED and
+// left alone when an Upsert finds one already there.
+type insertOnlyValue struct{ v any }
+
+// OnInsert marks a Values slot as insert-only: the value binds on the INSERT and
+// the column is absent from the conflict clause, so an existing row keeps
+// whatever it had.
+//
+//	w.Upsert(ctx, write.Values{
+//	    "Identity":        id,
+//	    "WindowStartedAt": write.OnInsert(t0),   // set when the window opened
+//	    "TotalCount":      write.Stamp,          // counted on every write
+//	}, write.OnConflict("Identity"))
+//
+// It exists because an upsert has three things a column can be, not two: bound
+// on both paths (an ordinary value), filled by the framework (write.Stamp), or
+// established once and never revised — a window's start, a first-seen instant, a
+// creation-time attribution. Without it that third kind would be overwritten on
+// every conflict by the value the caller happened to compute this time.
+//
+// Outside Upsert it is refused: on a plain Insert every column is insert-only
+// already, and on an Update there is no insert path for it to mean anything.
+func OnInsert(v any) any { return insertOnlyValue{v: v} }
+
+// UpsertOption configures one Upsert. Options carry what the STATEMENT needs and
+// the schema cannot know: which key decides "already there", and what an upsert
+// does to a row that is archived.
+type UpsertOption func(*upsertConfig)
+
+type upsertConfig struct {
+	conflictGo   []string
+	archive      archivePolicy
+	archiveGiven bool
+}
+
+// archivePolicy is what an Upsert does to the archive column of a row it finds.
+type archivePolicy int
+
+const (
+	archiveKeep archivePolicy = iota
+	archiveUnarchive
+)
+
+// OnConflict names the fields whose values decide whether the row already
+// exists — by GO FIELD NAME, like every other name above infra. It is declared
+// per call rather than on the schema because one table legitimately has more
+// than one way to be conflicted on, and because four of the five engines take
+// the key on the statement itself.
+//
+// MySQL IS THE EXCEPTION, and it cannot be emulated: ON DUPLICATE KEY UPDATE
+// fires on ANY unique key the row violates, not on the one named here. On a
+// table with a single unique key the behavior is identical everywhere; with more
+// than one, MySQL may resolve a conflict the other engines would have let fail.
+// Declare one unique key per upserted table and the difference disappears.
+func OnConflict(goFields ...string) UpsertOption {
+	return func(c *upsertConfig) { c.conflictGo = goFields }
+}
+
+// UnarchiveOnConflict brings an archived row back to life when the upsert lands
+// on one: deleted_at is set to NULL in the conflict clause.
+//
+// Note what it does NOT do: the row's other columns are updated by the same
+// rules as any conflict, so counters CONTINUE from where they were rather than
+// restarting. An upsert that must start over needs the old row deleted, not
+// archived.
+func UnarchiveOnConflict() UpsertOption {
+	return func(c *upsertConfig) { c.archive, c.archiveGiven = archiveUnarchive, true }
+}
+
+// KeepArchiveStateOnConflict leaves the archive column exactly as it is —
+// whatever it is. Most conflicts land on live rows, and those stay live; a
+// conflict that lands on an ARCHIVED row updates it while it stays archived, and
+// therefore stays invisible to every read.
+//
+// That second half is the reason this must be declared rather than defaulted. An
+// upsert is the one write that cannot be archive-gated: INSERT ... ON CONFLICT
+// has no WHERE for its conflict target, so an archived row still occupies the
+// unique key and still absorbs the write. Choosing it deliberately is
+// reasonable — a forensic counter that must keep counting after the subject was
+// retired — but it is not a choice the framework may make on someone's behalf.
+func KeepArchiveStateOnConflict() UpsertOption {
+	return func(c *upsertConfig) { c.archive, c.archiveGiven = archiveKeep, true }
+}
+
 // managedByVerb names the slots a Direct write may not bind directly, with what
 // owns each one. Keyed by the Go name Values would spell.
 var managedByVerb = map[string]string{
@@ -314,6 +398,67 @@ func (w *DirectWriter) Unarchive(ctx context.Context, q *criteria.Query) (int64,
 	return w.transition(ctx, q, false)
 }
 
+// Upsert writes one row, keyed on the fields OnConflict names rather than on the
+// identity: it inserts when nothing matches that key, and updates the row that
+// does — in one statement, so two callers racing on the same key cannot both
+// decide the row is missing.
+//
+//	w.Upsert(ctx, write.Values{
+//	    "Identity":        id,
+//	    "IdentityKind":    kind,
+//	    "Outcome":         "FAILURE",
+//	    "TotalCount":      write.Stamp,          // += 1 on both paths
+//	    "WindowStartedAt": write.OnInsert(t0),   // set once, never revised
+//	    "LastAt":          write.Stamp,          // the operation's instant
+//	    "LastIP":          ip,                   // overwritten on conflict
+//	}, write.OnConflict("Identity", "IdentityKind", "Outcome"),
+//	   write.KeepArchiveStateOnConflict())
+//
+// Each Values slot says what happens on a conflict, and the four cases are the
+// four kinds of column an upsert has: an ordinary value is overwritten;
+// write.Stamp is filled by the framework (the operation's instant for a stamped
+// TIME column, `col = col + 1` for a stamped COUNTER, computed server-side under
+// the row's lock so two racing increments cannot collapse into one); OnInsert is
+// established on creation and never revised; and the conflict key itself is
+// insert-only by definition — it is the thing that matched.
+//
+// It returns only an error. A row count would have to mean the same on every
+// backend and it does not: MySQL reports 2 for a conflicting upsert and 1 for an
+// inserting one, while the others report 1 for both. Reporting which path ran
+// would need a RETURNING/OUTPUT clause MySQL has no equivalent for, so the
+// framework declines to invent an answer.
+//
+// A schema declaring DeletedAt MUST also declare what an upsert does to the
+// archive column — UnarchiveOnConflict or KeepArchiveStateOnConflict — because
+// this is the one write that cannot be archive-gated (see those two).
+func (w *DirectWriter) Upsert(ctx context.Context, v Values, opts ...UpsertOption) error {
+	var cfg upsertConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	plan, err := w.upsertPlan(v, cfg)
+	if err != nil {
+		return err
+	}
+	// The identity is minted like every other Direct insert; on the conflict path
+	// it is simply not used — the row that matched keeps the id it already has,
+	// which is why Upsert returns no id.
+	id, err := newWriteID()
+	if err != nil {
+		return err
+	}
+	_, err = w.run(ctx, func(tx Tx) (string, []any, error) {
+		now, err := w.now(ctx, tx)
+		if err != nil {
+			return "", nil, err
+		}
+		return w.renderUpsert(tx.Dialect(), plan, id, now)
+	})
+	return err
+}
+
 // UpdateAll binds the given values on EVERY row of the table, archived ones
 // included. It is the deliberate sweep the empty-predicate refusal points at:
 // the verb, not a filter that happened to come out empty, is what says so.
@@ -525,4 +670,172 @@ func (w *DirectWriter) mapErr(err error) error {
 		return err
 	}
 	return TranslateUniqueViolation(w.eng.Dialect(), err, w.name, w.constraints)
+}
+
+// upsertPlan is a Values map resolved for one upsert: which columns bind what,
+// and what each one does when the row already exists. Every refusal is raised
+// while building it — before a transaction is opened — so a rejected call costs
+// nothing.
+//
+// It exists apart from resolveValues because an upsert reads the same map with a
+// wider vocabulary: OnInsert means nothing on the other verbs, and there a
+// stamped column rides the managed-column channel instead of a conflict clause.
+type upsertPlan struct {
+	bound      domain.Fields // ordinary values — overwritten on conflict
+	insertOnly domain.Fields // established on creation, never revised
+	times      []string      // stamped time columns — bound to the operation's instant
+	counters   []string      // stamped counters — 1 on insert, col + 1 on conflict
+	keyCols    []string      // the conflict target, in declaration order
+	keyed      map[string]bool
+	unarchive  bool
+	sdCol      string
+}
+
+func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error) {
+	table := w.schema.Table()
+	if len(cfg.conflictGo) == 0 {
+		return upsertPlan{}, fmt.Errorf(
+			"db: an Upsert on %q needs write.OnConflict(...) — the key that decides whether the row already "+
+				"exists is the statement's whole premise, and the framework will not guess it from the schema",
+			table)
+	}
+	sdCol, hasDeletedAt := w.schema.DeletedAtColumn()
+	if hasDeletedAt && !cfg.archiveGiven {
+		return upsertPlan{}, fmt.Errorf(
+			"db: an Upsert on %q must declare what it does to an ARCHIVED row — write.UnarchiveOnConflict() "+
+				"or write.KeepArchiveStateOnConflict(). Every other write verb is gated on deleted_at IS NULL, "+
+				"but an upsert cannot be: its conflict target takes no WHERE, so an archived row still holds "+
+				"the unique key and still absorbs the write. Unarchiving and updating-while-invisible are both "+
+				"defensible; picking one on your behalf is not",
+			table)
+	}
+	if len(v) == 0 {
+		return upsertPlan{}, fmt.Errorf("db: an Upsert on %q needs at least one value", table)
+	}
+
+	plan := upsertPlan{
+		bound:      domain.Fields{},
+		insertOnly: domain.Fields{},
+		unarchive:  cfg.archive == archiveUnarchive,
+		sdCol:      sdCol,
+	}
+
+	// The conflict key resolves through the schema like any other name. Its
+	// columns are insert-only by definition — they are what matched — so they are
+	// tracked here and skipped when the conflict clause is assembled.
+	isKey := make(map[string]bool, len(cfg.conflictGo))
+	for _, g := range cfg.conflictGo {
+		rf, ok := w.schema.Resolve(g)
+		if !ok {
+			return upsertPlan{}, fmt.Errorf(
+				"db: Upsert on %q — unknown conflict field %q; declare it with TableSchema.Field(...)", table, g)
+		}
+		if _, present := v[g]; !present {
+			return upsertPlan{}, fmt.Errorf(
+				"db: Upsert on %q — the conflict field %q carries no value; the key a row is matched on has to "+
+					"be part of the row being written", table, g)
+		}
+		isKey[rf.Column] = true
+		plan.keyCols = append(plan.keyCols, rf.Column)
+	}
+
+	var asked []string
+	for goField, val := range v {
+		if why, managed := managedByVerb[goField]; managed {
+			return upsertPlan{}, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
+		}
+		if _, marked := val.(stampMarker); marked {
+			asked = append(asked, goField)
+			continue
+		}
+		rf, ok := w.schema.Resolve(goField)
+		if !ok {
+			return upsertPlan{}, fmt.Errorf(
+				"db: unknown field %q on table %q — declare it with TableSchema.Field(...)", goField, table)
+		}
+		if w.schema.IsStampedField(goField) {
+			return upsertPlan{}, fmt.Errorf(
+				"db: %q on table %q is a stamped field — its value is the framework's, never the caller's. "+
+					"Pass write.Stamp to ask for it: Values{%q: write.Stamp}", goField, table, goField)
+		}
+		if only, insertScoped := val.(insertOnlyValue); insertScoped {
+			plan.insertOnly[rf.Column] = only.v
+			continue
+		}
+		plan.bound[rf.Column] = val
+	}
+
+	stamps, err := w.schema.StampColumns(asked)
+	if err != nil {
+		return upsertPlan{}, err
+	}
+	plan.times, plan.counters = w.schema.StampedCounterColumns(stamps)
+	// The key columns stay in `bound` — they are written on the INSERT like any
+	// other value. keyed records them so the CONFLICT clause can skip them:
+	// assigning a column the row was MATCHED on is a no-op at best, and on the
+	// MERGE dialects assigning a join key is an error.
+	plan.keyed = isKey
+	return plan, nil
+}
+
+// renderUpsert turns the resolved plan into the statement and its arguments.
+// It runs inside the transaction because a stamped time column binds the
+// operation's instant, and under relational.clock: db that instant is read from
+// the very transaction the statement will run in.
+func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now time.Time) (string, []any, error) {
+	boundKeys := SortedKeys(plan.bound)
+	insertKeys := SortedKeys(plan.insertOnly)
+
+	cols := make([]string, 0, 1+len(boundKeys)+len(insertKeys)+len(plan.times)+len(plan.counters))
+	args := make([]any, 0, cap(cols))
+
+	cols = append(cols, w.schema.IDColumn())
+	args = append(args, d.EncodeArg(domain.NewID(id)))
+	for _, c := range boundKeys {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(plan.bound[c]))
+	}
+	for _, c := range insertKeys {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(plan.insertOnly[c]))
+	}
+	for _, c := range plan.times {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(now))
+	}
+	for _, c := range plan.counters {
+		// A fresh row has counted one thing.
+		cols = append(cols, c)
+		args = append(args, int64(1))
+	}
+	// The managed timestamps ride the INSERT like they do on every other verb.
+	for _, c := range w.schema.InsertNowColumns() {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(now))
+	}
+
+	sets := make([]UpsertSet, 0, len(cols))
+	for _, c := range boundKeys {
+		if plan.keyed[c] {
+			continue
+		}
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	for _, c := range plan.times {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	for _, c := range plan.counters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetBump})
+	}
+	// updated_at is already in the INSERT list, bound to this same instant, so
+	// the conflict path takes it from the proposed row rather than binding a
+	// second argument — one value, one placeholder, no ordering to get wrong.
+	// created_at is deliberately absent: a row's creation is not revised.
+	for _, c := range w.schema.UpdateNowColumns() {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	if plan.unarchive {
+		sets = append(sets, UpsertSet{Col: plan.sdCol, Mode: core.UpsertSetExpr, Expr: "NULL"})
+	}
+	return d.BuildUpsert(w.schema.Table(), cols, plan.keyCols, sets), args, nil
 }

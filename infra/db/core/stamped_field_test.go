@@ -72,51 +72,113 @@ func TestStampedTimeField_RefusedOnASibling(t *testing.T) {
 	NewSiblingSchema[*stampDeclOrder]("order_terms").StampedTimeField("PaidAt", "paid_at")
 }
 
-// A type-less schema has no entity to carry the request. Both kinds are refused,
-// each with its own reason.
-func TestStampedTimeField_RefusedOnTypelessSchemas(t *testing.T) {
-	for _, c := range []struct {
-		name   string
-		build  func() *TableSchema
-		expect string
-	}{
-		{"external", func() *TableSchema { return NewExternalSchema("upstream_orders") }, "never writes"},
-		{"shared base", func() *TableSchema { return NewSharedBaseSchema("people") }, "ROLE schema"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal("a type-less schema must refuse a stamped field")
-				}
-				if msg, _ := r.(string); !strings.Contains(msg, c.expect) {
-					t.Fatalf("the panic must explain THIS schema's reason (%q), got %v", c.expect, r)
-				}
-			}()
-			c.build().StampedTimeField("PaidAt", "paid_at")
-		})
-	}
-}
-
-// An aggregate child is a VALUE in the aggregate map: a rule calling
-// item.Stamp(...) would mutate a copy and lose the request. Refuse at the attach
-// point rather than let it fail silently at runtime.
-func TestStampedTimeField_RefusedOnAnAggregateChild(t *testing.T) {
-	child := NewTableSchema[*stampDeclOrder]("order_lines").
-		ID("id").
-		ParentID("order_id").
-		StampedTimeField("PaidAt", "paid_at")
-
+// An external schema is the one that never writes, so it is the one that cannot
+// stamp.
+func TestStampedTimeField_RefusedOnAnExternalSchema(t *testing.T) {
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("a child's stamp request would be lost on a value copy — attaching it must be refused")
+			t.Fatal("an external schema never writes — the declaration must be refused")
 		}
-		if msg, _ := r.(string); !strings.Contains(msg, "silently lost") {
-			t.Fatalf("the panic must explain why, got %v", r)
+		if msg, _ := r.(string); !strings.Contains(msg, "never writes") {
+			t.Fatalf("the panic must name the reason, got %v", r)
 		}
 	}()
-	NewTableSchema[*stampDeclOrder]("orders").ID("id").Child(child)
+	NewExternalSchema("upstream_orders").StampedTimeField("PaidAt", "paid_at")
+}
+
+// A SHARED BASE may declare a stamped field: it is type-less, but its columns map
+// to the ROLE's Go fields, so the role's entity is what carries the request. The
+// consequence is that the TYPE check cannot run at declaration — it is deferred
+// to .SharedBase(role), where a struct finally exists.
+func TestStampedTimeField_SharedBaseDefersTheTypeCheck(t *testing.T) {
+	base := func() *TableSchema {
+		return NewSharedBaseSchema("people").
+			ID("id").
+			Revision("revision").
+			NaturalID("document").
+			Field("Document", "document").
+			StampedTimeField("VerifiedAt", "verified_at")
+	}
+	// Declaring it is fine on its own — there is nothing to check against yet.
+	b := base()
+	if !b.IsStampedField("VerifiedAt") {
+		t.Fatal("a shared base must accept a stamped declaration")
+	}
+
+	// A role whose field is the right type resolves cleanly.
+	type goodRole struct {
+		ID         domain.ID
+		Document   string
+		VerifiedAt *time.Time
+	}
+	NewTableSchema[*goodRole]("employees").ID("id").SharedBase(base(), "person_id")
+
+	// A role whose field is the WRONG type fails at the point the type appears.
+	type badRole struct {
+		ID         domain.ID
+		Document   string
+		VerifiedAt time.Time // not a pointer
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("the deferred type check must fire when the role anchors the type")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "*time.Time") {
+			t.Fatalf("the panic must teach the declaration, got %v", r)
+		}
+	}()
+	NewTableSchema[*badRole]("contractors").ID("id").SharedBase(base(), "person_id")
+}
+
+// Two declarations of one base must agree on which columns are stamped —
+// otherwise the behavior would depend on which instance the write path held.
+func TestSharedBaseEquivalence_ComparesTheStampedFlag(t *testing.T) {
+	stamped := NewSharedBaseSchema("people").
+		ID("id").Revision("revision").NaturalID("document").
+		Field("Document", "document").
+		StampedTimeField("VerifiedAt", "verified_at")
+	plain := NewSharedBaseSchema("people").
+		ID("id").Revision("revision").NaturalID("document").
+		Field("Document", "document").
+		Field("VerifiedAt", "verified_at")
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("a base declared stamped in one place and plain in another must be refused")
+		}
+	}()
+	AssertSharedBaseEquivalent(stamped, plain)
+}
+
+// An aggregate child carries stamp requests like any other node: it embeds
+// domain.Managed, and the value the domain hands to the aggregate map travels
+// with whatever its rule asked for. Attaching one is not refused.
+type stampDeclLine struct {
+	domain.Managed
+	Label     string
+	ShippedAt *time.Time
+}
+
+func (l stampDeclLine) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
+	return domain.IsSameByBusinessFields(l, other)
+}
+func (stampDeclLine) CollectionName() string                           { return "Lines" }
+func (stampDeclLine) BuildRules(string, domain.Service, *domain.Rules) {}
+
+func TestStampedTimeField_AllowedOnAnAggregateChild(t *testing.T) {
+	child := NewTableSchema[stampDeclLine]("order_lines").
+		ID("id").
+		ParentID("order_id").
+		Field("Label", "label").
+		StampedTimeField("ShippedAt", "shipped_at")
+
+	root := NewTableSchema[*stampDeclOrder]("orders").ID("id").Child(child)
+	got := root.ChildSchema("stampDeclLine")
+	if got == nil || !got.IsStampedField("ShippedAt") {
+		t.Fatal("the child's stamped declaration must survive attachment")
+	}
 }
 
 func TestStampColumns_TranslatesAndRefuses(t *testing.T) {
@@ -145,4 +207,45 @@ func TestRequestedStamps_NonCarrierHasNoRequests(t *testing.T) {
 	if got := domain.RequestedStamps(&stampDeclOrder{}); got != nil {
 		t.Fatalf("a type embedding no carrier requests nothing, got %v", got)
 	}
+}
+
+// The deferred check must know WHICH kind it is deferring: the two members of
+// the family fix different Go types, and validating a counter as a timestamp
+// would refuse a correct declaration (the bug this pins).
+func TestStampedCounterField_SharedBaseDefersItsOwnTypeCheck(t *testing.T) {
+	base := func() *TableSchema {
+		return NewSharedBaseSchema("people").
+			ID("id").
+			Revision("revision").
+			NaturalID("document").
+			Field("Document", "document").
+			StampedTimeField("VerifiedAt", "verified_at").
+			StampedCounterField("SeenCount", "seen_count")
+	}
+	// Both kinds on one base resolve cleanly against a role that types them right.
+	type goodRole struct {
+		ID         domain.ID
+		Document   string
+		VerifiedAt *time.Time
+		SeenCount  int64
+	}
+	NewTableSchema[*goodRole]("members").ID("id").SharedBase(base(), "person_id")
+
+	// And the counter's own check still fires when the role types it wrong.
+	type badRole struct {
+		ID         domain.ID
+		Document   string
+		VerifiedAt *time.Time
+		SeenCount  *int64 // a counter is never a pointer
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("a mistyped counter on a base must be refused when the role anchors it")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "int64") {
+			t.Fatalf("the panic must be the COUNTER's, got %v", r)
+		}
+	}()
+	NewTableSchema[*badRole]("contractors").ID("id").SharedBase(base(), "person_id")
 }

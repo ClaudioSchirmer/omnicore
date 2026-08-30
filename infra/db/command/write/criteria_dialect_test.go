@@ -3,10 +3,12 @@ package write
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 )
 
 // testPGDialect is a Postgres-flavored db.Dialect used by the criteria
@@ -61,6 +63,31 @@ func (testPGDialect) IsForeignKeyViolation(err error) (string, bool) {
 	}
 	return "", false
 }
-func (testPGDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) string {
-	return "INSERT " + table
+
+// BuildUpsert renders the Postgres shape faithfully — identifiers unquoted, which
+// is this fixture's convention — so a test can assert on the conflict clause the
+// write path builds. Mirrors infra/db/engine/postgres; the engine packages import
+// this one, so their real dialects cannot be reached from here.
+func (d testPGDialect) BuildUpsert(table string, cols, conflictCols []string, sets []UpsertSet) string {
+	phs := make([]string, len(cols))
+	for i := range cols {
+		phs[i] = d.Placeholder(i + 1)
+	}
+	sql := "INSERT INTO " + table + " (" + strings.Join(cols, ", ") + ") VALUES (" + strings.Join(phs, ", ") + ")" +
+		" ON CONFLICT (" + strings.Join(conflictCols, ", ") + ")"
+	if len(sets) == 0 {
+		return sql + " DO NOTHING"
+	}
+	parts := make([]string, len(sets))
+	for i, s := range sets {
+		switch s.Mode {
+		case core.UpsertSetNew:
+			parts[i] = s.Col + " = EXCLUDED." + s.Col
+		case core.UpsertSetBump:
+			parts[i] = s.Col + " = " + table + "." + s.Col + " + 1"
+		default:
+			parts[i] = s.Col + " = " + s.Expr
+		}
+	}
+	return sql + " DO UPDATE SET " + strings.Join(parts, ", ")
 }

@@ -530,16 +530,45 @@ w.Update(ctx, write.Values{"Status": "PAID", "PaidAt": write.Stamp}, q)</code></
     columns follow <em>declaration</em> order, so the SQL is stable however the rules happened to fire.
 </p>
 <p>
-    <strong>Where it is refused, and why.</strong> At declaration: a <strong>sibling</strong> (it carries no managed
-    columns of its own — the owner dates the row), an <strong>external schema</strong> (it never writes), a
-    <strong>shared base</strong> (no Go type of its own to carry the request — declare it on the ROLE, whose entity
-    owns the rule), and an <strong>aggregate child</strong> (a child is a value in the aggregate map, so a rule calling
-    <code>item.Stamp(...)</code> would mutate a copy and the request would be silently lost — the same reason the
-    framework writes child ids back through <code>AssignAggregateItemID</code> rather than letting the domain set
-    them). At write time: a <code>Stamp</code> naming a field that is unknown, or mapped but <em>plain</em>, is a typed
-    error rather than a silent no-op — the domain cannot see the schema, so there is no boot moment to catch it at. On
-    the Direct side, binding a real value into a stamped slot is refused too, with the diagnostic teaching
+    <strong>Where it works, and where it is refused.</strong> Every schema that WRITES can carry stamped fields: an
+    entity root, an aggregate child, a shared-base role, the shared base itself, and a Direct schema. Two of those are
+    worth a line each. An <strong>aggregate child</strong> travels as a value in the aggregate map, so the framework
+    writes the filled value back <em>there</em> — the copy every post-write reader sees — exactly as it writes back a
+    minted child id through <code>AssignAggregateItemID</code>. A <strong>shared base</strong> has no Go type of its
+    own, but its columns map to the ROLE's Go fields, so the role's entity is what carries the request; the one
+    consequence is that the field's TYPE cannot be checked at declaration and is validated at
+    <code>.SharedBase(...)</code> instead, where a struct finally exists (and two declarations of one base must agree
+    on which columns are stamped).
+</p>
+<p>
+    Refused at declaration on the two schemas that could not honor it: a <strong>sibling</strong> (it carries no
+    framework-owned columns of its own — the owner dates the row) and an <strong>external schema</strong> (it never
+    writes). At write time: a <code>Stamp</code> naming a field that is unknown, or mapped but <em>plain</em>, is a
+    typed error rather than a silent no-op — the domain cannot see the schema, so there is no boot moment to catch it
+    at. On the Direct side, binding a real value into a stamped slot is refused too, with the diagnostic teaching
     <code>write.Stamp</code>: the caller may ask for the column, never dictate it.
+</p>
+<p>
+    <strong>The second member of the family — <code>StampedCounterField</code>.</strong> Same marker, different
+    meaning: filling the column means <code>col = col + 1</code> instead of the operation's instant.
+</p>
+<pre><code>StampedTimeField("LastAt", "last_at")             // fills with the instant
+StampedCounterField("TotalCount", "total_count")  // fills with existing + 1
+
+o.Stamp("TotalCount")                             // same request, either way</code></pre>
+<p>
+    It counts <strong>per row</strong>: one row's counter counts that row's own events and never interacts with
+    another's. That is what makes it portable on every engine (<code>col = col + 1</code>, evaluated under the row's
+    lock) and what makes it <em>not</em> a sequence — a shared generator handing out values unique across a whole table
+    (an invoice number) needs a <code>SEQUENCE</code> object MySQL and SQLite do not have. Declared <code>int64</code>,
+    never a pointer: a row that was just created has counted one thing, so there is no absence for nil to describe.
+    It binds 1 on an INSERT and becomes the server-side increment on an UPDATE — computed by the database precisely so
+    two writers that both read the value and both wrote back read+1 cannot lose one of the increments silently.
+</p>
+<p>
+    A counter is deliberately absent from the outbox payload and from the write-back onto the entity: its new value is
+    the server's, and the framework does not read it back, so there is no honest value to state — the entity keeps the
+    value it was loaded with until the next load. The projection is unaffected, since the SyncEngine re-reads the row.
 </p>
 
 <h3>Reading the managed columns back — the <code>domain.Managed</code> carrier</h3>

@@ -24,6 +24,64 @@ with `1.0.0`.
 
 ### Added
 
+- **`DirectWriter.Upsert` — insert-or-update keyed on a declared conflict key
+  instead of on the identity**, in one statement, so two callers racing on the
+  same key cannot both decide the row is missing.
+
+  ```go
+  w.Upsert(ctx, write.Values{
+      "Identity":        id,
+      "IdentityKind":    kind,
+      "Outcome":         "FAILURE",
+      "TotalCount":      write.Stamp,          // += 1, server-side
+      "WindowStartedAt": write.OnInsert(t0),   // set once, never revised
+      "LastAt":          write.Stamp,          // the operation's instant
+      "LastIP":          ip,                   // overwritten on conflict
+  }, write.OnConflict("Identity", "IdentityKind", "Outcome"),
+     write.KeepArchiveStateOnConflict())
+  ```
+
+  - Each `Values` slot says what happens on a conflict, and the four cases are
+    the four kinds of column an upsert has: an ordinary value is overwritten;
+    `write.Stamp` is filled by the framework; `write.OnInsert(v)` is established
+    on creation and never revised; and the conflict key itself is insert-only by
+    definition — it is the thing that matched.
+  - `write.OnConflict(goFields...)` names the key **per call**, by Go field name,
+    because one table legitimately has more than one way to be conflicted on and
+    four of the five engines take the key on the statement itself.
+  - **MySQL is the documented exception**: `ON DUPLICATE KEY UPDATE` fires on ANY
+    unique key the row violates, not the one named. With a single unique key the
+    behavior is identical everywhere; with more than one, MySQL may resolve a
+    conflict the others would have let fail.
+  - A schema declaring `DeletedAt` MUST also declare `write.UnarchiveOnConflict()`
+    or `write.KeepArchiveStateOnConflict()`. This is the one write that cannot be
+    archive-gated — `INSERT … ON CONFLICT` has no `WHERE` for its conflict
+    target, so an archived row still holds the unique key and still absorbs the
+    write. Both answers are defensible; the framework does not pick one.
+  - Returns only an `error`. A row count cannot mean the same on every backend
+    (MySQL reports 2 for a conflicting upsert, 1 for an inserting one; the others
+    report 1 for both), and reporting which path ran would need a
+    `RETURNING`/`OUTPUT` clause MySQL has no equivalent for.
+
+- **`StampedCounterField` — a per-row counter the framework increments**, the
+  second member of the stamped family. The caller asks with the same marker
+  (`domain.Managed.Stamp` / `write.Stamp`); the schema decides that filling this
+  column means `col = col + 1` rather than the operation's instant.
+
+  - **Per row, not per table.** One row's counter counts that row's own events
+    and never interacts with another's — which is what makes it portable on every
+    engine and what makes it *not* a sequence (a shared generator handing out
+    values unique across a table needs a `SEQUENCE` object MySQL and SQLite do
+    not have).
+  - Declared `int64`, never a pointer: a row that was just created has counted
+    one thing. It binds 1 on an INSERT and becomes `col = col + 1` on an UPDATE
+    or an upsert conflict — computed by the server under the row's lock, so two
+    racing increments cannot collapse into one.
+  - Counters are deliberately absent from the outbox payload and from the
+    write-back onto the entity: the new value is the server's and the framework
+    does not read it back, so there is no honest value to state. The projection
+    is unaffected (the SyncEngine re-reads the row).
+
 - **`StampedTimeField` — a timestamp column whose WHEN belongs to the domain and
   whose VALUE belongs to the framework.**
 
@@ -63,14 +121,17 @@ with `1.0.0`.
     happened, and nil says that where a zero time would report year 1.
     Everything else is ordinary — it joins the bijection, filters, orders,
     projects and hydrates like any `Field`.
-  - Refused at declaration where it could not be honored: a sibling (carries no
-    managed columns of its own), an external schema (never writes), a shared
-    base (no Go type to carry the request — declare it on the role), and an
-    aggregate child (a child is a value in the aggregate map, so a rule calling
-    `item.Stamp(...)` would mutate a copy and lose the request). A `Stamp`
-    naming a field that is unknown or merely plain is a typed write-time error,
-    not a silent no-op — the domain cannot see the schema, so there is no boot
-    moment to catch it at.
+  - Available on every schema that WRITES — an entity root, an aggregate child,
+    a shared-base role, the shared base itself and a Direct schema. A child
+    carries its request through the aggregate map (the framework writes the value
+    back there, the same way it writes back a minted child id); a shared base is
+    type-less but its columns map to the ROLE's Go fields, so the role's entity
+    is the carrier and the type check is deferred to `.SharedBase(...)`. Refused
+    on a sibling (carries no framework-owned columns of its own — the owner dates
+    the row) and on an external schema (never writes). A `Stamp` naming a field
+    that is unknown or merely plain is a typed write-time error, not a silent
+    no-op — the domain cannot see the schema, so there is no boot moment to catch
+    it at.
   - Binding a value into a stamped slot of a Direct `Values` is refused, with
     the diagnostic teaching `write.Stamp`.
 
