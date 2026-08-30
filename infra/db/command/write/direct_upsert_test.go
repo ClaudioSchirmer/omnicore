@@ -266,3 +266,72 @@ func TestUpsert_InsertSideStartsCountersAtOne(t *testing.T) {
 		t.Fatalf("the counter must bind 1 on the insert side, args = %v", args)
 	}
 }
+
+// The remaining refusals and shapes upsertPlan owes, each raised before a
+// transaction exists.
+func TestUpsertPlan_RemainingRefusals(t *testing.T) {
+	w, _ := newUpsertWriter(t)
+	key := upsertConfig{conflictGo: []string{"Identity", "IdentityKind", "Outcome"}}
+
+	if _, err := w.upsertPlan(Values{}, key); err == nil ||
+		!strings.Contains(err.Error(), "at least one value") {
+		t.Fatalf("an empty Values must be refused, got %v", err)
+	}
+	if _, err := w.upsertPlan(Values{
+		"Identity": "b", "IdentityKind": "U", "Outcome": "F", "ID": "x",
+	}, key); err == nil || !strings.Contains(err.Error(), "minted") {
+		t.Fatalf("an explicit id must be refused, got %v", err)
+	}
+	if _, err := w.upsertPlan(Values{
+		"Identity": "b", "IdentityKind": "U", "Outcome": "F", "Nope": 1,
+	}, key); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("an unknown field must be refused, got %v", err)
+	}
+}
+
+// An upsert on a schema with NO archive column needs no policy, and none of the
+// archive machinery appears in its statement.
+func TestUpsert_NoArchiveColumnEmitsNoArchiveClause(t *testing.T) {
+	w, tx := newUpsertWriter(t)
+	if err := w.Upsert(context.Background(), Values{
+		"Identity": "bob", "IdentityKind": "U", "Outcome": "F", "LastIP": "1.1.1.1",
+	}, attemptKey()); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if strings.Contains(tx.lastSQL, "deleted_at") {
+		t.Fatalf("a schema with no DeletedAt must not mention it: %s", tx.lastSQL)
+	}
+}
+
+// The managed timestamps ride the upsert like they ride every other verb:
+// created_at on the insert side only, updated_at on both.
+func TestUpsert_ManagedTimestamps(t *testing.T) {
+	// A dedicated schema: the fixture above deliberately declares no managed
+	// timestamps, which is what lets its assertions pin the exact column list.
+	schema := core.NewDirectSchema[attemptRow]("authentication_attempts").
+		ID("id").
+		Field("Identity", "identity").
+		Field("IdentityKind", "identity_kind").
+		Field("Outcome", "outcome").
+		Field("LastIP", "last_ip").
+		CreatedAt("created_at").
+		UpdatedAt("updated_at")
+	tx := &fakeWriteTx{n: 1}
+	w := NewDirectWriter(&directTestEngine{tx: tx}, schema, "AuthAttempt")
+
+	if err := w.Upsert(context.Background(), Values{
+		"Identity": "bob", "IdentityKind": "U", "Outcome": "F", "LastIP": "1.1.1.1",
+	}, attemptKey()); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(tx.lastSQL, "ON CONFLICT")
+	if !strings.Contains(head, "created_at") || !strings.Contains(head, "updated_at") {
+		t.Fatalf("both managed columns belong on the INSERT: %s", head)
+	}
+	if !strings.Contains(tail, "updated_at = EXCLUDED.updated_at") {
+		t.Fatalf("updated_at must be revised on conflict: %s", tail)
+	}
+	if strings.Contains(tail, "created_at =") {
+		t.Fatalf("a row's creation is never revised: %s", tail)
+	}
+}

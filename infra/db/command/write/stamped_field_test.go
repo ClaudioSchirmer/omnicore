@@ -327,6 +327,7 @@ type stampedLine struct {
 	domain.Managed
 	Label     string
 	ShippedAt *time.Time
+	PickCount int64
 }
 
 func (l stampedLine) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
@@ -516,5 +517,57 @@ func TestStampedCounter_SplitsFromStampedTime(t *testing.T) {
 	}
 	if len(counters) != 1 || counters[0] != "total_count" {
 		t.Fatalf("counters = %v", counters)
+	}
+}
+
+// The last branch of the single-schema helper: a schema that DECLARES stamped
+// fields but is handed no request pays nothing and emits nothing.
+func TestStampedField_DeclaredButUnrequestedCostsNothing(t *testing.T) {
+	schema := stampedOrderSchema()
+	plan, err := stampedCols(schema, &stampedOrder{}, schema.UpdateNowColumns(), testStamp())
+	if err != nil {
+		t.Fatalf("stampedCols: %v", err)
+	}
+	if len(plan.counters) != 0 || len(plan.payload) != 0 {
+		t.Fatalf("nothing requested means nothing emitted, got %+v", plan)
+	}
+	if len(plan.nowCols) != 1 || plan.nowCols[0] != "updated_at" {
+		t.Fatalf("the managed columns pass through untouched, got %v", plan.nowCols)
+	}
+}
+
+// A child schema with no stamped field at all takes the same early exit.
+func TestStampedChild_SchemaWithoutStampsPassesThrough(t *testing.T) {
+	plain := core.NewTableSchema[stampedLine]("order_lines").
+		ID("id").ParentID("order_id").Field("Label", "label")
+	plan, err := stampedChildCols(plain, nil, stampedLine{}, []string{"updated_at"}, testStamp())
+	if err != nil {
+		t.Fatalf("stampedChildCols: %v", err)
+	}
+	if len(plan.nowCols) != 1 || plan.nowCols[0] != "updated_at" {
+		t.Fatalf("the managed columns pass through untouched, got %v", plan.nowCols)
+	}
+}
+
+// A counter on a CHILD is emitted as a counter, not as an instant.
+func TestStampedChild_CounterIsSeparatedFromTheInstant(t *testing.T) {
+	schema := core.NewTableSchema[stampedLine]("order_lines").
+		ID("id").ParentID("order_id").
+		Field("Label", "label").
+		StampedTimeField("ShippedAt", "shipped_at").
+		StampedCounterField("PickCount", "pick_count")
+
+	line := stampedLine{Label: "w"}
+	line.Stamp("ShippedAt")
+	line.Stamp("PickCount")
+	plan, err := stampedChildCols(schema, nil, line, nil, testStamp())
+	if err != nil {
+		t.Fatalf("stampedChildCols: %v", err)
+	}
+	if len(plan.nowCols) != 1 || plan.nowCols[0] != "shipped_at" {
+		t.Fatalf("the instant column, got %v", plan.nowCols)
+	}
+	if len(plan.counters) != 1 || plan.counters[0] != "pick_count" {
+		t.Fatalf("the counter column, got %v", plan.counters)
 	}
 }

@@ -249,3 +249,81 @@ func TestStampedCounterField_SharedBaseDefersItsOwnTypeCheck(t *testing.T) {
 	}()
 	NewTableSchema[*badRole]("contractors").ID("id").SharedBase(base(), "person_id")
 }
+
+// ApplyStamps is the write-back, and every guard in it exists because the
+// framework must never fail a good write over a reporting detail: the statement
+// is already correct, so an unreachable field is skipped rather than reported.
+func TestApplyStamps_GuardsSkipInsteadOfFailing(t *testing.T) {
+	s := stampDeclSchema()
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	// The happy path: a settable pointer field takes the instant.
+	o := &stampDeclOrder{}
+	s.ApplyStamps(o, []string{"PaidAt"}, now)
+	if o.PaidAt == nil || !o.PaidAt.Equal(now) {
+		t.Fatalf("the stamped field must carry the instant, got %v", o.PaidAt)
+	}
+
+	// No request → nothing happens, and no reflection is attempted.
+	p := &stampDeclOrder{}
+	s.ApplyStamps(p, nil, now)
+	if p.PaidAt != nil {
+		t.Fatal("an empty request must write nothing")
+	}
+
+	// A non-pointer target is not addressable, so there is nothing to set. The
+	// statement was still built correctly, so this is a skip, not an error.
+	s.ApplyStamps(stampDeclOrder{}, []string{"PaidAt"}, now) // must not panic
+	s.ApplyStamps((*stampDeclOrder)(nil), []string{"PaidAt"}, now)
+	s.ApplyStamps(nil, []string{"PaidAt"}, now)
+
+	// A name the schema does not declare stamped is skipped here too — the
+	// REFUSAL belongs to StampColumns, which runs before this.
+	q := &stampDeclOrder{Status: "NEW"}
+	s.ApplyStamps(q, []string{"Status", "Nope"}, now)
+	if q.Status != "NEW" {
+		t.Fatalf("a plain field must not be written by the write-back, got %q", q.Status)
+	}
+}
+
+// A counter is never written back: its new value is the server's and the
+// framework does not read it back, so there is nothing honest to put on the
+// entity.
+func TestApplyStamps_LeavesCountersAlone(t *testing.T) {
+	type counted struct {
+		ID         domain.ID
+		TotalCount int64
+	}
+	s := NewTableSchema[*counted]("hits").ID("id").StampedCounterField("TotalCount", "total_count")
+	c := &counted{TotalCount: 7}
+	s.ApplyStamps(c, []string{"TotalCount"}, time.Now())
+	if c.TotalCount != 7 {
+		t.Fatalf("a counter must not be written back, got %d", c.TotalCount)
+	}
+}
+
+// A stamped counter is refused on a sibling for the same reason a stamped time
+// is: the row is a slice of the owner's and carries no framework-owned column.
+func TestStampedCounterField_RefusedOnSiblingAndExternal(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		build  func() *TableSchema
+		expect string
+	}{
+		{"sibling", func() *TableSchema { return NewSiblingSchema[*stampDeclOrder]("order_terms") }, "sibling"},
+		{"external", func() *TableSchema { return NewExternalSchema("upstream") }, "never writes"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("the declaration must be refused")
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, c.expect) {
+					t.Fatalf("the panic must name the reason (%q), got %v", c.expect, r)
+				}
+			}()
+			c.build().StampedCounterField("TotalCount", "total_count")
+		})
+	}
+}

@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-08-30
+
 ### Changed
 
 - **`relational.clock` is now a MANDATORY yaml key, with no default — boot aborts
