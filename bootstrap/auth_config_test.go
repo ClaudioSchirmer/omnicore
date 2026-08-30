@@ -6,7 +6,7 @@ import (
 )
 
 const validYAMLWithJWT = `service: test
-relational: { dialect: postgres, dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x", clock: app }
 mongo: { uri: "mongodb://x", database: "v" }
 transport:
   endpoints: ["k:1"]
@@ -81,7 +81,7 @@ func TestAuthConfig_ExternalValidatorDefaults(t *testing.T) {
 
 func TestAuthConfig_FullRoundTrip(t *testing.T) {
 	yml := `service: test
-relational: { dialect: postgres, dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x", clock: app }
 mongo: { uri: "mongodb://x", database: "v" }
 transport:
   endpoints: ["k:1"]
@@ -236,7 +236,7 @@ func TestAuthConfig_JWTRejectsUnsupportedAlgorithm(t *testing.T) {
 
 func TestAuthConfig_ExternalValidatorValidations(t *testing.T) {
 	base := `service: test
-relational: { dialect: postgres, dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x", clock: app }
 mongo: { uri: "mongodb://x", database: "v" }
 transport: { endpoints: ["k:1"], syncGroup: "g" }
 auth:

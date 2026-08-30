@@ -68,6 +68,7 @@ const validYAMLAllRequired = `service: test
 relational:
   dialect: postgres
   dsn: "${DB:postgres://localhost}"
+  clock: app
 mongo:
   uri: "${MURI:mongodb://localhost}"
   database: "views"
@@ -122,7 +123,7 @@ func TestLoadConfigFrom_HappyPath_AppliesDefaults(t *testing.T) {
 
 func TestLoadConfigFrom_KafkaSyncWorkers_ExplicitOverride(t *testing.T) {
 	yaml := `service: test
-relational: { dialect: postgres, dsn: "postgres://x" }
+relational: { dialect: postgres, dsn: "postgres://x", clock: app }
 mongo: { uri: "mongodb://x", database: "v" }
 transport:
   endpoints: ["k:1"]
@@ -524,6 +525,7 @@ func TestLoadConfigFrom_FilePrefix_AppliesToValue(t *testing.T) {
 relational:
   dialect: postgres
   dsn: "${file:` + path + `}"
+  clock: app
 mongo:
   uri: "mongodb://localhost"
   database: "views"
@@ -546,6 +548,7 @@ func TestLoadConfigFrom_FilePrefix_NotFound_FailsBoot(t *testing.T) {
 relational:
   dialect: postgres
   dsn: "${file:/no/such/file}"
+  clock: app
 mongo:
   uri: "mongodb://localhost"
   database: "views"
@@ -620,6 +623,7 @@ func TestLoadConfigFrom_VaultPrefix_FailsBoot_WithoutResolver(t *testing.T) {
 relational:
   dialect: postgres
   dsn: "${vault:secret/db#dsn}"
+  clock: app
 mongo:
   uri: "mongodb://localhost"
   database: "views"

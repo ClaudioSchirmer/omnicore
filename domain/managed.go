@@ -9,10 +9,14 @@ import "time"
 // Access model: the id is settable (SetID / ClearID) — identity flows in from
 // the persister and, on some surfaces, from the caller. The revision and the
 // three timestamps are READ-ONLY: the write path stamps created_at/updated_at
-// with the app clock, the framework bumps revision, and deleted_at moves only
-// through Archive/Unarchive — the dev never sets them, they surface after a load
-// via the getters. The relational loader populates all of it through
-// SetManagedColumns.
+// from the operation's own instant (the source declared in relational.clock),
+// the framework bumps revision, and deleted_at moves only through
+// Archive/Unarchive — the dev never sets them, they surface after a load via the
+// getters. The relational loader populates all of it through SetManagedColumns.
+//
+// Stamp is the one thing on this carrier the DOMAIN drives, and it still sets no
+// value: it asks the framework to fill a stamped field on this write, leaving
+// the WHEN to a business rule and the value to the same operation instant.
 //
 // The fields are unexported: they are framework-managed and never part of
 // business identity (IsSameByBusinessFields skips this carrier) or the audit
@@ -26,6 +30,80 @@ type Managed struct {
 	createdAt *time.Time
 	updatedAt *time.Time
 	deletedAt *time.Time
+
+	// stamps are the STAMPED fields this write asks the framework to fill —
+	// requested by Go field name, never by column (the physical name lives only
+	// in the TableSchema). See Stamp.
+	stamps []string
+}
+
+// Stamp asks the framework to fill a stamped field on THIS write. The domain
+// owns the WHEN — a business rule decides that a contract was just signed, an
+// order just paid — and the framework owns the VALUE, which is the write
+// operation's own authoritative instant (the same one created_at/updated_at
+// carry, read from the clock the service declared in relational.clock).
+//
+// HOW TO USE IT — two halves, in two layers. The infra schema declares WHICH
+// columns are stamped; the domain decides WHEN each one happens:
+//
+//	// infra/persistence — the WHAT
+//	core.NewTableSchema[*Order]("orders").
+//	    ID("id").
+//	    Field("Status", "status").
+//	    StampedTimeField("PaidAt", "paid_at").      // *time.Time, nullable column
+//	    StampedTimeField("CanceledAt", "canceled_at")
+//
+//	// domain — the WHEN
+//	type Order struct {
+//	    domain.BaseEntity                            // brings Stamp along
+//	    Status string
+//	    PaidAt *time.Time                            // never assigned by hand
+//	}
+//
+//	func (o *Order) Pay() {
+//	    o.Status = "PAID"
+//	    o.Stamp("PaidAt")                            // ask; do not assign
+//	}
+//
+//	// application — an ordinary write; nothing extra to remember
+//	order.Pay()
+//	res, err := repo.Update(ctx, order)
+//	// order.PaidAt is now filled with the instant the row carries.
+//
+// The field is addressed by GO FIELD NAME, exactly as a criteria addresses one
+// (criteria.Eq("Status", …)) — the physical column never leaves the schema.
+// After the write, the value is on the entity too, so the response, the audit
+// event and the outbox payload all agree with the row.
+//
+// A rule inside BuildRules may stamp as freely as a method does: the request is
+// read at write time, so wherever the decision is made is where the call goes.
+//
+// The Direct write path has no entity to carry the request, so it asks through
+// its own only channel — the Values map — with the same verb:
+//
+//	w.Update(ctx, write.Values{"Status": "PAID", "PaidAt": write.Stamp}, q)
+//
+// WHY IT IS AN ASK AND NOT AN ASSIGNMENT. A timestamp the code writes is a
+// timestamp the code can get wrong — the process clock drifts per replica, and
+// nothing downstream can tell a skewed reading from a real one. So the field is
+// never written from the struct; assigning o.PaidAt by hand does nothing. On a
+// write that did NOT request it the column is left out of the statement
+// entirely, which is also why an already-stamped row keeps its value with nobody
+// having to remember to preserve it.
+//
+// The request belongs to one write, not to the entity's state: it is not
+// persisted, not part of business identity, and does not survive into the Old()
+// ghost. Naming a field the schema does not declare as stamped is an error
+// raised by the write, not a panic — the domain cannot see the schema.
+//
+// Requesting the same field twice is the same as once.
+func (m *Managed) Stamp(goField string) {
+	for _, s := range m.stamps {
+		if s == goField {
+			return
+		}
+	}
+	m.stamps = append(m.stamps, goField)
 }
 
 // GetID returns the id as a value — an empty ID (IsEmpty) when the row is not
@@ -105,4 +183,27 @@ func SetManagedColumns(target any, revision int64, createdAt, updatedAt, deleted
 	}
 	w.setManagedColumns(revision, createdAt, updatedAt, deletedAt)
 	return true
+}
+
+// stampCarrier is the read seam behind RequestedStamps: promoted from the
+// embedded Managed, so any entity or aggregate child satisfies it structurally
+// and infra never names the carrier type.
+type stampCarrier interface{ requestedStamps() []string }
+
+func (m *Managed) requestedStamps() []string { return m.stamps }
+
+// RequestedStamps returns the stamped fields target asked the framework to fill
+// on this write, by Go field name, in request order — the write path's read of
+// what Stamp accumulated. Nil for a target that embeds no carrier or requested
+// nothing. Pass a POINTER, the same way SetManagedColumns is called.
+//
+// It is the counterpart of Events(): a write reads the entity's accumulated
+// intent, translates it through the schema, and the intent itself is never
+// persisted.
+func RequestedStamps(target any) []string {
+	c, ok := target.(stampCarrier)
+	if !ok {
+		return nil
+	}
+	return c.requestedStamps()
 }

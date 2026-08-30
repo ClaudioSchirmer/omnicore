@@ -259,7 +259,7 @@ func TestDirectWrite_ValuesRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := resolveValues(schema, c.v)
+			_, _, err := resolveValues(schema, c.v)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err = %v, want it to mention %q", err, c.want)
 			}
@@ -270,7 +270,7 @@ func TestDirectWrite_ValuesRefusals(t *testing.T) {
 // Values are keyed by GO field name and land on the physical column — the
 // three-name model holds on the write side too.
 func TestDirectWrite_ValuesResolveGoNamesToColumns(t *testing.T) {
-	got, err := resolveValues(directJobSchema(), Values{"Status": "pending", "Owner": "u1"})
+	got, _, err := resolveValues(directJobSchema(), Values{"Status": "pending", "Owner": "u1"})
 	if err != nil {
 		t.Fatalf("resolveValues: %v", err)
 	}

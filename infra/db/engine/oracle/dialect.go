@@ -56,6 +56,11 @@ const likeEscapeClause = ` ESCAPE '\'`
 // is session-timezone and would make this the one session-relative dialect.
 func (oracleDialect) NowExpr() string { return "SYSTIMESTAMP" }
 
+// UTCNowExpr rebases SYSTIMESTAMP (server time zone) to UTC. SYS_EXTRACT_UTC is
+// the conversion that does not consult the SESSION time zone, so the reading is
+// the same for every replica regardless of how its connection was opened.
+func (oracleDialect) UTCNowExpr() string { return "SYS_EXTRACT_UTC(SYSTIMESTAMP)" }
+
 // ApplyLimit caps a complete SELECT at n rows with the tail
 // `FETCH FIRST n ROWS ONLY` clause — valid without an ORDER BY (the existence
 // probes deliberately carry none), so unlike SQL Server's SELECT-head TOP no

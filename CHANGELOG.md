@@ -11,6 +11,110 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`relational.clock` is now a MANDATORY yaml key, with no default — boot aborts
+  without it.** Every `microservice.<profile>.yaml` must declare
+  `relational.clock: db` or `relational.clock: app`. **This is breaking**: an
+  existing service upgrading to this version will not boot until the key is
+  added. It is deliberately not defaulted, for the same reason `dialect` and
+  `dsn` are not: which clock a service's history is written against is an
+  operator's declaration, and a framework that picked one silently would be
+  choosing whose timestamps to trust.
+
+### Added
+
+- **`StampedTimeField` — a timestamp column whose WHEN belongs to the domain and
+  whose VALUE belongs to the framework.**
+
+  ```go
+  // infra — the what
+  StampedTimeField("PaidAt", "paid_at")
+
+  // domain — the when
+  func (o *Order) MarkPaid() { o.Stamp("PaidAt") }
+
+  // direct — the when
+  w.Update(ctx, write.Values{"Status": "PAID", "PaidAt": write.Stamp}, q)
+  ```
+
+  This is the seat `CreatedAt`/`UpdatedAt` do not cover. Those date the ROW —
+  written, last touched — on a schedule the framework fixes. A stamped field
+  dates a FACT the business decides has just happened: signed, paid, approved,
+  cancelled. Nothing but a rule knows when that is, so the framework cannot
+  schedule it; and nothing but the framework should choose the instant, because
+  a value read from the writing process is a per-replica clock reading that
+  drifts (see `relational.clock`).
+
+  - The column is NEVER written from the struct. On a write that did not request
+    it the column is left out of the statement entirely — not bound, not set,
+    not nulled — which is also why an already-stamped row keeps its value with
+    nobody having to remember to preserve it. A requested one binds the write
+    operation's single instant, the same value `created_at`/`updated_at` carry.
+  - The value is written back onto the entity, so the audit event, the outbox
+    payload, the response and the caller's in-memory entity all agree with the
+    row — the same move the framework already makes with a minted child id.
+  - `domain.Managed.Stamp(goField)` is the request on the entity side (promoted
+    to every root and aggregate child); `write.Stamp` is the marker a Direct
+    write puts in a `Values` slot. Requesting twice is requesting once, and the
+    emitted columns follow DECLARATION order so the SQL is stable however the
+    rules fired.
+  - The Go field is `*time.Time`: until a rule stamps it the fact has not
+    happened, and nil says that where a zero time would report year 1.
+    Everything else is ordinary — it joins the bijection, filters, orders,
+    projects and hydrates like any `Field`.
+  - Refused at declaration where it could not be honored: a sibling (carries no
+    managed columns of its own), an external schema (never writes), a shared
+    base (no Go type to carry the request — declare it on the role), and an
+    aggregate child (a child is a value in the aggregate map, so a rule calling
+    `item.Stamp(...)` would mutate a copy and lose the request). A `Stamp`
+    naming a field that is unknown or merely plain is a typed write-time error,
+    not a silent no-op — the domain cannot see the schema, so there is no boot
+    moment to catch it at.
+  - Binding a value into a stamped slot of a Direct `Values` is refused, with
+    the diagnostic teaching `write.Stamp`.
+
+- **The write operation's instant can now be read from the database instead of
+  the writing process** — `relational.clock: db`. It governs the managed
+  timestamp columns: `created_at`, `updated_at` and the archive/unarchive
+  `deleted_at` stamp.
+
+  The app clock is a per-POD clock. Several replicas of one service each carry
+  their own drift, so two rows written seconds apart can be stamped out of
+  order, and no amount of care in the write path fixes a wrong reading at the
+  source. Under `clock: db` the framework reads the instant from the relational
+  backend **once per write transaction**, so every replica shares one clock —
+  the one the rows already live on. `clock: app` keeps the previous behavior
+  (`time.Now().UTC()`, no round-trip).
+
+  - What does NOT change with the setting: the instant is still minted **once
+    per operation** and **bound as an ordinary argument**, never emitted as a
+    `NOW()` expression inside the DML. Every statement of one write (root,
+    children, siblings, base cascade) therefore carries the same instant, and
+    the value is known in Go before `COMMIT` — the outbox payload, the audit
+    event, the lifecycle hooks and the response all agree on it. That property
+    is load-bearing: the unarchive cascade tells the children *this* archive put
+    to sleep from the ones already archived on their own by comparing exactly
+    that stamp.
+  - Cost: one extra round-trip per write transaction under `clock: db`.
+  - On SQLite the engine is embedded, so the database clock *is* the process
+    clock — the setting is honored, it simply buys no fleet-wide agreement.
+  - Neither setting makes `updated_at` an ordering token. Ordering between
+    concurrent writes is carried by `Revision`, the commit-order token
+    incremented under the row lock; `clock: db` makes `updated_at` a
+    trustworthy *display* timestamp, not a different kind of thing.
+
+- **`Dialect.UTCNowExpr()`** — the engine's SQL expression for the current
+  instant in UTC, at its finest sub-second precision: `NOW() AT TIME ZONE 'UTC'`
+  (Postgres), `UTC_TIMESTAMP(6)` (MySQL), `SYSUTCDATETIME()` (SQL Server),
+  `SYS_EXTRACT_UTC(SYSTIMESTAMP)` (Oracle), `strftime(...)` (SQLite). It is
+  deliberately not the existing `NowExpr()`, which stamps the framework's own
+  control-plane rows and is server-timezone by design — and which, being MySQL's
+  bare `NOW()` and SQL Server's `CURRENT_TIMESTAMP`, carries zero fractional
+  digits on one engine and ~3.33 ms rounding on another. Entity timestamps can
+  afford neither. `NowExpr()` is unchanged and keeps its callers.
+
+
 ## [0.64.0] - 2026-08-29
 
 ### Added

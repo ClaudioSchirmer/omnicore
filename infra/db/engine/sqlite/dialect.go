@@ -65,6 +65,13 @@ func (sqliteDialect) LikeClause(col, ph string) string {
 // (RFC3339, see encodeArg) scan/compare unequally; %f keeps them aligned (D1).
 func (sqliteDialect) NowExpr() string { return "strftime('%Y-%m-%d %H:%M:%f','now')" }
 
+// UTCNowExpr is the same expression: SQLite's 'now' is already UTC, and %f is
+// the finest resolution it offers (milliseconds). Note that on SQLite the
+// database clock IS the process clock — the engine is embedded, so
+// relational.clock: db buys no fleet-wide agreement here. It stays honest
+// rather than special-cased: the value still comes from the engine.
+func (sqliteDialect) UTCNowExpr() string { return "strftime('%Y-%m-%d %H:%M:%f','now')" }
+
 // ApplyLimit caps a complete SELECT at n rows — the native tail clause.
 func (sqliteDialect) ApplyLimit(sql string, n int) string {
 	return sql + " LIMIT " + strconv.Itoa(n)

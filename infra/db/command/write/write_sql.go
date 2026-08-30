@@ -1,6 +1,7 @@
 package write
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -32,17 +33,25 @@ func newWriteID() (string, error) {
 }
 
 // writeNow mints the single authoritative timestamp of one write operation.
-// Managed columns (created_at/updated_at and the DeletedAt stamp) are
-// application-clock values bound as ordinary arguments — the same move the ids
-// made with the Go-minted UUID v7: no dialect NOW() expression in the data DML,
-// so every statement of one operation (root, children, siblings, base cascade)
-// carries the SAME instant, known in Go before COMMIT (the outbox payload can
-// therefore carry it too). UTC, truncated to microseconds — the precision every
-// supported backend stores (timestamptz / DATETIME(6) / DATETIME2(6) /
-// TIMESTAMP(6)) — so the value bound here and the value the composer reads back
-// are identical. Minted once per verb call and threaded down, never per
-// statement.
-func writeNow() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
+// Managed columns (created_at/updated_at and the DeletedAt stamp) are bound as
+// ordinary arguments — the same move the ids made with the Go-minted UUID v7:
+// no dialect NOW() expression in the data DML, so every statement of one
+// operation (root, children, siblings, base cascade) carries the SAME instant,
+// known in Go before COMMIT (the outbox payload can therefore carry it too).
+// UTC, truncated to microseconds — the precision every supported backend stores
+// (timestamptz / DATETIME(6) / DATETIME2(6) / TIMESTAMP(6)) — so the value bound
+// here and the value the composer reads back are identical. Minted once per verb
+// call and threaded down, never per statement.
+//
+// WHERE the instant is read from is the operator's declaration
+// (relational.clock): the writing process under ClockApp, the database itself
+// under ClockDB — one clock for a whole fleet, at the cost of one round-trip per
+// write TX. Because the reading rides the OPEN transaction, the mint moved from
+// "before Begin" to "just after it"; everything downstream is unchanged, since
+// the value is still a Go time.Time bound as an argument.
+func writeNow(ctx context.Context, tx Tx, clock ClockMode) (time.Time, error) {
+	return core.NowFrom(ctx, tx, clock)
+}
 
 // writeTarget names the table a write statement runs against and how a criteria
 // field resolves on it. For every ordinary write both come from the SAME schema
@@ -360,4 +369,59 @@ func requireDeletedAt(s *TableSchema, entityName string) (string, error) {
 		)
 	}
 	return col, nil
+}
+
+// stampedCols resolves the stamped columns a write requested — the Go field
+// names the domain accumulated through domain.Managed.Stamp, translated through
+// the schema. It returns the verb's managed now-columns WITH the stamped ones
+// appended (what the statement binds to the operation instant) and the stamped
+// ones on their own (what the payload has to be told about, since WriteFields
+// deliberately never emits them).
+//
+// Every stamped column binds the SAME instant the managed timestamps carry,
+// which is the whole contract: the domain says WHEN, the framework says with
+// what value.
+//
+// It also writes that value back onto the entity. The audit event reads its
+// values from the STRUCT, and the caller keeps holding this entity after the
+// write — without the write-back both would report the field as still empty on
+// the very write that filled it.
+//
+// A schema with no stamped field never allocates: the requests cannot mean
+// anything and are not read. A request naming a field the schema did not declare
+// stamped is an error here — the domain asks by Go name and cannot see the
+// schema, so this is the first moment the two meet.
+func stampedCols(schema *TableSchema, src any, nowCols []string, now time.Time) (all, stamped []string, err error) {
+	if !schema.HasStampedFields() {
+		return nowCols, nil, nil
+	}
+	asked := domain.RequestedStamps(src)
+	cols, err := schema.StampColumns(asked)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(cols) == 0 {
+		return nowCols, nil, nil
+	}
+	schema.ApplyStamps(src, asked, now)
+	out := make([]string, 0, len(nowCols)+len(cols))
+	return append(append(out, nowCols...), cols...), cols, nil
+}
+
+// withStamps returns the payload's view of the written columns: the bound fields
+// plus the stamped ones the statement filled. The copy is deliberate — fields is
+// the very map the DML binds, and the payload must never reach back into it (the
+// redaction pass has the same rule, for the same reason).
+func withStamps(fields domain.Fields, stamped []string, now time.Time) domain.Fields {
+	if len(stamped) == 0 {
+		return fields
+	}
+	out := make(domain.Fields, len(fields)+len(stamped))
+	for k, v := range fields {
+		out[k] = v
+	}
+	for _, c := range stamped {
+		out[c] = now
+	}
+	return out
 }

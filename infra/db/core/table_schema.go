@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
@@ -154,6 +155,13 @@ type schemaField struct {
 	// are never touched by either. See redaction.go.
 	inSync  Redactor
 	inAudit Redactor
+
+	// stamped marks a field declared with StampedTimeField: the framework owns
+	// its VALUE (the write operation's authoritative instant) and the domain owns
+	// the WHEN (domain.Managed.Stamp / write.Stamp). writeFields never emits it,
+	// so a write that did not ask for it leaves the column out of the statement
+	// entirely and an already-stamped row keeps what it had.
+	stamped bool
 }
 
 // IDKind classifies a persisted field's identity typing, derived from its Go
@@ -534,6 +542,136 @@ func (s *TableSchema) Field(goName, column string, labelKey ...string) *TableSch
 	return s.declareField(goName, column, redactedFieldSpec{labelKey: lk})
 }
 
+// StampedTimeField declares a timestamp column whose WHEN belongs to the caller
+// and whose VALUE belongs to the framework. This method is the WHAT; who asks
+// for the stamp, and how, depends on which kind of schema it was declared on.
+//
+// ON AN ENTITY SCHEMA (NewTableSchema) the domain asks, because the entity is
+// the only thing an entity write takes:
+//
+//	// infra
+//	core.NewTableSchema[*Order]("orders").
+//	    ID("id").
+//	    Field("Status", "status").
+//	    StampedTimeField("PaidAt", "paid_at")
+//
+//	// domain — the rule that knows the moment (Stamp is promoted from
+//	// domain.Managed, which BaseEntity embeds)
+//	type Order struct {
+//	    domain.BaseEntity
+//	    Status string
+//	    PaidAt *time.Time      // never assigned by hand
+//	}
+//
+//	func (o *Order) Pay() {
+//	    o.Status = "PAID"
+//	    o.Stamp("PaidAt")      // ask; do not assign
+//	}
+//
+//	// application — an ordinary write, nothing extra to remember
+//	order.Pay()
+//	res, err := repo.Update(ctx, order)   // order.PaidAt now holds the row's value
+//
+// ON A DIRECT SCHEMA (NewDirectSchema) the CALLER asks, because a Direct write
+// has no entity — its only channel is the Values map, so the request rides there
+// as a marker instead of a value:
+//
+//	// infra
+//	core.NewDirectSchema[JobRow]("job_queue").
+//	    ID("id").
+//	    Field("Status", "status").
+//	    StampedTimeField("StartedAt", "started_at")
+//
+//	// application — the WHEN is the call site's; the value is still not its own
+//	_, err := jobs.Update(ctx, write.Values{
+//	    "Status":    "running",
+//	    "StartedAt": write.Stamp,
+//	}, criteria.Where(criteria.Eq("Status", "pending")))
+//
+// Same verb, same guarantees, two channels — each path asks through the only
+// input it has. Either way the field is addressed by GO FIELD NAME, never by
+// column, and one write dates every row it touches with one instant.
+//
+// This is the seat CreatedAt/UpdatedAt do not cover. Those date the ROW —
+// written, last touched — on a schedule the framework fixes. A stamped field
+// dates a FACT the business decides has just happened: signed, paid, approved,
+// cancelled. Nothing but a rule knows when that is, so the framework cannot
+// schedule it; and nothing but the framework should choose the instant, because
+// a value read from the writing process is a per-replica clock reading that
+// drifts (see relational.clock).
+//
+// So the column is NEVER written from the struct. On a write that did not
+// request it the column is left out of the statement entirely — not bound, not
+// set, not nulled — which is also why an already-stamped row keeps its value
+// with nobody having to remember to preserve it. A requested one binds the write
+// operation's single instant, the same value created_at/updated_at carry, so
+// every statement of the operation agrees and the audit event, the outbox
+// payload and the response carry the same timestamp without a read-back.
+//
+// The Go field is *time.Time: until a rule stamps it, the fact has not happened,
+// and nil says exactly that where a zero time would lie. Everything else about
+// the field is ordinary — it maps into the bijection like any Field, and it
+// filters, orders, projects and hydrates the same way.
+//
+// Refused at declaration on a schema that cannot honor it: a sibling (it carries
+// no managed columns of its own — the owner dates the row) and an external
+// schema (it never writes). A Stamp naming a field this schema did not declare
+// stamped is an error raised by the write, not a panic: the domain cannot see
+// the schema, so there is no boot moment at which to catch it.
+func (s *TableSchema) StampedTimeField(goName, column string) *TableSchema {
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): a sibling declares NO stamped fields — the sibling row is a 1:1 slice "+
+				"of the OWNER's row and carries no managed columns of its own. Declare StampedTimeField(%q, %q) "+
+				"on the owner.",
+			s.table, goName, column,
+		))
+	}
+	if s.typ == nil {
+		why := "an external schema (NewExternalSchema) maps an UPSTREAM service's columns for the read side " +
+			"and never writes, so there is no write to stamp on"
+		if s.isSharedBase {
+			why = "a shared base (NewSharedBaseSchema) has no Go type of its own — it is written by whichever " +
+				"role touches the identity, so there is no entity to carry the Stamp request. Declare the " +
+				"stamped field on the ROLE schema, whose entity owns the rule that decides the moment"
+		}
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): StampedTimeField(%q, %q) is refused — %s.",
+			s.table, goName, column, why,
+		))
+	}
+	// Declare it as an ordinary field first — every name/column guard, the type
+	// resolution against the anchored struct and the bijection claim are exactly
+	// the ones a Field passes — then mark the declaration on the three views the
+	// schema keeps of it.
+	s.declareField(goName, column, redactedFieldSpec{})
+	fd := s.fields[len(s.fields)-1]
+	mustStampedTimeType(s.table, goName, s.typ.Field(fd.path[0]).Type)
+	fd.stamped = true
+	s.fields[len(s.fields)-1] = fd
+	s.byGo[fd.goName] = fd
+	s.byCol[fd.column] = fd
+	return s
+}
+
+// stampedTimeType is what a stamped field must be declared as. The pointer is
+// not a nullability preference — it is the semantics: before the fact happens
+// the column has no value, and a zero time.Time would report midnight of year 1
+// as the moment something was signed.
+var stampedTimeType = reflect.TypeOf((*time.Time)(nil))
+
+func mustStampedTimeType(table, goName string, ft reflect.Type) {
+	if ft == stampedTimeType {
+		return
+	}
+	panic(fmt.Sprintf(
+		"infra.TableSchema(%s): stamped field %q is typed %s — a stamped field is declared *time.Time. "+
+			"It records WHEN a fact happened, and until the domain stamps it the fact has not happened: nil "+
+			"says that, where a zero time.Time would report year 1 as the moment. Declare the column nullable.",
+		table, goName, ft,
+	))
+}
+
 // RedactedField declares a persisted field whose real value stays in the
 // relational column and in the hydrated entity, but appears REDACTED in the
 // copies the framework makes of the row. Same mapping contract as Field — the
@@ -797,6 +935,15 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): aggregate child %q declares Revision(%q) — a child row is guarded by its "+
 				"owner's revision; drop the call.", s.table, child.table, child.revisionCol))
+	}
+	if child.HasStampedFields() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): aggregate child %q declares a stamped field — a child is a VALUE in the "+
+				"aggregate map, so a rule calling item.Stamp(...) would mutate a copy and the request would be "+
+				"silently lost (the same reason the framework writes child ids back through "+
+				"AssignAggregateItemID rather than letting the domain set them). Declare the stamped field on "+
+				"the ROOT, or model the moment as a plain child field the root's rule fills.",
+			s.table, child.table))
 	}
 	if !child.hasPKDeclared() {
 		panic(fmt.Sprintf(
@@ -1191,6 +1338,12 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 	}
 	out := make(domain.Fields, len(s.fields))
 	for _, f := range s.fields {
+		// A stamped field is never written from the struct: the framework owns
+		// the value, and a write that did not request it leaves the column out of
+		// the statement entirely (StampColumns adds the requested ones).
+		if f.stamped {
+			continue
+		}
 		fv, ok := f.path.ValueIn(v)
 		if !ok {
 			// Either a type-less column, or a part of an ABSENT optional composite
@@ -1217,6 +1370,108 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // WriteFields is the exported form of writeFields — the column → value map an
 // engine binds for INSERT/UPDATE (ID and managed timestamp columns excluded).
 func (s *TableSchema) WriteFields(e any) domain.Fields { return s.writeFields(e) }
+
+// StampColumns translates the stamped fields a write requested — Go field names
+// from domain.RequestedStamps, or the keys a Direct write marked with
+// write.Stamp — into the columns the statement binds to the operation's instant.
+// Order follows DECLARATION order, not request order, so the generated SQL is
+// stable however the domain happened to ask.
+//
+// A name this schema did not declare as stamped is refused, naming what went
+// wrong: the domain asks by Go name and cannot see the schema, so this is the
+// first moment the two meet. Both mistakes it catches are real — a typo, and a
+// Stamp on a field that is mapped but plain (which would otherwise silently do
+// nothing, since a plain field takes its value from the struct).
+func (s *TableSchema) StampColumns(goFields []string) ([]string, error) {
+	if len(goFields) == 0 {
+		return nil, nil
+	}
+	want := make(map[string]bool, len(goFields))
+	for _, g := range goFields {
+		want[g] = true
+	}
+	out := make([]string, 0, len(goFields))
+	for _, f := range s.fields {
+		if f.stamped && want[f.goName] {
+			out = append(out, f.column)
+			delete(want, f.goName)
+		}
+	}
+	for _, g := range goFields {
+		if !want[g] {
+			continue
+		}
+		if f, mapped := s.byGo[g]; mapped {
+			return nil, fmt.Errorf(
+				"db: %s.Stamp(%q) — %q is a plain field on table %q, so its value comes from the entity and "+
+					"stamping it would do nothing. Declare it with StampedTimeField(%q, %q) to hand its value "+
+					"to the framework",
+				s.table, g, g, s.table, g, f.column)
+		}
+		return nil, fmt.Errorf(
+			"db: %s.Stamp(%q) — table %q declares no stamped field %q. Stamped fields are declared with "+
+				"StampedTimeField(goName, column); check the spelling of the Go field name",
+			s.table, g, s.table, g)
+	}
+	return out, nil
+}
+
+// ApplyStamps writes the instant the statement bound back onto the entity, for
+// each stamped field this write requested. It runs after the statement is built
+// and before the operation's copies are made — which is the point: the audit
+// event and the outbox payload read their values from the STRUCT
+// (GoFieldValues), so without this the trail would report the field as still
+// empty on the very write that filled it, and the caller would hold a stale
+// entity until the next load.
+//
+// It is the same move the framework already makes with a minted child id
+// (AssignAggregateItemID): the value is the framework's, and once decided it
+// belongs on the entity too, so that everything downstream of one write agrees.
+//
+// The target must be a POINTER to be settable; an unaddressable or unresolvable
+// field is skipped rather than reported, because the statement has already been
+// built correctly — the row is right either way, and refusing here would fail a
+// good write over a reporting detail.
+func (s *TableSchema) ApplyStamps(e any, goFields []string, now time.Time) {
+	if len(goFields) == 0 {
+		return
+	}
+	v := reflect.ValueOf(e)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return
+	}
+	v = v.Elem()
+	for _, g := range goFields {
+		f, ok := s.byGo[g]
+		if !ok || !f.stamped {
+			continue
+		}
+		target := f.path.TargetIn(v)
+		if !target.IsValid() || !target.CanSet() || target.Type() != stampedTimeType {
+			continue
+		}
+		stamp := now
+		target.Set(reflect.ValueOf(&stamp))
+	}
+}
+
+// IsStampedField reports whether goName is declared on this schema as a stamped
+// field — what a write path checks before it lets a caller bind a value to it.
+func (s *TableSchema) IsStampedField(goName string) bool {
+	f, ok := s.byGo[goName]
+	return ok && f.stamped
+}
+
+// HasStampedFields reports whether this schema declares any stamped field —
+// what a write path checks before it looks for requests.
+func (s *TableSchema) HasStampedFields() bool {
+	for _, f := range s.fields {
+		if f.stamped {
+			return true
+		}
+	}
+	return false
+}
 
 // InsertNowColumns is the exported form of insertNowColumns.
 func (s *TableSchema) InsertNowColumns() []string { return s.insertNowColumns() }

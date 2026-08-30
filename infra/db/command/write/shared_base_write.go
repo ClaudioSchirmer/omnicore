@@ -172,14 +172,18 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	if !sharedPK {
 		roleFields[fkCol] = domain.NewID(baseID)
 	}
-	now := writeNow()
-
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps (see
+	// BaseEngine.now / relational.clock).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	hctx := HookContext{Verb: "Insert", EntityType: entity.EntityName()}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
@@ -228,7 +232,11 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		}
 		id = nid
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, roleFields, schema.InsertNowColumns(), now, schema.RevisionColumn())
+	roleNowCols, roleStamped, err := stampedCols(schema, src, schema.InsertNowColumns(), now)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, roleFields, roleNowCols, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -254,7 +262,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	// SyncEngine fans out to the OTHER roles' read models from THIS event — the
 	// historical empty base-table UPDATED row is no longer emitted.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, roleFields,
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(roleFields, roleStamped, now),
 			outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now), BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -287,14 +295,18 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	baseID := deterministicBaseID(nk)
-	now := writeNow()
-
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps (see
+	// BaseEngine.now / relational.clock).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	hctx := HookContext{Verb: "Update", EntityType: entity.EntityName()}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
@@ -304,7 +316,11 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), roleFields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	roleNowCols, roleStamped, err := stampedCols(schema, src, schema.UpdateNowColumns(), now)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), roleFields, roleNowCols, now, schema.RevisionColumn(), rev)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -341,7 +357,7 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	// ONE outbox row per write (see insertWithBase): the payload carries the
 	// base id + revision, so the fan-out rides this event — no empty base row.
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, roleFields,
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(roleFields, roleStamped, now),
 			outboxMeta{ID: entity.ID().Value(), Revision: ownRev, CreatedAt: ownCreatedAt, BaseID: baseID, BaseRevision: baseRev})); err != nil {
 		return domain.WriteResult{}, err
 	}

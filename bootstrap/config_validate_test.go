@@ -12,6 +12,7 @@ func validBaseConfig() *Config {
 	c := &Config{Service: "svc"}
 	c.Relational.Dialect = "postgres"
 	c.Relational.DSN = "postgres://localhost/db"
+	c.Relational.Clock = "app"
 	c.Mongo.URI = "mongodb://localhost:27017"
 	c.Mongo.Database = "views"
 	c.Transport.Endpoints = []string{"localhost:9092"}

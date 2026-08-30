@@ -7,6 +7,83 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>relational.clock</code> is now a
+                MANDATORY yaml key, with no default: boot aborts without it.</strong> Every
+                <code>microservice.&lt;profile&gt;.yaml</code> must declare <code>relational.clock: db</code> or
+                <code>relational.clock: app</code>; an existing service upgrading to this version will not boot until
+                the key is added. It is deliberately not defaulted, for the same reason <code>dialect</code> and
+                <code>dsn</code> are not: which clock a service's history is written against is an operator's
+                declaration, and a framework that picked one silently would be choosing whose timestamps to trust.
+                See <a href="#yaml-reference">yaml-reference</a>.</li>
+            <li><strong>Added</strong> — <strong><code>StampedTimeField</code>: a timestamp column whose WHEN
+                belongs to the domain and whose VALUE belongs to the framework.</strong> Declare it in the schema
+                (<code>StampedTimeField("PaidAt", "paid_at")</code>), ask for it from a rule
+                (<code>o.Stamp("PaidAt")</code>) or from a Direct write
+                (<code>Values{"PaidAt": write.Stamp}</code>). See <a href="#table-schema">TableSchema</a>.
+                <ul>
+                    <li>This is the seat <code>CreatedAt</code>/<code>UpdatedAt</code> do not cover. Those date the
+                        ROW — written, last touched — on a schedule the framework fixes. A stamped field dates a FACT
+                        the business decides has just happened: signed, paid, approved, cancelled. Nothing but a rule
+                        knows when that is, so the framework cannot schedule it; and nothing but the framework should
+                        choose the instant, because a value read from the writing process is a per-replica clock
+                        reading that drifts.</li>
+                    <li>The column is never written from the struct. A write that did not request it leaves the column
+                        out of the statement entirely — not bound, not set, not nulled — which is also why an
+                        already-stamped row keeps its value with nobody having to preserve it. A requested one binds
+                        the operation's single instant, the same value the managed timestamps carry, and is written
+                        back onto the entity so the audit event, the outbox payload, the response and the caller's
+                        in-memory entity all agree with the row.</li>
+                    <li>The Go field is <code>*time.Time</code>: until a rule stamps it the fact has not happened, and
+                        nil says that where a zero time would report year 1. Everything else is ordinary — it joins
+                        the bijection, filters, orders, projects and hydrates like any <code>Field</code>.</li>
+                    <li>Refused at declaration where it could not be honored: a sibling, an external schema, a shared
+                        base (declare it on the role) and an aggregate child (a child is a value in the aggregate map,
+                        so <code>item.Stamp(...)</code> would mutate a copy and lose the request). A
+                        <code>Stamp</code> naming an unknown or merely plain field is a typed write-time error, never
+                        a silent no-op.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong>the write operation's instant can now be read from the database
+                instead of the writing process</strong> (<code>relational.clock: db</code>). It governs the managed
+                timestamp columns — <code>created_at</code>, <code>updated_at</code> and the archive/unarchive
+                <code>deleted_at</code> stamp. The app clock is a per-POD clock: several replicas of one service each
+                carry their own drift, so two rows written seconds apart can be stamped out of order, and no amount of
+                care in the write path fixes a wrong reading at the source. Under <code>db</code> the framework reads
+                the instant from the relational backend <strong>once per write transaction</strong>, so every replica
+                shares one clock — the one the rows already live on. <code>app</code> keeps the previous behavior.
+                See <a href="#table-schema">TableSchema</a>.
+                <ul>
+                    <li>What does not change with the setting: the instant is still minted <strong>once per
+                        operation</strong> and <strong>bound as an ordinary argument</strong>, never a
+                        <code>NOW()</code> inside the DML. Every statement of one write (root, children, siblings,
+                        base cascade) therefore carries the same instant, and the value is known in Go before
+                        <code>COMMIT</code> — outbox payload, audit event, lifecycle hooks and response all agree on
+                        it. That property is load-bearing: the unarchive cascade tells the children <em>this</em>
+                        archive put to sleep from the ones already archived on their own by comparing exactly that
+                        stamp.</li>
+                    <li>Cost: one extra round-trip per write transaction under <code>db</code>. On SQLite the engine
+                        is embedded, so the database clock <em>is</em> the process clock — the setting is honored, it
+                        simply buys no fleet-wide agreement.</li>
+                    <li>Neither setting makes <code>updated_at</code> an ordering token. Ordering between concurrent
+                        writes is carried by <code>Revision</code>, the commit-order token incremented under the row
+                        lock; <code>db</code> makes <code>updated_at</code> a trustworthy <em>display</em> timestamp,
+                        not a different kind of thing.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <code>Dialect.UTCNowExpr()</code>: the engine's SQL expression for the current
+                instant in UTC, at its finest sub-second precision — <code>NOW() AT TIME ZONE 'UTC'</code> (Postgres),
+                <code>UTC_TIMESTAMP(6)</code> (MySQL), <code>SYSUTCDATETIME()</code> (SQL Server),
+                <code>SYS_EXTRACT_UTC(SYSTIMESTAMP)</code> (Oracle), <code>strftime(…)</code> (SQLite). Deliberately
+                not the existing <code>NowExpr()</code>, which stamps the framework's own control-plane rows and is
+                server-timezone by design — and which, being MySQL's bare <code>NOW()</code> and SQL Server's
+                <code>CURRENT_TIMESTAMP</code>, carries zero fractional digits on one engine and ~3.33 ms rounding on
+                another. Entity timestamps can afford neither. <code>NowExpr()</code> is unchanged and keeps its
+                callers.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.64.0</span><span class="release-date">August 29, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>DirectSchema and DirectRepository: the query and write engine anchored on a

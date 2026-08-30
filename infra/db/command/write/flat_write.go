@@ -36,20 +36,28 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	now := writeNow()
-
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps (see
+	// BaseEngine.now / relational.clock).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	hctx := HookContext{Verb: "Insert", EntityType: entity.EntityName()}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, fields, schema.InsertNowColumns(), now, schema.RevisionColumn())
+	nowCols, stamped, err := stampedCols(schema, src, schema.InsertNowColumns(), now)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	sql, args := buildInsert(d, schema.Table(), schema.IDColumn(), id, fields, nowCols, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -57,7 +65,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, nil, "INSERTED", now, CascadeStamps{}, fields, outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
+		buildWritePayload(schema, src, nil, "INSERTED", now, CascadeStamps{}, withStamps(fields, stamped, now), outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -86,7 +94,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	if entity.EntityMode() == domain.ModeArchive {
 		root, _ := entity.AggregateInfo()
 		return domain.WriteResult{ID: entity.ID()}, b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
-			HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
+			HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
 			func(stamps CascadeStamps) audit.AuditEvent {
 				return BuildArchiveEvent(ctx, entity, schema, b.auditClaims, stamps)
 			},
@@ -100,21 +108,29 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	}
 	src := entity.Source()
 	fields := schema.WriteFields(src)
-	now := writeNow()
-
 	tx, err := b.beginner.Begin(ctx)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps (see
+	// BaseEngine.now / relational.clock).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
 	hctx := HookContext{Verb: "Update", EntityType: entity.EntityName()}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return domain.WriteResult{}, err
 	}
 	rev := loadedRevision(src)
-	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), fields, schema.UpdateNowColumns(), now, schema.RevisionColumn(), rev)
+	nowCols, stamped, err := stampedCols(schema, src, schema.UpdateNowColumns(), now)
+	if err != nil {
+		return domain.WriteResult{}, err
+	}
+	sql, args, err := buildUpdate(d, schemaTarget(schema), criteria.Eq(idGoField, entity.ID()), fields, nowCols, now, schema.RevisionColumn(), rev)
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -129,7 +145,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, nil, "UPDATED", now, CascadeStamps{}, fields, meta)); err != nil {
+		buildWritePayload(schema, src, nil, "UPDATED", now, CascadeStamps{}, withStamps(fields, stamped, now), meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -151,7 +167,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archivable, schema *TableSchema, hook WriteHook) error {
 	root, _ := entity.AggregateInfo()
 	return b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED", writeNow(),
+		HookContext{Verb: "Archive", EntityType: entity.EntityName()}, "ARCHIVED",
 		func(stamps CascadeStamps) audit.AuditEvent {
 			return BuildArchiveEvent(ctx, entity, schema, b.auditClaims, stamps)
 		},
@@ -161,7 +177,7 @@ func (b *BaseEngine) Archive(ctx persistence.RequestContext, entity domain.Archi
 func (b *BaseEngine) Unarchive(ctx persistence.RequestContext, entity domain.Unarchivable, schema *TableSchema, hook WriteHook) error {
 	root, _ := entity.AggregateInfo()
 	return b.softWrite(ctx, entity.Source(), root, entity.ID().Value(), schema, hook,
-		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED", writeNow(),
+		HookContext{Verb: "Unarchive", EntityType: entity.EntityName()}, "UNARCHIVED",
 		func(stamps CascadeStamps) audit.AuditEvent {
 			return BuildUnarchiveEvent(ctx, entity, schema, b.auditClaims, stamps)
 		},
@@ -229,7 +245,6 @@ func (b *BaseEngine) softWrite(
 	hook WriteHook,
 	hctx HookContext,
 	eventType string,
-	now time.Time,
 	buildEvent func(stamps CascadeStamps) audit.AuditEvent,
 	evs []domain.DomainEvent,
 ) error {
@@ -245,6 +260,14 @@ func (b *BaseEngine) softWrite(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	d := tx.Dialect()
+	// The operation's one instant, read through the transaction it stamps. The
+	// archive direction binds it on the root row and on every child the cascade
+	// reaches; the unarchive direction ignores it in favour of the stamp the row
+	// already carries (read below).
+	now, err := b.now(ctx, tx)
+	if err != nil {
+		return err
+	}
 
 	if err := b.FireAfterBegin(ctx, tx, src, hook, hctx); err != nil {
 		return err

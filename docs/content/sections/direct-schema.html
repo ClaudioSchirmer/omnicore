@@ -297,6 +297,19 @@ err := phones.Aggregate(ctx, criteria.Where(criteria.Eq("ParentID", userID)), to
                 own verbs — writing the column directly would bypass them.</td>
         </tr>
         <tr>
+            <td>A real value in a <strong>stamped</strong> slot of <code>Values</code></td>
+            <td>Error before any statement</td>
+            <td>A stamped column's value is the framework's — the write operation's instant — never the caller's. The
+                diagnostic teaches the marker: pass <code>write.Stamp</code> to ask for it.</td>
+        </tr>
+        <tr>
+            <td><code>write.Stamp</code> on a <strong>plain</strong> field, or a write carrying <em>only</em> stamps</td>
+            <td>Error before any statement</td>
+            <td>A plain field takes its value from <code>Values</code>, so stamping it would silently do nothing. And a
+                stamp records WHEN something happened — it is not the something: a write with no other column has no
+                change to date.</td>
+        </tr>
+        <tr>
             <td>A write with an <strong>empty predicate</strong> (<code>criteria.Where(nil)</code>)</td>
             <td>Error before any statement, on every write verb</td>
             <td>A criteria assembled conditionally that came out empty would become a full-table sweep, and the call

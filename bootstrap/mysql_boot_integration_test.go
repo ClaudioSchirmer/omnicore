@@ -96,6 +96,7 @@ func mysqlBootConfig(t *testing.T, dsn, migrationsDir string) *Config {
 	cfg := &Config{Service: "mysql-boot-probe"}
 	cfg.Relational.Dialect = dialectMySQL
 	cfg.Relational.DSN = dsn // dialect + dsn both live under relational:
+	cfg.Relational.Clock = "app"
 	cfg.Mongo.URI = mongoBootURI()
 	cfg.Mongo.Database = "mysql_boot_probe"
 	cfg.Migrations.Dir = migrationsDir

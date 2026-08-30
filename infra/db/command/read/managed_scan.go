@@ -135,55 +135,6 @@ func (m *managedScan) apply(target any, dialect Dialect) error {
 	return nil
 }
 
-// managedTimeLayouts are the textual timestamp forms a driver may hand back
-// through the column map when it does NOT decode to time.Time itself: SQLite
-// stores timestamps as TEXT (RFC3339Nano for app-clock values, a
-// "YYYY-MM-DD HH:MM:SS.mmm" strftime form for NowExpr) and MySQL without
-// parseTime returns "YYYY-MM-DD HH:MM:SS" as bytes. Ordered most- to
-// least-specific; the first that parses wins.
-var managedTimeLayouts = []string{
-	time.RFC3339Nano,
-	time.RFC3339,
-	"2006-01-02 15:04:05.999999999",
-	"2006-01-02 15:04:05",
-	"2006-01-02",
-}
-
-// coerceManagedTime turns a managed-timestamp cell taken from a column-keyed row
-// map into a *time.Time, tolerating every driver representation one can arrive
-// in: a native time.Time / *time.Time (the pgx, MySQL parseTime, go-mssqldb,
-// go-ora path) and the textual string/[]byte forms SQLite (and MySQL without
-// parseTime) return. The schema-driven scan itself needs none of this — it
-// decodes through the engine's sql.NullTime targets — so this is the map-shaped
-// counterpart of that decode. Returns nil for an unrecognized or unparseable
-// value (the caller reads nil as "absent"), never a misleading zero time.
-func coerceManagedTime(v any) *time.Time {
-	switch t := v.(type) {
-	case time.Time:
-		return &t
-	case *time.Time:
-		return t
-	case string:
-		return parseManagedTimeText(t)
-	case []byte:
-		return parseManagedTimeText(string(t))
-	default:
-		return nil
-	}
-}
-
-func parseManagedTimeText(s string) *time.Time {
-	if s == "" {
-		return nil
-	}
-	for _, layout := range managedTimeLayouts {
-		if t, err := time.Parse(layout, s); err == nil {
-			return &t
-		}
-	}
-	return nil
-}
-
 // toInt64 coerces the integer forms a driver hands a revision column through the
 // column map (int64 on most, int32/int on some) to int64. A non-integer value
 // yields 0 — a revision the caller reads as "absent".

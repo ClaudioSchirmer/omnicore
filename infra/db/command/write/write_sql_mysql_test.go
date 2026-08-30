@@ -54,7 +54,8 @@ func (testMySQLDialect) ILikeClause(col, ph string) string {
 func (testMySQLDialect) LikeClause(col, ph string) string {
 	return "BINARY " + col + " LIKE " + ph
 }
-func (testMySQLDialect) NowExpr() string { return "NOW()" }
+func (testMySQLDialect) NowExpr() string    { return "NOW()" }
+func (testMySQLDialect) UTCNowExpr() string { return "NOW() AT TIME ZONE 'UTC'" }
 func (testMySQLDialect) ApplyLimit(sql string, n int) string {
 	return fmt.Sprintf("%s LIMIT %d", sql, n)
 }

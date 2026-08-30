@@ -231,8 +231,8 @@ func UserSchema() *core.TableSchema {
         Field("Email", "mail").         // renamed column
         Field("Phone", "phone").
         DeletedAt("deleted_at").       // managed: presence enables the predicate
-        CreatedAt("created_at").        // managed: framework stamps the op's app-clock instant on INSERT
-        UpdatedAt("updated_at").        // managed: framework stamps the op's app-clock instant on INSERT + UPDATE
+        CreatedAt("created_at").        // managed: framework stamps the operation's instant on INSERT
+        UpdatedAt("updated_at").        // managed: framework stamps the operation's instant on INSERT + UPDATE
         Child(AddressSchema())          // aggregate child, keyed by Go type name
 }
 
@@ -491,6 +491,57 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
     Nothing else in the framework depends on this precision: it is the archive cascade's discriminator, and only that.
 </div>
 
+<h3>Stamped fields — the domain says WHEN, the framework says with what</h3>
+<p>
+    <code>CreatedAt</code>/<code>UpdatedAt</code> date the <strong>row</strong> — written, last touched — on a schedule
+    the framework fixes. A <strong>stamped field</strong> dates a <strong>fact the business decides has just
+    happened</strong>: signed, paid, approved, cancelled. Nothing but a rule knows when that is, so the framework
+    cannot schedule it; and nothing but the framework should choose the instant, because a value read from the writing
+    process is a per-replica clock reading that drifts (see <code>relational.clock</code> above). So the two halves are
+    split, deliberately:
+</p>
+<pre><code>// infra — the WHAT
+core.NewTableSchema[*Order]("orders").
+    ID("id").
+    Field("Status", "status").
+    StampedTimeField("PaidAt", "paid_at").
+    CreatedAt("created_at").
+    UpdatedAt("updated_at")
+
+// domain — the WHEN
+func (o *Order) MarkPaid() { o.Stamp("PaidAt") }        // promoted from domain.Managed
+
+// direct — the WHEN
+w.Update(ctx, write.Values{"Status": "PAID", "PaidAt": write.Stamp}, q)</code></pre>
+<p>
+    The Go field is <code>*time.Time</code> and the column is nullable: until a rule stamps it the fact has not
+    happened, and <code>nil</code> says exactly that where a zero <code>time.Time</code> would report year 1 as the
+    moment something was signed. Everything else about the field is <strong>ordinary</strong> — it joins the bijection
+    like any <code>Field</code>, and it filters, orders, projects into views and hydrates on load the same way.
+</p>
+<p>
+    <strong>What the framework guarantees.</strong> The column is never written from the struct, so setting it by hand
+    does nothing — that is what makes it trustworthy. A write that did <em>not</em> request it leaves the column out of
+    the statement <em>entirely</em>: not bound, not set, not nulled, which is also why an already-stamped row keeps its
+    value with nobody having to remember to preserve it. A requested one binds the write operation's single instant —
+    the same value the managed timestamps carry — and that value is written <strong>back onto the entity</strong>, so
+    the audit event, the outbox payload, the response and the caller's in-memory entity all agree with the row (the
+    same move the framework already makes with a minted child id). Requesting twice is requesting once, and the emitted
+    columns follow <em>declaration</em> order, so the SQL is stable however the rules happened to fire.
+</p>
+<p>
+    <strong>Where it is refused, and why.</strong> At declaration: a <strong>sibling</strong> (it carries no managed
+    columns of its own — the owner dates the row), an <strong>external schema</strong> (it never writes), a
+    <strong>shared base</strong> (no Go type of its own to carry the request — declare it on the ROLE, whose entity
+    owns the rule), and an <strong>aggregate child</strong> (a child is a value in the aggregate map, so a rule calling
+    <code>item.Stamp(...)</code> would mutate a copy and the request would be silently lost — the same reason the
+    framework writes child ids back through <code>AssignAggregateItemID</code> rather than letting the domain set
+    them). At write time: a <code>Stamp</code> naming a field that is unknown, or mapped but <em>plain</em>, is a typed
+    error rather than a silent no-op — the domain cannot see the schema, so there is no boot moment to catch it at. On
+    the Direct side, binding a real value into a stamped slot is refused too, with the diagnostic teaching
+    <code>write.Stamp</code>: the caller may ask for the column, never dictate it.
+</p>
+
 <h3>Reading the managed columns back — the <code>domain.Managed</code> carrier</h3>
 <p>
     A relational load (<code>FindOne</code>/<code>FindAll</code> on a <code>BaseAggregateRepository</code>) surfaces the
@@ -511,7 +562,8 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
 </table>
 <p>
     Only the id is settable. <code>Revision</code> and the three timestamps are <strong>get-only</strong> by design: the
-    write path is untouched — <code>created_at</code>/<code>updated_at</code> are stamped by the app clock,
+    write path is untouched — <code>created_at</code>/<code>updated_at</code> are stamped from the operation's
+    instant (whose source the service declares, see the box below),
     <code>revision</code> by the framework, and <code>deleted_at</code> moves only through Archive/Unarchive — so a public
     setter on them would be a lie the write would ignore. The carrier is populated by the loader through a
     package-visible seal; the timestamps are honest <code>*time.Time</code> (nil, never a misleading zero, when a column
@@ -523,13 +575,31 @@ core.NewExternalSchema("users").ID("id").Field("Email", "mail")</code></pre>
 </p>
 
 <div class="box">
-    <strong>Operational consequence — the time source is the pods' clock, not the database's.</strong>
-    With several pods writing, timestamp quality across writers is only as good as the cluster's clock sync:
-    keep every node on NTP — for <code>created_at</code>/<code>updated_at</code> and the audit trail it is a
-    <em>correctness</em> requirement, not hygiene. Under clock skew, two consecutive writes of the same row from
-    different pods can leave <code>updated_at</code> going <em>backwards</em>. That never affects the projection —
-    ordering between concurrent writes is carried by <code>Revision</code>, the commit-order token — but it means
-    <code>updated_at</code> is a <em>display</em> timestamp: never use it as a concurrency or ordering token.
+    <strong>Which clock stamps them — <code>relational.clock</code>, declared, never assumed.</strong>
+    The managed timestamps carry the instant of the write operation, and <em>where that instant is read from</em> is a
+    mandatory declaration in the service's yaml (no default — see
+    <a href="#yaml-reference">yaml-reference</a>):
+    <ul>
+        <li><code>clock: app</code> — the writing process (<code>time.Now().UTC()</code>). No round-trip. With several
+            replicas writing, timestamp quality is only as good as the cluster's clock sync: keep every node on NTP.
+            Under skew, two consecutive writes of one row from different replicas can leave <code>updated_at</code>
+            going <em>backwards</em>.</li>
+        <li><code>clock: db</code> — the relational backend, read <strong>once per write transaction</strong> through
+            the dialect's UTC now expression. Every replica then shares one clock, which is the point: no amount of
+            care in the write path can fix a wrong reading at the source. Costs one extra round-trip per write
+            transaction. (On SQLite the engine is embedded, so the database clock <em>is</em> the process clock — the
+            setting is honored, it simply buys no fleet-wide agreement.)</li>
+    </ul>
+    Either way the value is minted <strong>once per operation</strong> and bound as an ordinary argument — never a
+    <code>NOW()</code> inside the DML — so every statement of one write (root, children, siblings, base cascade)
+    carries the same instant, and the value is known in Go before <code>COMMIT</code>: the outbox payload, the audit
+    event, the lifecycle hooks and the response all agree on it. That single-instant property is load-bearing, not
+    cosmetic: the unarchive cascade tells the children <em>this</em> archive put to sleep from the ones already
+    archived on their own by comparing exactly that stamp.
+    <br><br>
+    Neither setting makes <code>updated_at</code> an ordering token. Ordering between concurrent writes is carried by
+    <code>Revision</code>, the commit-order token incremented under the row lock; <code>updated_at</code> is a
+    <em>display</em> timestamp, and <code>clock: db</code> makes it a trustworthy one, not a different kind of thing.
 </div>
 
 <h3>One declaration, every consumer — <code>WithSchema</code></h3>

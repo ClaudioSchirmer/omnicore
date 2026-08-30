@@ -234,6 +234,7 @@ func (pgLikeDialect) DecodeID(raw string) (string, error) { return raw, nil }
 func (pgLikeDialect) ILikeClause(col, ph string) string   { return col + " ILIKE " + ph }
 func (pgLikeDialect) LikeClause(col, ph string) string    { return col + " LIKE " + ph }
 func (pgLikeDialect) NowExpr() string                     { return "NOW()" }
+func (pgLikeDialect) UTCNowExpr() string                  { return "NOW() AT TIME ZONE 'UTC'" }
 func (pgLikeDialect) ApplyLimit(sql string, n int) string { return fmt.Sprintf("%s LIMIT %d", sql, n) }
 func (pgLikeDialect) ApplyLimitOffset(sql string, limit, offset int) string {
 	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
