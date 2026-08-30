@@ -7,6 +7,34 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">—</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>a read join may now CHAIN:
+                <code>read.LeftJoin(...).Then(read.InnerJoin(...))</code>, with no depth limit.</strong> A hop's
+                <code>.On(...)</code> names a foreign key of the PREVIOUS target; its <code>.Field(...)</code> lands on
+                the same struct the head lands on, at any depth, so nothing above infrastructure learns that depth
+                exists — filter, order, the aggregate DSL, <code>?fields=</code>, the export and the relational read
+                model all serve a chain field exactly as they serve a one-hop one.
+                <ul>
+                    <li>A chain of two hops or more is emitted as a <strong>nested</strong> join, so a deeper
+                        <code>InnerJoin</code> binds its block instead of filtering the result set — which is what lets
+                        <code>LeftJoin(vendor).Then(InnerJoin(owner))</code> mean what it reads as. The block is atomic:
+                        a miss at any hop reports the whole chain absent, hop 1 included. A one-hop join is emitted
+                        byte for byte as before.</li>
+                    <li>Nullability follows the PATH: one <code>LeftJoin</code> above makes every field below it a
+                        pointer. The nullable-foreign-key refusal for <code>InnerJoin</code> narrows to paths that are
+                        inner all the way — under a <code>LeftJoin</code> an inner hop drops nothing.</li>
+                    <li>Each hop is aliased from the PATH of foreign keys reaching it
+                        (<code>j_vendor_id__owner_id</code>, hashed past 48 characters), so two chains may traverse the
+                        same column name in different branches.</li>
+                    <li>A chain on an AGGREGATE repository logs one boot advisory per chain — those joins ride every
+                        read the loader serves, <code>FindByID</code> included. A <code>DirectRepository</code> never
+                        logs one, at any depth.</li>
+                </ul>
+                See <a href="#read-joins">read joins</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.65.0</span><span class="release-date">August 30, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>relational.clock</code> is now a

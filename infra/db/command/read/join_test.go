@@ -42,6 +42,15 @@ type joinOrder struct {
 	VendorTier     joinVOTier  // enum value object
 	VendorAddr     joinVOAddr  // composite value object
 	VendorNote     *joinVOCode // scalar value object, nullable
+
+	// Cascade fixtures. Every one of these lands on the ROOT struct however deep
+	// its hop is — a hop three tables out has no struct of its own, which is the
+	// property that keeps JoinFields (and therefore every surface above infra)
+	// unaware that depth exists at all.
+	ChainOwnerName *string
+	ChainOwnerNick *string
+	ChainOwnerID   *string
+	ChainInnerName string
 }
 
 // The three value-object kinds the persistence seam distinguishes. Each is
@@ -89,6 +98,8 @@ type joinLine struct {
 	// both is no collision. It is the case the per-owner keying of the guard
 	// exists for.
 	TargetNick *string
+	// The child's own cascade fixture: a chain that departs from the CHILD.
+	ChainCityState *string
 }
 
 func (l joinLine) BuildRules(string, domain.Service, *domain.Rules) {}
@@ -457,9 +468,9 @@ func TestJoinScanTargets_IdentityColumnDecodesIntoTheString(t *testing.T) {
 			{GoField: "CustomerName", Column: "nome"},
 		},
 	}}
-	got, err := joinScanTargetsFor(order, js)
+	got, err := joinScanTargets(order, resolveJoins(js, "orders"))
 	if err != nil {
-		t.Fatalf("joinScanTargetsFor: %v", err)
+		t.Fatalf("joinScanTargets: %v", err)
 	}
 	// An ordinary column keeps the raw address it always had.
 	if _, ok := got[2].(*string); !ok {
@@ -507,7 +518,7 @@ func TestJoinScanTargets_RefusesAnIdentityColumnOnANonStringField(t *testing.T) 
 		Target: joinTargetSchema("customers"),
 		Fields: []JoinField{{GoField: "TargetBadOwner", Column: "owner_id"}},
 	}}
-	_, err := joinScanTargetsFor(&joinOrder{}, js)
+	_, err := joinScanTargets(&joinOrder{}, resolveJoins(js, "orders"))
 	if err == nil {
 		t.Fatal("an identity column on an int64 field must error")
 	}
@@ -1137,19 +1148,19 @@ func TestJoinFields_NilWhenNothingIsDeclared(t *testing.T) {
 func TestJoinScanTargets_RefusesAnImpossibleDestination(t *testing.T) {
 	js := []Join{{Fields: []JoinField{{GoField: "CustomerName", Column: "nome"}}}}
 
-	if _, err := joinScanTargetsFor("not a struct", js); err == nil {
+	if _, err := joinScanTargets("not a struct", resolveJoins(js, "orders")); err == nil {
 		t.Error("a non-struct destination must error")
 	}
-	if _, err := joinScanTargetsFor(&struct{ Other string }{}, js); err == nil {
+	if _, err := joinScanTargets(&struct{ Other string }{}, resolveJoins(js, "orders")); err == nil {
 		t.Error("a destination without the field must error")
 	}
-	if _, err := joinScanTargetsFor(&joinOrder{}, js); err != nil {
+	if _, err := joinScanTargets(&joinOrder{}, resolveJoins(js, "orders")); err != nil {
 		t.Errorf("a valid destination must build targets: %v", err)
 	}
 }
 
 func TestJoinScanTargets_EmptyWithoutRootJoins(t *testing.T) {
-	got, err := joinScanTargets(&joinOrder{}, []Join{{Child: joinLineSchema()}})
+	got, err := joinScanTargets(&joinOrder{}, resolveJoins(rootJoins([]Join{{Child: joinLineSchema()}}), "orders"))
 	if err != nil {
 		t.Fatalf("joinScanTargets: %v", err)
 	}
@@ -1244,5 +1255,384 @@ func TestDeclaredJoin_AnchorFilterAndOrderAreQualified(t *testing.T) {
 	}
 	if !strings.Contains(sql, "ORDER BY orders.code DESC") {
 		t.Errorf("the anchor order must be qualified under a join:\n%s", sql)
+	}
+}
+
+// ─── cascade: chains that reach past the first hop ───────────────────────────
+
+// chainedLoader declares orders → customers → owners: the head departs from the
+// root's customer_id, the hop from the TARGET's owner_id. Both LEFT, so every
+// landed field is a pointer.
+func chainedLoader(t *testing.T) *AggregateLoader[*joinOrder] {
+	t.Helper()
+	return joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(LeftJoin(joinTargetSchema("owners")).On("owner_id").
+				Field("ChainOwnerName", "nome").
+				Then(LeftJoin(joinTargetSchema("regions")).On("owner_id").
+					Field("ChainOwnerNick", "nome"))),
+	)
+}
+
+// The chain is emitted as ONE nested block, not as a flat list of joins. The
+// parentheses are what make a LEFT above protect the whole reach: rendered flat,
+// a deeper INNER would filter the result set and drop the very roots the LEFT
+// just promised to keep.
+func TestChain_IsEmittedAsANestedBlock(t *testing.T) {
+	sql := capturedSQL(t, chainedLoader(t), criteria.Where(nil))
+
+	const want = "LEFT JOIN (customers j_customer_id " +
+		"LEFT JOIN (owners j_customer_id__owner_id " +
+		"LEFT JOIN regions j_customer_id__owner_id__owner_id " +
+		"ON j_customer_id__owner_id__owner_id.id = j_customer_id__owner_id.owner_id) " +
+		"ON j_customer_id__owner_id.id = j_customer_id.owner_id) " +
+		"ON j_customer_id.id = orders.customer_id"
+	if !strings.Contains(sql, want) {
+		t.Errorf("the chain must be one nested block.\n got: %s\nwant substring: %s", sql, want)
+	}
+}
+
+// Each hop's ON departs from the PREVIOUS hop's alias — never from the anchor.
+// An ON that kept pointing at the root would silently join the wrong rows.
+func TestChain_EachHopDepartsFromItsParent(t *testing.T) {
+	sql := capturedSQL(t, chainedLoader(t), criteria.Where(nil))
+	if strings.Contains(sql, "j_customer_id__owner_id.id = orders.") {
+		t.Errorf("hop 2 must depart from hop 1's alias, not from the anchor:\n%s", sql)
+	}
+}
+
+// Depth 1 renders EXACTLY as it did before chains existed — no parentheses, same
+// alias, same bytes. The regression that matters most: every service in
+// production declares depth-1 joins.
+func TestChain_DepthOneIsUnchanged(t *testing.T) {
+	sql := capturedSQL(t, joinedLoader(t), criteria.Where(nil))
+	if strings.Contains(sql, "(customers") || strings.Contains(sql, "(carriers") {
+		t.Errorf("a one-hop join must not be parenthesized:\n%s", sql)
+	}
+	if !strings.Contains(sql, "INNER JOIN customers j_customer_id ON j_customer_id.id = orders.customer_id") {
+		t.Errorf("the one-hop rendering must be byte-identical:\n%s", sql)
+	}
+}
+
+// A mixed chain keeps each hop's declared kind INSIDE the block: the INNER binds
+// the block, the LEFT above binds the root to it. This is the A/B/C shape — a
+// root with no counterpart, and a counterpart missing ITS counterpart, both come
+// back with the chain NULL instead of vanishing.
+func TestChain_InnerUnderLeftIsScopedToTheBlock(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(InnerJoin(joinTargetSchema("owners")).On("owner_id").
+				Field("ChainOwnerName", "nome")),
+	)
+	sql := capturedSQL(t, l, criteria.Where(nil))
+
+	const want = "LEFT JOIN (customers j_customer_id " +
+		"INNER JOIN owners j_customer_id__owner_id " +
+		"ON j_customer_id__owner_id.id = j_customer_id.owner_id) " +
+		"ON j_customer_id.id = orders.customer_id"
+	if !strings.Contains(sql, want) {
+		t.Errorf("the INNER must sit INSIDE the LEFT's block.\n got: %s\nwant substring: %s", sql, want)
+	}
+	// The flat form is the bug this rendering exists to avoid.
+	if strings.Contains(sql, "orders.customer_id INNER JOIN owners") {
+		t.Errorf("a trailing INNER would drop the roots the LEFT preserves:\n%s", sql)
+	}
+}
+
+// A field is NULL-able because of the PATH, not because of its own hop. An INNER
+// hop under a LEFT still lands NULL on every root the block did not match, so the
+// field must be a pointer — the declaration is refused when it is not.
+func TestChain_NullabilityFollowsThePath(t *testing.T) {
+	wantPanic(t, "cannot hold the NULL a left join produces", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CarrierCode", "nome").
+				Then(InnerJoin(joinTargetSchema("owners")).On("owner_id").
+					Field("ChainInnerName", "nome")), // string, not *string
+		)
+	})
+}
+
+// The mirror of the rule: a chain that is INNER all the way through never
+// produces a NULL, so a non-pointer field is honest there.
+func TestChain_AllInnerAcceptsANonPointerField(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CustomerName", "nome").
+			Then(InnerJoin(joinTargetSchema("owners")).On("owner_id").
+				Field("ChainInnerName", "nome")),
+	)
+	if got := len(l.Joins()[0].Through); got != 1 {
+		t.Fatalf("the hop must be recorded on the head: %d", got)
+	}
+}
+
+// An INNER hop over a NULLABLE foreign key is refused only when the PATH is inner
+// all the way — there it drops roots. Under a LEFT it drops nothing: the block
+// simply does not match. Refusing it there would refuse the very declaration the
+// nested rendering exists to serve.
+func TestChain_NullableFKUnderALeftIsAllowed(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(InnerJoin(joinTargetSchema("owners")).On("alt_owner_id").
+				Field("ChainOwnerName", "nome")),
+	)
+	if got := len(l.Joins()[0].Through); got != 1 {
+		t.Fatalf("an inner hop over a nullable FK under a LEFT must be accepted: %d", got)
+	}
+}
+
+func TestChain_NullableFKOnAnAllInnerPathIsRefused(t *testing.T) {
+	wantPanic(t, "the foreign key is nullable", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CustomerName", "nome").
+				Then(InnerJoin(joinTargetSchema("owners")).On("alt_owner_id").
+					Field("ChainOwnerName", "nome")),
+		)
+	})
+}
+
+// A hop's .On(...) names a column of the PREVIOUS TARGET. Naming one of the
+// declaring entity's own columns is the mistake the message must catch, and it
+// must say which hop.
+func TestChain_HopForeignKeyIsCheckedAgainstThePreviousTarget(t *testing.T) {
+	wantPanic(t, "hop 2 of the chain customer_id → code", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CarrierCode", "nome").
+				Then(LeftJoin(joinTargetSchema("owners")).On("code"). // a column of ORDERS
+											Field("ChainOwnerName", "nome")),
+		)
+	})
+}
+
+// A hop continues from the previous target, so it cannot name a child: only the
+// head of a chain decides what the chain hangs off.
+func TestChain_HopCannotBeAChildJoin(t *testing.T) {
+	wantPanic(t, "a hop continues from the PREVIOUS TARGET", func() {
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(LeftJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+				Field("StateName", "nome"))
+	})
+}
+
+// Two chains may legitimately traverse the SAME foreign key name from different
+// tables — the path is what tells the aliases apart, so neither collides.
+func TestChain_SameFKInTwoBranchesIsNotACollision(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(LeftJoin(joinTargetSchema("owners")).On("owner_id").
+				Field("ChainOwnerName", "nome")),
+		LeftJoin(joinTargetSchema("carriers")).On("carrier_id").
+			Field("TargetNick", "nickname").
+			Then(LeftJoin(joinTargetSchema("regions")).On("owner_id").
+				Field("ChainOwnerNick", "nome")),
+	)
+	sql := capturedSQL(t, l, criteria.Where(nil))
+	if !strings.Contains(sql, "j_customer_id__owner_id") || !strings.Contains(sql, "j_carrier_id__owner_id") {
+		t.Errorf("each branch must get its own alias:\n%s", sql)
+	}
+}
+
+// The same foreign key twice from the SAME point IS a collision — one key reaches
+// one table, and both hops would land on one alias.
+func TestChain_SameFKTwiceFromOnePointIsRefused(t *testing.T) {
+	wantPanic(t, "already carries the join to", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CarrierCode", "nome").
+				Then(
+					LeftJoin(joinTargetSchema("owners")).On("owner_id").Field("ChainOwnerName", "nome"),
+					LeftJoin(joinTargetSchema("regions")).On("owner_id").Field("ChainOwnerNick", "nome"),
+				),
+		)
+	})
+}
+
+// A field mapped twice on the same owner is still a collision at any depth: both
+// columns would be selected and both would scan into the same struct address.
+func TestChain_FieldCollisionAcrossDepthsIsRefused(t *testing.T) {
+	wantPanic(t, "is already mapped by", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			LeftJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("ChainOwnerName", "nome").
+				Then(LeftJoin(joinTargetSchema("owners")).On("owner_id").
+					Field("ChainOwnerName", "nome")),
+		)
+	})
+}
+
+// A field of a DEEP hop is addressable in a criteria, qualified by that hop's
+// own alias — the resolution walks the chain, not just its head.
+func TestChain_DeepFieldIsFilterableUnderItsAlias(t *testing.T) {
+	sql := capturedSQL(t, chainedLoader(t), criteria.Where(criteria.Eq("ChainOwnerName", "ana")))
+	if !strings.Contains(sql, "j_customer_id__owner_id.nome = $1") {
+		t.Errorf("a depth-2 field must resolve under its own alias:\n%s", sql)
+	}
+}
+
+func TestChain_DeepFieldIsSortableUnderItsAlias(t *testing.T) {
+	sql := capturedSQL(t, chainedLoader(t), criteria.Where(nil).OrderBy("ChainOwnerNick"))
+	if !strings.Contains(sql, "ORDER BY j_customer_id__owner_id__owner_id.nome") {
+		t.Errorf("a depth-3 field must order under its own alias:\n%s", sql)
+	}
+}
+
+// An identity column of a DEEP hop's target still lands as canonical text: the
+// typing comes from the target's schema, which the chain carries at every level.
+func TestChain_DeepIdentityColumnIsTypedFromItsOwnTarget(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(LeftJoin(joinTargetSchema("owners")).On("owner_id").
+				Field("ChainOwnerID", "owner_id")),
+	)
+	targets, err := joinScanTargets(&joinOrder{}, l.rootJoinNodes())
+	if err != nil {
+		t.Fatalf("joinScanTargets: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("both hops contribute a target, got %d", len(targets))
+	}
+	if _, ok := targets[1].(sql.Scanner); !ok {
+		t.Errorf("a deep identity column must scan through the id decoder, got %T", targets[1])
+	}
+}
+
+// A chain that departs from a CHILD is not a separate mechanism: same alias
+// derivation, same nesting, same pre-order — only the anchor differs.
+func TestChain_FromAChildUsesTheChildAsAnchor(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+			Field("StateName", "nome").
+			Then(LeftJoin(joinTargetSchema("states")).On("owner_id").
+				Field("ChainCityState", "nome")),
+	)
+	sql := childCapturedSQL(t, l)
+	const want = "LEFT JOIN (cities j_city_id " +
+		"LEFT JOIN states j_city_id__owner_id " +
+		"ON j_city_id__owner_id.id = j_city_id.owner_id) " +
+		"ON j_city_id.id = order_lines.city_id"
+	if !strings.Contains(sql, want) {
+		t.Errorf("a child chain must nest off the child.\n got: %s\nwant substring: %s", sql, want)
+	}
+}
+
+// The whole chain lands on ONE table's fields, so JoinFields keeps the shape it
+// had when a traversal was one hop. This is what lets the view reader, the
+// field-selection gate and every surface above infra stay untouched.
+func TestChain_JoinFieldsStayKeyedByTheLandingTable(t *testing.T) {
+	got := chainedLoader(t).JoinFields()
+	if len(got) != 1 {
+		t.Fatalf("a root chain lands on one table, got %d keys: %v", len(got), got)
+	}
+	want := []string{"CarrierCode", "ChainOwnerName", "ChainOwnerNick"}
+	if strings.Join(got["orders"], ",") != strings.Join(want, ",") {
+		t.Errorf("every depth lands on the root, in pre-order.\n got: %v\nwant: %v", got["orders"], want)
+	}
+}
+
+// ─── the alias derivation ────────────────────────────────────────────────────
+
+func TestJoinAlias_ReadablePathAndHashEscape(t *testing.T) {
+	if got := joinAlias([]string{"campus_id"}); got != "j_campus_id" {
+		t.Errorf("one hop keeps the historical alias, got %q", got)
+	}
+	if got := joinAlias([]string{"campus_id", "city_id"}); got != "j_campus_id__city_id" {
+		t.Errorf("a path reads as its hops, got %q", got)
+	}
+
+	long := []string{strings.Repeat("a", 30), strings.Repeat("b", 30)}
+	got := joinAlias(long)
+	if len(got) > joinAliasBudget {
+		t.Errorf("past the budget the alias must be hashed, got %q (%d chars)", got, len(got))
+	}
+	if got != joinAlias(long) {
+		t.Error("the hash must be stable across calls")
+	}
+	// NUL-separated, so a different split of the same letters is a different alias.
+	if got == joinAlias([]string{strings.Repeat("a", 29), "a" + strings.Repeat("b", 30)}) {
+		t.Error("two different paths must not hash alike")
+	}
+}
+
+// ─── the boot advisory ───────────────────────────────────────────────────────
+
+// A chain on an AGGREGATE repository files exactly one advisory, naming the
+// chain — the joins ride FindByID, which is the write path's load.
+func TestAdvisory_OneChainOneLineOnAnAggregate(t *testing.T) {
+	DrainJoinAdvisories()
+	chainedLoader(t)
+
+	got := DrainJoinAdvisories()
+	if len(got) != 1 {
+		t.Fatalf("one chain files one advisory, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "customer_id → owner_id → owner_id") {
+		t.Errorf("the advisory must name the chain: %s", got[0])
+	}
+	if !strings.Contains(got[0], "DirectRepository") {
+		t.Errorf("the advisory must name the alternative: %s", got[0])
+	}
+}
+
+// Depth 1 is the shape every service already declares; it says nothing.
+func TestAdvisory_SilentAtDepthOne(t *testing.T) {
+	DrainJoinAdvisories()
+	joinedLoader(t)
+	if got := DrainJoinAdvisories(); len(got) != 0 {
+		t.Errorf("a one-hop join must file nothing, got %v", got)
+	}
+}
+
+// A chain that departs from a child costs the same on every load, so it reports
+// through the same path — with the child as the table it names.
+func TestAdvisory_ChildChainReportsToo(t *testing.T) {
+	DrainJoinAdvisories()
+	joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoinInChild(joinLineSchema()).To(joinTargetSchema("cities")).On("city_id").
+			Field("StateName", "nome").
+			Then(LeftJoin(joinTargetSchema("states")).On("owner_id").
+				Field("ChainCityState", "nome")),
+	)
+	got := DrainJoinAdvisories()
+	if len(got) != 1 {
+		t.Fatalf("a child chain files one advisory, got %d: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], `from "order_lines"`) {
+		t.Errorf("the advisory must name the child it departs from: %s", got[0])
+	}
+}
+
+// Draining clears, so a second boot in the same process does not report the
+// first one's chains again.
+func TestAdvisory_DrainClears(t *testing.T) {
+	DrainJoinAdvisories()
+	chainedLoader(t)
+	if len(DrainJoinAdvisories()) == 0 {
+		t.Fatal("the advisory must be there to drain")
+	}
+	if got := DrainJoinAdvisories(); len(got) != 0 {
+		t.Errorf("a drained buffer must be empty, got %v", got)
+	}
+}
+
+// A nil hop is skipped, the same way WithJoins skips a nil binding — so a
+// conditionally-built chain needs no branch at the call site.
+func TestChain_SkipsNilHops(t *testing.T) {
+	l := joinLoader(joinOrderSchema()).WithJoins(
+		LeftJoin(joinTargetSchema("customers")).On("customer_id").
+			Field("CarrierCode", "nome").
+			Then(nil, LeftJoin(joinTargetSchema("owners")).On("owner_id").
+				Field("ChainOwnerName", "nome"), nil),
+	)
+	if got := len(l.Joins()[0].Through); got != 1 {
+		t.Fatalf("nil hops must be skipped, got %d", got)
 	}
 }

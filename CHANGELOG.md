@@ -11,6 +11,42 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **A read join may now CHAIN: `read.LeftJoin(...).Then(read.InnerJoin(...))`,
+  with no depth limit.** A declared traversal used to reach exactly one aggregate;
+  `Then` continues it from that aggregate to the next, and from there onward. A
+  hop's `.On(...)` names a foreign key of the PREVIOUS TARGET; its `.Field(...)`
+  lands on the SAME struct the head lands on, at any depth, because a join field
+  carries no domain type. Chains hang off a root join or a `...InChild` one alike,
+  and every read that already served a one-hop join serves a chain: filter, order,
+  the aggregate DSL, `?fields=`, the export, and the relational read model.
+
+  A chain of two hops or more is emitted as a NESTED join —
+  `LEFT JOIN (vendor INNER JOIN owner ON …) ON …` — so a deeper `InnerJoin`
+  binds its block instead of filtering the result set. That is what lets
+  `LeftJoin(vendor).Then(InnerJoin(owner))` mean what it reads as: the vendor is
+  optional, a vendor HAS an owner, and a root with neither is still returned with
+  the chain absent. The block is atomic: a miss at any hop reports the whole chain
+  absent, hop 1 included. A one-hop join is emitted exactly as before, byte for
+  byte.
+
+  Nullability follows the PATH, not the hop: one `LeftJoin` anywhere above makes
+  every field below it a pointer, whatever the deeper hops declare. The
+  nullable-foreign-key refusal for `InnerJoin` narrows accordingly — it applies
+  when the path is inner all the way (there it would drop roots) and not under a
+  `LeftJoin`, where the block simply does not match. Each hop is rendered under an
+  alias derived from the PATH of foreign keys reaching it (`j_vendor_id__owner_id`,
+  hashed past 48 characters), so two chains may traverse the same column name in
+  different branches.
+
+  A chain declared on an AGGREGATE repository logs one advisory per chain at boot:
+  those joins ride every read the loader serves, `FindByID` included, which is the
+  load the write-side Auto handlers go through. It names the chain and suggests a
+  `read.DirectRepository` when the reach is only ever read. A `DirectRepository`
+  itself never logs one, at any depth — it has no write path to charge.
+
+
 ## [0.65.0] - 2026-08-30
 
 ### Changed

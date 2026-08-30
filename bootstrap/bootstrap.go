@@ -223,6 +223,15 @@ func runWithConfig(cfg *Config, wire func(Deps) Wiring) error {
 		deps.Logger.Info("feature registered", "type", fmt.Sprintf("%T", f), "readable", readable)
 	}
 
+	// Declaration advisories the read side filed while the features wired their
+	// repositories — a deep read-join chain on an aggregate loader. Reported HERE
+	// because this is where the service's logger exists: the declaration itself
+	// runs inside a Feature's wiring, with no logger in reach. Advisory, never
+	// fatal — the framework sets no depth limit.
+	for _, advisory := range read.DrainJoinAdvisories() {
+		deps.Logger.Warn(advisory)
+	}
+
 	// Cross-service composition: resolve cfg + Wiring subscriptions,
 	// apply defaults, run the four boot guards (§8). Runs BEFORE
 	// SyncEngine.Start and BEFORE the UpstreamSubscriber goroutines

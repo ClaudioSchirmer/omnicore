@@ -2,7 +2,10 @@ package read
 
 import (
 	"fmt"
+	"hash/fnv"
 	"reflect"
+	"strconv"
+	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
@@ -54,6 +57,14 @@ func (k JoinKind) String() string {
 	return "LeftJoin"
 }
 
+// sqlVerb is how this kind is written in a FROM.
+func (k JoinKind) sqlVerb() string {
+	if k == JoinInner {
+		return "INNER JOIN"
+	}
+	return "LEFT JOIN"
+}
+
 // JoinField is one column of the joined table mapped onto a Go field of the
 // entity that declares the join — same (goField, column) shape, same order, as
 // TableSchema.Field.
@@ -94,6 +105,16 @@ type Join struct {
 	// Fields is what the traversal brings back. At least one is mandatory: a join
 	// that maps no field reaches nothing.
 	Fields []JoinField
+	// Through are the hops that continue the traversal FROM Target — the aggregate
+	// one step further out, and so on with no depth limit. Their FKColumn names a
+	// column of the PARENT'S Target, never of the entity that declared the chain,
+	// and their Child is always nil: a chain hangs off whatever the head hangs
+	// off, and only the head decides that.
+	//
+	// It is a tree rather than a parent pointer so declaration order IS pre-order:
+	// the FROM, the SELECT list and the scan targets all walk it the same way, and
+	// the three cannot drift. flattenJoins is the single walk they share.
+	Through []Join
 }
 
 // InnerJoin declares a traversal from the ROOT that requires the match. Its
@@ -176,6 +197,41 @@ func (b *JoinBinding) Field(goField, column string) *JoinBinding {
 	return b
 }
 
+// Then continues the traversal FROM this join's target: the aggregate one hop
+// further out, and so on with no depth limit — the framework sets none, because
+// how far a read reaches is the caller's call, not the framework's.
+//
+// The .On(...) of a hop names the foreign key ON THE PREVIOUS TARGET'S table.
+// That is the same predicate the head already uses (fk = target.id, with the id
+// coming from the target's own TableSchema); what moves with the chain is which
+// table the left-hand side lives on.
+//
+// The Fields of EVERY hop, at any depth, land on the SAME struct the head lands
+// on — the root entity, or the child for a ...InChild chain. A join field
+// carries no domain type, so there is no "struct of hop 2" for one to live in.
+//
+// Kinds mix freely. A chain of depth 2 or more is emitted as a NESTED join, so
+// LeftJoin(campus).Then(InnerJoin(city)) means what it reads as: the campus is
+// optional, and a campus that HAS no city brings back nothing rather than
+// dropping the root. Rendering it as a flat join list would drop those roots, so
+// the flat form is not what this compiles to.
+func (b *JoinBinding) Then(hops ...*JoinBinding) *JoinBinding {
+	for _, h := range hops {
+		if h == nil {
+			continue
+		}
+		if h.j.Child != nil {
+			panic(fmt.Sprintf(
+				"read.%s(%q).Then(read.%sInChild(%q)): a hop continues from the PREVIOUS TARGET, so it "+
+					"cannot name a child — only the head of a chain decides what it hangs off. Use "+
+					"read.InnerJoin/LeftJoin for the hop, and declare the child on the head.",
+				b.j.Kind, b.j.Target.Table(), h.j.Kind, h.j.Child.Table()))
+		}
+		b.j.Through = append(b.j.Through, h.build())
+	}
+	return b
+}
+
 // build finalizes the declaration, validating everything that can be known from
 // the join alone. What needs the OWNING schema — the child membership, the FK
 // column, the Go field's existence and nullability — is checked by validateJoins,
@@ -195,6 +251,147 @@ func (b *JoinBinding) build() Join {
 	return b.j
 }
 
+// joinNode is one hop of a declared chain, resolved: the declaration itself, the
+// alias it is rendered under, the alias on the LEFT of its ON, the sub-chain
+// resolved the same way, and the kind the PATH has by the time it reaches here.
+//
+// effectiveKind never reaches the SQL — every hop is emitted with the kind it was
+// declared with, inside its block. It exists for validation: a field reached
+// through a LEFT anywhere above must be able to hold the NULL that block produces
+// when it does not match, even if its own hop is an INNER.
+type joinNode struct {
+	j             Join
+	alias         string
+	parentAlias   string // the anchor table at hop 1, the parent's alias deeper
+	effectiveKind JoinKind
+	through       []joinNode
+}
+
+// resolveJoins turns declared traversals into resolved nodes, anchored on the
+// table their head hangs off — the root's for a root chain, the child's for a
+// ...InChild one.
+//
+// It is the ONE place a path is accumulated, an alias derived and a kind carried
+// down. The FROM renders from the tree it returns and the SELECT list, the scan
+// targets and the criteria resolution all read the SAME nodes through
+// flattenJoins, so the four cannot disagree about which alias a column came from.
+func resolveJoins(joins []Join, anchor string) []joinNode {
+	return resolveJoinsAt(joins, nil, anchor, JoinInner)
+}
+
+func resolveJoinsAt(joins []Join, path []string, parentAlias string, parentKind JoinKind) []joinNode {
+	if len(joins) == 0 {
+		return nil
+	}
+	out := make([]joinNode, 0, len(joins))
+	for _, j := range joins {
+		hop := append(append([]string{}, path...), j.FKColumn)
+		alias := joinAlias(hop)
+		kind := j.Kind
+		if parentKind == JoinLeft {
+			kind = JoinLeft
+		}
+		out = append(out, joinNode{
+			j:             j,
+			alias:         alias,
+			parentAlias:   parentAlias,
+			effectiveKind: kind,
+			through:       resolveJoinsAt(j.Through, hop, alias, kind),
+		})
+	}
+	return out
+}
+
+// flattenJoins reads resolved nodes in PRE-ORDER — the order the SELECT list and
+// the scan targets follow, so a column and its destination stay paired however
+// deep the chain goes.
+func flattenJoins(nodes []joinNode) []joinNode {
+	var out []joinNode
+	for _, n := range nodes {
+		out = append(out, n)
+		out = append(out, flattenJoins(n.through)...)
+	}
+	return out
+}
+
+// renderJoins writes the FROM entries for resolved traversals, in declaration
+// order.
+//
+// The alias follows the table with NO "AS": that keyword is optional before a
+// TABLE alias in standard SQL and Oracle rejects it outright (ORA-02000), while
+// every other backend accepts the bare form. Column aliases are a different
+// position with a different rule — the dialects that write one keep their AS.
+func renderJoins(nodes []joinNode, dialect Dialect) string {
+	var sb strings.Builder
+	for _, n := range nodes {
+		sb.WriteString(" " + n.j.Kind.sqlVerb() + " " + n.joinedTerm(dialect) +
+			" ON " + n.onPredicate(dialect))
+	}
+	return sb.String()
+}
+
+// joinedTerm is the right-hand side of one join: the target under its alias, or —
+// when hops continue from it — the whole sub-chain PARENTHESIZED.
+//
+// The parentheses are what make a mixed chain mean what it reads as.
+// LeftJoin(campus).Then(InnerJoin(city)) says "the campus is optional; a campus
+// has a city". Rendered flat —
+//
+//	FROM enrollment LEFT JOIN campus ... INNER JOIN city ...
+//
+// the trailing INNER filters the whole result and drops every enrollment with NO
+// campus, which the LEFT above just promised to keep. Nested, the INNER scopes to
+// the block: the block matches or it does not, and a root with no campus (or a
+// campus with no city) comes back with the chain's fields NULL. That is the
+// declaration, honored.
+//
+// A chain of depth 1 has no sub-chain and renders exactly as it always has, down
+// to the byte.
+func (n joinNode) joinedTerm(dialect Dialect) string {
+	term := dialect.QuoteIdent(n.j.Target.Table()) + " " + dialect.QuoteIdent(n.alias)
+	if len(n.through) == 0 {
+		return term
+	}
+	return "(" + term + renderJoins(n.through, dialect) + ")"
+}
+
+// onPredicate is always the joining side's FKColumn against the TARGET's declared
+// id column. What moves with the chain is only which table the left-hand side
+// lives on: the anchor at hop 1, the parent hop's alias below it.
+func (n joinNode) onPredicate(dialect Dialect) string {
+	return dialect.QuoteIdent(n.alias) + "." + dialect.QuoteIdent(n.j.Target.IDColumn()) +
+		" = " + dialect.QuoteIdent(n.parentAlias) + "." + dialect.QuoteIdent(n.j.FKColumn)
+}
+
+// joinAliasBudget is how long a derived alias may get before it is hashed
+// instead. MySQL caps an identifier at 64 characters and the other engines at
+// 128, so the budget leaves room under the tightest of them.
+const joinAliasBudget = 48
+
+// joinAlias is the table alias one hop is rendered under, derived from the PATH
+// of foreign keys that reaches it — "j_campus_id__city_id".
+//
+// The path, not the column: a foreign key names one hop uniquely only among its
+// siblings, and two chains may legitimately traverse a city_id each. Path
+// derivation is also what keeps two traversals to the same table apart, which is
+// what the alias existed for in the first place (bill_to_id and ship_to_id both
+// reaching customers).
+//
+// Past the budget the path is replaced by the hex FNV-64a of it — the same
+// derivation, for the same reason, as oracle.rebuildLockName. The readable form
+// covers every realistic chain and keeps EXPLAIN output legible; the hash is
+// there so a chain of long column names fails on nobody's identifier limit.
+func joinAlias(path []string) string {
+	name := "j_" + strings.Join(path, "__")
+	if len(name) <= joinAliasBudget {
+		return name
+	}
+	h := fnv.New64a()
+	// NUL-separated so ["ab","c"] and ["a","bc"] cannot hash alike.
+	_, _ = h.Write([]byte(strings.Join(path, "\x00")))
+	return "j_" + strconv.FormatUint(h.Sum64(), 16)
+}
+
 // validateJoins asserts every declaration against the schema that owns it AND
 // against the other declarations. It runs at construction — a violation panics
 // there, never on the first request.
@@ -209,9 +406,17 @@ func (b *JoinBinding) build() Join {
 // prove each mapped field exists and, for a left join, that it can hold the NULL
 // a missing counterpart produces.
 func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
-	fail := func(format string, args ...any) {
-		panic(fmt.Sprintf("read.WithJoins[%s]: ", contextName) + fmt.Sprintf(format, args...))
+	// failAt names WHERE in a chain the violation is. At the head the message is
+	// exactly what it always was — a depth-1 declaration reads no differently for
+	// this feature existing.
+	failAt := func(path []string, format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		if len(path) > 1 {
+			msg = fmt.Sprintf("hop %d of the chain %s: %s", len(path), strings.Join(path, " → "), msg)
+		}
+		panic(fmt.Sprintf("read.WithJoins[%s]: ", contextName) + msg)
 	}
+	fail := func(format string, args ...any) { failAt(nil, format, args...) }
 	if root == nil {
 		fail("no schema declared — call WithSchema(...) before WithJoins(...)")
 	}
@@ -220,21 +425,113 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 	for _, ch := range root.ChildSchemas() {
 		ownChildren[ch.Table()] = ch
 	}
-	// One join per foreign key per owner. The FK is what the SQL alias is derived
-	// from — two traversals may reach the SAME table (bill_to and ship_to both to
-	// customers), and the FK is what tells them apart. Two joins sharing one FK
-	// would collide on that alias, and a column pointing at two tables is a
-	// modelling mistake worth naming rather than aliasing around.
+	// One join per foreign key per JOINING TABLE IN THE CHAIN. The FK is part of
+	// what the SQL alias is derived from — two traversals may reach the SAME table
+	// (bill_to and ship_to both to customers), and the FK is what tells them
+	// apart. Two joins sharing one FK from the same point would collide on that
+	// alias, and a column pointing at two tables is a modelling mistake worth
+	// naming rather than aliasing around.
+	//
+	// The key is the PATH to the joining table, not the table itself: two
+	// different chains may each traverse a city_id, and they are different
+	// traversals reached through different aliases. Only a collision at the same
+	// point in the same chain is one.
 	fkSeen := map[string]string{}
 	// One Go field per owner receives ONE column. Two traversals mapping the same
 	// field is the quietest mistake in this file: the SELECT carries both columns
 	// (joinSelectExprs), the scan builds two destinations at the SAME struct
-	// address (joinScanTargetsFor), so the later column overwrites the earlier
+	// address (joinScanTargets), so the later column overwrites the earlier
 	// one on every row — and a criteria naming that field binds to whichever join
 	// was declared first, which may be the one whose value was overwritten. The
 	// key is the OWNER's table because a root join and a child join land on
 	// different structs: the same Go name there is two different fields.
 	goSeen := map[string]string{}
+
+	// walk validates one hop and then everything that continues from it.
+	//
+	// Two owners travel down the chain and they are NOT the same thing:
+	//
+	//   - joining is the table the hop departs from — the entity at the head, the
+	//     PREVIOUS TARGET below it. It answers for .On(...): a hop's foreign key is
+	//     a column of the aggregate it is leaving, not of the one that declared the
+	//     chain.
+	//   - fieldOwner is the struct the mapped fields LAND on, and it never changes
+	//     down a chain: a join field carries no domain type, so hop 3 has no struct
+	//     of its own and its value belongs to the entity that declared the
+	//     traversal. It answers for .Field(...) — existence, shadowing, collision.
+	//
+	// Keeping them apart is what lets the depth grow without anything above infra
+	// noticing: JoinFields stays keyed by the table the fields land on.
+	var walk func(j Join, fieldOwner, joining *core.TableSchema, scope string, path []string, pathKind JoinKind)
+	walk = func(j Join, fieldOwner, joining *core.TableSchema, scope string, path []string, pathKind JoinKind) {
+		path = append(append([]string{}, path...), j.FKColumn)
+		// The kind the PATH has here: one LEFT anywhere above makes the whole block
+		// optional, however this hop was declared.
+		kind := j.Kind
+		if pathKind == JoinLeft {
+			kind = JoinLeft
+		}
+
+		if _, ok := joining.GoNameForRead(j.FKColumn); !ok {
+			failAt(path, "%s(%q).On(%q): %q is not a column of %q",
+				j.Kind, j.Target.Table(), j.FKColumn, j.FKColumn, joining.Table())
+		}
+
+		fkKey := scope + "." + j.FKColumn
+		if prev, dup := fkSeen[fkKey]; dup {
+			failAt(path, "%s(%q).On(%q): %q already carries the join to %q — one foreign key reaches "+
+				"ONE table. Two traversals to the same table need two foreign keys (bill_to_id, "+
+				"ship_to_id), which is also what tells their SQL aliases apart.",
+				j.Kind, j.Target.Table(), j.FKColumn, fkKey, prev)
+		}
+		fkSeen[fkKey] = j.Target.Table()
+
+		// An inner join drops what has no counterpart. Over a NON-NULLABLE key
+		// referential integrity means there is always one, so the choice is intent
+		// and plan; over a nullable one it would silently drop aggregates — from
+		// FindByID too, which the write-side handlers load through.
+		//
+		// Only when the PATH is inner all the way. Under a LEFT above, an inner hop
+		// over a nullable key drops nothing: the block simply does not match and the
+		// chain's fields come back NULL, root intact. That case is not a mistake —
+		// it is exactly what LeftJoin(campus).Then(InnerJoin(city)) is FOR, and
+		// refusing it here would refuse the declaration this framework renders.
+		if kind == JoinInner {
+			if fkGo, ok := joining.GoNameForRead(j.FKColumn); ok && joining.IDKindOf(fkGo) == core.IDPointer {
+				failAt(path, "%s(%q).On(%q): the foreign key is nullable (%s is a *domain.ID), so an inner "+
+					"join would silently drop every %s with no %s — use LeftJoin instead.",
+					j.Kind, j.Target.Table(), j.FKColumn, fkGo, joining.Table(), j.Target.Table())
+			}
+		}
+
+		ownerType := fieldOwner.GoType()
+		for _, f := range j.Fields {
+			if _, ok := j.Target.GoNameForRead(f.Column); !ok {
+				failAt(path, "%s(%q).Field(%q, %q): %q is not a column of %q",
+					j.Kind, j.Target.Table(), f.GoField, f.Column, f.Column, j.Target.Table())
+			}
+			if _, taken := fieldOwner.Resolve(f.GoField); taken {
+				failAt(path, "%s(%q).Field(%q, ...): %q already resolves on %q — a join field must not "+
+					"shadow the entity's own field, a sibling's or the shared base's",
+					j.Kind, j.Target.Table(), f.GoField, f.GoField, fieldOwner.Table())
+			}
+			goKey := fieldOwner.Table() + "." + f.GoField
+			if prev, dup := goSeen[goKey]; dup {
+				failAt(path, "%s(%q).Field(%q, %q): %s.%s is already mapped by %s — one Go field receives "+
+					"ONE column. Both would be selected and both would scan into the same field, so "+
+					"the second silently overwrites the first on every row. Give the second traversal "+
+					"its own field.",
+					j.Kind, j.Target.Table(), f.GoField, f.Column, fieldOwner.Table(), f.GoField, prev)
+			}
+			goSeen[goKey] = fmt.Sprintf("the join to %q on column %q", j.Target.Table(), f.Column)
+			validateJoinFieldType(func(format string, args ...any) { failAt(path, format, args...) },
+				j, kind, ownerType, f)
+		}
+
+		for _, hop := range j.Through {
+			walk(hop, fieldOwner, j.Target, fkKey, path, kind)
+		}
+	}
 
 	for _, j := range joins {
 		owner := root
@@ -248,55 +545,7 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 			}
 			owner = ch
 		}
-
-		if _, ok := owner.GoNameForRead(j.FKColumn); !ok {
-			fail("%s(%q).On(%q): %q is not a column of %q",
-				j.Kind, j.Target.Table(), j.FKColumn, j.FKColumn, owner.Table())
-		}
-
-		fkKey := owner.Table() + "." + j.FKColumn
-		if prev, dup := fkSeen[fkKey]; dup {
-			fail("%s(%q).On(%q): %q already carries the join to %q — one foreign key reaches "+
-				"ONE table. Two traversals to the same table need two foreign keys (bill_to_id, "+
-				"ship_to_id), which is also what tells their SQL aliases apart.",
-				j.Kind, j.Target.Table(), j.FKColumn, fkKey, prev)
-		}
-		fkSeen[fkKey] = j.Target.Table()
-
-		// An inner join drops roots with no counterpart. Over a NON-NULLABLE key
-		// referential integrity means there is always one, so the choice is intent
-		// and plan; over a nullable key it would silently drop aggregates — from
-		// FindByID too, which the write-side handlers load through.
-		if j.Kind == JoinInner {
-			if fkGo, ok := owner.GoNameForRead(j.FKColumn); ok && owner.IDKindOf(fkGo) == core.IDPointer {
-				fail("%s(%q).On(%q): the foreign key is nullable (%s is a *domain.ID), so an inner "+
-					"join would silently drop every %s with no %s — use LeftJoin instead.",
-					j.Kind, j.Target.Table(), j.FKColumn, fkGo, owner.Table(), j.Target.Table())
-			}
-		}
-
-		ownerType := owner.GoType()
-		for _, f := range j.Fields {
-			if _, ok := j.Target.GoNameForRead(f.Column); !ok {
-				fail("%s(%q).Field(%q, %q): %q is not a column of %q",
-					j.Kind, j.Target.Table(), f.GoField, f.Column, f.Column, j.Target.Table())
-			}
-			if _, taken := owner.Resolve(f.GoField); taken {
-				fail("%s(%q).Field(%q, ...): %q already resolves on %q — a join field must not "+
-					"shadow the entity's own field, a sibling's or the shared base's",
-					j.Kind, j.Target.Table(), f.GoField, f.GoField, owner.Table())
-			}
-			goKey := owner.Table() + "." + f.GoField
-			if prev, dup := goSeen[goKey]; dup {
-				fail("%s(%q).Field(%q, %q): %s.%s is already mapped by %s — one Go field receives "+
-					"ONE column. Both would be selected and both would scan into the same field, so "+
-					"the second silently overwrites the first on every row. Give the second traversal "+
-					"its own field.",
-					j.Kind, j.Target.Table(), f.GoField, f.Column, owner.Table(), f.GoField, prev)
-			}
-			goSeen[goKey] = fmt.Sprintf("the join to %q on column %q", j.Target.Table(), f.Column)
-			validateJoinFieldType(fail, j, ownerType, f)
-		}
+		walk(j, owner, owner, owner.Table(), nil, JoinInner)
 	}
 }
 
@@ -305,7 +554,12 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 // a missing counterpart produces. A non-nullable field there would receive its
 // zero value and report a blank name where the truth is "there is no
 // counterpart".
-func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.Type, f JoinField) {
+//
+// pathKind, not j.Kind, decides the NULL question. A hop's own kind says how it
+// treats the row in front of it; what reaches this field is the whole block it
+// hangs in, and one LEFT anywhere above makes that block optional. An INNER hop
+// three levels down a LEFT chain still lands NULL on the root that never matched.
+func validateJoinFieldType(fail func(string, ...any), j Join, pathKind JoinKind, ownerType reflect.Type, f JoinField) {
 	if ownerType == nil {
 		return // type-less schema: nothing to prove the field against
 	}
@@ -337,7 +591,7 @@ func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.
 	// declaration is checked rather than trusted.
 	tgtGoField, tgtType, srcNullable := targetColumnNullability(j, f)
 	if idKind := targetIDKindOf(j, f); idKind != core.IDNone {
-		wantPtr := srcNullable || j.Kind == JoinLeft
+		wantPtr := srcNullable || pathKind == JoinLeft
 		if !isJoinIDTextField(sf.Type, wantPtr) {
 			want, why := "string", "an identity column is read as its canonical text"
 			if wantPtr {
@@ -354,7 +608,7 @@ func validateJoinFieldType(fail func(string, ...any), j Join, ownerType reflect.
 				ownerType.Name(), f.GoField, want, why, sf.Type)
 		}
 	}
-	if j.Kind == JoinLeft && !isNullableKind(sf.Type) {
+	if pathKind == JoinLeft && !isNullableKind(sf.Type) {
 		fail("%s(%q).Field(%q, ...): %s.%s is %s, which cannot hold the NULL a left join "+
 			"produces when there is no counterpart — declare it as a pointer, or use InnerJoin",
 			j.Kind, j.Target.Table(), f.GoField, ownerType.Name(), f.GoField, sf.Type)

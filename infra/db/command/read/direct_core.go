@@ -132,14 +132,27 @@ func (c *directCore) JoinFields() map[string][]string {
 		return nil
 	}
 	out := map[string][]string{}
+	// The whole chain lands on ONE table's struct — the root's, or the child's for
+	// a ...InChild traversal — however deep it goes. A join field carries no domain
+	// type, so a hop three levels out has no struct of its own to land in, and this
+	// map keeps the shape it had when a traversal could only be one hop: which is
+	// why the view reader, the field-selection gate and every surface above infra
+	// need to know nothing about depth.
+	var collect func(table string, joins []Join)
+	collect = func(table string, joins []Join) {
+		for _, j := range joins {
+			for _, f := range j.Fields {
+				out[table] = append(out[table], f.GoField)
+			}
+			collect(table, j.Through)
+		}
+	}
 	for _, j := range c.joins {
 		table := c.schema.Table()
 		if j.Child != nil {
 			table = j.Child.Table()
 		}
-		for _, f := range j.Fields {
-			out[table] = append(out[table], f.GoField)
-		}
+		collect(table, []Join{j})
 	}
 	return out
 }
@@ -192,7 +205,7 @@ func (c *directCore) idKindResolver() func(string) core.IDKind {
 	anchor := c.schema
 	sibs := anchor.Siblings()
 	base, _, hasBase := anchor.SharedBaseRef()
-	joins := rootJoins(c.joins)
+	joins := flattenJoins(c.rootJoinNodes())
 	return func(goField string) core.IDKind {
 		if k := anchor.IDKindOf(goField); k != core.IDNone {
 			return k
@@ -207,10 +220,10 @@ func (c *directCore) idKindResolver() func(string) core.IDKind {
 				return k
 			}
 		}
-		for _, j := range joins {
-			for _, f := range j.Fields {
+		for _, n := range joins {
+			for _, f := range n.j.Fields {
 				if f.GoField == goField {
-					return targetIDKindOf(j, f)
+					return targetIDKindOf(n.j, f)
 				}
 			}
 		}
@@ -321,19 +334,16 @@ func (c *directCore) resolverRecordingJoins(j *joinedTables) core.FieldResolver 
 // offered here: filtering the root by a field of a 1:N child is a pushdown a
 // single root SELECT cannot express.
 func (c *directCore) resolveDeclaredJoin(j *joinedTables, goField string) (core.ResolvedField, bool) {
-	for _, dj := range c.joins {
-		if dj.Child != nil {
-			continue
-		}
-		for _, f := range dj.Fields {
+	for _, n := range flattenJoins(c.rootJoinNodes()) {
+		for _, f := range n.j.Fields {
 			if f.GoField != goField {
 				continue
 			}
 			return core.ResolvedField{
 				Column:    f.Column,
-				Schema:    dj.Target,
+				Schema:    n.j.Target,
 				Owner:     core.OwnerJoin,
-				Qualifier: joinAlias(dj),
+				Qualifier: n.alias,
 			}, true
 		}
 	}
@@ -365,23 +375,16 @@ func (c *directCore) joinClause(j *joinedTables, dialect Dialect) string {
 			" = " + anchor + "." + dialect.QuoteIdent(j.baseFK))
 	}
 	// Declared joins (WithJoins), each under its own alias so two traversals to
-	// the SAME table stay distinct. Emitted in declaration order, which is the
-	// order the SELECT list and the scan targets follow.
-	//
-	// The alias follows the table with NO "AS": that keyword is optional before a
-	// TABLE alias in standard SQL and Oracle rejects it outright (ORA-02000),
-	// while every other backend accepts the bare form. Column aliases are a
-	// different position with a different rule — the dialects that write one keep
-	// their AS.
-	for _, dj := range rootJoins(c.joins) {
-		verb := " LEFT JOIN "
-		if dj.Kind == JoinInner {
-			verb = " INNER JOIN "
-		}
-		qa := dialect.QuoteIdent(joinAlias(dj))
-		sb.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " " + qa +
-			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
-			" = " + anchor + "." + dialect.QuoteIdent(dj.FKColumn))
-	}
+	// the SAME table stay distinct, and each chain rendered from the SAME resolved
+	// nodes the SELECT list, the scan targets and the criteria resolution read —
+	// so an alias cannot mean one thing in the FROM and another in the WHERE.
+	sb.WriteString(renderJoins(c.rootJoinNodes(), dialect))
 	return sb.String()
+}
+
+// rootJoinNodes resolves the declared traversals that hang off the ROOT, anchored
+// on the schema's own table. Every consumer of a root join goes through here, so
+// they all see the same aliases.
+func (c *directCore) rootJoinNodes() []joinNode {
+	return resolveJoins(rootJoins(c.joins), c.schema.Table())
 }
