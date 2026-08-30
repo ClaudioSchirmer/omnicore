@@ -28,6 +28,13 @@
                         the write, naming <code>StampEmpty</code>.</li>
                 </ul>
                 See <a href="#table-schema">TableSchema</a>.</li>
+            <li><strong>Fixed</strong> — <strong><code>StampEmpty</code> on a stamped TIME failed at the database
+                on MySQL.</strong> go-sql-driver serializes a zero <code>time.Time</code> as the literal
+                <code>'0000-00-00'</code> rather than as year 1, and a server running <code>NO_ZERO_DATE</code> +
+                <code>STRICT_TRANS_TABLES</code> (the MySQL 8 default) rejects it. The column was never the problem:
+                <code>DATETIME(6)</code> stores year 1 and reads it back as a zero <code>time.Time</code>. The MySQL
+                codec now binds the zero instant as its formatted text; the other four backends take year 1 directly
+                and are unchanged.</li>
             <li><strong>Fixed</strong> — <strong>a shared BASE's stamped column was written to the row but never
                 onto the role's struct</strong>, so the entity the caller kept holding — and the audit event, which
                 reads the struct — reported the OLD value while the row held the new one. It affected the original

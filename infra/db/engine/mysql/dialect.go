@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	driver "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
@@ -214,9 +215,45 @@ func (mysqlDialect) EncodeArg(val any) any {
 		return v.Value()
 	case uuid.UUID:
 		return v[:]
+	case time.Time:
+		return encodeMySQLTime(v)
+	case *time.Time:
+		if v == nil {
+			return nil
+		}
+		return encodeMySQLTime(*v)
 	default:
 		return val
 	}
+}
+
+// zeroDatetimeLayout is how the ZERO instant is spelled for this backend. It is
+// the ordinary DATETIME(6) literal shape — nothing special about it except that
+// the driver never gets to see a zero time.Time and apply its own rule.
+const zeroDatetimeLayout = "2006-01-02 15:04:05.000000"
+
+// encodeMySQLTime binds an instant, with ONE value handled by hand: the zero
+// time.Time.
+//
+// go-sql-driver serializes a zero time.Time as the literal '0000-00-00' rather
+// than as year 1, and a server running NO_ZERO_DATE + STRICT_TRANS_TABLES — the
+// default on MySQL 8 — rejects that outright:
+//
+//	Error 1292 (22007): Incorrect datetime value: '0000-00-00'
+//
+// The column is not the problem: DATETIME(6) stores '0001-01-01 00:00:00.000000'
+// without complaint, and reads it back as a time.Time whose IsZero() is true. So
+// the zero binds as its formatted text, which the driver passes through
+// untouched, and every other instant keeps the path it always had.
+//
+// This is what TableSchema.StampEmpty writes into a stamped TIME column, and it
+// is the only backend that needs the detour — Postgres, SQL Server (DATETIME2),
+// Oracle and SQLite all take year 1 directly.
+func encodeMySQLTime(t time.Time) any {
+	if t.IsZero() {
+		return t.Format(zeroDatetimeLayout)
+	}
+	return t
 }
 
 // DecodeID converts a scanned leading key back to the canonical UUID string. A

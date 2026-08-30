@@ -76,6 +76,18 @@ with `1.0.0`.
 
 ### Fixed
 
+- **`StampEmpty` on a stamped TIME failed at the database on MySQL.** The verb
+  writes the declared type's zero, and go-sql-driver serializes a zero
+  `time.Time` as the literal `'0000-00-00'` rather than as year 1 — which a
+  server running `NO_ZERO_DATE` + `STRICT_TRANS_TABLES` (the MySQL 8 default)
+  rejects outright: `Error 1292 (22007): Incorrect datetime value: '0000-00-00'`.
+  The column was never the problem — `DATETIME(6)` stores
+  `0001-01-01 00:00:00.000000` and reads it back as a `time.Time` whose
+  `IsZero()` is true. The MySQL codec now binds the zero instant as its formatted
+  text, which the driver passes through untouched; every other instant keeps the
+  path it had. Postgres, SQL Server (`DATETIME2`), Oracle and SQLite take year 1
+  directly and are unchanged.
+
 - **A shared BASE's stamped column was written to the row but never onto the
   role's struct.** `ApplyStamps` walked the schema's own resolved index path, and
   a base has no struct of its own — its fields are resolved against each ROLE's
