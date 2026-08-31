@@ -193,7 +193,7 @@ func (r *DirectRepository[T]) findRows(ctx context.Context, q *criteria.Query, l
 		anchor = dialect.QuoteIdent(r.schema.Table())
 	}
 	selectCols := qualifyIdentifiers(cols, dialect, anchor)
-	if exprs := joinSelectExprs(r.joins, dialect); len(exprs) > 0 {
+	if exprs := joinSelectExprs(r.rootJoinNodes(), dialect); len(exprs) > 0 {
 		selectCols = append(selectCols, exprs...)
 	}
 
@@ -222,7 +222,7 @@ func (r *DirectRepository[T]) findRows(ctx context.Context, q *criteria.Query, l
 	var out []T
 	for cursor.Next() {
 		var row T
-		targets, err := joinScanTargets(any(&row), r.joins)
+		targets, err := joinScanTargets(any(&row), r.rootJoinNodes())
 		if err != nil {
 			return nil, err
 		}

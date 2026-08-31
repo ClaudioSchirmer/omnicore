@@ -31,10 +31,55 @@ type Managed struct {
 	updatedAt *time.Time
 	deletedAt *time.Time
 
-	// stamps are the STAMPED fields this write asks the framework to fill —
+	// stamps are the STAMPED fields this write asks the framework to WRITE —
 	// requested by Go field name, never by column (the physical name lives only
-	// in the TableSchema). See Stamp.
-	stamps []string
+	// in the TableSchema) — each with what it asks for. See Stamp, StampNull and
+	// StampEmpty.
+	stamps []StampRequest
+}
+
+// StampOp is WHAT a stamp request asks the framework to write into the column.
+// The domain still never supplies a value: it names the field and the intent,
+// and the framework derives the rest from the declaration.
+type StampOp uint8
+
+const (
+	// StampFill is the original request: the operation's own instant for a
+	// stamped time, the existing value plus one for a stamped counter.
+	StampFill StampOp = iota
+	// StampToNull writes SQL NULL — the fact UN-happened. It needs a field that
+	// can represent absence: a stamped time always can (*time.Time), a stamped
+	// counter only when it is declared *int64. Asking it of an int64 counter is
+	// refused by the write, naming the fix.
+	StampToNull
+	// StampToEmpty writes the DECLARED TYPE'S ZERO: 0 for a counter, the zero
+	// instant for a time.
+	//
+	// It is not a spelling of StampToNull. A zero is a value, so it reaches a
+	// column declared NOT NULL, which is exactly where an absence cannot go —
+	// and on a counter it is the difference between "counted nothing" and "has
+	// no count". The year-1 instant a time lands on is the honest zero of the
+	// type: the framework warns against an ACCIDENTAL one (a *time.Time exists
+	// so an unstamped fact reads as absent), never against an explicit reset.
+	StampToEmpty
+)
+
+func (o StampOp) String() string {
+	switch o {
+	case StampToNull:
+		return "StampNull"
+	case StampToEmpty:
+		return "StampEmpty"
+	default:
+		return "Stamp"
+	}
+}
+
+// StampRequest is one field this write asks the framework to write, and what it
+// asks for.
+type StampRequest struct {
+	Field string
+	Op    StampOp
 }
 
 // Stamp asks the framework to fill a stamped field on THIS write. The domain
@@ -96,14 +141,44 @@ type Managed struct {
 // ghost. Naming a field the schema does not declare as stamped is an error
 // raised by the write, not a panic — the domain cannot see the schema.
 //
-// Requesting the same field twice is the same as once.
-func (m *Managed) Stamp(goField string) {
-	for _, s := range m.stamps {
-		if s == goField {
+// Requesting the same field twice is the same as once. Requesting it with a
+// DIFFERENT verb replaces the earlier request in place: a rule that stamps a
+// fact and a later rule that clears it are describing one outcome, and the last
+// word is the one the write carries. Replacing in place, rather than appending,
+// also keeps the request order stable — the order the statement's columns and
+// the payload follow.
+func (m *Managed) Stamp(goField string) { m.stampAs(goField, StampFill) }
+
+// StampNull asks the framework to write SQL NULL into a stamped column — the
+// fact un-happened: an order no longer paid, a member no longer verified.
+//
+// It is the counterpart of Stamp, through the same channel and with the same
+// division of labour: the domain owns WHETHER, the framework owns the value. And
+// like Stamp, a write that does not ask leaves the column out of the statement
+// entirely — clearing is a request, never a side effect.
+//
+// The field must be able to hold an absence. A stamped time always can; a
+// stamped counter only when it is declared *int64 (see StampedCounterField). An
+// int64 counter is refused by the write, which names StampEmpty as the verb that
+// zeroes it.
+func (m *Managed) StampNull(goField string) { m.stampAs(goField, StampToNull) }
+
+// StampEmpty asks the framework to write the declared type's ZERO: 0 for a
+// stamped counter, the zero instant for a stamped time.
+//
+// Reach for it where an absence will not do — a counter that must read "counted
+// nothing" rather than "has no count", or a NOT NULL column that has no room for
+// a NULL at all.
+func (m *Managed) StampEmpty(goField string) { m.stampAs(goField, StampToEmpty) }
+
+func (m *Managed) stampAs(goField string, op StampOp) {
+	for i, s := range m.stamps {
+		if s.Field == goField {
+			m.stamps[i].Op = op
 			return
 		}
 	}
-	m.stamps = append(m.stamps, goField)
+	m.stamps = append(m.stamps, StampRequest{Field: goField, Op: op})
 }
 
 // GetID returns the id as a value — an empty ID (IsEmpty) when the row is not
@@ -188,7 +263,7 @@ func SetManagedColumns(target any, revision int64, createdAt, updatedAt, deleted
 // stampCarrier is the read seam behind RequestedStamps: promoted from the
 // embedded Managed, so any entity or aggregate child satisfies it structurally
 // and infra never names the carrier type.
-type stampCarrier interface{ requestedStamps() []string }
+type stampCarrier interface{ requestedStamps() []StampRequest }
 
 // requestedStamps takes a VALUE receiver, unlike every mutating method on this
 // carrier. That is what lets an aggregate CHILD be read: children travel through
@@ -196,20 +271,34 @@ type stampCarrier interface{ requestedStamps() []string }
 // VALUE, which is not addressable and therefore satisfies no pointer-receiver
 // interface. Reading does not mutate, so the value receiver costs nothing and
 // makes root, child and base-child all answerable through one seam.
-func (m Managed) requestedStamps() []string { return m.stamps }
+func (m Managed) requestedStamps() []StampRequest { return m.stamps }
 
-// RequestedStamps returns the stamped fields target asked the framework to fill
-// on this write, by Go field name, in request order — the write path's read of
-// what Stamp accumulated. Nil for a target that embeds no carrier or requested
-// nothing. Pass a POINTER, the same way SetManagedColumns is called.
+// RequestedStamps returns what target asked the framework to write into its
+// stamped columns on this write — the Go field name and the verb, in request
+// order. Nil for a target that embeds no carrier or requested nothing. Pass a
+// POINTER, the same way SetManagedColumns is called.
 //
 // It is the counterpart of Events(): a write reads the entity's accumulated
 // intent, translates it through the schema, and the intent itself is never
 // persisted.
-func RequestedStamps(target any) []string {
+func RequestedStamps(target any) []StampRequest {
 	c, ok := target.(stampCarrier)
 	if !ok {
 		return nil
 	}
 	return c.requestedStamps()
+}
+
+// StampFields is RequestedStamps reduced to the names, which is what every
+// schema-side resolution takes (a column is claimed by NAME; the verb only
+// decides what is written into it).
+func StampFields(reqs []StampRequest) []string {
+	if len(reqs) == 0 {
+		return nil
+	}
+	out := make([]string, len(reqs))
+	for i, r := range reqs {
+		out[i] = r.Field
+	}
+	return out
 }

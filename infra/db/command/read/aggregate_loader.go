@@ -75,8 +75,15 @@ func (l *AggregateLoader[T]) WithSchema(schema *TableSchema) *AggregateLoader[T]
 //
 // It takes the WHOLE set and may be called ONCE — see directCore.declareJoins,
 // which both this loader and a Direct repository declare through.
+//
+// A chain that reaches past the first hop files a boot advisory here, and only
+// here: the cost it names is the AGGREGATE's — these joins ride FindByID, and
+// FindByID is the write path's load. The Direct repository declares through the
+// same core and reports nothing, at any depth, because it has no write path to
+// charge. See join_advisory.go.
 func (l *AggregateLoader[T]) WithJoins(bindings ...*JoinBinding) *AggregateLoader[T] {
 	l.declareJoins(bindings...)
+	reportDeepChains(l.contextName(), l.schema, l.joins)
 	return l
 }
 
@@ -250,7 +257,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if ms.has() {
 		selectCols += ", " + strings.Join(qualifyIdentifiers(ms.cols, dialect, anchorQualifier), ", ")
 	}
-	if exprs := joinSelectExprs(l.joins, dialect); len(exprs) > 0 {
+	if exprs := joinSelectExprs(l.rootJoinNodes(), dialect); len(exprs) > 0 {
 		selectCols += ", " + strings.Join(exprs, ", ")
 	}
 	sql := "SELECT " + leadingPK + ", " + selectCols + " FROM " + dialect.QuoteIdent(table) + joinSQL
@@ -274,7 +281,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 		// The declared joins' values ride the same row, AFTER the managed columns
 		// — the order joinSelectExprs listed them in.
 		trailing := ms.targets()
-		joinTargets, err := joinScanTargets(any(root), l.joins)
+		joinTargets, err := joinScanTargets(any(root), l.rootJoinNodes())
 		if err != nil {
 			return nil, nil, err
 		}
@@ -404,7 +411,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 		// domain.Managed, so it is no longer a struct field — it and the managed
 		// columns are stamped onto the carrier via ms.apply after the scan.
 		ms := newChildManagedScan(child)
-		cJoins := childJoinsOf(l.joins, child.Table())
+		cJoins := resolveJoins(childJoinsOf(l.joins, child.Table()), child.Table())
 		sql, scanCols, scanByCol := childScanSQL(child, fkCol, childCols, childByCol, placeholders, scope, dialect, ms.cols, cJoins)
 		rows, err := l.rows().Query(ctx, sql, qargs...)
 		if err != nil {
@@ -414,7 +421,7 @@ func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, 
 			vp := reflect.New(child.GoType())
 			trailing := ms.targets()
 			if len(cJoins) > 0 {
-				jt, jerr := joinScanTargetsFor(vp.Interface(), cJoins)
+				jt, jerr := joinScanTargets(vp.Interface(), cJoins)
 				if jerr != nil {
 					rows.Close()
 					return jerr
@@ -812,12 +819,6 @@ func (j *joinedTables) any() bool {
 	return len(j.siblings) > 0 || j.base != nil || j.hasDeclared
 }
 
-// joinAlias is the table alias one declared join is rendered under. It is keyed
-// on the FOREIGN KEY rather than the target table because two joins may reach
-// the same table (bill_to and ship_to both to customers) — the FK is what tells
-// them apart, and WithJoins guarantees it is unique per owner.
-func joinAlias(j Join) string { return "j_" + j.FKColumn }
-
 // rootJoins is the declared traversals that hang off the root, in declaration
 // order — the order the FROM, the SELECT list and the scan targets all follow, so
 // the three cannot drift.
@@ -831,14 +832,15 @@ func rootJoins(joins []Join) []Join {
 	return out
 }
 
-// joinSelectExprs renders the alias-qualified column list a declared join
-// contributes to the root SELECT, in the same order joinScanTargets builds its
-// destinations.
-func joinSelectExprs(joins []Join, dialect Dialect) []string {
+// joinSelectExprs renders the alias-qualified column list declared traversals
+// contribute to the root SELECT, in the same PRE-ORDER joinScanTargets builds its
+// destinations — a chain's own columns first, then everything that continues from
+// it, so a column and its destination stay paired at any depth.
+func joinSelectExprs(nodes []joinNode, dialect Dialect) []string {
 	var out []string
-	for _, j := range rootJoins(joins) {
-		alias := dialect.QuoteIdent(joinAlias(j))
-		for _, f := range j.Fields {
+	for _, n := range flattenJoins(nodes) {
+		alias := dialect.QuoteIdent(n.alias)
+		for _, f := range n.j.Fields {
 			out = append(out, alias+"."+dialect.QuoteIdent(f.Column))
 		}
 	}
@@ -857,12 +859,7 @@ func joinSelectExprs(joins []Join, dialect Dialect) []string {
 // on oracle) has to be decoded into the plain string the declaration was forced
 // to be, which core.IDTextScanTarget does. Every other column keeps the raw
 // address it always had.
-func joinScanTargets(target any, joins []Join) ([]any, error) {
-	return joinScanTargetsFor(target, rootJoins(joins))
-}
-
-// joinScanTargetsFor is joinScanTargets over an explicit, already-filtered list.
-func joinScanTargetsFor(target any, joins []Join) ([]any, error) {
+func joinScanTargets(target any, nodes []joinNode) ([]any, error) {
 	rv := reflect.ValueOf(target)
 	for rv.Kind() == reflect.Pointer {
 		rv = rv.Elem()
@@ -871,7 +868,8 @@ func joinScanTargetsFor(target any, joins []Join) ([]any, error) {
 		return nil, fmt.Errorf("join scan: destination must be a struct, got %s", rv.Kind())
 	}
 	var out []any
-	for _, j := range joins {
+	for _, n := range flattenJoins(nodes) {
+		j := n.j
 		for _, f := range j.Fields {
 			fv := rv.FieldByName(f.GoField)
 			if !fv.IsValid() || !fv.CanAddr() {
@@ -940,7 +938,7 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 // ready-made: the branch that decides whether anything else is in the FROM is
 // the only one that can decide whether the gate's column needs qualifying, and
 // a caller that guessed would guess wrong the day a join was declared.
-func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, scope criteria.Scope, dialect Dialect, trailingCols []string, joins []Join) (string, []string, map[string]core.FieldPath) {
+func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByCol map[string]core.FieldPath, placeholders []string, scope criteria.Scope, dialect Dialect, trailingCols []string, joins []joinNode) (string, []string, map[string]core.FieldPath) {
 	ct := dialect.QuoteIdent(child.Table())
 	sibs := child.Siblings()
 	if len(sibs) == 0 && len(joins) == 0 {
@@ -985,20 +983,14 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 	for _, c := range trailingCols {
 		sel += ", " + ct + "." + dialect.QuoteIdent(c)
 	}
-	// Declared child joins, each under its own alias (bare, no "AS" — see
-	// joinClause). They come LAST in the SELECT, in declaration order — the order
-	// childJoinScanTargets builds its destinations — and after the carrier
-	// columns, so the trailing target list reads carrier-then-joins on both sides.
-	for _, dj := range joins {
-		verb := " LEFT JOIN "
-		if dj.Kind == JoinInner {
-			verb = " INNER JOIN "
-		}
-		qa := dialect.QuoteIdent(joinAlias(dj))
-		join.WriteString(verb + dialect.QuoteIdent(dj.Target.Table()) + " " + qa +
-			" ON " + qa + "." + dialect.QuoteIdent(dj.Target.IDColumn()) +
-			" = " + ct + "." + dialect.QuoteIdent(dj.FKColumn))
-		for _, f := range dj.Fields {
+	// Declared child joins, rendered from the SAME resolved nodes the child's scan
+	// targets read. They come LAST in the SELECT, in the PRE-ORDER those targets
+	// follow, and after the carrier columns, so the trailing target list reads
+	// carrier-then-joins on both sides — at any depth.
+	join.WriteString(renderJoins(joins, dialect))
+	for _, n := range flattenJoins(joins) {
+		qa := dialect.QuoteIdent(n.alias)
+		for _, f := range n.j.Fields {
 			sel += ", " + qa + "." + dialect.QuoteIdent(f.Column)
 		}
 	}

@@ -166,6 +166,77 @@ CampusOwnerID string</code></pre>
     Model that as a real foreign key, or read it with <code>deps.DB.Querier()</code>.
 </div>
 
+<h3>Reaching further: a chain of hops</h3>
+<p>
+    A traversal is not limited to one aggregate. <code>.Then(...)</code> continues it from the one it just
+    reached, and from there onward — there is no depth limit, because how far a read reaches is the caller's
+    decision, not the framework's.
+</p>
+<pre><code>read.LeftJoin(schemas.VendorSchema()).On("vendor_id").
+    Field("VendorName", "name").
+    Then(read.InnerJoin(schemas.OwnerSchema()).On("owner_id").
+        Field("OwnerName", "name").
+        Then(read.LeftJoin(schemas.TerritorySchema()).On("territory_id").
+            Field("TerritoryCode", "code")))</code></pre>
+<p>
+    Two rules make the rest follow. A hop's <code>.On(...)</code> names a foreign key <strong>of the previous
+    target</strong> — <code>owner_id</code> is a column of the vendor's table, not of the entity declaring the
+    chain. And every hop's <code>.Field(...)</code>, at every depth, lands on the <strong>same struct the head
+    lands on</strong>: a join field carries no domain type, so a hop three tables out has no struct of its own.
+    That is also why nothing above infrastructure has to learn about depth — a chain field is an ordinary field
+    of the loaded entity, filterable, sortable, projectable and exportable exactly like a one-hop one.
+</p>
+
+<div class="box">
+    <strong>A chain is emitted as a NESTED join, and that is what makes a mixed one mean what it reads as.</strong>
+    <code>LeftJoin(vendor).Then(InnerJoin(owner))</code> says: <em>the vendor is optional; a vendor has an
+    owner</em>. Rendered as a flat join list — <code>FROM orders LEFT JOIN vendors … INNER JOIN owners …</code> —
+    the trailing <code>INNER</code> would filter the whole result set and drop every order with no vendor at all,
+    which the <code>LeftJoin</code> above it just promised to keep. Nested, the <code>INNER</code> binds its own
+    block:
+    <pre><code>FROM orders
+LEFT JOIN (vendors j_vendor_id
+           INNER JOIN owners j_vendor_id__owner_id
+                   ON j_vendor_id__owner_id.id = j_vendor_id.owner_id)
+       ON j_vendor_id.id = orders.vendor_id</code></pre>
+    A join of ONE hop has no block and is emitted exactly as it always was.
+</div>
+
+<div class="box">
+    <strong>The block is atomic.</strong> A miss at any hop reports the <em>whole</em> chain absent — hop 1
+    included, even when hop 1 matched. That is the declaration honored rather than softened: the chain asked for
+    a vendor <em>with</em> an owner, and a vendor without one is not that. What survives is the ROOT, which is
+    what the <code>LeftJoin</code> at the head is for. Declare a second traversal over its own foreign key when
+    you want the near hop reported independently of the far one.
+</div>
+
+<h3>What changes at depth, and what does not</h3>
+<ul>
+    <li><strong>Nullability follows the PATH.</strong> One <code>LeftJoin</code> anywhere above makes every field
+        below it a pointer, whatever the deeper hops declare — the block that produces the NULL is the whole
+        chain, not the last hop. A chain that is <code>InnerJoin</code> all the way through needs no pointer.</li>
+    <li><strong>The nullable-foreign-key refusal narrows.</strong> An <code>InnerJoin</code> over a nullable key is
+        refused when the path is inner all the way — there it silently drops roots, from <code>FindByID</code>
+        included. Under a <code>LeftJoin</code> it drops nothing (the block simply does not match), so it is
+        allowed, and it is precisely how you say <em>"only when the counterpart has one"</em>.</li>
+    <li><strong>Aliases come from the PATH</strong> of foreign keys reaching each hop —
+        <code>j_vendor_id__owner_id</code> — so two chains may traverse a column of the same name in different
+        branches without colliding. Past 48 characters the path is replaced by its hash, which keeps every engine's
+        identifier limit satisfied.</li>
+    <li><strong>Everything else is unchanged.</strong> A chain hangs off a root join or a <code>...InChild</code>
+        one on identical terms; a child chain stays load-only at every depth, for the same 1:N reason depth 1 was;
+        and the whole set still goes in ONE <code>WithJoins</code> call.</li>
+</ul>
+
+<div class="box">
+    <strong>A chain on an AGGREGATE repository logs one advisory at boot.</strong> Not a limit and not a
+    deprecation — a reminder of where the cost lands: these joins ride <em>every</em> read the loader serves,
+    <code>FindByID</code> included, which is the load the write-side Auto handlers go through. A chain declared for
+    one screen is charged to every command the service serves. The line names the chain and suggests a
+    <a href="#direct-schema"><code>read.DirectRepository</code></a> when the reach is only ever read. That
+    repository never logs one, at any depth: it carries no write path to charge.
+</div>
+
 <h3>Which columns of the target a join may name</h3>
 <p>
     Whatever the target's <a href="#table-schema"><code>TableSchema</code></a> answers on the <em>read</em> side, which

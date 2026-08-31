@@ -11,6 +11,114 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-08-30
+
+### Added
+
+- **The stamped family can now CLEAR a column: `StampNull` and `StampEmpty`, on
+  both channels and both kinds.** `Stamp` only ever wrote forward, so a fact that
+  UN-happens — an order that stops being paid, a retry budget that is refilled —
+  had no verb at all. The entity side gains `o.StampNull("PaidAt")` /
+  `o.StampEmpty("TotalCount")`; the Direct side gains the matching markers
+  `write.StampNull` / `write.StampEmpty`, through the same Values channel
+  `write.Stamp` uses.
+
+  They are not two spellings of one thing. `StampNull` writes an ABSENCE;
+  `StampEmpty` writes the declared type's ZERO — 0 for a counter, the zero
+  instant for a time. A zero is a value, so it reaches a column declared NOT NULL,
+  where an absence cannot go; on a counter it is the difference between "counted
+  nothing" and "has no count".
+
+  Both are requests, like `Stamp`: a column no verb named is left out of the
+  statement, so nothing is cleared by omission. Naming one field with two
+  different verbs is one request and the LAST one wins. Unlike a counter's
+  increment, a cleared or reset value IS written back onto the entity and into the
+  outbox payload — it is the framework's own value, known before the statement
+  runs. All four verb paths carry them: Insert, Update, UpdateAll and the Upsert
+  conflict clause.
+
+- **`StampedCounterField` now accepts `*int64` as well as `int64`.** The pointer
+  form adds nothing to the increment (that is the server's either way) and only
+  widens what the field can hold, which is what `StampNull` needs — a plain
+  `int64` has no absence to write, and asking it is refused by the write with a
+  message naming `StampEmpty`.
+
+- **A read join may now CHAIN: `read.LeftJoin(...).Then(read.InnerJoin(...))`,
+  with no depth limit.** A declared traversal used to reach exactly one aggregate;
+  `Then` continues it from that aggregate to the next, and from there onward. A
+  hop's `.On(...)` names a foreign key of the PREVIOUS TARGET; its `.Field(...)`
+  lands on the SAME struct the head lands on, at any depth, because a join field
+  carries no domain type. Chains hang off a root join or a `...InChild` one alike,
+  and every read that already served a one-hop join serves a chain: filter, order,
+  the aggregate DSL, `?fields=`, the export, and the relational read model.
+
+  A chain of two hops or more is emitted as a NESTED join —
+  `LEFT JOIN (vendor INNER JOIN owner ON …) ON …` — so a deeper `InnerJoin`
+  binds its block instead of filtering the result set. That is what lets
+  `LeftJoin(vendor).Then(InnerJoin(owner))` mean what it reads as: the vendor is
+  optional, a vendor HAS an owner, and a root with neither is still returned with
+  the chain absent. The block is atomic: a miss at any hop reports the whole chain
+  absent, hop 1 included. A one-hop join is emitted exactly as before, byte for
+  byte.
+
+  Nullability follows the PATH, not the hop: one `LeftJoin` anywhere above makes
+  every field below it a pointer, whatever the deeper hops declare. The
+  nullable-foreign-key refusal for `InnerJoin` narrows accordingly — it applies
+  when the path is inner all the way (there it would drop roots) and not under a
+  `LeftJoin`, where the block simply does not match. Each hop is rendered under an
+  alias derived from the PATH of foreign keys reaching it (`j_vendor_id__owner_id`,
+  hashed past 48 characters), so two chains may traverse the same column name in
+  different branches.
+
+  A chain declared on an AGGREGATE repository logs one advisory per chain at boot:
+  those joins ride every read the loader serves, `FindByID` included, which is the
+  load the write-side Auto handlers go through. It names the chain and suggests a
+  `read.DirectRepository` when the reach is only ever read. A `DirectRepository`
+  itself never logs one, at any depth — it has no write path to charge.
+
+### Fixed
+
+- **`StampEmpty` on a stamped TIME failed at the database on MySQL.** The verb
+  writes the declared type's zero, and go-sql-driver serializes a zero
+  `time.Time` as the literal `'0000-00-00'` rather than as year 1 — which a
+  server running `NO_ZERO_DATE` + `STRICT_TRANS_TABLES` (the MySQL 8 default)
+  rejects outright: `Error 1292 (22007): Incorrect datetime value: '0000-00-00'`.
+  The column was never the problem — `DATETIME(6)` stores
+  `0001-01-01 00:00:00.000000` and reads it back as a `time.Time` whose
+  `IsZero()` is true. The MySQL codec now binds the zero instant as its formatted
+  text, which the driver passes through untouched; every other instant keeps the
+  path it had. Postgres, SQL Server (`DATETIME2`), Oracle and SQLite take year 1
+  directly and are unchanged.
+
+- **A shared BASE's stamped column was written to the row but never onto the
+  role's struct.** `ApplyStamps` walked the schema's own resolved index path, and
+  a base has no struct of its own — its fields are resolved against each ROLE's
+  type at `.SharedBase(...)` time and the path is stored on the role's link. So
+  the base's field carried no usable path, the write-back was silently skipped,
+  and the entity the caller kept holding — and the audit event, which reads the
+  struct — reported the OLD value while the row held the new one. Affected the
+  original `Stamp` too, on every base since the family shipped; nothing caught it
+  because no test covered the base seat. A type-less base now resolves the
+  write-back by Go NAME, which is exactly what its own path resolution does.
+
+- **A stamped COUNTER on a Direct write reached Insert / Update / UpdateAll as a
+  stamped TIME.** Those three paths appended every resolved stamp column to the
+  "bind the operation's instant" list, so a counter column was bound a
+  `time.Time` and the statement failed at the database. Only `Upsert` built its
+  own plan and split the two kinds, which is why nothing caught it — no test or
+  suite had ever asked a counter of the other three verbs. All four now resolve
+  through one plan.
+
+### Changed
+
+- **breaking** — `domain.RequestedStamps` returns `[]domain.StampRequest` (the
+  field name plus the verb) instead of `[]string`, and
+  `TableSchema.ApplyStamps` takes the same. A stamp request now carries WHAT it
+  asks for, and the two seams that read it had to widen with it rather than fork.
+  `domain.StampFields` reduces a request slice back to the names, which is what
+  every schema-side resolution still takes. Only a consumer that reads the raw
+  request list is affected; nothing on the declaration or the calling side moved.
+
 ## [0.65.0] - 2026-08-30
 
 ### Changed

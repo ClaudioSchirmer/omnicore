@@ -57,7 +57,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, fields, plan.nowCols, plan.counters, now, schema.RevisionColumn())
+	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, fields, plan, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -65,7 +65,7 @@ func (b *BaseEngine) Insert(ctx persistence.RequestContext, entity domain.Insert
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, nil, "INSERTED", now, CascadeStamps{}, withStamps(fields, plan.payload, now), outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
+		buildWritePayload(schema, src, nil, "INSERTED", now, CascadeStamps{}, withStamps(fields, plan, now), outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -145,7 +145,7 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, nil, "UPDATED", now, CascadeStamps{}, withStamps(fields, plan.payload, now), meta)); err != nil {
+		buildWritePayload(schema, src, nil, "UPDATED", now, CascadeStamps{}, withStamps(fields, plan, now), meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {

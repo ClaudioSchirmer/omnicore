@@ -30,10 +30,11 @@ import (
 // below and refuses a real value.
 type Values map[string]any
 
-// stampMarker is the type of Stamp. It is a distinct, unexported type carrying
-// no data, so it can never be confused with a value a caller meant to bind and
-// so no other package can forge one.
-type stampMarker struct{}
+// stampMarker is the type of Stamp, StampNull and StampEmpty. It is a distinct,
+// unexported type, so it can never be confused with a value a caller meant to
+// bind and no other package can forge one. The op it carries is the only thing
+// that tells the three apart — a caller still supplies no value, only intent.
+type stampMarker struct{ op domain.StampOp }
 
 // Stamp is the marker a Direct write puts in a Values slot to ask the framework
 // to FILL that column. It is the Direct half of TableSchema.StampedTimeField —
@@ -76,7 +77,36 @@ type stampMarker struct{}
 // It carries no type of its own on purpose. What the marker FILLS is the
 // schema's declaration to make — a stamped time column today, whatever the
 // family grows into later — so the call site never has to change when it does.
-var Stamp = stampMarker{}
+var Stamp = stampMarker{domain.StampFill}
+
+// StampNull is the marker that asks the framework to write SQL NULL into a
+// stamped column — the Direct half of domain.Managed.StampNull, through the same
+// channel Stamp uses:
+//
+//	_, err := jobs.Update(ctx, write.Values{
+//	    "Status":    "pending",
+//	    "StartedAt": write.StampNull,   // the job is no longer running
+//	}, criteria.Where(criteria.Eq("Status", "running")))
+//
+// The field has to be able to hold an absence: a stamped time always can, a
+// stamped counter only when it is declared *int64. Asking it of a plain int64 is
+// refused by the write, which names StampEmpty as the verb that zeroes it.
+//
+// Like every stamp verb, it is a REQUEST: a column left out of Values is left out
+// of the statement, so nothing is cleared by omission.
+var StampNull = stampMarker{domain.StampToNull}
+
+// StampEmpty is the marker that asks the framework to write the declared type's
+// ZERO — 0 for a stamped counter, the zero instant for a stamped time:
+//
+//	_, err := jobs.Update(ctx, write.Values{
+//	    "Attempts": write.StampEmpty,   // the retry budget is refilled
+//	}, criteria.Where(criteria.Eq("Status", "pending")))
+//
+// It is not a spelling of StampNull. A zero is a VALUE, so it reaches a column
+// declared NOT NULL — where an absence cannot go — and on a counter it is the
+// difference between "counted nothing" and "has no count".
+var StampEmpty = stampMarker{domain.StampToEmpty}
 
 // insertOnlyValue wraps a value a caller wants bound when the row is CREATED and
 // left alone when an Upsert finds one already there.
@@ -175,29 +205,29 @@ var managedByVerb = map[string]string{
 // builders bind, through the schema's OWN resolution — the same surface a
 // criteria field resolves through, so a name works in a filter exactly where it
 // works in a write.
-func resolveValues(schema *TableSchema, v Values) (domain.Fields, []string, error) {
+func resolveValues(schema *TableSchema, v Values) (domain.Fields, stampPlan, error) {
 	if len(v) == 0 {
-		return nil, nil, fmt.Errorf("db: a Direct write needs at least one value — an empty Values binds no column")
+		return nil, stampPlan{}, fmt.Errorf("db: a Direct write needs at least one value — an empty Values binds no column")
 	}
 	out := make(domain.Fields, len(v))
-	var asked []string
+	var asked []domain.StampRequest
 	for goField, val := range v {
 		if why, managed := managedByVerb[goField]; managed {
-			return nil, nil, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
+			return nil, stampPlan{}, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
 		}
-		if _, marked := val.(stampMarker); marked {
-			// The marker never becomes a bound value: it names a column for the
-			// stamp list, which StampColumns then validates against the schema.
-			asked = append(asked, goField)
+		if m, marked := val.(stampMarker); marked {
+			// The marker never becomes a bound value: it names a column and the
+			// verb, which the schema then validates against its declaration.
+			asked = append(asked, domain.StampRequest{Field: goField, Op: m.op})
 			continue
 		}
 		rf, ok := schema.Resolve(goField)
 		if !ok {
-			return nil, nil, fmt.Errorf("db: unknown field %q on table %q — declare it with TableSchema.Field(...)",
+			return nil, stampPlan{}, fmt.Errorf("db: unknown field %q on table %q — declare it with TableSchema.Field(...)",
 				goField, schema.Table())
 		}
 		if schema.IsStampedField(goField) {
-			return nil, nil, fmt.Errorf(
+			return nil, stampPlan{}, fmt.Errorf(
 				"db: %q on table %q is a stamped field — its value is the framework's (the write operation's "+
 					"instant), never the caller's. Pass write.Stamp to ask for it: Values{%q: write.Stamp}",
 				goField, schema.Table(), goField)
@@ -208,17 +238,19 @@ func resolveValues(schema *TableSchema, v Values) (domain.Fields, []string, erro
 	// a plain field is a mistake about that field, and saying so beats telling
 	// the caller their write has no substance when the substance is the very key
 	// they got wrong.
-	stamps, err := schema.StampColumns(asked)
+	claimed, err := schema.StampRequestColumns(asked)
 	if err != nil {
-		return nil, nil, err
+		return nil, stampPlan{}, err
 	}
 	if len(out) == 0 {
-		return nil, nil, fmt.Errorf(
+		return nil, stampPlan{}, fmt.Errorf(
 			"db: a Direct write on %q asked only for stamps — a write has to change something the caller "+
 				"decided; a stamp records WHEN that happened, it is not the change itself",
 			schema.Table())
 	}
-	return out, stamps, nil
+	var plan stampPlan
+	plan.splitStamps(claimed)
+	return out, plan, nil
 }
 
 // DirectWriter is the write half of a Direct repository: INSERT/UPDATE/DELETE
@@ -306,7 +338,7 @@ func (w *DirectWriter) Schema() *TableSchema { return w.schema }
 // (UUID v7, like every other insert in the framework). Values never carries
 // "ID"; the returned id is how the caller keeps it.
 func (w *DirectWriter) Insert(ctx context.Context, v Values) (domain.ID, error) {
-	fields, stamps, err := resolveValues(w.schema, v)
+	fields, plan, err := resolveValues(w.schema, v)
 	if err != nil {
 		return domain.ID{}, err
 	}
@@ -319,8 +351,9 @@ func (w *DirectWriter) Insert(ctx context.Context, v Values) (domain.ID, error) 
 		if err != nil {
 			return "", nil, err
 		}
-		sql, args := buildInsert(tx.Dialect(), w.schema.Table(), w.schema.IDColumn(), id, fields,
-			append(w.schema.InsertNowColumns(), stamps...), now, "")
+		plan.nowCols = append(w.schema.InsertNowColumns(), plan.nowCols...)
+		sql, args := buildInsertWithCounters(tx.Dialect(), w.schema.Table(), w.schema.IDColumn(), id,
+			fields, plan, now, "")
 		return sql, args, nil
 	}); err != nil {
 		return domain.ID{}, err
@@ -339,7 +372,7 @@ func (w *DirectWriter) Update(ctx context.Context, v Values, q *criteria.Query) 
 // only in what they do with the affected-row count, never in what they emit.
 func (w *DirectWriter) updateStmt(ctx context.Context, v Values, q *criteria.Query) func(Tx) (string, []any, error) {
 	return func(tx Tx) (string, []any, error) {
-		fields, stamps, err := resolveValues(w.schema, v)
+		fields, plan, err := resolveValues(w.schema, v)
 		if err != nil {
 			return "", nil, err
 		}
@@ -351,8 +384,8 @@ func (w *DirectWriter) updateStmt(ctx context.Context, v Values, q *criteria.Que
 		if err != nil {
 			return "", nil, err
 		}
-		return buildUpdate(tx.Dialect(), schemaTarget(w.schema), pred, fields,
-			append(w.schema.UpdateNowColumns(), stamps...), now, "", 0)
+		plan.nowCols = append(w.schema.UpdateNowColumns(), plan.nowCols...)
+		return buildUpdatePlan(tx.Dialect(), schemaTarget(w.schema), pred, fields, plan, now, "", 0)
 	}
 }
 
@@ -463,7 +496,7 @@ func (w *DirectWriter) Upsert(ctx context.Context, v Values, opts ...UpsertOptio
 // included. It is the deliberate sweep the empty-predicate refusal points at:
 // the verb, not a filter that happened to come out empty, is what says so.
 func (w *DirectWriter) UpdateAll(ctx context.Context, v Values) (int64, error) {
-	fields, stamps, err := resolveValues(w.schema, v)
+	fields, plan, err := resolveValues(w.schema, v)
 	if err != nil {
 		return 0, err
 	}
@@ -473,7 +506,8 @@ func (w *DirectWriter) UpdateAll(ctx context.Context, v Values) (int64, error) {
 			return "", nil, err
 		}
 		d := tx.Dialect()
-		sets, args := buildSet(d, fields, append(w.schema.UpdateNowColumns(), stamps...), now, "")
+		plan.nowCols = append(w.schema.UpdateNowColumns(), plan.nowCols...)
+		sets, args := buildSetWithCounters(d, fields, plan, now, "")
 		return fmt.Sprintf("UPDATE %s SET %s", d.QuoteIdent(w.schema.Table()), strings.Join(sets, ", ")), args, nil
 	})
 }
@@ -685,6 +719,12 @@ type upsertPlan struct {
 	insertOnly domain.Fields // established on creation, never revised
 	times      []string      // stamped time columns — bound to the operation's instant
 	counters   []string      // stamped counters — 1 on insert, col + 1 on conflict
+	// The clearing verbs. On an upsert each one has to say itself TWICE — once in
+	// the proposed row and once in the conflict clause — because the two halves of
+	// the statement are written separately on every dialect.
+	nullCols     []string // NULL on both halves
+	zeroTimes    []string // the zero instant, bound once and taken by the conflict
+	zeroCounters []string // literal 0 on both halves
 	keyCols    []string      // the conflict target, in declaration order
 	keyed      map[string]bool
 	unarchive  bool
@@ -739,13 +779,13 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 		plan.keyCols = append(plan.keyCols, rf.Column)
 	}
 
-	var asked []string
+	var asked []domain.StampRequest
 	for goField, val := range v {
 		if why, managed := managedByVerb[goField]; managed {
 			return upsertPlan{}, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
 		}
-		if _, marked := val.(stampMarker); marked {
-			asked = append(asked, goField)
+		if m, marked := val.(stampMarker); marked {
+			asked = append(asked, domain.StampRequest{Field: goField, Op: m.op})
 			continue
 		}
 		rf, ok := w.schema.Resolve(goField)
@@ -765,11 +805,14 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 		plan.bound[rf.Column] = val
 	}
 
-	stamps, err := w.schema.StampColumns(asked)
+	claimed, err := w.schema.StampRequestColumns(asked)
 	if err != nil {
 		return upsertPlan{}, err
 	}
-	plan.times, plan.counters = w.schema.StampedCounterColumns(stamps)
+	var sp stampPlan
+	sp.splitStamps(claimed)
+	plan.times, plan.counters = sp.requestedTimes, sp.counters
+	plan.nullCols, plan.zeroTimes, plan.zeroCounters = sp.nullCols, sp.zeroTimes, sp.zeroCounters
 	// The key columns stay in `bound` — they are written on the INSERT like any
 	// other value. keyed records them so the CONFLICT clause can skip them:
 	// assigning a column the row was MATCHED on is a no-op at best, and on the
@@ -808,6 +851,22 @@ func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now t
 		cols = append(cols, c)
 		args = append(args, int64(1))
 	}
+	for _, c := range plan.zeroTimes {
+		cols = append(cols, c)
+		args = append(args, d.EncodeArg(time.Time{}))
+	}
+	// The proposed row states these too. The INSERT half of an upsert pairs one
+	// column with one argument — there is no room for a literal — so the absence
+	// and the zero are BOUND here, rather than left to whatever DEFAULT the table
+	// happens to declare (a NOT NULL counter may declare none at all).
+	for _, c := range plan.nullCols {
+		cols = append(cols, c)
+		args = append(args, nil)
+	}
+	for _, c := range plan.zeroCounters {
+		cols = append(cols, c)
+		args = append(args, int64(0))
+	}
 	// The managed timestamps ride the INSERT like they do on every other verb.
 	for _, c := range w.schema.InsertNowColumns() {
 		cols = append(cols, c)
@@ -826,6 +885,19 @@ func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now t
 	}
 	for _, c := range plan.counters {
 		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetBump})
+	}
+	// The zero instant is already in the proposed row, so the conflict path takes
+	// it from there — one value, one placeholder, exactly like updated_at below.
+	for _, c := range plan.zeroTimes {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	// NULL and 0 are literals: nothing is bound for them on either half, so there
+	// is no argument order to get wrong between the INSERT and the conflict.
+	for _, c := range plan.nullCols {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "NULL"})
+	}
+	for _, c := range plan.zeroCounters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "0"})
 	}
 	// updated_at is already in the INSERT list, bound to this same instant, so
 	// the conflict path takes it from the proposed row rather than binding a

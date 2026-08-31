@@ -18,7 +18,7 @@ func TestStamp_AccumulatesRequestsInOrder(t *testing.T) {
 	e.Stamp("PaidAt")
 	e.Stamp("ShippedAt")
 	got := RequestedStamps(e)
-	if len(got) != 2 || got[0] != "PaidAt" || got[1] != "ShippedAt" {
+	if len(got) != 2 || got[0].Field != "PaidAt" || got[1].Field != "ShippedAt" {
 		t.Fatalf("requests must survive in order, got %v", got)
 	}
 }
@@ -67,7 +67,7 @@ func TestStamp_WorksThroughADirectlyEmbeddedCarrier(t *testing.T) {
 	}
 	i := &item{Label: "l"}
 	i.Stamp("DoneAt")
-	if got := RequestedStamps(i); len(got) != 1 || got[0] != "DoneAt" {
+	if got := RequestedStamps(i); len(got) != 1 || got[0].Field != "DoneAt" {
 		t.Fatalf("the carrier promotes Stamp to any embedder, got %v", got)
 	}
 }

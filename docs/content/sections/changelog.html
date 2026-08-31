@@ -7,6 +7,73 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.66.0</span><span class="release-date">August 30, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong>the stamped family can now CLEAR a column:
+                <code>StampNull</code> and <code>StampEmpty</code>, on both channels and both kinds.</strong>
+                <code>Stamp</code> only ever wrote forward, so a fact that UN-happens — an order that stops being paid,
+                a retry budget that is refilled — had no verb at all. The entity side gains
+                <code>o.StampNull(...)</code> / <code>o.StampEmpty(...)</code>; the Direct side gains
+                <code>write.StampNull</code> / <code>write.StampEmpty</code> through the same Values channel.
+                <ul>
+                    <li>They are not two spellings of one thing. <code>StampNull</code> writes an ABSENCE;
+                        <code>StampEmpty</code> writes the declared type's ZERO — <code>0</code> for a counter, the zero
+                        instant for a time. A zero is a value, so it reaches a <code>NOT NULL</code> column, where an
+                        absence cannot go.</li>
+                    <li>Both are requests: a column no verb named is left out of the statement, so nothing is cleared by
+                        omission. Two different verbs on one field is one request and the LAST wins. Unlike a counter's
+                        increment, a cleared or reset value IS written back onto the entity and into the payload.</li>
+                    <li><code>StampedCounterField</code> now accepts <code>*int64</code> as well as <code>int64</code> —
+                        the shape <code>StampNull</code> needs. Asking it of a plain <code>int64</code> is refused by
+                        the write, naming <code>StampEmpty</code>.</li>
+                </ul>
+                See <a href="#table-schema">TableSchema</a>.</li>
+            <li><strong>Fixed</strong> — <strong><code>StampEmpty</code> on a stamped TIME failed at the database
+                on MySQL.</strong> go-sql-driver serializes a zero <code>time.Time</code> as the literal
+                <code>'0000-00-00'</code> rather than as year 1, and a server running <code>NO_ZERO_DATE</code> +
+                <code>STRICT_TRANS_TABLES</code> (the MySQL 8 default) rejects it. The column was never the problem:
+                <code>DATETIME(6)</code> stores year 1 and reads it back as a zero <code>time.Time</code>. The MySQL
+                codec now binds the zero instant as its formatted text; the other four backends take year 1 directly
+                and are unchanged.</li>
+            <li><strong>Fixed</strong> — <strong>a shared BASE's stamped column was written to the row but never
+                onto the role's struct</strong>, so the entity the caller kept holding — and the audit event, which
+                reads the struct — reported the OLD value while the row held the new one. It affected the original
+                <code>Stamp</code> too, on every base since the family shipped. A type-less base now resolves the
+                write-back by Go name, which is what its own path resolution already does.</li>
+            <li><strong>Fixed</strong> — <strong>a stamped COUNTER on a Direct write reached Insert / Update /
+                UpdateAll as a stamped TIME</strong>, binding a <code>time.Time</code> into the counter column and
+                failing at the database. Only <code>Upsert</code> split the two kinds; all four verbs now resolve
+                through one plan.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <code>domain.RequestedStamps</code> returns
+                <code>[]domain.StampRequest</code> (field plus verb) instead of <code>[]string</code>, and
+                <code>TableSchema.ApplyStamps</code> takes the same. <code>domain.StampFields</code> reduces a request
+                slice back to the names. Only a consumer that reads the raw request list is affected.</li>
+            <li><strong>Added</strong> — <strong>a read join may now CHAIN:
+                <code>read.LeftJoin(...).Then(read.InnerJoin(...))</code>, with no depth limit.</strong> A hop's
+                <code>.On(...)</code> names a foreign key of the PREVIOUS target; its <code>.Field(...)</code> lands on
+                the same struct the head lands on, at any depth, so nothing above infrastructure learns that depth
+                exists — filter, order, the aggregate DSL, <code>?fields=</code>, the export and the relational read
+                model all serve a chain field exactly as they serve a one-hop one.
+                <ul>
+                    <li>A chain of two hops or more is emitted as a <strong>nested</strong> join, so a deeper
+                        <code>InnerJoin</code> binds its block instead of filtering the result set — which is what lets
+                        <code>LeftJoin(vendor).Then(InnerJoin(owner))</code> mean what it reads as. The block is atomic:
+                        a miss at any hop reports the whole chain absent, hop 1 included. A one-hop join is emitted
+                        byte for byte as before.</li>
+                    <li>Nullability follows the PATH: one <code>LeftJoin</code> above makes every field below it a
+                        pointer. The nullable-foreign-key refusal for <code>InnerJoin</code> narrows to paths that are
+                        inner all the way — under a <code>LeftJoin</code> an inner hop drops nothing.</li>
+                    <li>Each hop is aliased from the PATH of foreign keys reaching it
+                        (<code>j_vendor_id__owner_id</code>, hashed past 48 characters), so two chains may traverse the
+                        same column name in different branches.</li>
+                    <li>A chain on an AGGREGATE repository logs one boot advisory per chain — those joins ride every
+                        read the loader serves, <code>FindByID</code> included. A <code>DirectRepository</code> never
+                        logs one, at any depth.</li>
+                </ul>
+                See <a href="#read-joins">read joins</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.65.0</span><span class="release-date">August 30, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong><code>relational.clock</code> is now a

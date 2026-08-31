@@ -53,7 +53,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, rootFields, plan.nowCols, plan.counters, now, schema.RevisionColumn())
+	sql, args := buildInsertWithCounters(d, schema.Table(), schema.IDColumn(), id, rootFields, plan, now, schema.RevisionColumn())
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -64,7 +64,7 @@ func (b *BaseEngine) insertAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "INSERTED", id,
-		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(rootFields, plan.payload, now), outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
+		buildWritePayload(schema, src, root, "INSERTED", now, CascadeStamps{}, withStamps(rootFields, plan, now), outboxMeta{ID: id, Revision: 1, CreatedAt: insertCreatedAt(schema, now)})); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -127,7 +127,7 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 		return domain.WriteResult{}, err
 	}
 	if err := WriteOutbox(ctx, tx, schema.Table(), "UPDATED", entity.ID().Value(),
-		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(rootFields, plan.payload, now), meta)); err != nil {
+		buildWritePayload(schema, src, root, "UPDATED", now, CascadeStamps{}, withStamps(rootFields, plan, now), meta)); err != nil {
 		return domain.WriteResult{}, err
 	}
 	ab := b.BuildAudit(func() audit.AuditEvent {
@@ -377,7 +377,7 @@ func insertChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	if err != nil {
 		return "", err
 	}
-	sql, args := buildInsertWithCounters(d, child.Table(), child.IDColumn(), childID, fields, plan.nowCols, plan.counters, now, "")
+	sql, args := buildInsertWithCounters(d, child.Table(), child.IDColumn(), childID, fields, plan, now, "")
 	if err := tx.Exec(ctx, sql, args...); err != nil {
 		return "", err
 	}
