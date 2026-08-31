@@ -322,19 +322,9 @@ func resolveValues(schema *TableSchema, v Values) (domain.Fields, stampPlan, err
 		}
 		out[rf.Column] = val
 	}
-	// Validate what was ASKED before judging the shape of the write: a marker on
-	// a plain field is a mistake about that field, and saying so beats telling
-	// the caller their write has no substance when the substance is the very key
-	// they got wrong.
 	claimed, err := schema.StampRequestColumns(asked)
 	if err != nil {
 		return nil, stampPlan{}, err
-	}
-	if len(out) == 0 {
-		return nil, stampPlan{}, fmt.Errorf(
-			"db: a Direct write on %q asked only for stamps — a write has to change something the caller "+
-				"decided; a stamp records WHEN that happened, it is not the change itself",
-			schema.Table())
 	}
 	var plan stampPlan
 	plan.splitStamps(claimed)
