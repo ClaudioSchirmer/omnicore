@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-08-30
+
 ### Added
 
 - **The stamped family can now CLEAR a column: `StampNull` and `StampEmpty`, on
