@@ -79,12 +79,16 @@ func (d testPGDialect) BuildUpsert(table string, cols, conflictCols []string, se
 		return sql + " DO NOTHING"
 	}
 	parts := make([]string, len(sets))
+	arg := len(cols)
 	for i, s := range sets {
 		switch s.Mode {
 		case core.UpsertSetNew:
 			parts[i] = s.Col + " = EXCLUDED." + s.Col
 		case core.UpsertSetBump:
 			parts[i] = s.Col + " = " + table + "." + s.Col + " + 1"
+		case core.UpsertSetArg:
+			arg++
+			parts[i] = s.Col + " = " + d.Placeholder(arg)
 		default:
 			parts[i] = s.Col + " = " + s.Expr
 		}

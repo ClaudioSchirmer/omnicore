@@ -70,3 +70,21 @@ func TestOracleDialect_BuildUpsert_DoNothing(t *testing.T) {
 		t.Errorf("MERGE source must select FROM dual with a parenthesized ON, got:\n%s", got)
 	}
 }
+
+// A conflict-ONLY assignment (write.OnUpdate) binds a placeholder of its own,
+// numbered after the source columns: WHEN MATCHED is rendered after the USING
+// SELECT, so the arguments appended behind the insert ones line up.
+func TestOracleDialect_BuildUpsert_ArgContinuesTheNumbering(t *testing.T) {
+	got := oracleDialect{}.BuildUpsert(
+		"authentication_attempts",
+		[]string{"id", "identity", "last_ip"},
+		[]string{"identity"},
+		[]core.UpsertSet{
+			{Col: "last_ip", Mode: core.UpsertSetNew},
+			{Col: "repeated_at", Mode: core.UpsertSetArg},
+		},
+	)
+	if !strings.Contains(got, `WHEN MATCHED THEN UPDATE SET "LAST_IP" = source."LAST_IP", "REPEATED_AT" = :4`) {
+		t.Errorf("oracle upsert missing the conflict-only placeholder in:\n%s", got)
+	}
+}

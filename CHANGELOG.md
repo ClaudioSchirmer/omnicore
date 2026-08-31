@@ -11,6 +11,58 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **`write.OnUpdate` — the conflict half of an Upsert — and both scoping wrappers
+  now take a stamp verb.** An upsert has two halves and, until now, only one of
+  them could be addressed: `write.OnInsert(v)` bound a value on the row being
+  created, and everything else was written on both. Two things were unreachable
+  because of it. A column that describes the COLLISION ("when did this repeat",
+  "who overwrote it") had no way to stay out of the row being created; and a
+  column dated with the framework's OWN instant could not be dated once — a bare
+  `write.Stamp` refreshes it on every conflict, and the caller cannot compute
+  that instant itself, since under `relational.clock: db` it is read from the very
+  transaction the statement runs in.
+
+  `write.OnInsert(write.Stamp)` now dates a creation and never re-dates it;
+  `write.OnUpdate(write.Stamp)` dates only the collision. `write.StampNull` and
+  `write.StampEmpty` scope the same way, and so do ordinary values:
+  `write.OnUpdate(v)` binds only when the row was already there.
+
+  An `OnUpdate` column is absent from the proposed row entirely, so it takes the
+  table's DEFAULT on the creating path — a NOT NULL column with no DEFAULT would
+  make that path fail, which is the table's contract to settle. On the conflict
+  path its value binds a placeholder of its own, numbered after the inserted
+  columns on every engine.
+
+  Three refusals come with it, each raised before a transaction is opened: a
+  scoped value on any verb other than `Upsert` (an `Insert` is insert-only
+  already, an `Update` has no insert path — this was previously bound as an
+  opaque wrapper and failed at the driver); the two wrappers nested in each
+  other; and either wrapper on a conflict-key field, which is written once by
+  definition and which the MERGE dialects reject as an assignment to a join
+  column.
+
+- **`core.UpsertSetArg`, a fifth upsert assignment mode**, for the conflict-only
+  values above: `col = <placeholder>`, numbered from `len(cols)+1` in the order
+  those assignments appear. All five bundled dialects render it. A custom
+  `core.Dialect` implementation should handle it — its `default` branch would
+  otherwise render an empty expression.
+
+### Fixed
+
+- **`write.OnInsert(write.Stamp)` was refused with a diagnostic that named the
+  very thing the caller had written.** A stamped column carrying the marker was
+  judged before the wrapper was unwrapped, so the write came back with "…is a
+  stamped field — its value is the framework's, never the caller's. Pass
+  write.Stamp", which is what it had been passed. On a PLAIN field the same
+  expression was worse than refused: the marker was bound as an ordinary
+  argument and reached the driver.
+
+- **`write.OnInsert` outside an `Upsert` was documented as refused and was not.**
+  `Insert`, `Update`, `UpdateOne` and `UpdateAll` bound the wrapper itself as the
+  column's value; it is now refused by name, with the reason.
+
 ## [0.66.0] - 2026-08-30
 
 ### Added

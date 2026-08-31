@@ -60,3 +60,21 @@ func TestMySQLDialect_BuildUpsert_DoNothing(t *testing.T) {
 		t.Errorf("must not use INSERT IGNORE:\n%s", got)
 	}
 }
+
+// A conflict-ONLY assignment (write.OnUpdate) binds a placeholder of its own.
+// MySQL's are positional and untyped, so the ordering is all that matters — the
+// clause follows the VALUES list, exactly where the caller appends its args.
+func TestMySQLDialect_BuildUpsert_ArgBindsItsOwnPlaceholder(t *testing.T) {
+	got := mysqlDialect{}.BuildUpsert(
+		"authentication_attempts",
+		[]string{"id", "identity", "last_ip"},
+		[]string{"identity"},
+		[]core.UpsertSet{
+			{Col: "last_ip", Mode: core.UpsertSetNew},
+			{Col: "repeated_at", Mode: core.UpsertSetArg},
+		},
+	)
+	if !strings.Contains(got, "`repeated_at` = ?") {
+		t.Errorf("mysql upsert missing the conflict-only placeholder in:\n%s", got)
+	}
+}

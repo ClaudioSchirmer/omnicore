@@ -180,6 +180,10 @@ func (d sqlserverDialect) BuildUpsert(table string, cols, conflictCols []string,
 	}
 	if len(sets) > 0 {
 		b.WriteString(" WHEN MATCHED THEN UPDATE SET ")
+		// A conflict-only value binds its own argument, numbered after the
+		// source columns — WHEN MATCHED is rendered after the USING SELECT, so
+		// the positions line up with the arguments appended behind them.
+		arg := len(cols)
 		for i, s := range sets {
 			if i > 0 {
 				b.WriteString(", ")
@@ -196,6 +200,9 @@ func (d sqlserverDialect) BuildUpsert(table string, cols, conflictCols []string,
 				b.WriteString("target.")
 				b.WriteString(d.QuoteIdent(s.Col))
 				b.WriteString(" + 1")
+			case core.UpsertSetArg:
+				arg++
+				b.WriteString(d.Placeholder(arg))
 			default:
 				b.WriteString(s.Expr)
 			}

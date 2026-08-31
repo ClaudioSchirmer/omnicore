@@ -154,4 +154,17 @@ func TestBuildUpsert(t *testing.T) {
 	if got != want {
 		t.Errorf("DO UPDATE upsert:\n got %q\nwant %q", got, want)
 	}
+
+	// A conflict-ONLY assignment (write.OnUpdate) binds a placeholder of its
+	// own, after the inserted columns — the clause follows the VALUES list,
+	// exactly where the caller appends its arguments.
+	sets = []core.UpsertSet{
+		{Col: "email", Mode: core.UpsertSetNew},
+		{Col: "repeated_at", Mode: core.UpsertSetArg},
+	}
+	got = d.BuildUpsert("users", []string{"id", "email"}, []string{"id"}, sets)
+	want = `INSERT INTO "users" ("id", "email") VALUES (?, ?) ON CONFLICT ("id") DO UPDATE SET "email" = excluded."email", "repeated_at" = ?`
+	if got != want {
+		t.Errorf("conflict-only upsert:\n got %q\nwant %q", got, want)
+	}
 }
