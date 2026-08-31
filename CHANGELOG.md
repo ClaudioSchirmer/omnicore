@@ -11,6 +11,31 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.67.1] - 2026-08-31
+
+### Fixed
+
+- **A Direct write made of stamp verbs alone is accepted.** `resolveValues`
+  refused any `write.Values` that resolved to no ordinary column, on the grounds
+  that "a stamp records WHEN something happened, it is not the something". That
+  is true of `write.Stamp` on a TIME column and of nothing else, and the refusal
+  made three legitimate writes impossible on `Update`, `UpdateOne`, `UpdateAll`
+  and `Insert`: the bare server-side increment
+  (`Values{"Attempts": write.Stamp}` → `attempts = attempts + 1`), which is the
+  reason `StampedCounterField` exists; and the two clearing verbs on their own —
+  `write.StampEmpty` zeroing a counter and `write.StampNull` closing a window
+  are the transition, with nothing left to date beside them. The only escape was
+  to pad `Values` with a column the write did not mean to touch.
+
+  The rule lived in the Direct adapter alone. The canonical aggregate path never
+  had it (the statement is built from the entity's own struct, so the shape was
+  not even representable), and `Upsert` — which reads `Values` through its own
+  resolver — already accepted a stamp-only write. Removing it restores the
+  feature-equivalence the two channels are meant to keep.
+
+  The one refusal that remains on this path is an EMPTY `Values`, which binds no
+  column and leaves the statement with no `SET` to render.
+
 ## [0.67.0] - 2026-08-31
 
 ### Added

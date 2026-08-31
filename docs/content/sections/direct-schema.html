@@ -205,6 +205,15 @@ n, err = jobs.DeleteAll(ctx)</code></pre>
     nothing committed.
 </p>
 <p>
+    <strong>A write may consist of stamp verbs and nothing else.</strong> A bare
+    <code>write.Values{"Attempts": write.Stamp}</code> emits <code>attempts = attempts + 1</code> and is a complete
+    write — the increment is a state change the SERVER computes, and the counter is the only column that carries it.
+    The clearing verbs say the same: zeroing a counter and closing a window
+    (<code>{"CurrentCount": write.StampEmpty, "WindowStartedAt": write.StampNull}</code>) is the whole transition, with
+    nothing left over to date beside it. The one shape refused is an <em>empty</em> <code>Values</code>, which binds no
+    column at all and leaves the statement with no <code>SET</code> to render.
+</p>
+<p>
     <strong><code>Upsert</code> is the one write keyed on something other than the identity</strong>: it inserts when
     nothing matches the key <code>write.OnConflict(...)</code> names, and updates the row that does — in one statement,
     so two callers racing on the same key cannot both decide the row is missing. Each <code>Values</code> slot declares
@@ -396,11 +405,9 @@ err := phones.Aggregate(ctx, criteria.Where(criteria.Eq("ParentID", userID)), to
                 marker: pass <code>write.Stamp</code> to ask for it.</td>
         </tr>
         <tr>
-            <td><code>write.Stamp</code> on a <strong>plain</strong> field, or a write carrying <em>only</em> stamps</td>
+            <td><code>write.Stamp</code> on a <strong>plain</strong> field</td>
             <td>Error before any statement</td>
-            <td>A plain field takes its value from <code>Values</code>, so stamping it would silently do nothing. And a
-                stamp records WHEN something happened — it is not the something: a write with no other column has no
-                change to date.</td>
+            <td>A plain field takes its value from <code>Values</code>, so stamping it would silently do nothing.</td>
         </tr>
         <tr>
             <td>A write with an <strong>empty predicate</strong> (<code>criteria.Where(nil)</code>)</td>

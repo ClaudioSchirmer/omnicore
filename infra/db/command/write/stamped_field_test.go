@@ -249,12 +249,54 @@ func TestDirectStamp_MarkerOnAPlainFieldIsRefused(t *testing.T) {
 	}
 }
 
-// A stamp records when something happened; it is not the something. A write
-// carrying nothing else has no change to date.
-func TestDirectStamp_StampOnlyWriteIsRefused(t *testing.T) {
-	_, _, err := resolveValues(stampedJobSchema(), Values{"PaidAt": Stamp})
-	if err == nil || !strings.Contains(err.Error(), "only for stamps") {
-		t.Fatalf("a stamp-only write must be refused, got %v", err)
+// A write made ONLY of stamp verbs is a write like any other. The bare increment
+// is the case that proves it: `col = col + 1` is a state change no other column
+// accompanies, computed by the server, and it is the whole reason
+// StampedCounterField exists. Nothing about it needs a companion value.
+func TestDirectStamp_AnIncrementAloneIsTheWholeWrite(t *testing.T) {
+	tx := &fakeWriteTx{n: 1}
+	w := NewDirectWriter(&directTestEngine{tx: tx}, clearedSchema(), "Cleared")
+
+	if _, err := w.Update(context.Background(),
+		Values{"Count": Stamp},
+		criteria.Where(criteria.Eq("Label", "x"))); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !strings.Contains(tx.lastSQL, "count = count + 1") {
+		t.Fatalf("the increment must reach the statement: %s", tx.lastSQL)
+	}
+	if strings.Contains(tx.lastSQL, "SET  ") || strings.Contains(tx.lastSQL, "SET WHERE") {
+		t.Fatalf("the SET list must not come out empty: %s", tx.lastSQL)
+	}
+}
+
+// The clearing verbs alone, on both kinds: zeroing a counter and closing a window
+// IS the transition — there is nothing left to date beside it.
+func TestDirectStamp_ClearingVerbsAloneAreTheWholeWrite(t *testing.T) {
+	tx := &fakeWriteTx{n: 1}
+	w := NewDirectWriter(&directTestEngine{tx: tx}, clearedSchema(), "Cleared")
+
+	if _, err := w.Update(context.Background(),
+		Values{"Count": StampEmpty, "PaidAt": StampNull},
+		criteria.Where(criteria.Eq("Label", "x"))); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !strings.Contains(tx.lastSQL, "count = 0") || !strings.Contains(tx.lastSQL, "paid_at = NULL") {
+		t.Fatalf("both clearing verbs must reach the statement: %s", tx.lastSQL)
+	}
+}
+
+// An INSERT carrying nothing but stamps is the same story: the row is the id plus
+// what the verbs write.
+func TestDirectStamp_AStampOnlyInsertIsAccepted(t *testing.T) {
+	tx := &fakeWriteTx{n: 1}
+	w := NewDirectWriter(&directTestEngine{tx: tx}, clearedSchema(), "Cleared")
+
+	if _, err := w.Insert(context.Background(), Values{"Count": Stamp}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if !strings.Contains(tx.lastSQL, "count") {
+		t.Fatalf("the counter must reach the INSERT: %s", tx.lastSQL)
 	}
 }
 

@@ -7,6 +7,30 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.67.1</span><span class="release-date">August 31, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>a Direct write made of stamp verbs alone is accepted.</strong> Any
+                <code>write.Values</code> that resolved to no ordinary column was refused, on the grounds that a stamp
+                records WHEN something happened and is not the something. That holds for <code>write.Stamp</code> on a
+                TIME column and for nothing else, and the refusal made three legitimate writes impossible on
+                <code>Update</code>, <code>UpdateOne</code>, <code>UpdateAll</code> and <code>Insert</code>:
+                <ul>
+                    <li>the bare server-side increment — <code>write.Values{"Attempts": write.Stamp}</code> emits
+                        <code>attempts = attempts + 1</code>, which is the reason <code>StampedCounterField</code>
+                        exists;</li>
+                    <li>the clearing verbs on their own — <code>write.StampEmpty</code> zeroing a counter and
+                        <code>write.StampNull</code> closing a window ARE the transition, with nothing left to date
+                        beside them.</li>
+                </ul>
+                The only escape was to pad <code>Values</code> with a column the write did not mean to touch. The rule
+                lived in the Direct adapter alone: the canonical aggregate path never had it (its statement is built
+                from the entity's own struct, so the shape was not representable) and <code>Upsert</code> already
+                accepted a stamp-only write — so removing it restores the feature-equivalence the two channels keep.
+                An <em>empty</em> <code>Values</code> is still refused: it binds no column and leaves the statement
+                with no <code>SET</code> to render.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.67.0</span><span class="release-date">August 31, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><code>write.OnUpdate</code>, the conflict half of an Upsert, and a
