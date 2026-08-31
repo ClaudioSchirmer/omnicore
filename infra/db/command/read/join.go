@@ -472,6 +472,19 @@ func validateJoins(contextName string, root *core.TableSchema, joins []Join) {
 			kind = JoinLeft
 		}
 
+		// The TARGET is one table in the FROM, so it must BE one table. A schema
+		// carrying children, siblings or a shared base would enter whole and be
+		// traversed in part — and worse than silently: a column of the target's
+		// satellite resolves on the NODE, so the declaration would be accepted and
+		// then qualified by the target's alias, where that column does not exist.
+		// Demanding the reduction here means it happens where the developer can see
+		// it, and the resolution below can no longer reach past the table.
+		if !j.Target.IsDirect() {
+			failAt(path, "%s(%q): the target of a read join is ONE table, so it takes a DIRECT schema — "+
+				"a schema with children, siblings or a shared base would be traversed in part. "+
+				"Reduce it at the call site: %s(%s.AsDirectSchema())",
+				j.Kind, j.Target.Table(), j.Kind, j.Target.Table())
+		}
 		if _, ok := joining.GoNameForRead(j.FKColumn); !ok {
 			failAt(path, "%s(%q).On(%q): %q is not a column of %q",
 				j.Kind, j.Target.Table(), j.FKColumn, j.FKColumn, joining.Table())

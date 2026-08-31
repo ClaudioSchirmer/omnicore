@@ -1427,6 +1427,92 @@ func (s *TableSchema) Resolve(goName string) (ResolvedField, bool) {
 // (JoinUpstream → external Mongo collection), a type-anchored schema a local relational table.
 func (s *TableSchema) isExternal() bool { return s.typ == nil }
 
+// isUpstreamExternal narrows isExternal to the schema kind that names a table
+// this connection CANNOT read: an upstream service's mirrored collection
+// (NewExternalSchema).
+//
+// The distinction matters because type-less is not one thing. A shared base is
+// type-less too — it carries no Go struct until a role resolves it — and it is a
+// real table in this database, written and read by this service. A refusal that
+// tests isExternal alone rejects it with the wrong reason, which is why the two
+// declaration guards above spell out the same pair (typ == nil && !isSharedBase)
+// rather than asking isExternal.
+func (s *TableSchema) isUpstreamExternal() bool {
+	return s != nil && s.typ == nil && !s.isSharedBase
+}
+
+// AsDirectSchema returns a COPY of this schema reduced to its own table: the
+// anchor's columns, its id, its managed slots and its composite decompositions —
+// with the vertical composition dropped (children, siblings, shared base, and the
+// base's registry of referencing roles). The receiver is untouched.
+//
+// It exists because a read that reaches ACROSS into another schema — a declared
+// read join's target, a criteria subquery's source — puts exactly one table in
+// its FROM. Handed a whole node, such a read could only use a slice of it, and a
+// slice taken in silence is the failure mode this framework refuses everywhere
+// else. So those verbs demand a Direct schema, and this is how any schema becomes
+// one: the reduction happens where the developer can see it, at the call site,
+// instead of inside a translator.
+//
+// The result is an ordinary Direct schema, with everything that follows from
+// that — including anchoring a DirectRepository. Writing an aggregate's table
+// through the Direct path skips the outbox, the audit row, the revision guard and
+// the cascade; that is a real escape hatch and it is deliberately left open, the
+// same way core.Exec is. It is not the framework's business to forbid a decision
+// it can carry out correctly.
+//
+// Two kinds do NOT convert, because the result would not be a readable table:
+//
+//   - a SIBLING has no identity of its own (it borrows the owner's primary key,
+//     and declaring ID on it is refused), so on its own it is not a row source;
+//   - an EXTERNAL schema names an upstream service's mirrored collection, which
+//     does not exist on this connection at all.
+//
+// Both panic, naming the reason — a declaration mistake, reported like every
+// other one on this type.
+func (s *TableSchema) AsDirectSchema() *TableSchema {
+	if s == nil {
+		panic("infra.TableSchema: AsDirectSchema on a nil schema")
+	}
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): AsDirectSchema on a SIBLING — a sibling borrows its owner's primary "+
+				"key (declaring ID on it is refused), so it is not a row source on its own. Convert the "+
+				"OWNER's schema, whose table carries the identity.", s.table))
+	}
+	if s.isUpstreamExternal() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): AsDirectSchema on an EXTERNAL schema — its columns belong to an "+
+				"upstream service and describe a locally materialized Mongo collection, so there is no "+
+				"such table on this connection to read from.", s.table))
+	}
+
+	c := *s
+	c.direct = true
+	c.children = map[string]*TableSchema{}
+	c.siblings = nil
+	c.sharedBaseLink = nil
+	c.referencingRoleLinks = nil
+	c.isSharedBase = false
+	c.naturalIDCol = ""
+	c.orphanPolicy = OrphanPolicy(0)
+
+	// The maps and slices are copied, not shared: a Direct schema is an ordinary
+	// schema and may be declared onto further, and a Field(...) on the copy must
+	// not appear on the original.
+	c.fields = append([]schemaField(nil), s.fields...)
+	c.byGo = make(map[string]schemaField, len(s.byGo))
+	for k, v := range s.byGo {
+		c.byGo[k] = v
+	}
+	c.byCol = make(map[string]schemaField, len(s.byCol))
+	for k, v := range s.byCol {
+		c.byCol[k] = v
+	}
+	c.composites = append([]*compositeDecl(nil), s.composites...)
+	return &c
+}
+
 // typeName returns the schema's Go type name ("Address"), or "" for a type-less
 // external schema. A local view embed derives its Go segment from this; an
 // external embed has none, so it must declare the segment via .As(...).

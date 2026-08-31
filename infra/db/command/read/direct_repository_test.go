@@ -40,7 +40,7 @@ func directJobTable() *TableSchema {
 }
 
 func directOwnerTable() *TableSchema {
-	return core.NewTableSchema[directOwner]("users").ID("id").Field("Name", "name")
+	return core.NewTableSchema[directOwner]("users").ID("id").Field("Name", "name").AsDirectSchema()
 }
 
 type directReadEngine struct {
@@ -76,7 +76,10 @@ func TestDirectRepository_RefusesWhatItCannotAnchorOn(t *testing.T) {
 		build func()
 	}{
 		{"an entity schema", "was not built with core.NewDirectSchema", func() {
-			NewDirectRepository[directOwner](eng, directOwnerTable())
+			// Built here rather than from directOwnerTable(), which now hands over
+			// the reduced form a join target has to be.
+			NewDirectRepository[directOwner](eng,
+				core.NewTableSchema[directOwner]("users").ID("id").Field("Name", "name"))
 		}},
 		{"no primary key", "declares no primary key", func() {
 			NewDirectRepository[directJob](eng, core.NewDirectSchema[directJob]("t").Field("Status", "status"))

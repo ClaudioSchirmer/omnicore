@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -96,7 +97,7 @@ func compileErrPG(t *testing.T, e criteria.Expr, s *TableSchema) error {
 // ─── rendering ───────────────────────────────────────────────────────────────
 
 func TestSubquery_Forms(t *testing.T) {
-	users, phones, rp := subUserSchema(), subPhoneSchema(), subRolePermSchema()
+	users, phones, rp := subUserSchema(), subPhoneSchema().AsDirectSchema(), subRolePermSchema().AsDirectSchema()
 
 	cases := []struct {
 		name string
@@ -188,7 +189,7 @@ func TestSubquery_Forms(t *testing.T) {
 }
 
 func TestSubquery_ScopeOptOuts(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	t.Run("IncludeArchived drops the gate", func(t *testing.T) {
 		sql, _ := compilePG(t, criteria.Exists(criteria.Sub(phones).IncludeArchived()), users)
@@ -208,7 +209,7 @@ func TestSubquery_ScopeOptOuts(t *testing.T) {
 // ─── correlation ─────────────────────────────────────────────────────────────
 
 func TestSubquery_OuterReference(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	// The 1:N reverse filter: users holding at least one active phone.
 	e := criteria.Exists(criteria.Sub(phones).
@@ -226,7 +227,7 @@ func TestSubquery_OuterReference(t *testing.T) {
 }
 
 func TestSubquery_EnclosingStatementRendersUnchanged(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	// The same enclosing predicate, with and without a correlated subquery beside
 	// it. Whatever a subquery needs, it must not change how the statement around
@@ -248,7 +249,7 @@ func TestSubquery_EnclosingStatementRendersUnchanged(t *testing.T) {
 // ─── placeholder numbering ───────────────────────────────────────────────────
 
 func TestSubquery_PlaceholderNumberingAcrossNesting(t *testing.T) {
-	users, phones, rp := subUserSchema(), subPhoneSchema(), subRolePermSchema()
+	users, phones, rp := subUserSchema(), subPhoneSchema().AsDirectSchema(), subRolePermSchema().AsDirectSchema()
 
 	e := criteria.And(
 		criteria.Eq("Name", "Bob"),
@@ -281,7 +282,7 @@ func TestSubquery_PlaceholderNumberingAcrossNesting(t *testing.T) {
 }
 
 func TestSubquery_PlaceholderNumberingContinuesAfterBase(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	// An UPDATE binds its SET list first; the predicate must continue that
 	// numbering rather than restart, inside a subquery as much as outside it.
@@ -302,7 +303,7 @@ func TestSubquery_PlaceholderNumberingContinuesAfterBase(t *testing.T) {
 // ─── identity typing ─────────────────────────────────────────────────────────
 
 func TestSubquery_InnerProbeLiftsTheSourcesIdentity(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 	u := uuid.MustParse("018f8b2c-1d3e-7a9b-bc4d-5e6f7a8b9c0d")
 
 	// A bare-string probe against the SUBQUERY's identity column binds in the
@@ -323,7 +324,7 @@ func TestSubquery_InnerProbeLiftsTheSourcesIdentity(t *testing.T) {
 // ─── refusals ────────────────────────────────────────────────────────────────
 
 func TestSubquery_Refusals(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	cases := []struct {
 		name string
@@ -351,9 +352,9 @@ func TestSubquery_Refusals(t *testing.T) {
 			"Sub(nil)",
 		},
 		{
-			"external schema",
+			"a source that is not a direct schema",
 			criteria.InSub("ID", criteria.Sub(NewExternalSchema("upstream").Field("K", "k")).Select("K")),
-			"UPSTREAM service",
+			"DIRECT schema",
 		},
 		{
 			"unknown field in the projection",
@@ -382,7 +383,7 @@ func TestSubquery_Refusals(t *testing.T) {
 		},
 		{
 			"NinSub over a nullable column",
-			criteria.NinSub("Name", criteria.Sub(users).Select("Email")),
+			criteria.NinSub("Name", criteria.Sub(users.AsDirectSchema()).Select("Email")),
 			"NOT IN matches NO rows",
 		},
 	}
@@ -405,11 +406,10 @@ func TestSubquery_OuterOutsideASubqueryIsRefused(t *testing.T) {
 	}
 }
 
-// A field of a SIBLING resolves in the enclosing statement, whose FROM carries
-// the satellite, and must NOT resolve inside a subquery, whose FROM is one
-// table. The message has to say which table it landed on, because the developer
-// sees the same name working one line above.
-func TestSubquery_SatelliteFieldIsRefusedInside(t *testing.T) {
+// The source of a subquery is ONE table, and that is now enforced by the TYPE of
+// schema it takes rather than by resolving names carefully: a node is refused at
+// the call, and the message names the reduction that turns it into a source.
+func TestSubquery_SourceMustBeDirect(t *testing.T) {
 	owner := NewTableSchema[subUser]("users").
 		ID("id").
 		Field("Name", "name").
@@ -417,13 +417,25 @@ func TestSubquery_SatelliteFieldIsRefusedInside(t *testing.T) {
 		DeletedAt("deleted_at").
 		Sibling(NewSiblingSchema[subUser]("user_extras").Field("Tag", "tag"))
 
-	if _, ok := owner.Resolve("Tag"); !ok {
-		t.Fatal("fixture: the sibling field must resolve on the enclosing schema")
+	err := compileErrPG(t, criteria.InSub("ID", criteria.Sub(owner).Select("ID")), owner)
+	if !strings.Contains(err.Error(), "DIRECT schema") || !strings.Contains(err.Error(), "AsDirectSchema()") {
+		t.Errorf("error = %q, want it to demand a direct schema and name the reduction", err)
 	}
 
-	err := compileErrPG(t, criteria.InSub("ID", criteria.Sub(owner).Select("Tag")), owner)
-	if !strings.Contains(err.Error(), "user_extras") || !strings.Contains(err.Error(), "ONE table") {
-		t.Errorf("error = %q, want it to name the satellite table and the one-table rule", err)
+	// Reduced, the same schema is a valid source — and the satellite's field is
+	// simply not part of it any more.
+	flat := owner.AsDirectSchema()
+	if _, ok := flat.Resolve("Tag"); ok {
+		t.Error("AsDirectSchema kept the sibling's field")
+	}
+	if _, _, err := CompileWhere(
+		criteria.InSub("ID", criteria.Sub(flat).Select("ID")),
+		outerResolver(owner), testPGDialect{}, owner.IDKindOf); err != nil {
+		t.Errorf("the reduced schema was refused as a source: %v", err)
+	}
+	// The owner is untouched by the reduction.
+	if _, ok := owner.Resolve("Tag"); !ok {
+		t.Error("AsDirectSchema mutated the schema it was called on")
 	}
 }
 
@@ -435,7 +447,7 @@ func TestSubquery_SatelliteFieldIsRefusedInside(t *testing.T) {
 func TestSubquery_SelfCorrelationIsUnambiguous(t *testing.T) {
 	users := subUserSchema()
 
-	sql, _ := compilePG(t, criteria.Exists(criteria.Sub(users).
+	sql, _ := compilePG(t, criteria.Exists(criteria.Sub(users.AsDirectSchema()).
 		Where(criteria.And(
 			criteria.Eq("Email", criteria.Outer("Email")),
 			criteria.Ne("ID", criteria.Outer("ID")),
@@ -466,7 +478,7 @@ func TestSubAlias_HashesPastTheBudget(t *testing.T) {
 // ─── the write path ──────────────────────────────────────────────────────────
 
 func TestSubquery_WritePath(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	t.Run("another table renders on every engine", func(t *testing.T) {
 		for _, d := range []Dialect{testPGDialect{}, testMySQLDialect{}} {
@@ -484,7 +496,7 @@ func TestSubquery_WritePath(t *testing.T) {
 
 	t.Run("the write target renders where the engine allows it", func(t *testing.T) {
 		sql, _, err := CompileWhereForWrite(
-			criteria.InSub("ID", criteria.Sub(users).Select("ID")),
+			criteria.InSub("ID", criteria.Sub(users.AsDirectSchema()).Select("ID")),
 			outerResolver(users), testPGDialect{}, users.IDKindOf, 0, "users")
 		if err != nil {
 			t.Fatalf("postgres refused a subquery on the write target: %v", err)
@@ -496,7 +508,7 @@ func TestSubquery_WritePath(t *testing.T) {
 
 	t.Run("the write target is refused on MySQL, and only there", func(t *testing.T) {
 		sql, _, err := CompileWhereForWrite(
-			criteria.InSub("ID", criteria.Sub(users).Select("ID")),
+			criteria.InSub("ID", criteria.Sub(users.AsDirectSchema()).Select("ID")),
 			outerResolver(users), testMySQLDialect{}, users.IDKindOf, 0, "users")
 		if err == nil {
 			t.Fatalf("mysql accepted a subquery on the write target: %s", sql)
@@ -511,7 +523,7 @@ func TestSubquery_WritePath(t *testing.T) {
 
 	t.Run("a read is never subject to the write-target rule", func(t *testing.T) {
 		if _, _, err := CompileWhere(
-			criteria.InSub("ID", criteria.Sub(users).Select("ID")),
+			criteria.InSub("ID", criteria.Sub(users.AsDirectSchema()).Select("ID")),
 			outerResolver(users), testMySQLDialect{}, users.IDKindOf); err != nil {
 			t.Errorf("mysql refused a self-referencing subquery on a READ: %v", err)
 		}
@@ -525,7 +537,7 @@ func TestSubquery_WritePath(t *testing.T) {
 // dialects, so a divergence shows up as a diff rather than as a surprise on the
 // engine nobody ran locally.
 func TestSubquery_PerDialectRendering(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 	e := criteria.InSub("ID", criteria.Sub(phones).Select("UserID").
 		Where(criteria.Eq("Number", "555")))
 
@@ -579,7 +591,7 @@ func TestSubquery_PerDialectRendering(t *testing.T) {
 // everywhere: SQL Server rewrites the SELECT head instead, and it must rewrite
 // the SUBQUERY's head, not the statement's.
 func TestSubquery_LimitPerDialect(t *testing.T) {
-	users, rp := subUserSchema(), subRolePermSchema()
+	users, rp := subUserSchema(), subRolePermSchema().AsDirectSchema()
 	e := criteria.EqSub("Name", criteria.Sub(rp).Select("RoleID").OrderBy("RoleID").Limit(1))
 
 	cases := []struct {
@@ -611,7 +623,7 @@ func TestSubquery_LimitPerDialect(t *testing.T) {
 // A subquery two levels deep referencing the MIDDLE scope: the outer reference
 // must carry that scope's alias, not the statement's table.
 func TestSubquery_OuterReferenceFromTwoLevelsDeep(t *testing.T) {
-	users, phones, rp := subUserSchema(), subPhoneSchema(), subRolePermSchema()
+	users, phones, rp := subUserSchema(), subPhoneSchema().AsDirectSchema(), subRolePermSchema().AsDirectSchema()
 
 	e := criteria.Exists(criteria.Sub(phones).
 		Where(criteria.Exists(criteria.Sub(rp).
@@ -624,7 +636,7 @@ func TestSubquery_OuterReferenceFromTwoLevelsDeep(t *testing.T) {
 }
 
 func TestSubquery_NotInNullableGuard_OnlyFiresWhenItCan(t *testing.T) {
-	users, phones := subUserSchema(), subPhoneSchema()
+	users, phones := subUserSchema(), subPhoneSchema().AsDirectSchema()
 
 	// A non-nullable projected column is fine.
 	if _, _, err := CompileWhere(
@@ -674,5 +686,83 @@ func TestFieldIsNullable(t *testing.T) {
 	}
 	if _, known := (*TableSchema)(nil).fieldIsNullable("K"); known {
 		t.Error("a nil schema claimed to know its nullability")
+	}
+}
+
+// The two kinds that do not reduce. Their reason lives on the conversion, which
+// is where a developer meets it: the refusal at Sub/InnerJoin only says "give me
+// a direct schema", and AsDirectSchema is what answers why this one cannot be.
+func TestAsDirectSchema_Refusals(t *testing.T) {
+	cases := []struct {
+		name   string
+		build  func() *TableSchema
+		reason string
+	}{
+		{
+			"sibling",
+			func() *TableSchema { return NewSiblingSchema[subUser]("user_extras").Field("Tag", "tag") },
+			"borrows its owner's primary key",
+		},
+		{
+			"external",
+			func() *TableSchema { return NewExternalSchema("upstream").Field("K", "k") },
+			"upstream service",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatal("expected a panic")
+				}
+				if !strings.Contains(fmt.Sprint(r), c.reason) {
+					t.Errorf("panic = %v, want it to name: %s", r, c.reason)
+				}
+			}()
+			_ = c.build().AsDirectSchema()
+		})
+	}
+}
+
+// A shared base is type-less like an external schema and a REAL table unlike one.
+// Testing "external" as "has no Go type" would refuse it with the wrong reason.
+func TestAsDirectSchema_SharedBaseConverts(t *testing.T) {
+	base := NewSharedBaseSchema("pessoa").
+		ID("id").
+		NaturalID("documento").
+		Revision("revision").
+		Field("Nome", "nome")
+
+	flat := base.AsDirectSchema()
+	if !flat.IsDirect() {
+		t.Fatal("the reduction did not produce a direct schema")
+	}
+	if _, ok := flat.Resolve("Nome"); !ok {
+		t.Error("the base's own field did not survive the reduction")
+	}
+	if flat.IsSharedBase() {
+		t.Error("the copy is still marked as a shared base")
+	}
+}
+
+// Every other kind reduces, which is what keeps "the join target must be direct"
+// from shrinking anyone's reach.
+func TestAsDirectSchema_ConvertsEveryReadableKind(t *testing.T) {
+	root := subUserSchema()
+	child := NewTableSchema[subPhone]("phones").ID("id").ParentID("user_id").Field("Number", "number")
+	direct := NewDirectSchema[subRolePerm]("role_permissions").ID("id").Field("RoleID", "role_id")
+
+	for name, s := range map[string]*TableSchema{"root": root, "child": child, "direct": direct} {
+		flat := s.AsDirectSchema()
+		if !flat.IsDirect() {
+			t.Errorf("%s: not direct after the reduction", name)
+		}
+		if flat.Table() != s.Table() {
+			t.Errorf("%s: table changed to %q", name, flat.Table())
+		}
+		if len(flat.ChildSchemas()) != 0 || len(flat.Siblings()) != 0 {
+			t.Errorf("%s: composition survived the reduction", name)
+		}
 	}
 }

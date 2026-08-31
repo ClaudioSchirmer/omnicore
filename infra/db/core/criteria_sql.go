@@ -355,25 +355,6 @@ func subAlias(table string, depth int) string {
 	return "sq" + strconv.Itoa(depth) + "_" + strconv.FormatUint(h.Sum64(), 16)
 }
 
-// anchorOnlyResolver is the field resolution a subquery gets: its source's OWN
-// row, and nothing else.
-//
-// TableSchema.Resolve deliberately reaches past the anchor into the siblings and
-// the shared base, because a statement that resolves through it carries those
-// tables in its FROM as 1:1 LEFT JOINs. A subquery's FROM is ONE table, so a
-// field resolving onto a satellite would be qualified by a table that is not
-// there. Refusing it names the fix (make that table the subquery's own source,
-// or nest an Exists over it) instead of emitting SQL that cannot run.
-func anchorOnlyResolver(s *TableSchema) FieldResolver {
-	return func(goField string) (ResolvedField, bool) {
-		rf, ok := s.Resolve(goField)
-		if !ok || rf.Owner != OwnerAnchor {
-			return ResolvedField{}, false
-		}
-		return rf, true
-	}
-}
-
 func (v *sqlVisitor) VisitSubquery(c criteria.SubqueryComparison) error {
 	col, err := v.column(c.Field)
 	if err != nil {
@@ -485,11 +466,12 @@ func (v *sqlVisitor) renderSub(sq *criteria.SubQuery, existence bool) (string, e
 			"criteria: Sub(%T) — this backend reads a *core.TableSchema (an entity schema, an "+
 				"aggregate child, a sibling, a shared base or a Direct schema)", sq.Src)
 	}
-	if schema.isExternal() {
+	if !schema.IsDirect() {
 		return "", fmt.Errorf(
-			"criteria: Sub(%s) is an external schema — its columns belong to an UPSTREAM service "+
-				"and describe a Mongo view source, so there is no such table on this connection",
-			schema.Table())
+			"criteria: Sub(%s) takes a DIRECT schema — a subquery reads ONE table, and a schema carrying "+
+				"children, siblings or a shared base would enter whole and be read in part. Reduce it at "+
+				"the call site: Sub(%s.AsDirectSchema())",
+			schema.Table(), schema.Table())
 	}
 	if v.writeTarget != "" && !v.dialect.AllowsSubqueryOnWriteTarget() && schema.Table() == v.writeTarget {
 		return "", fmt.Errorf(
@@ -505,7 +487,7 @@ func (v *sqlVisitor) renderSub(sq *criteria.SubQuery, existence bool) (string, e
 
 	alias := v.dialect.QuoteIdent(subAlias(schema.Table(), v.depth+1))
 	inner := &sqlVisitor{
-		resolve:     anchorOnlyResolver(schema),
+		resolve:     schema.Resolve,
 		dialect:     v.dialect,
 		idKind:      schema.IDKindOf,
 		base:        v.base + len(v.args),
@@ -583,7 +565,7 @@ func (v *sqlVisitor) subItem(sq *criteria.SubQuery, schema *TableSchema, existen
 	if sq.Func == criteria.AggCount {
 		return "COUNT(*)", nil
 	}
-	rf, ok := anchorOnlyResolver(schema)(sq.Field)
+	rf, ok := schema.Resolve(sq.Field)
 	if !ok {
 		return "", subFieldError(schema, sq.Field, "Select")
 	}
@@ -615,19 +597,10 @@ func (v *sqlVisitor) subOrder(sq *criteria.SubQuery) (string, error) {
 	return "ORDER BY " + strings.Join(parts, ", "), nil
 }
 
-// subFieldError explains a name that does not resolve INSIDE a subquery,
-// separating "no such field" from the satellite case, which is the one a
-// developer will hit by accident: the same name resolves fine in the enclosing
-// statement, because that statement's FROM carries the satellite and the
-// subquery's does not.
+// subFieldError explains a name that does not resolve inside a subquery. The
+// source is a Direct schema, so there is no satellite it could have landed on
+// instead — the name is simply not a column of that table.
 func subFieldError(schema *TableSchema, goField, where string) error {
-	if rf, ok := schema.Resolve(goField); ok && rf.Owner != OwnerAnchor {
-		return fmt.Errorf(
-			"criteria: %s(%q) inside Sub(%s) resolves onto %q, which a subquery does not have in "+
-				"its FROM — a subquery reads ONE table. Make that table the subquery's own source, "+
-				"or nest an Exists over it",
-			where, goField, schema.Table(), rf.Schema.Table())
-	}
 	return fmt.Errorf(
 		"criteria: %s(%q) inside Sub(%s) — not a persisted field of that table", where, goField, schema.Table())
 }
