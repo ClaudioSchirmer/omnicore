@@ -34,6 +34,16 @@ const (
 	// count attempts on conflict; it exists because no verbatim expression can
 	// spell "the existing row's column" portably.
 	UpsertSetBump
+	// UpsertSetArg assigns the column to a bound ARGUMENT of its own —
+	// `col = <placeholder>`. It is the only assignment whose value is not
+	// already in the proposed row, and that is exactly what a conflict-ONLY
+	// value needs: such a column is absent from the insert half, so there is no
+	// `EXCLUDED.col` for UpsertSetNew to read it from.
+	//
+	// Its placeholders continue the numbering the inserted columns started — the
+	// first is len(cols)+1 and they follow the order these assignments appear in
+	// — so the caller appends the matching arguments after the inserted ones.
+	UpsertSetArg
 )
 
 // UpsertSet is one `col = <value>` assignment applied when the natural key
@@ -154,5 +164,7 @@ type Dialect interface {
 	// key already exists. An empty sets renders the do-nothing form (PG
 	// `ON CONFLICT (…) DO NOTHING`; MySQL a no-op `ON DUPLICATE KEY UPDATE k=k`).
 	// The only divergent assignment is UpsertSetNew (`EXCLUDED.col` ⟷ `new.col`).
+	// An UpsertSetArg assignment takes its own placeholder, numbered from
+	// len(cols)+1 in the order those assignments appear.
 	BuildUpsert(table string, cols, conflictCols []string, sets []UpsertSet) string
 }

@@ -27,6 +27,11 @@ type attemptRow struct {
 	LastIP          string
 	IdentityExisted bool
 	TotalBlocked    int64
+	// The two scoping wrappers need a column on each half: one dated when the
+	// row is created, one dated only when something collided with it.
+	WindowOpenedAt *time.Time
+	RepeatedAt     *time.Time
+	RepeatCount    int64
 }
 
 func attemptSchema() *TableSchema {
@@ -333,5 +338,370 @@ func TestUpsert_ManagedTimestamps(t *testing.T) {
 	}
 	if strings.Contains(tail, "created_at =") {
 		t.Fatalf("a row's creation is never revised: %s", tail)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OnInsert / OnUpdate — the two halves of an upsert, and the stamp verbs scoped
+// to one of them. The point of the pairing is that the VALUE stays the
+// framework's while the caller says on which path it is written.
+// ---------------------------------------------------------------------------
+
+// scopedSchema declares a stamped column for each half plus a counter, so one
+// fixture covers every bucket a scoped stamp plan can carry.
+func scopedSchema() *TableSchema {
+	return core.NewDirectSchema[attemptRow]("authentication_attempts").
+		ID("id").
+		Field("Identity", "identity").
+		Field("LastIP", "last_ip").
+		StampedTimeField("WindowOpenedAt", "window_opened_at").
+		StampedTimeField("RepeatedAt", "repeated_at").
+		StampedCounterField("RepeatCount", "repeat_count")
+}
+
+func newScopedWriter(t *testing.T) (*DirectWriter, *fakeWriteTx) {
+	t.Helper()
+	tx := &fakeWriteTx{n: 1}
+	return NewDirectWriter(&directTestEngine{tx: tx}, scopedSchema(), "AuthAttempt"), tx
+}
+
+const testUpsertID = "018f0000-0000-7000-8000-000000000001"
+
+// The ask this whole pairing exists for: a window opened with the framework's
+// own instant, and never reopened. The caller cannot compute that instant, and a
+// bare write.Stamp would refresh it on every conflict.
+func TestUpsert_OnInsertStampDatesTheCreationOnly(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	plan, err := w.upsertPlan(Values{
+		"Identity":       "bob",
+		"WindowOpenedAt": OnInsert(Stamp),
+		"LastIP":         "10.0.0.1",
+	}, upsertConfig{conflictGo: []string{"Identity"}})
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, ok := strings.Cut(sql, "ON CONFLICT")
+	if !ok {
+		t.Fatalf("expected an ON CONFLICT clause: %s", sql)
+	}
+	if !strings.Contains(head, "window_opened_at") {
+		t.Fatalf("the created row must be dated: %s", head)
+	}
+	if strings.Contains(tail, "window_opened_at") {
+		t.Fatalf("a window is opened once, never reopened: %s", tail)
+	}
+	// The instant bound is the operation's own — the whole reason the marker
+	// exists rather than a time the caller computed.
+	var stamped bool
+	for _, a := range args {
+		if a == testNow {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Fatalf("the operation instant must be bound on the insert half, args = %v", args)
+	}
+}
+
+// The mirror: a column that describes the COLLISION is absent from the row being
+// created, and binds an argument of its own on the conflict path — there is no
+// proposed row to read it back from.
+func TestUpsert_OnUpdateStampBindsItsOwnArgument(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	plan, err := w.upsertPlan(Values{
+		"Identity":   "bob",
+		"LastIP":     "10.0.0.1",
+		"RepeatedAt": OnUpdate(Stamp),
+	}, upsertConfig{conflictGo: []string{"Identity"}})
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(sql, "ON CONFLICT")
+	if strings.Contains(head, "repeated_at") {
+		t.Fatalf("a collision column has no place in the row being created: %s", head)
+	}
+	// id, identity and last_ip are the inserted columns, so the conflict-only
+	// value takes the placeholder right after them.
+	if !strings.Contains(tail, "repeated_at = $4") {
+		t.Fatalf("the conflict-only stamp must bind its own placeholder: %s", tail)
+	}
+	if len(args) != 4 || args[3] != testNow {
+		t.Fatalf("the fourth argument must be the operation instant, args = %v", args)
+	}
+}
+
+// An ordinary value scopes the same way a stamp does.
+func TestUpsert_OnUpdateValueIsWrittenOnlyOnConflict(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	plan, err := w.upsertPlan(Values{
+		"Identity": "bob",
+		"LastIP":   OnUpdate("10.0.0.1"),
+	}, upsertConfig{conflictGo: []string{"Identity"}})
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(sql, "ON CONFLICT")
+	if strings.Contains(head, "last_ip") {
+		t.Fatalf("an OnUpdate column must not be in the proposed row: %s", head)
+	}
+	if !strings.Contains(tail, "last_ip = $3") {
+		t.Fatalf("an OnUpdate column binds its own placeholder: %s", tail)
+	}
+	if len(args) != 3 || args[2] != "10.0.0.1" {
+		t.Fatalf("the value must be bound last, args = %v", args)
+	}
+}
+
+// A counter says itself differently on each half: 1 in the row being created,
+// `col + 1` against the row that was already there. Scoping picks one of the two.
+func TestUpsert_ScopedCounters(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	key := upsertConfig{conflictGo: []string{"Identity"}}
+
+	plan, err := w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": "1.1.1.1", "RepeatCount": OnInsert(Stamp),
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, _, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(sql, "ON CONFLICT")
+	if !strings.Contains(head, "repeat_count") || strings.Contains(tail, "repeat_count") {
+		t.Fatalf("an insert-only counter starts at 1 and never bumps: %s", sql)
+	}
+
+	plan, err = w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": "1.1.1.1", "RepeatCount": OnUpdate(Stamp),
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, _, err = w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ = strings.Cut(sql, "ON CONFLICT")
+	if strings.Contains(head, "repeat_count") {
+		t.Fatalf("a collision counter is not stated by the row being created: %s", head)
+	}
+	if !strings.Contains(tail, "repeat_count = authentication_attempts.repeat_count + 1") {
+		t.Fatalf("a collision counter increments the existing row: %s", tail)
+	}
+}
+
+// The clearing verbs scope too. On the insert half they are bound values (the
+// proposed row pairs one column with one argument); on the conflict half NULL
+// and 0 are literals and the zero instant binds an argument of its own.
+func TestUpsert_ScopedClearingVerbs(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	key := upsertConfig{conflictGo: []string{"Identity"}}
+
+	plan, err := w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": "1.1.1.1", "RepeatedAt": OnInsert(StampNull),
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(sql, "ON CONFLICT")
+	if !strings.Contains(head, "repeated_at") || strings.Contains(tail, "repeated_at") {
+		t.Fatalf("an insert-only absence is stated once, on the row created: %s", sql)
+	}
+	if len(args) != 4 || args[3] != nil {
+		t.Fatalf("the absence must be bound on the insert half, args = %v", args)
+	}
+
+	plan, err = w.upsertPlan(Values{
+		"Identity":    "bob",
+		"LastIP":      "1.1.1.1",
+		"RepeatedAt":  OnUpdate(StampEmpty),
+		"RepeatCount": OnUpdate(StampEmpty),
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err = w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ = strings.Cut(sql, "ON CONFLICT")
+	if strings.Contains(head, "repeated_at") || strings.Contains(head, "repeat_count") {
+		t.Fatalf("neither reset belongs to the row being created: %s", head)
+	}
+	if !strings.Contains(tail, "repeat_count = 0") {
+		t.Fatalf("a counter reset is a literal: %s", tail)
+	}
+	if !strings.Contains(tail, "repeated_at = $4") {
+		t.Fatalf("the zero instant binds its own placeholder: %s", tail)
+	}
+	if len(args) != 4 || !args[3].(time.Time).IsZero() {
+		t.Fatalf("the zero instant must be the last argument, args = %v", args)
+	}
+	// NULL on the conflict half is a literal too — nothing is bound for it.
+	plan, err = w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": "1.1.1.1", "RepeatedAt": OnUpdate(StampNull),
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err = w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	if _, tail, _ = strings.Cut(sql, "ON CONFLICT"); !strings.Contains(tail, "repeated_at = NULL") {
+		t.Fatalf("a conflict-only absence is a literal: %s", tail)
+	}
+	if len(args) != 3 {
+		t.Fatalf("a literal binds nothing of its own, args = %v", args)
+	}
+}
+
+// Both halves at once, with the managed timestamps riding along: the placeholder
+// numbering is the contract that has to hold, since the conflict clause is
+// rendered after the values it follows.
+func TestUpsert_BothHalvesKeepThePlaceholderNumbering(t *testing.T) {
+	schema := scopedSchema().UpdatedAt("updated_at")
+	tx := &fakeWriteTx{n: 1}
+	w := NewDirectWriter(&directTestEngine{tx: tx}, schema, "AuthAttempt")
+
+	plan, err := w.upsertPlan(Values{
+		"Identity":       "bob",
+		"LastIP":         "1.1.1.1",
+		"WindowOpenedAt": OnInsert(Stamp),
+		"RepeatedAt":     OnUpdate(Stamp),
+		"RepeatCount":    Stamp,
+	}, upsertConfig{conflictGo: []string{"Identity"}})
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(sql, "ON CONFLICT")
+	// id, identity, last_ip, repeat_count, window_opened_at, updated_at.
+	if !strings.Contains(head, "VALUES ($1, $2, $3, $4, $5, $6)") {
+		t.Fatalf("the proposed row must bind six columns: %s", head)
+	}
+	if !strings.Contains(tail, "repeated_at = $7") {
+		t.Fatalf("the conflict-only stamp continues the numbering: %s", tail)
+	}
+	if len(args) != 7 || args[6] != testNow {
+		t.Fatalf("the seventh argument is the conflict-only instant, args = %v", args)
+	}
+	if !strings.Contains(tail, "repeat_count = authentication_attempts.repeat_count + 1") ||
+		!strings.Contains(tail, "updated_at = EXCLUDED.updated_at") {
+		t.Fatalf("the unscoped columns keep behaving exactly as before: %s", tail)
+	}
+}
+
+// The refusals the two wrappers own. Each is raised before a transaction exists.
+func TestUpsert_ScopedRefusals(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	key := upsertConfig{conflictGo: []string{"Identity"}}
+
+	if _, err := w.upsertPlan(Values{
+		"Identity": "bob", "WindowOpenedAt": OnInsert(OnUpdate(Stamp)),
+	}, key); err == nil || !strings.Contains(err.Error(), "nesting") {
+		t.Fatalf("nested wrappers must be refused, got %v", err)
+	}
+	if _, err := w.upsertPlan(Values{
+		"Identity": OnInsert("bob"), "LastIP": "1.1.1.1",
+	}, key); err == nil || !strings.Contains(err.Error(), "matched on") {
+		t.Fatalf("a wrapped conflict key must be refused, got %v", err)
+	}
+	if _, err := w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": OnUpdate(Stamp),
+	}, key); err == nil || !strings.Contains(err.Error(), "plain field") {
+		t.Fatalf("stamping a plain field must be refused, got %v", err)
+	}
+	if _, err := w.upsertPlan(Values{
+		"Identity": "bob", "RepeatedAt": OnInsert(testStamp()),
+	}, key); err == nil || !strings.Contains(err.Error(), "write.Stamp") {
+		t.Fatalf("dictating a stamped column must be refused, got %v", err)
+	}
+}
+
+// The two halves are an upsert's, and no other verb has two of them.
+func TestScopedValueIsRefusedOutsideUpsert(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		v    Values
+		want string
+	}{
+		{"OnInsert", Values{"LastIP": OnInsert("1.1.1.1")}, "write.OnInsert"},
+		{"OnUpdate", Values{"LastIP": OnUpdate("1.1.1.1")}, "write.OnUpdate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := resolveValues(scopedSchema(), tc.v)
+			if err == nil || !strings.Contains(err.Error(), tc.want) ||
+				!strings.Contains(err.Error(), "UPSERT") {
+				t.Fatalf("a scoped value must be refused off the upsert path, got %v", err)
+			}
+		})
+	}
+}
+
+// The clearing verbs UNSCOPED, which is what they have always been: an upsert
+// states each one twice — bound in the row it proposes, literal (or read back
+// from that row) in the conflict clause.
+func TestUpsert_ClearingVerbsSayThemselvesOnBothHalves(t *testing.T) {
+	w, _ := newScopedWriter(t)
+	key := upsertConfig{conflictGo: []string{"Identity"}}
+
+	plan, err := w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": "1.1.1.1",
+		"RepeatedAt": StampNull, "RepeatCount": StampEmpty,
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, _, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	head, tail, _ := strings.Cut(sql, "ON CONFLICT")
+	if !strings.Contains(head, "repeated_at") || !strings.Contains(head, "repeat_count") {
+		t.Fatalf("the proposed row states both: %s", head)
+	}
+	if !strings.Contains(tail, "repeated_at = NULL") || !strings.Contains(tail, "repeat_count = 0") {
+		t.Fatalf("the conflict clause says both as literals: %s", tail)
+	}
+
+	// The zero instant is the exception: it is already in the proposed row, so
+	// the conflict path takes it from there rather than binding it twice.
+	plan, err = w.upsertPlan(Values{
+		"Identity": "bob", "LastIP": "1.1.1.1", "RepeatedAt": StampEmpty,
+	}, key)
+	if err != nil {
+		t.Fatalf("upsertPlan: %v", err)
+	}
+	sql, args, err := w.renderUpsert(testPGDialect{}, plan, testUpsertID, testNow)
+	if err != nil {
+		t.Fatalf("renderUpsert: %v", err)
+	}
+	if _, tail, _ = strings.Cut(sql, "ON CONFLICT"); !strings.Contains(tail, "repeated_at = EXCLUDED.repeated_at") {
+		t.Fatalf("the zero instant is read back from the proposed row: %s", tail)
+	}
+	if len(args) != 4 || !args[3].(time.Time).IsZero() {
+		t.Fatalf("the zero instant is bound once, args = %v", args)
 	}
 }

@@ -186,13 +186,14 @@ err = jobs.DeleteOne(ctx, criteria.ByID(id))
 n, err = jobs.Archive(ctx, criteria.Where(criteria.Eq("Source", src)))
 n, err = jobs.Unarchive(ctx, criteria.Where(criteria.Eq("Source", src)))
 
-err = jobs.Upsert(ctx, write.Values{                    // keyed on a conflict target,
-    "Source":     src,                                  // not on the identity
+err = jobs.Upsert(ctx, write.Values{                      // keyed on a conflict target,
+    "Source":     src,                                    // not on the identity
     "Outcome":    "FAILURE",
-    "TotalCount": write.Stamp,                          // += 1, server-side
-    "FirstSeen":  write.OnInsert(t),                    // set once, never revised
-    "LastAt":     write.Stamp,                          // the operation's instant
-    "LastIP":     ip,                                   // overwritten on conflict
+    "TotalCount": write.Stamp,                            // += 1, server-side
+    "FirstSeen":  write.OnInsert(write.Stamp),            // dated once, never re-dated
+    "RepeatedAt": write.OnUpdate(write.Stamp),            // only a SECOND arrival has one
+    "LastAt":     write.Stamp,                            // the operation's instant
+    "LastIP":     ip,                                     // overwritten on conflict
 }, write.OnConflict("Source", "Outcome"), write.KeepArchiveStateOnConflict())
 
 n, err = jobs.UpdateAll(ctx, write.Values{"Status": "cancelled"})   // the deliberate sweep
@@ -207,7 +208,7 @@ n, err = jobs.DeleteAll(ctx)</code></pre>
     <strong><code>Upsert</code> is the one write keyed on something other than the identity</strong>: it inserts when
     nothing matches the key <code>write.OnConflict(...)</code> names, and updates the row that does — in one statement,
     so two callers racing on the same key cannot both decide the row is missing. Each <code>Values</code> slot declares
-    what happens on a conflict, and the four cases are the four kinds of column an upsert has:
+    what happens on a conflict, and the cases are the kinds of column an upsert has:
 </p>
 <table>
     <thead><tr><th>Slot</th><th>On insert</th><th>On conflict</th></tr></thead>
@@ -216,9 +217,30 @@ n, err = jobs.DeleteAll(ctx)</code></pre>
         <tr><td><code>write.Stamp</code> on a <a href="#table-schema">stamped</a> TIME column</td><td>the operation's instant</td><td>the operation's instant</td></tr>
         <tr><td><code>write.Stamp</code> on a <a href="#table-schema">stamped</a> COUNTER (<code>StampedCounterField</code>)</td><td><code>1</code></td><td><code>col = col + 1</code>, computed server-side</td></tr>
         <tr><td><code>write.OnInsert(v)</code></td><td>bound</td><td><strong>untouched</strong> — established once, never revised</td></tr>
+        <tr><td><code>write.OnInsert(write.Stamp)</code> on a stamped column</td><td>the operation's instant (or <code>1</code> on a counter)</td><td><strong>untouched</strong></td></tr>
+        <tr><td><code>write.OnUpdate(v)</code></td><td><strong>absent</strong> — the column takes its DEFAULT</td><td>bound</td></tr>
+        <tr><td><code>write.OnUpdate(write.Stamp)</code> on a stamped column</td><td><strong>absent</strong></td><td>the operation's instant (or <code>col = col + 1</code> on a counter)</td></tr>
         <tr><td>the conflict key itself</td><td>bound</td><td>untouched — it is the thing that matched</td></tr>
     </tbody>
 </table>
+<p>
+    <strong><code>write.OnInsert</code> and <code>write.OnUpdate</code> scope a slot to ONE half of the statement</strong>
+    — the row it creates, or the row it finds — and each takes a stamp verb as readily as a value. That pairing is the
+    only way to write a column with the framework's <em>own</em> instant on exactly one of the two paths:
+    <code>write.OnInsert(write.Stamp)</code> dates a creation and never re-dates it (a bare <code>write.Stamp</code>
+    would refresh it on every conflict), and <code>write.OnUpdate(write.Stamp)</code> dates only the collision. The
+    caller cannot compute that instant itself — under <code>relational.clock: db</code> it is read from the very
+    transaction the statement runs in — which is precisely why the request travels as a marker instead of a value.
+    <code>write.StampNull</code> and <code>write.StampEmpty</code> scope the same way.
+</p>
+<p>
+    Two things to know about them. An <code>OnUpdate</code> column is left out of the proposed row entirely, so it has
+    to tolerate absence on the creating path: <code>NOT NULL</code> with no <code>DEFAULT</code> makes that path fail,
+    and that is the table's contract to settle. And both wrappers are <strong>refused everywhere but an
+    <code>Upsert</code></strong> — on a plain <code>Insert</code> every column is insert-only already, on an
+    <code>Update</code> there is no insert path, and on the conflict key itself scoping says either nothing or
+    something the MERGE dialects reject outright.
+</p>
 <p>
     The key is named <strong>per call</strong>, by Go field name, because one table legitimately has more than one way
     to be conflicted on and four of the five engines take the key on the statement itself. <strong>MySQL is the

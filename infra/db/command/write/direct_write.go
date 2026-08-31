@@ -108,9 +108,34 @@ var StampNull = stampMarker{domain.StampToNull}
 // difference between "counted nothing" and "has no count".
 var StampEmpty = stampMarker{domain.StampToEmpty}
 
-// insertOnlyValue wraps a value a caller wants bound when the row is CREATED and
-// left alone when an Upsert finds one already there.
-type insertOnlyValue struct{ v any }
+// writeScope says which HALF of an upsert a value binds on. Its zero value is
+// the ordinary one — bound on both — so a Values slot with no wrapper keeps
+// meaning exactly what it has always meant, on every verb.
+type writeScope int
+
+const (
+	scopeBoth writeScope = iota
+	scopeInsert
+	scopeUpdate
+)
+
+// verb names the wrapper a scope came from, for the diagnostics that have to say
+// which one the caller wrote.
+func (s writeScope) verb() string {
+	if s == scopeUpdate {
+		return "write.OnUpdate"
+	}
+	return "write.OnInsert"
+}
+
+// scopedValue wraps a value a caller wants bound on ONE half of an upsert: the
+// row it creates, or the row it finds. What it carries may be an ordinary value
+// or a stamp marker — the scope says WHERE it applies, the value itself still
+// says what it is.
+type scopedValue struct {
+	scope writeScope
+	v     any
+}
 
 // OnInsert marks a Values slot as insert-only: the value binds on the INSERT and
 // the column is absent from the conflict clause, so an existing row keeps
@@ -118,19 +143,76 @@ type insertOnlyValue struct{ v any }
 //
 //	w.Upsert(ctx, write.Values{
 //	    "Identity":        id,
-//	    "WindowStartedAt": write.OnInsert(t0),   // set when the window opened
-//	    "TotalCount":      write.Stamp,          // counted on every write
+//	    "WindowStartedAt": write.OnInsert(write.Stamp),  // opened once, never reopened
+//	    "TotalCount":      write.Stamp,                  // counted on every write
 //	}, write.OnConflict("Identity"))
 //
-// It exists because an upsert has three things a column can be, not two: bound
-// on both paths (an ordinary value), filled by the framework (write.Stamp), or
-// established once and never revised — a window's start, a first-seen instant, a
-// creation-time attribution. Without it that third kind would be overwritten on
-// every conflict by the value the caller happened to compute this time.
+// It exists because an upsert has more things a column can be than a plain write
+// does: bound on both paths (an ordinary value), filled by the framework
+// (write.Stamp), or established once and never revised — a window's start, a
+// first-seen instant, a creation-time attribution. Without it that last kind
+// would be overwritten on every conflict by the value the caller happened to
+// compute this time.
+//
+// IT TAKES A STAMP VERB TOO, and that pairing is the only way to date a row's
+// CREATION with the operation's own instant: the caller cannot compute that
+// instant (under relational.clock: db it is read from the very transaction the
+// statement runs in), and a bare write.Stamp would refresh the column on every
+// conflict. write.OnInsert(write.StampNull) and write.OnInsert(write.StampEmpty)
+// read the same way — the absence or the zero is stated on the row being
+// created, and the row that was already there is left alone.
 //
 // Outside Upsert it is refused: on a plain Insert every column is insert-only
 // already, and on an Update there is no insert path for it to mean anything.
-func OnInsert(v any) any { return insertOnlyValue{v: v} }
+func OnInsert(v any) any { return scopedValue{scope: scopeInsert, v: v} }
+
+// OnUpdate is the mirror of OnInsert: the value binds ONLY when the row was
+// already there. The column is left out of the proposed row entirely, so on the
+// creating path it takes whatever the table declares for it.
+//
+//	w.Upsert(ctx, write.Values{
+//	    "Identity":   id,
+//	    "LastAt":     write.Stamp,                  // every arrival is dated
+//	    "RepeatedAt": write.OnUpdate(write.Stamp),  // only a SECOND one is
+//	}, write.OnConflict("Identity"))
+//
+// It is what a column describing the COLLISION needs — when this repeated, who
+// overwrote it, a reason that only exists because something was already there.
+// Bound as an ordinary value, such a column would be filled on a first arrival
+// that collided with nothing.
+//
+// Like OnInsert it takes a stamp verb, with the same meaning it carries
+// anywhere else. It is the one place a stamped column is written from an
+// argument of its own rather than read back out of the proposed row — that row
+// does not carry the column at all.
+//
+// THE INSERT HALF IS THE CALLER'S TO THINK ABOUT: a column left out of it has to
+// tolerate absence. NOT NULL with no DEFAULT makes the creating path fail, and
+// that is the table's contract to settle, not the statement's.
+//
+// Outside Upsert it is refused, exactly as OnInsert is: an Update writes every
+// value it is handed, and an Insert has no conflict path.
+func OnUpdate(v any) any { return scopedValue{scope: scopeUpdate, v: v} }
+
+// unwrapScoped separates the scope from the value. A bare value is scopeBoth,
+// which is what every write outside an upsert has and what an upsert slot means
+// when the caller wrapped nothing.
+//
+// Nesting is refused rather than resolved: a value binds on one half or on both,
+// and two wrappers around it say nothing a single one does not already say.
+func unwrapScoped(table, goField string, val any) (writeScope, any, error) {
+	s, wrapped := val.(scopedValue)
+	if !wrapped {
+		return scopeBoth, val, nil
+	}
+	if inner, nested := s.v.(scopedValue); nested {
+		return scopeBoth, nil, fmt.Errorf(
+			"db: %q on table %q wraps %s in %s — a value binds on the insert half, on the conflict half, or "+
+				"on both; nesting the two says nothing a single wrapper does not",
+			goField, table, inner.scope.verb(), s.scope.verb())
+	}
+	return s.scope, s.v, nil
+}
 
 // UpsertOption configures one Upsert. Options carry what the STATEMENT needs and
 // the schema cannot know: which key decides "already there", and what an upsert
@@ -214,6 +296,12 @@ func resolveValues(schema *TableSchema, v Values) (domain.Fields, stampPlan, err
 	for goField, val := range v {
 		if why, managed := managedByVerb[goField]; managed {
 			return nil, stampPlan{}, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
+		}
+		if sv, scoped := val.(scopedValue); scoped {
+			return nil, stampPlan{}, fmt.Errorf(
+				"db: %q on table %q is wrapped in %s — an insert half and a conflict half are an UPSERT's, and "+
+					"no other verb has two of them. Bind the value plainly here",
+				goField, schema.Table(), sv.scope.verb())
 		}
 		if m, marked := val.(stampMarker); marked {
 			// The marker never becomes a bound value: it names a column and the
@@ -440,20 +528,27 @@ func (w *DirectWriter) Unarchive(ctx context.Context, q *criteria.Query) (int64,
 //	    "Identity":        id,
 //	    "IdentityKind":    kind,
 //	    "Outcome":         "FAILURE",
-//	    "TotalCount":      write.Stamp,          // += 1 on both paths
-//	    "WindowStartedAt": write.OnInsert(t0),   // set once, never revised
-//	    "LastAt":          write.Stamp,          // the operation's instant
-//	    "LastIP":          ip,                   // overwritten on conflict
+//	    "TotalCount":      write.Stamp,                 // += 1 on both paths
+//	    "WindowStartedAt": write.OnInsert(write.Stamp),  // dated once, never re-dated
+//	    "LastAt":          write.Stamp,                  // the operation's instant
+//	    "LastIP":          ip,                           // overwritten on conflict
 //	}, write.OnConflict("Identity", "IdentityKind", "Outcome"),
 //	   write.KeepArchiveStateOnConflict())
 //
-// Each Values slot says what happens on a conflict, and the four cases are the
-// four kinds of column an upsert has: an ordinary value is overwritten;
-// write.Stamp is filled by the framework (the operation's instant for a stamped
-// TIME column, `col = col + 1` for a stamped COUNTER, computed server-side under
-// the row's lock so two racing increments cannot collapse into one); OnInsert is
-// established on creation and never revised; and the conflict key itself is
-// insert-only by definition — it is the thing that matched.
+// Each Values slot says what happens on a conflict, and the cases are the kinds
+// of column an upsert has: an ordinary value is overwritten; write.Stamp is
+// filled by the framework (the operation's instant for a stamped TIME column,
+// `col = col + 1` for a stamped COUNTER, computed server-side under the row's
+// lock so two racing increments cannot collapse into one); OnInsert is
+// established on creation and never revised; OnUpdate is stated only when the
+// row was already there, and is absent from the row being created; and the
+// conflict key itself is insert-only by definition — it is the thing that
+// matched.
+//
+// The two wrappers take a stamp verb as readily as a value, which is how a
+// column gets the framework's OWN instant on exactly one of the two paths —
+// write.OnInsert(write.Stamp) dates a creation without ever re-dating it,
+// write.OnUpdate(write.Stamp) dates only the collision.
 //
 // It returns only an error. A row count would have to mean the same on every
 // backend and it does not: MySQL reports 2 for a conflicting upsert and 1 for an
@@ -712,23 +807,24 @@ func (w *DirectWriter) mapErr(err error) error {
 // nothing.
 //
 // It exists apart from resolveValues because an upsert reads the same map with a
-// wider vocabulary: OnInsert means nothing on the other verbs, and there a
-// stamped column rides the managed-column channel instead of a conflict clause.
+// wider vocabulary: OnInsert and OnUpdate mean nothing on the other verbs, which
+// have a single half, and there a stamped column rides the managed-column
+// channel instead of a conflict clause.
 type upsertPlan struct {
-	bound      domain.Fields // ordinary values — overwritten on conflict
+	bound      domain.Fields // ordinary values — written on both halves
 	insertOnly domain.Fields // established on creation, never revised
-	times      []string      // stamped time columns — bound to the operation's instant
-	counters   []string      // stamped counters — 1 on insert, col + 1 on conflict
-	// The clearing verbs. On an upsert each one has to say itself TWICE — once in
-	// the proposed row and once in the conflict clause — because the two halves of
-	// the statement are written separately on every dialect.
-	nullCols     []string // NULL on both halves
-	zeroTimes    []string // the zero instant, bound once and taken by the conflict
-	zeroCounters []string // literal 0 on both halves
-	keyCols    []string      // the conflict target, in declaration order
-	keyed      map[string]bool
-	unarchive  bool
-	sdCol      string
+	updateOnly domain.Fields // stated only when the row was already there
+	// The stamp requests, one plan per half they reach. They are split HERE
+	// rather than tagged column by column because that is what keeps renderUpsert
+	// honest: a bucket goes into the proposed row, into the conflict clause, or
+	// into both, and neither half can forget a column the other one states.
+	stamps       stampPlan // asked on both halves
+	insertStamps stampPlan // OnInsert(write.Stamp…) — the proposed row only
+	updateStamps stampPlan // OnUpdate(write.Stamp…) — the conflict clause only
+	keyCols      []string  // the conflict target, in declaration order
+	keyed        map[string]bool
+	unarchive    bool
+	sdCol        string
 }
 
 func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error) {
@@ -756,6 +852,7 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 	plan := upsertPlan{
 		bound:      domain.Fields{},
 		insertOnly: domain.Fields{},
+		updateOnly: domain.Fields{},
 		unarchive:  cfg.archive == archiveUnarchive,
 		sdCol:      sdCol,
 	}
@@ -764,6 +861,7 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 	// columns are insert-only by definition — they are what matched — so they are
 	// tracked here and skipped when the conflict clause is assembled.
 	isKey := make(map[string]bool, len(cfg.conflictGo))
+	keyGo := make(map[string]bool, len(cfg.conflictGo))
 	for _, g := range cfg.conflictGo {
 		rf, ok := w.schema.Resolve(g)
 		if !ok {
@@ -776,16 +874,38 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 					"be part of the row being written", table, g)
 		}
 		isKey[rf.Column] = true
+		keyGo[g] = true
 		plan.keyCols = append(plan.keyCols, rf.Column)
 	}
 
-	var asked []domain.StampRequest
-	for goField, val := range v {
+	var asked, askedOnInsert, askedOnUpdate []domain.StampRequest
+	for goField, raw := range v {
 		if why, managed := managedByVerb[goField]; managed {
 			return upsertPlan{}, fmt.Errorf("db: %q cannot be written directly — %s", goField, why)
 		}
+		scope, val, err := unwrapScoped(table, goField, raw)
+		if err != nil {
+			return upsertPlan{}, err
+		}
+		// The key is insert-only by definition — it is what MATCHED — so scoping
+		// it says either nothing or something the statement cannot honor: the
+		// MERGE dialects refuse an assignment to a join column outright.
+		if scope != scopeBoth && keyGo[goField] {
+			return upsertPlan{}, fmt.Errorf(
+				"db: Upsert on %q — the conflict field %q cannot be wrapped in %s: the key is what the row was "+
+					"matched on, so it is written once and never revised. Bind it plainly",
+				table, goField, scope.verb())
+		}
 		if m, marked := val.(stampMarker); marked {
-			asked = append(asked, domain.StampRequest{Field: goField, Op: m.op})
+			req := domain.StampRequest{Field: goField, Op: m.op}
+			switch scope {
+			case scopeInsert:
+				askedOnInsert = append(askedOnInsert, req)
+			case scopeUpdate:
+				askedOnUpdate = append(askedOnUpdate, req)
+			default:
+				asked = append(asked, req)
+			}
 			continue
 		}
 		rf, ok := w.schema.Resolve(goField)
@@ -798,21 +918,32 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 				"db: %q on table %q is a stamped field — its value is the framework's, never the caller's. "+
 					"Pass write.Stamp to ask for it: Values{%q: write.Stamp}", goField, table, goField)
 		}
-		if only, insertScoped := val.(insertOnlyValue); insertScoped {
-			plan.insertOnly[rf.Column] = only.v
-			continue
+		switch scope {
+		case scopeInsert:
+			plan.insertOnly[rf.Column] = val
+		case scopeUpdate:
+			plan.updateOnly[rf.Column] = val
+		default:
+			plan.bound[rf.Column] = val
 		}
-		plan.bound[rf.Column] = val
 	}
 
-	claimed, err := w.schema.StampRequestColumns(asked)
-	if err != nil {
-		return upsertPlan{}, err
+	// Each half's requests are validated by the SAME schema surface — a marker on
+	// a plain field is the same mistake whichever half it was scoped to.
+	for _, ask := range []struct {
+		reqs []domain.StampRequest
+		into *stampPlan
+	}{
+		{asked, &plan.stamps},
+		{askedOnInsert, &plan.insertStamps},
+		{askedOnUpdate, &plan.updateStamps},
+	} {
+		claimed, err := w.schema.StampRequestColumns(ask.reqs)
+		if err != nil {
+			return upsertPlan{}, err
+		}
+		ask.into.splitStamps(claimed)
 	}
-	var sp stampPlan
-	sp.splitStamps(claimed)
-	plan.times, plan.counters = sp.requestedTimes, sp.counters
-	plan.nullCols, plan.zeroTimes, plan.zeroCounters = sp.nullCols, sp.zeroTimes, sp.zeroCounters
 	// The key columns stay in `bound` — they are written on the INSERT like any
 	// other value. keyed records them so the CONFLICT clause can skip them:
 	// assigning a column the row was MATCHED on is a no-op at best, and on the
@@ -825,11 +956,17 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 // It runs inside the transaction because a stamped time column binds the
 // operation's instant, and under relational.clock: db that instant is read from
 // the very transaction the statement will run in.
+//
+// The two halves are assembled in this order for a reason: every argument the
+// proposed row binds comes first, and the conflict-only ones follow in the order
+// their assignments appear — which is exactly how the dialect numbers the
+// placeholders it renders for them.
 func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now time.Time) (string, []any, error) {
 	boundKeys := SortedKeys(plan.bound)
 	insertKeys := SortedKeys(plan.insertOnly)
+	updateKeys := SortedKeys(plan.updateOnly)
 
-	cols := make([]string, 0, 1+len(boundKeys)+len(insertKeys)+len(plan.times)+len(plan.counters))
+	cols := make([]string, 0, 1+len(boundKeys)+len(insertKeys))
 	args := make([]any, 0, cap(cols))
 
 	cols = append(cols, w.schema.IDColumn())
@@ -842,63 +979,32 @@ func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now t
 		cols = append(cols, c)
 		args = append(args, d.EncodeArg(plan.insertOnly[c]))
 	}
-	for _, c := range plan.times {
-		cols = append(cols, c)
-		args = append(args, d.EncodeArg(now))
-	}
-	for _, c := range plan.counters {
-		// A fresh row has counted one thing.
-		cols = append(cols, c)
-		args = append(args, int64(1))
-	}
-	for _, c := range plan.zeroTimes {
-		cols = append(cols, c)
-		args = append(args, d.EncodeArg(time.Time{}))
-	}
-	// The proposed row states these too. The INSERT half of an upsert pairs one
-	// column with one argument — there is no room for a literal — so the absence
-	// and the zero are BOUND here, rather than left to whatever DEFAULT the table
-	// happens to declare (a NOT NULL counter may declare none at all).
-	for _, c := range plan.nullCols {
-		cols = append(cols, c)
-		args = append(args, nil)
-	}
-	for _, c := range plan.zeroCounters {
-		cols = append(cols, c)
-		args = append(args, int64(0))
-	}
+	// The stamps the proposed row states: the ones asked on both halves and the
+	// insert-only ones alike. Here they are the same columns bound to the same
+	// values — only the conflict clause below tells the two apart.
+	cols, args = appendProposedStamps(d, cols, args, plan.stamps, now)
+	cols, args = appendProposedStamps(d, cols, args, plan.insertStamps, now)
 	// The managed timestamps ride the INSERT like they do on every other verb.
 	for _, c := range w.schema.InsertNowColumns() {
 		cols = append(cols, c)
 		args = append(args, d.EncodeArg(now))
 	}
 
-	sets := make([]UpsertSet, 0, len(cols))
+	sets := make([]UpsertSet, 0, len(cols)+len(updateKeys))
 	for _, c := range boundKeys {
 		if plan.keyed[c] {
 			continue
 		}
 		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
 	}
-	for _, c := range plan.times {
-		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	sets = appendProposedStampSets(sets, plan.stamps)
+	// From here on the assignments bind arguments of their own: their columns are
+	// absent from the proposed row, so there is nothing there to read them from.
+	for _, c := range updateKeys {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetArg})
+		args = append(args, d.EncodeArg(plan.updateOnly[c]))
 	}
-	for _, c := range plan.counters {
-		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetBump})
-	}
-	// The zero instant is already in the proposed row, so the conflict path takes
-	// it from there — one value, one placeholder, exactly like updated_at below.
-	for _, c := range plan.zeroTimes {
-		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
-	}
-	// NULL and 0 are literals: nothing is bound for them on either half, so there
-	// is no argument order to get wrong between the INSERT and the conflict.
-	for _, c := range plan.nullCols {
-		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "NULL"})
-	}
-	for _, c := range plan.zeroCounters {
-		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "0"})
-	}
+	sets, args = appendConflictStampSets(d, sets, args, plan.updateStamps, now)
 	// updated_at is already in the INSERT list, bound to this same instant, so
 	// the conflict path takes it from the proposed row rather than binding a
 	// second argument — one value, one placeholder, no ordering to get wrong.
@@ -910,4 +1016,73 @@ func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now t
 		sets = append(sets, UpsertSet{Col: plan.sdCol, Mode: core.UpsertSetExpr, Expr: "NULL"})
 	}
 	return d.BuildUpsert(w.schema.Table(), cols, plan.keyCols, sets), args, nil
+}
+
+// appendProposedStamps states a stamp plan in the row the upsert PROPOSES. Every
+// bucket becomes a column of the INSERT with its value bound — including the
+// absence and the zero, which are literals in a conflict clause but cannot be
+// here: the insert half pairs one column with one argument and has no room for
+// an expression, and a NOT NULL counter may declare no DEFAULT at all.
+func appendProposedStamps(d Dialect, cols []string, args []any, sp stampPlan, now time.Time) ([]string, []any) {
+	add := func(columns []string, val any) {
+		for _, c := range columns {
+			cols = append(cols, c)
+			args = append(args, val)
+		}
+	}
+	add(sp.requestedTimes, d.EncodeArg(now))
+	// A fresh row has counted one thing.
+	add(sp.counters, int64(1))
+	add(sp.zeroTimes, d.EncodeArg(time.Time{}))
+	add(sp.nullCols, nil)
+	add(sp.zeroCounters, int64(0))
+	return cols, args
+}
+
+// appendProposedStampSets is the conflict half of the stamps the proposed row
+// already states: a filled or zeroed time is taken from there, a counter
+// increments the EXISTING row, and the two clearing verbs are literals — nothing
+// is bound on either side of them, so there is no argument order to get wrong.
+func appendProposedStampSets(sets []UpsertSet, sp stampPlan) []UpsertSet {
+	for _, c := range sp.requestedTimes {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	for _, c := range sp.counters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetBump})
+	}
+	for _, c := range sp.zeroTimes {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
+	}
+	for _, c := range sp.nullCols {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "NULL"})
+	}
+	for _, c := range sp.zeroCounters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "0"})
+	}
+	return sets
+}
+
+// appendConflictStampSets is the same vocabulary for a stamp asked ONLY on the
+// conflict path. The clearing verbs stay literals and a counter still increments
+// the existing row; the times are what differs — with no proposed row to be read
+// back from, each binds an argument of its own.
+func appendConflictStampSets(d Dialect, sets []UpsertSet, args []any, sp stampPlan, now time.Time) ([]UpsertSet, []any) {
+	for _, c := range sp.requestedTimes {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetArg})
+		args = append(args, d.EncodeArg(now))
+	}
+	for _, c := range sp.counters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetBump})
+	}
+	for _, c := range sp.zeroTimes {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetArg})
+		args = append(args, d.EncodeArg(time.Time{}))
+	}
+	for _, c := range sp.nullCols {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "NULL"})
+	}
+	for _, c := range sp.zeroCounters {
+		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetExpr, Expr: "0"})
+	}
+	return sets, args
 }

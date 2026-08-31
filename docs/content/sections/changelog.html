@@ -7,6 +7,44 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.67.0</span><span class="release-date">August 31, 2026</span></div>
+        <ul>
+            <li><strong>Added</strong> — <strong><code>write.OnUpdate</code>, the conflict half of an Upsert, and a
+                stamp verb inside both scoping wrappers.</strong> An upsert has two halves and only one of them could
+                be addressed: <code>write.OnInsert(v)</code> bound a value on the row being created, everything else
+                was written on both. Two things were unreachable because of it — a column describing the COLLISION
+                ("when did this repeat", "who overwrote it") could not stay out of the row being created, and a column
+                dated with the framework's OWN instant could not be dated once, since a bare <code>write.Stamp</code>
+                refreshes it on every conflict and the caller cannot compute that instant itself (under
+                <code>relational.clock: db</code> it is read from the very transaction the statement runs in).
+                <ul>
+                    <li><code>write.OnInsert(write.Stamp)</code> dates a creation and never re-dates it;
+                        <code>write.OnUpdate(write.Stamp)</code> dates only the collision.
+                        <code>write.StampNull</code> and <code>write.StampEmpty</code> scope the same way, and so do
+                        ordinary values — <code>write.OnUpdate(v)</code> binds only when the row was already there.</li>
+                    <li>An <code>OnUpdate</code> column is absent from the proposed row, so on the creating path it
+                        takes the table's DEFAULT — <code>NOT NULL</code> with no DEFAULT makes that path fail, and
+                        that is the table's contract to settle. On the conflict path it binds a placeholder of its own
+                        on every engine.</li>
+                    <li>Three refusals ship with it, all raised before a transaction is opened: a scoped value on any
+                        verb other than <code>Upsert</code>, the two wrappers nested in each other, and either wrapper
+                        on a conflict-key field — written once by definition, and rejected outright by the MERGE
+                        dialects as an assignment to a join column.</li>
+                </ul>
+                See <a href="#direct-schema">Direct schemas</a>.</li>
+            <li><strong>Fixed</strong> — <strong><code>write.OnInsert(write.Stamp)</code> was refused with a
+                diagnostic that named the very thing the caller had written.</strong> A stamped column carrying the
+                marker was judged before the wrapper was unwrapped, so the write came back with "…is a stamped field —
+                its value is the framework's, never the caller's. Pass write.Stamp", which is what it had been passed.
+                On a PLAIN field the same expression was worse than refused: the marker was bound as an ordinary
+                argument and reached the driver.</li>
+            <li><strong>Fixed</strong> — <strong><code>write.OnInsert</code> outside an <code>Upsert</code> was
+                documented as refused and was not.</strong> <code>Insert</code>, <code>Update</code>,
+                <code>UpdateOne</code> and <code>UpdateAll</code> bound the wrapper itself as the column's value; it is
+                now refused by name, with the reason.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.66.0</span><span class="release-date">August 30, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong>the stamped family can now CLEAR a column:

@@ -96,6 +96,10 @@ func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets [
 		return b.String()
 	}
 	b.WriteString(" DO UPDATE SET ")
+	// A conflict-only value binds its own argument, numbered after the inserted
+	// columns — the clause is rendered after the VALUES list, so the positions
+	// line up with the arguments appended behind the insert ones.
+	arg := len(cols)
 	for i, s := range sets {
 		if i > 0 {
 			b.WriteString(", ")
@@ -111,6 +115,9 @@ func (d pgDialect) BuildUpsert(table string, cols, conflictCols []string, sets [
 			b.WriteString(".")
 			b.WriteString(d.QuoteIdent(s.Col))
 			b.WriteString(" + 1")
+		case core.UpsertSetArg:
+			arg++
+			b.WriteString(d.Placeholder(arg))
 		default:
 			b.WriteString(s.Expr)
 		}

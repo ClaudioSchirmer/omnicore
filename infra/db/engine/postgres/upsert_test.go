@@ -53,3 +53,24 @@ func TestPgDialect_BuildUpsert_DoNothing(t *testing.T) {
 		t.Errorf("empty sets must render DO NOTHING, got:\n%s", got)
 	}
 }
+
+// A conflict-ONLY assignment (write.OnUpdate) binds a placeholder of its own,
+// numbered after the inserted columns: DO UPDATE is rendered after the VALUES
+// list, so the arguments the caller appends behind the insert ones line up.
+func TestPgDialect_BuildUpsert_ArgContinuesTheNumbering(t *testing.T) {
+	got := pgDialect{}.BuildUpsert(
+		"authentication_attempts",
+		[]string{"id", "identity", "last_ip"},
+		[]string{"identity"},
+		[]core.UpsertSet{
+			{Col: "last_ip", Mode: core.UpsertSetNew},
+			{Col: "repeated_at", Mode: core.UpsertSetArg},
+			{Col: "repeated_by", Mode: core.UpsertSetArg},
+		},
+	)
+	for _, want := range []string{"repeated_at = $4", "repeated_by = $5"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pg upsert missing %q in:\n%s", want, got)
+		}
+	}
+}

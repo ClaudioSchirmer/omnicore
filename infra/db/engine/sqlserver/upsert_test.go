@@ -67,3 +67,21 @@ func TestSQLServerDialect_BuildUpsert_DoNothing(t *testing.T) {
 		t.Errorf("HOLDLOCK is mandatory on every MERGE upsert, got:\n%s", got)
 	}
 }
+
+// A conflict-ONLY assignment (write.OnUpdate) binds a placeholder of its own,
+// numbered after the source columns: WHEN MATCHED is rendered after the USING
+// SELECT, so the arguments appended behind the insert ones line up.
+func TestSQLServerDialect_BuildUpsert_ArgContinuesTheNumbering(t *testing.T) {
+	got := sqlserverDialect{}.BuildUpsert(
+		"authentication_attempts",
+		[]string{"id", "identity", "last_ip"},
+		[]string{"identity"},
+		[]core.UpsertSet{
+			{Col: "last_ip", Mode: core.UpsertSetNew},
+			{Col: "repeated_at", Mode: core.UpsertSetArg},
+		},
+	)
+	if !strings.Contains(got, "WHEN MATCHED THEN UPDATE SET [last_ip] = source.[last_ip], [repeated_at] = @p4") {
+		t.Errorf("sqlserver upsert missing the conflict-only placeholder in:\n%s", got)
+	}
+}
