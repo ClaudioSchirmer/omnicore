@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-08-31
+
 ### Added
 
 - **`write.OnUpdate` — the conflict half of an Upsert — and both scoping wrappers
