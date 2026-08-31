@@ -57,9 +57,13 @@ from the tag.
    fresh empty `## [Unreleased]` above it. (The `[X.Y.Z]: …/releases/tag/vX.Y.Z` link
    reference at the bottom is optional — the convention lapsed after 0.12.0.)
 2. **`index.html`** — bump the `#verBadge` span (`v…`).
-3. **`content/sections/changelog.html`** — add a new `.release` block at the top
-   (`<span class="release-tag">vX.Y.Z</span><span class="release-date">Month D, YYYY</span>`),
-   mirroring the CHANGELOG.md entry. **Breaking entries** (here or in the standing
+3. **`content/sections/changelog.html`** — rename the standing **Unreleased** block's head to
+   `<span class="release-tag">vX.Y.Z</span><span class="release-date">Month D, YYYY</span>`,
+   mirroring the CHANGELOG.md entry. (While work is in flight its entries accumulate in that
+   block, headed `<span class="release-tag">Unreleased</span><span class="release-date">on the
+   next tag</span>` — the same standing block `../CHANGELOG.md` keeps, so the two never drift and
+   a version block never appears for a tag that does not exist. Open a fresh empty one above after
+   the rename.) **Breaking entries** (here or in the standing
    `[Unreleased]` block) MUST carry a standalone `<strong>breaking</strong>` right
    after `<strong>Changed</strong> —`: `assets/app.js` auto-derives each release's
    severity — the ▲ icon and the release-tag colour — by scanning entries for a

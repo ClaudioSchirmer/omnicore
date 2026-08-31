@@ -245,3 +245,5 @@ func (pgLikeDialect) ReleaseSavepoint(name string) string                       
 func (pgLikeDialect) IsUniqueViolation(error) (string, bool)                          { return "", false }
 func (pgLikeDialect) IsForeignKeyViolation(error) (string, bool)                      { return "", false }
 func (pgLikeDialect) BuildUpsert(string, []string, []string, []core.UpsertSet) string { return "" }
+
+func (pgLikeDialect) AllowsSubqueryOnWriteTarget() bool { return true }

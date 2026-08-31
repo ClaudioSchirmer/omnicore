@@ -83,6 +83,10 @@ func (sqlserverDialect) ApplyLimitOffset(sqlText string, limit, offset int) stri
 	return sqlText + " OFFSET " + strconv.Itoa(offset) + " ROWS FETCH NEXT " + strconv.Itoa(limit) + " ROWS ONLY"
 }
 
+// AllowsSubqueryOnWriteTarget — T-SQL puts no restriction on reading the
+// updated table from a subquery of the same statement.
+func (sqlserverDialect) AllowsSubqueryOnWriteTarget() bool { return true }
+
 // Savepoint statements, T-SQL flavor: SAVE TRANSACTION opens the savepoint,
 // ROLLBACK TRANSACTION <name> rolls back to it — and there is NO release
 // statement (a savepoint is simply discarded at COMMIT), so ReleaseSavepoint

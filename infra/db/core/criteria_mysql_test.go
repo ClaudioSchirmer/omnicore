@@ -150,3 +150,9 @@ func TestMySQLVisitor_DomainIDArgEncodedToBinary(t *testing.T) {
 		t.Fatalf("args[0] = %v (%T), want a 16-byte BINARY(16) form", args[0], args[0])
 	}
 }
+
+// AllowsSubqueryOnWriteTarget mirrors the real MySQL dialect: it is the one
+// supported engine that refuses a subquery reading the statement's own write
+// target (error 1093), and the fake has to say so for that refusal to be
+// exercised here.
+func (testMySQLDialect) AllowsSubqueryOnWriteTarget() bool { return false }

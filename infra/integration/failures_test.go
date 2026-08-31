@@ -471,3 +471,5 @@ func TestMarkProcessed(t *testing.T) {
 		}
 	})
 }
+
+func (fakeDialect) AllowsSubqueryOnWriteTarget() bool { return true }

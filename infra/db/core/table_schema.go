@@ -1235,6 +1235,33 @@ func (s *TableSchema) ColumnOf(goName string) (string, bool) {
 	return f.column, ok
 }
 
+// fieldIsNullable reports whether a Go field can hold an ABSENCE, and whether
+// that could be determined at all.
+//
+// The Go type is the declaration, exactly as the read joins read it: a pointer
+// holds NULL, a value does not. known is false when there is no struct to ask —
+// a type-less schema, or a field that resolves to no struct position — and a
+// caller then leaves the question unenforced rather than guessing, which is the
+// stance the join validation already takes for a column its target's struct
+// does not expose.
+func (s *TableSchema) fieldIsNullable(goField string) (nullable, known bool) {
+	if s == nil || s.typ == nil {
+		return false, false
+	}
+	if goField == s.idGo {
+		return s.IDKindOf(goField) == IDPointer, true
+	}
+	f, ok := s.byGo[goField]
+	if !ok {
+		return false, false
+	}
+	ft, ok := f.path.TypeIn(s.typ)
+	if !ok {
+		return false, false
+	}
+	return ft.Kind() == reflect.Pointer, true
+}
+
 // GoOf returns the Go field name for a physical column (ID included). The
 // inverse of ColumnOf — lossless because the map is complete.
 func (s *TableSchema) GoOf(column string) (string, bool) {

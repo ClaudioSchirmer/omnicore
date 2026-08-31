@@ -95,3 +95,5 @@ func (d testPGDialect) BuildUpsert(table string, cols, conflictCols []string, se
 	}
 	return sql + " DO UPDATE SET " + strings.Join(parts, ", ")
 }
+
+func (testPGDialect) AllowsSubqueryOnWriteTarget() bool { return true }

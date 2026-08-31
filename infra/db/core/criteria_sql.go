@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
@@ -32,6 +34,29 @@ type sqlVisitor struct {
 	base int
 	sb   strings.Builder
 	args []any
+
+	// ─── subquery scaffolding ────────────────────────────────────────────────
+	//
+	// parent is the ENCLOSING scope, nil for a statement's own predicate. It is
+	// what an Outer(...) reference resolves against — one level, never further:
+	// searching outward is how SQL silently binds a mistyped inner column to an
+	// outer table, and this module declares names instead of inferring them.
+	parent *sqlVisitor
+	// selfQual is the (quoted) qualifier this scope's own columns carry. Empty
+	// at statement level, where qual already says what the FROM demands; a
+	// subquery sets it to its source's alias, so every column it renders is
+	// unambiguous and no name can drift out to the enclosing scope.
+	selfQual string
+	// depth is the nesting level (0 = statement), which names the alias.
+	depth int
+	// writeTarget is the table an UPDATE/DELETE is modifying, empty on a read.
+	// It exists for one engine-specific refusal — see Dialect
+	// AllowsSubqueryOnWriteTarget.
+	writeTarget string
+	// srcSchema is the subquery's source, nil at statement level. It is carried
+	// only so an unresolved name gets the message that fits the place it was
+	// written in.
+	srcSchema *TableSchema
 }
 
 // ColQual is the qualification a statement needs for the columns it renders,
@@ -119,12 +144,68 @@ func liftIDProbe(val any) any {
 	}
 }
 
-func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
-	rf, ok := v.resolve(c.Field)
+// column resolves a Go field of THIS scope and renders it as the SQL identifier
+// the scope needs: what the statement's FROM demands at the top level (byte for
+// byte what it always was), the subquery's own alias inside one.
+func (v *sqlVisitor) column(goField string) (string, error) {
+	rf, ok := v.resolve(goField)
 	if !ok {
-		return fmt.Errorf("criteria: unknown field %q (not a persisted field of the entity)", c.Field)
+		if v.srcSchema != nil {
+			return "", subFieldError(v.srcSchema, goField, "a predicate on")
+		}
+		return "", fmt.Errorf("criteria: unknown field %q (not a persisted field of the entity)", goField)
 	}
-	col := QualifyCol(rf, v.qual, v.dialect)
+	if v.selfQual != "" {
+		return v.selfQual + "." + v.dialect.QuoteIdent(rf.Column), nil
+	}
+	return QualifyCol(rf, v.qual, v.dialect), nil
+}
+
+// columnForInner renders one of THIS scope's columns as a NESTED scope must
+// spell it: always qualified. At statement level that means the table the column
+// physically lives on (QualifyCol's owner form) — which is legal with no change
+// to the enclosing statement, because that table is in its FROM under its own
+// name; inside a subquery it is that subquery's alias.
+func (v *sqlVisitor) columnForInner(rf ResolvedField) string {
+	if v.selfQual != "" {
+		return v.selfQual + "." + v.dialect.QuoteIdent(rf.Column)
+	}
+	return QualifyCol(rf, ColQual{Owner: true}, v.dialect)
+}
+
+// outerColumn renders an Outer(...) reference: the enclosing scope's column,
+// qualified, with no argument bound. It is what makes a subquery correlated.
+func (v *sqlVisitor) outerColumn(ref criteria.OuterRef) (string, error) {
+	if v.parent == nil {
+		return "", fmt.Errorf(
+			"criteria: Outer(%q) used outside a subquery — an outer reference only means "+
+				"something inside Sub(...).Where(...)", ref.Field)
+	}
+	rf, ok := v.parent.resolve(ref.Field)
+	if !ok {
+		return "", fmt.Errorf(
+			"criteria: Outer(%q): the enclosing statement has no such field. An outer reference "+
+				"reaches exactly one level up and is never searched for further out", ref.Field)
+	}
+	return v.parent.columnForInner(rf), nil
+}
+
+// operand renders the right-hand side of a comparison: a bound placeholder for a
+// literal, the enclosing scope's column for an Outer reference. Correlation
+// therefore costs no operator of its own — every builder that takes an `any`
+// value takes an OuterRef.
+func (v *sqlVisitor) operand(goField string, val any) (string, error) {
+	if ref, ok := val.(criteria.OuterRef); ok {
+		return v.outerColumn(ref)
+	}
+	return v.place(goField, val), nil
+}
+
+func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
+	col, err := v.column(c.Field)
+	if err != nil {
+		return err
+	}
 
 	switch c.Op {
 	case criteria.OpIsNull:
@@ -154,7 +235,11 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 		}
 		ph := make([]string, len(c.Values))
 		for i, val := range c.Values {
-			ph[i] = v.place(c.Field, val)
+			p, err := v.operand(c.Field, val)
+			if err != nil {
+				return err
+			}
+			ph[i] = p
 		}
 		v.sb.WriteString(col)
 		if c.Op == criteria.OpNin {
@@ -168,11 +253,15 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 		if len(c.Values) != 1 {
 			return fmt.Errorf("criteria: operator %q on %q requires exactly one value, got %d", c.Op, c.Field, len(c.Values))
 		}
+		rhs, err := v.operand(c.Field, c.Values[0])
+		if err != nil {
+			return err
+		}
 		if c.Op == criteria.OpILike {
 			// Case-insensitive LIKE is dialect-specific and rendered as a whole
 			// clause: native ILIKE on Postgres, LOWER(col) LIKE LOWER(?) on MySQL
 			// (case-insensitive on any collation).
-			v.sb.WriteString(v.dialect.ILikeClause(col, v.place(c.Field, c.Values[0])))
+			v.sb.WriteString(v.dialect.ILikeClause(col, rhs))
 			break
 		}
 		if c.Op == criteria.OpLike {
@@ -180,7 +269,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 			// reliably case-sensitive on PG/Oracle, so MySQL/SQL Server force
 			// byte-exact comparison via Dialect.LikeClause. Rendered as a whole
 			// clause like ILike (not a plain binary operator).
-			v.sb.WriteString(v.dialect.LikeClause(col, v.place(c.Field, c.Values[0])))
+			v.sb.WriteString(v.dialect.LikeClause(col, rhs))
 			break
 		}
 		op, ok := binaryOps[c.Op]
@@ -191,7 +280,7 @@ func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {
 		v.sb.WriteByte(' ')
 		v.sb.WriteString(op)
 		v.sb.WriteByte(' ')
-		v.sb.WriteString(v.place(c.Field, c.Values[0]))
+		v.sb.WriteString(rhs)
 	}
 	return nil
 }
@@ -241,6 +330,308 @@ func (v *sqlVisitor) VisitNot(n criteria.Negation) error {
 	return nil
 }
 
+// ─── Subqueries ─────────────────────────────────────────────────────────────
+
+// subAliasBudget is how long a derived subquery alias may get before it is
+// hashed instead — the same budget, for the same reason, as the read joins'
+// (MySQL caps an identifier at 64 characters, the others at 128).
+const subAliasBudget = 48
+
+// subAlias is the alias a subquery's source table is rendered under.
+//
+// A subquery's source is ALWAYS aliased, never written bare. The alternative —
+// aliasing only on a detected collision — needs to know every table already in
+// scope, which the translator does not: a statement hands it a resolver, not its
+// FROM. Aliasing unconditionally makes self-correlation (a subquery over the
+// same table as the statement) correct by construction, and makes it impossible
+// for an inner column name to drift out and silently bind to an outer table.
+func subAlias(table string, depth int) string {
+	name := table + "_sq" + strconv.Itoa(depth)
+	if len(name) <= subAliasBudget {
+		return name
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(table))
+	return "sq" + strconv.Itoa(depth) + "_" + strconv.FormatUint(h.Sum64(), 16)
+}
+
+// anchorOnlyResolver is the field resolution a subquery gets: its source's OWN
+// row, and nothing else.
+//
+// TableSchema.Resolve deliberately reaches past the anchor into the siblings and
+// the shared base, because a statement that resolves through it carries those
+// tables in its FROM as 1:1 LEFT JOINs. A subquery's FROM is ONE table, so a
+// field resolving onto a satellite would be qualified by a table that is not
+// there. Refusing it names the fix (make that table the subquery's own source,
+// or nest an Exists over it) instead of emitting SQL that cannot run.
+func anchorOnlyResolver(s *TableSchema) FieldResolver {
+	return func(goField string) (ResolvedField, bool) {
+		rf, ok := s.Resolve(goField)
+		if !ok || rf.Owner != OwnerAnchor {
+			return ResolvedField{}, false
+		}
+		return rf, true
+	}
+}
+
+func (v *sqlVisitor) VisitSubquery(c criteria.SubqueryComparison) error {
+	col, err := v.column(c.Field)
+	if err != nil {
+		return err
+	}
+	op, ok := subqueryOps[c.Op]
+	if !ok {
+		return fmt.Errorf(
+			"criteria: operator %q does not take a subquery — the set forms are InSub/NinSub and "+
+				"the scalar ones EqSub/NeSub/GtSub/GteSub/LtSub/LteSub", c.Op)
+	}
+	if c.Op == criteria.OpNin {
+		if err := v.refuseNotInOnNullable(c); err != nil {
+			return err
+		}
+	}
+	sub, err := v.renderSub(c.Sub, false)
+	if err != nil {
+		return err
+	}
+	v.sb.WriteString(col)
+	v.sb.WriteByte(' ')
+	v.sb.WriteString(op)
+	v.sb.WriteByte(' ')
+	switch c.Sub.Quant {
+	case criteria.QuantAny:
+		v.sb.WriteString("ANY ")
+	case criteria.QuantAll:
+		v.sb.WriteString("ALL ")
+	}
+	v.sb.WriteByte('(')
+	v.sb.WriteString(sub)
+	v.sb.WriteByte(')')
+	return nil
+}
+
+// subqueryOps are the operators a subquery may sit on the right of. LIKE/ILIKE
+// and the null probes are absent on purpose: a pattern match against a row set
+// is not a thing, and IS NULL takes no operand at all.
+var subqueryOps = map[criteria.Operator]string{
+	criteria.OpIn:  "IN",
+	criteria.OpNin: "NOT IN",
+	criteria.OpEq:  "=",
+	criteria.OpNe:  "<>",
+	criteria.OpGt:  ">",
+	criteria.OpGte: ">=",
+	criteria.OpLt:  "<",
+	criteria.OpLte: "<=",
+}
+
+// refuseNotInOnNullable rejects NOT IN over a subquery whose projected column
+// can be NULL.
+//
+// SQL's NOT IN returns NO ROWS AT ALL when the set contains a single NULL — not
+// an error, not a warning, just a silently empty result. It is the one trap in
+// this family a developer cannot see in the query they wrote, so it is refused
+// rather than documented, and the message names the safe form.
+func (v *sqlVisitor) refuseNotInOnNullable(c criteria.SubqueryComparison) error {
+	if c.Sub == nil {
+		return nil
+	}
+	schema, ok := c.Sub.Src.(*TableSchema)
+	if !ok || c.Sub.Field == "" {
+		return nil
+	}
+	nullable, known := schema.fieldIsNullable(c.Sub.Field)
+	if !known || !nullable {
+		return nil
+	}
+	return fmt.Errorf(
+		"criteria: NinSub(%q, Sub(%s).Select(%q)) — %q is nullable, and SQL's NOT IN matches NO "+
+			"rows at all when the subquery returns a single NULL, silently. Use "+
+			"NotExists(Sub(%s).Where(...)) instead, which says the same thing safely",
+		c.Field, schema.Table(), c.Sub.Field, c.Sub.Field, schema.Table())
+}
+
+func (v *sqlVisitor) VisitExistence(e criteria.Existence) error {
+	sub, err := v.renderSub(e.Sub, true)
+	if err != nil {
+		return err
+	}
+	if e.Negated {
+		v.sb.WriteString("NOT ")
+	}
+	v.sb.WriteString("EXISTS (")
+	v.sb.WriteString(sub)
+	v.sb.WriteByte(')')
+	return nil
+}
+
+// renderSub compiles one nested SELECT and folds its bound arguments into this
+// scope's, in emission order — which is what keeps a positional dialect's
+// numbering correct with no change to any Compile* signature: the subquery emits
+// one contiguous run of placeholders, so continuing from base+len(args) is
+// exact.
+//
+// existence selects nothing (EXISTS asks whether a row is there, so the item is
+// the literal 1); every other form projects exactly one item.
+func (v *sqlVisitor) renderSub(sq *criteria.SubQuery, existence bool) (string, error) {
+	if sq == nil {
+		return "", fmt.Errorf("criteria: a subquery node was built with no Sub(...)")
+	}
+	if sq.Src == nil {
+		return "", fmt.Errorf("criteria: Sub(nil) — a subquery needs the schema it reads from")
+	}
+	schema, ok := sq.Src.(*TableSchema)
+	if !ok {
+		return "", fmt.Errorf(
+			"criteria: Sub(%T) — this backend reads a *core.TableSchema (an entity schema, an "+
+				"aggregate child, a sibling, a shared base or a Direct schema)", sq.Src)
+	}
+	if schema.isExternal() {
+		return "", fmt.Errorf(
+			"criteria: Sub(%s) is an external schema — its columns belong to an UPSTREAM service "+
+				"and describe a Mongo view source, so there is no such table on this connection",
+			schema.Table())
+	}
+	if v.writeTarget != "" && !v.dialect.AllowsSubqueryOnWriteTarget() && schema.Table() == v.writeTarget {
+		return "", fmt.Errorf(
+			"criteria: a subquery inside an UPDATE/DELETE cannot read %q, the table the statement "+
+				"is writing — the selected engine forbids it (MySQL error 1093). Read the ids in "+
+				"their own statement first, or point the subquery at another table",
+			schema.Table())
+	}
+	item, err := v.subItem(sq, schema, existence)
+	if err != nil {
+		return "", err
+	}
+
+	alias := v.dialect.QuoteIdent(subAlias(schema.Table(), v.depth+1))
+	inner := &sqlVisitor{
+		resolve:     anchorOnlyResolver(schema),
+		dialect:     v.dialect,
+		idKind:      schema.IDKindOf,
+		base:        v.base + len(v.args),
+		parent:      v,
+		selfQual:    alias,
+		depth:       v.depth + 1,
+		writeTarget: v.writeTarget,
+		srcSchema:   schema,
+	}
+
+	var where string
+	if sq.Predicate != nil {
+		if err := sq.Predicate.Accept(inner); err != nil {
+			return "", err
+		}
+		where = inner.sb.String()
+	}
+	gate := ScopeGate(sq.Scope, schema, v.dialect, alias)
+
+	order, err := inner.subOrder(sq)
+	if err != nil {
+		return "", err
+	}
+	if sq.LimitN > 0 && order == "" {
+		return "", fmt.Errorf(
+			"criteria: Sub(%s).Limit(%d) with no OrderBy — the first n rows of an unordered set "+
+				"are undefined", schema.Table(), sq.LimitN)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("SELECT ")
+	sb.WriteString(item)
+	sb.WriteString(" FROM ")
+	sb.WriteString(v.dialect.QuoteIdent(schema.Table()))
+	sb.WriteByte(' ')
+	sb.WriteString(alias)
+	if clause := BuildWhereClause(where, gate); clause != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(clause)
+	}
+	if order != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(order)
+	}
+	sql := sb.String()
+	if sq.LimitN > 0 {
+		sql = v.dialect.ApplyLimit(sql, int(sq.LimitN))
+	}
+
+	v.args = append(v.args, inner.args...)
+	return sql, nil
+}
+
+// subItem renders what the subquery projects, and refuses the two ways the
+// projection can be wrong: absent, or asked for more than once.
+func (v *sqlVisitor) subItem(sq *criteria.SubQuery, schema *TableSchema, existence bool) (string, error) {
+	if existence {
+		if sq.Selects() != 0 {
+			return "", fmt.Errorf(
+				"criteria: Exists(Sub(%s)...) projects nothing — drop the Select, the question is "+
+					"whether a row is there", schema.Table())
+		}
+		return "1", nil
+	}
+	switch {
+	case sq.Selects() == 0:
+		return "", fmt.Errorf(
+			"criteria: Sub(%s) has no projected item — a subquery on the right of a comparison "+
+				"needs Select(goField) or one of the Select<Aggregate> forms", schema.Table())
+	case sq.Selects() > 1:
+		return "", fmt.Errorf(
+			"criteria: Sub(%s) projects %d items — a subquery compares one column, so exactly one "+
+				"Select is allowed", schema.Table(), sq.Selects())
+	}
+	if sq.Func == criteria.AggCount {
+		return "COUNT(*)", nil
+	}
+	rf, ok := anchorOnlyResolver(schema)(sq.Field)
+	if !ok {
+		return "", subFieldError(schema, sq.Field, "Select")
+	}
+	col := v.dialect.QuoteIdent(subAlias(schema.Table(), v.depth+1)) + "." + v.dialect.QuoteIdent(rf.Column)
+	if sq.Func == criteria.AggNone {
+		return col, nil
+	}
+	return string(sq.Func) + "(" + col + ")", nil
+}
+
+// subOrder renders the subquery's ORDER BY, resolved and qualified in the
+// subquery's own scope.
+func (v *sqlVisitor) subOrder(sq *criteria.SubQuery) (string, error) {
+	if len(sq.Order) == 0 {
+		return "", nil
+	}
+	parts := make([]string, len(sq.Order))
+	for i, o := range sq.Order {
+		col, err := v.column(o.Field)
+		if err != nil {
+			return "", fmt.Errorf("criteria: subquery order field %q does not resolve on its source", o.Field)
+		}
+		if o.Desc {
+			parts[i] = col + " DESC"
+		} else {
+			parts[i] = col + " ASC"
+		}
+	}
+	return "ORDER BY " + strings.Join(parts, ", "), nil
+}
+
+// subFieldError explains a name that does not resolve INSIDE a subquery,
+// separating "no such field" from the satellite case, which is the one a
+// developer will hit by accident: the same name resolves fine in the enclosing
+// statement, because that statement's FROM carries the satellite and the
+// subquery's does not.
+func subFieldError(schema *TableSchema, goField, where string) error {
+	if rf, ok := schema.Resolve(goField); ok && rf.Owner != OwnerAnchor {
+		return fmt.Errorf(
+			"criteria: %s(%q) inside Sub(%s) resolves onto %q, which a subquery does not have in "+
+				"its FROM — a subquery reads ONE table. Make that table the subquery's own source, "+
+				"or nest an Exists over it",
+			where, goField, schema.Table(), rf.Schema.Table())
+	}
+	return fmt.Errorf(
+		"criteria: %s(%q) inside Sub(%s) — not a persisted field of that table", where, goField, schema.Table())
+}
+
 // CompileWhere renders the predicate into a SQL fragment + ordered args. A nil
 // predicate yields an empty fragment (no WHERE).
 func CompileWhere(e criteria.Expr, resolve FieldResolver, dialect Dialect, idKind func(string) IDKind) (string, []any, error) {
@@ -268,6 +659,27 @@ func CompileWhereQualifiedFrom(e criteria.Expr, resolve FieldResolver, dialect D
 		return "", nil, nil
 	}
 	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind, qual: qual, base: base}
+	if err := e.Accept(v); err != nil {
+		return "", nil, err
+	}
+	return v.sb.String(), v.args, nil
+}
+
+// CompileWhereForWrite is CompileWhereQualifiedFrom for the predicate of an
+// UPDATE or a DELETE, which needs one thing a read does not: the table the
+// statement is modifying.
+//
+// It is there for a single engine-specific refusal. A subquery in a write
+// predicate is ordinary SQL on three of the four backends; MySQL forbids one
+// that reads the statement's own target table (error 1093), and forbids nothing
+// else. Knowing the target is what lets the translator refuse EXACTLY that —
+// neither shrinking the capability on the engines that have it, nor letting the
+// one that does not fail at runtime.
+func CompileWhereForWrite(e criteria.Expr, resolve FieldResolver, dialect Dialect, idKind func(string) IDKind, base int, targetTable string) (string, []any, error) {
+	if e == nil {
+		return "", nil, nil
+	}
+	v := &sqlVisitor{resolve: resolve, dialect: dialect, idKind: idKind, base: base, writeTarget: targetTable}
 	if err := e.Accept(v); err != nil {
 		return "", nil, err
 	}

@@ -133,6 +133,17 @@ type Dialect interface {
 	// `OFFSET m ROWS FETCH NEXT n ROWS ONLY` tail (not the SELECT-head TOP — TOP
 	// cannot express a skip).
 	ApplyLimitOffset(sql string, limit, offset int) string
+	// AllowsSubqueryOnWriteTarget reports whether the predicate of an UPDATE or
+	// a DELETE may contain a subquery that reads the statement's OWN target
+	// table. Standard SQL allows it and three of the four engines do; MySQL
+	// refuses it outright (error 1093, "You can't specify target table 'x' for
+	// update in FROM clause") and refuses nothing else about subqueries.
+	//
+	// It is on the seam rather than derived from an engine name because a new
+	// backend has to ANSWER it: the criteria translator refuses exactly the case
+	// the engine cannot run, and an engine that silently inherited "yes" would
+	// turn a compile-time refusal into a runtime failure.
+	AllowsSubqueryOnWriteTarget() bool
 	// Savepoint / RollbackToSavepoint / ReleaseSavepoint render the in-TX
 	// savepoint statements for a (validated, framework-owned) name. Postgres
 	// and MySQL speak the standard forms; T-SQL spells them SAVE TRANSACTION /

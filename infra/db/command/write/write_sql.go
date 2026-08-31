@@ -110,7 +110,7 @@ func compilePredicate(d Dialect, t writeTarget, pred criteria.Expr, bound int) (
 			"db: a write statement on %q was built with no predicate — that is a full-table "+
 				"UPDATE/DELETE, which this path never emits", t.table)
 	}
-	where, args, err := core.CompileWhereQualifiedFrom(pred, t.resolve, d, t.idKind, core.ColQual{}, bound)
+	where, args, err := core.CompileWhereForWrite(pred, t.resolve, d, t.idKind, bound, t.table)
 	if err != nil {
 		return "", nil, err
 	}

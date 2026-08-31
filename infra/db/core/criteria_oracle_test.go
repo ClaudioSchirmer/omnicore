@@ -152,3 +152,5 @@ func TestOracleVisitor_DomainIDArgEncodedToRaw(t *testing.T) {
 		t.Fatalf("args[0] = %v (%T), want a 16-byte RAW(16) form", args[0], args[0])
 	}
 }
+
+func (testOracleDialect) AllowsSubqueryOnWriteTarget() bool { return true }
