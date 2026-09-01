@@ -132,6 +132,7 @@ audit:
         <tr><td><code>actorIssuer</code></td><td>string (omitempty)</td><td>JWT <code>iss</code> when present</td></tr>
         <tr><td><code>actorClaims</code></td><td>object (omitempty)</td><td>filtered by the <code>auth.auditClaims</code> allowlist</td></tr>
         <tr><td><code>tenantId</code></td><td>string (omitempty)</td><td>multi-tenant scope of the request, read from the JWT <code>tenant_id</code> claim (the fixed key — audit does not honor the <code>auth.authorization.tenant.claim</code> override); backed by the <code>audit_events_tenant_idx</code> column</td></tr>
+        <tr><td><code>clientIp</code></td><td>string (omitempty)</td><td>the request's network origin, as the framework resolved it (see <a href="#app-context">AppContext.ClientIP</a>): the socket peer by default, the rightmost untrusted entry of the forwarded chain once <a href="#yaml-reference"><code>http.trustProxy</code></a> is declared. Empty when the write did not come from an inbound HTTP request (consumer handler, background job). Rides the <code>payload</code> blob rather than a column — unlike <code>tenantId</code> it is detail read WITH an event, not a scope events are filtered by. The slog echo emits it as <code>ip</code>, the same key the access log uses, so one value pivots across both streams</td></tr>
         <tr><td><code>dateTime</code></td><td>RFC3339Nano</td><td>captured at <code>ValidEntity</code> construction</td></tr>
     </tbody></table>
     <p>A full <code>insert</code> event of an aggregate (slog echo shape — <code>database</code> stores the same payload as a row + <code>jsonb</code> blob):</p>
@@ -147,6 +148,7 @@ audit:
   "actor":       "user-42",
   "actorIssuer": "https://idp.example",
   "actorClaims": { "tenant_id": "acme", "roles": ["admin"] },
+  "ip":          "198.51.100.23",
   "dateTime":    "2026-06-09T12:00:00.123456Z",
   "snapshot":    { "Name": "Jane Doe", "Email": "jane@x.test" },
   "children":    { "Address": [

@@ -25,6 +25,7 @@ type AppContext struct {
 	metadata      map[string]any
 	identity      *Identity
 	bearerToken   string
+	clientIP      string
 	correlationID uuid.UUID
 	causationID   uuid.UUID
 	parent        context.Context
@@ -111,6 +112,32 @@ func (c *AppContext) SetBearerToken(token string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bearerToken = token
+}
+
+// ClientIP returns the network origin of the request as the framework
+// resolved it, or "" when nothing resolved it (a background job, a consumer
+// handler, a test fixture — anything that is not an inbound HTTP request).
+//
+// Behind a reverse proxy the value is only as trustworthy as the deployment
+// says it is: with no `http.trustProxy` block it is the socket peer, which is
+// spoof-proof but names the balancer; with the block declared it is the
+// rightmost untrusted entry of the forwarded chain. A service building a
+// network-based control (an IP allow-list, a per-origin rate limit) on this
+// value is therefore also depending on that block being declared correctly —
+// the framework resolves the address, it cannot make an undeclared topology
+// trustworthy.
+func (c *AppContext) ClientIP() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.clientIP
+}
+
+// SetClientIP is the framework middleware's hook to attach the resolved
+// origin. Passing "" clears it.
+func (c *AppContext) SetClientIP(ip string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clientIP = ip
 }
 
 // ActorSubject returns the JWT `sub` of the request, or the sentinel

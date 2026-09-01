@@ -50,3 +50,32 @@ func TestEchoSlog_AllOptionalBlocksEmitted(t *testing.T) {
 		}
 	}
 }
+
+// The slog destination emits the origin under the SAME key the access log
+// uses ("ip"), so an operator pivoting from a suspicious access line to the
+// writes it produced greps one value across both streams.
+func TestEchoSlog_ClientIPEmittedAsIP(t *testing.T) {
+	logger, buf := newCaptureLogger()
+	EchoSlog(nil, logger, appaudit.AuditEvent{
+		ThreadID: uuid.NewString(), EntityType: "User", EntityID: uuid.NewString(),
+		Verb: "update", ActionName: "GetUpdatable", Kind: "delta", Actor: "user-7",
+		DateTime: time.Now().UTC(), ClientIP: "198.51.100.23",
+	})
+	entry := extractAuditLogLine(t, buf)
+	if entry["ip"] != "198.51.100.23" {
+		t.Errorf("audit slog line ip = %v, want 198.51.100.23", entry["ip"])
+	}
+}
+
+func TestEchoSlog_ClientIPOmittedWhenEmpty(t *testing.T) {
+	logger, buf := newCaptureLogger()
+	EchoSlog(nil, logger, appaudit.AuditEvent{
+		ThreadID: uuid.NewString(), EntityType: "User", EntityID: uuid.NewString(),
+		Verb: "insert", ActionName: "GetInsertable", Kind: "snapshot", Actor: "user-7",
+		DateTime: time.Now().UTC(),
+	})
+	entry := extractAuditLogLine(t, buf)
+	if _, ok := entry["ip"]; ok {
+		t.Error("an event with no origin emitted an ip attribute")
+	}
+}

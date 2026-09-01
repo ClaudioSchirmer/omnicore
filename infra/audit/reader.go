@@ -166,6 +166,7 @@ func (r *reader) FindByAggregate(ctx context.Context, entityType, aggregateID st
 // Mirrors the shape buildAuditPayload (persister.go) writes so a row's
 // roundtrip through the table preserves the AuditEvent semantic.
 type auditPayload struct {
+	ClientIP    string                           `json:"clientIp,omitempty"`
 	ActorClaims map[string]any                   `json:"actorClaims,omitempty"`
 	Snapshot    map[string]any                   `json:"snapshot,omitempty"`
 	Changes     []appaudit.FieldChange           `json:"changes,omitempty"`
@@ -231,6 +232,7 @@ func scanAuditRow(scan func(dest ...any) error) (*appaudit.AuditEvent, error) {
 		if err := json.Unmarshal(payloadBytes, &pl); err != nil {
 			return nil, fmt.Errorf("unmarshal payload (id=%s): %w", id, err)
 		}
+		ev.ClientIP = pl.ClientIP
 		ev.ActorClaims = pl.ActorClaims
 		ev.Snapshot = pl.Snapshot
 		ev.Changes = pl.Changes

@@ -758,14 +758,25 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	fwweb.SetAuthorizationEnabled(deps.Config.Auth.Authorization != nil &&
 		deps.Config.Auth.Authorization.Enabled)
 
-	fiberCfg := fiber.Config{
-		AppName:      deps.Config.Service,
-		ErrorHandler: fwweb.ErrorHandler(deps.Pipeline),
+	// The fiber.Config is layered lowest-precedence first: the service's
+	// escape hatch, then the operator's YAML, then the fields the framework
+	// owns outright. Each layer only writes what it declares, so a knob left
+	// unset anywhere keeps Fiber's own default.
+	var fiberCfg fiber.Config
+	if wiring.FiberConfig != nil {
+		wiring.FiberConfig(&fiberCfg)
+		// The hatch may reach every Fiber field EXCEPT the trusted-proxy trio:
+		// those are half of a mechanism whose other half is a middleware, so a
+		// hatch that sets them produces a silently insecure service.
+		if err := rejectHatchProxyConfig(&fiberCfg); err != nil {
+			return nil, err
+		}
 	}
-	// Optional HTTP hardening knobs — each left at Fiber's default when unset.
-	// BodyLimit rejects an oversized body with 413; ReadTimeout surfaces as 408
-	// (both rendered by the ErrorHandler); IdleTimeout silently closes the idle
-	// keep-alive with no response. All three enforced at the fasthttp layer.
+	// Optional HTTP hardening knobs — each left as the layer below set it when
+	// unset. BodyLimit rejects an oversized body with 413; ReadTimeout surfaces
+	// as 408 (both rendered by the ErrorHandler); IdleTimeout silently closes
+	// the idle keep-alive with no response. All three enforced at the fasthttp
+	// layer.
 	if v := deps.Config.HTTP.BodyLimitBytes; v != nil {
 		fiberCfg.BodyLimit = *v
 	}
@@ -775,7 +786,23 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	if v := deps.Config.HTTP.IdleTimeoutSeconds; v != nil {
 		fiberCfg.IdleTimeout = time.Duration(*v) * time.Second
 	}
+	// Trusted-proxy topology. Has to be decided here and not in BeforeServe:
+	// fiber.New precompiles the allowlist into unexported fields, so a config
+	// mutated after construction is never consulted.
+	deps.Config.HTTP.TrustProxy.apply(&fiberCfg)
+	// Framework-owned, written last: the error envelope of every route is
+	// built on this handler, so neither layer above may replace it.
+	fiberCfg.AppName = deps.Config.Service
+	fiberCfg.ErrorHandler = fwweb.ErrorHandler(deps.Pipeline)
 	app := fiber.New(fiberCfg)
+
+	// Request-origin resolution, FIRST in the chain: the access log, the
+	// server span and every handler calling c.IP() must all see the same
+	// address, so it is settled before any of them run. No-op — not even
+	// registered — without http.trustProxy.
+	if tp := deps.Config.HTTP.TrustProxy; tp != nil && tp.Enabled {
+		app.Use(clientIPMiddleware(tp.headerName(), tp.compile()))
+	}
 
 	// The inbound access log — one structured record per request through the
 	// service logger, gated by http.accessLog (default on). Registered OUTSIDE

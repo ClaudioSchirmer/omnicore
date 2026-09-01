@@ -307,3 +307,25 @@ func insertableOf(t *testing.T, e domain.Entity) domain.Insertable {
 	}
 	return i
 }
+
+// The trail answers "from where", not only "who": the resolved origin rides
+// every event the four builders produce.
+func TestPopulateContext_ClientIP(t *testing.T) {
+	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
+	ctx.SetClientIP("198.51.100.23")
+	ev := BuildInsertEvent(ctx, insertableOf(t, &builderTestEntity{Name: "x"}),
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
+	if ev.ClientIP != "198.51.100.23" {
+		t.Errorf("ClientIP = %q, want 198.51.100.23", ev.ClientIP)
+	}
+}
+
+// A write that did not come from an inbound request (consumer handler,
+// background job) leaves it empty rather than inventing an origin.
+func TestPopulateContext_ClientIPEmptyOffTheRequestPath(t *testing.T) {
+	ev := BuildInsertEvent(newBuilderCtx(), insertableOf(t, &builderTestEntity{Name: "x"}),
+		domain.NewID(uuid.NewString()), builderTestSchema, nil)
+	if ev.ClientIP != "" {
+		t.Errorf("ClientIP = %q, want empty off the request path", ev.ClientIP)
+	}
+}

@@ -103,6 +103,9 @@ func InsertAuditEvent(ctx context.Context, exec Execer, placeholder func(int) st
 // exists on the event, not with the AuditEvent's struct shape.
 func buildAuditPayload(ev appaudit.AuditEvent) ([]byte, error) {
 	payload := map[string]any{}
+	if ev.ClientIP != "" {
+		payload["clientIp"] = ev.ClientIP
+	}
 	if len(ev.ActorClaims) > 0 {
 		payload["actorClaims"] = ev.ActorClaims
 	}

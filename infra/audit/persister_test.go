@@ -72,3 +72,44 @@ func TestNullableString_EmptyBecomesNull(t *testing.T) {
 		t.Errorf("populated → %v, want passthrough", v)
 	}
 }
+
+// The origin rides the payload blob, and survives the round-trip back through
+// the reader — a forensic answer to "from where" is worthless if it only
+// exists on the way in.
+func TestAuditPayload_ClientIPRoundTrips(t *testing.T) {
+	payload, err := buildAuditPayload(appaudit.AuditEvent{ClientIP: "198.51.100.23"})
+	if err != nil {
+		t.Fatalf("buildAuditPayload: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if raw["clientIp"] != "198.51.100.23" {
+		t.Fatalf("payload = %s, want clientIp", payload)
+	}
+	// …and back out through the reader's own decode view.
+	var pl auditPayload
+	if err := json.Unmarshal(payload, &pl); err != nil {
+		t.Fatalf("reader unmarshal: %v", err)
+	}
+	if pl.ClientIP != "198.51.100.23" {
+		t.Fatalf("reader decoded ClientIP = %q", pl.ClientIP)
+	}
+}
+
+// An event with no origin must not grow a "clientIp": "" key — the payload
+// scales with what exists, which is why the other blocks are elided too.
+func TestAuditPayload_ClientIPElidedWhenEmpty(t *testing.T) {
+	payload, err := buildAuditPayload(appaudit.AuditEvent{Snapshot: map[string]any{"name": "x"}})
+	if err != nil {
+		t.Fatalf("buildAuditPayload: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := got["clientIp"]; ok {
+		t.Errorf("empty origin emitted a key: %s", payload)
+	}
+}

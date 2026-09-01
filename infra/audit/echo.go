@@ -45,6 +45,11 @@ func EchoSlog(ctx persistence.RequestContext, logger *slog.Logger, ev appaudit.A
 	if ev.TenantID != "" {
 		attrs = append(attrs, slog.String("tenantId", ev.TenantID))
 	}
+	// Matches the access log's "ip" spelling on purpose: an operator pivoting
+	// from a suspicious access line to the writes it produced greps one value.
+	if ev.ClientIP != "" {
+		attrs = append(attrs, slog.String("ip", ev.ClientIP))
+	}
 	if ev.Snapshot != nil {
 		attrs = append(attrs, slog.Any("snapshot", ev.Snapshot))
 	}

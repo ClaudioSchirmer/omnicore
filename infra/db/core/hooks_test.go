@@ -36,6 +36,7 @@ func (notAppContext) ID() uuid.UUID               { return uuid.Nil }
 func (notAppContext) ActorSubject() string        { return persistence.AnonymousActor }
 func (notAppContext) ActorIssuer() string         { return "" }
 func (notAppContext) ActorClaims() map[string]any { return nil }
+func (notAppContext) ClientIP() string            { return "" }
 
 func TestAdaptWriteOptions_EmptyIsZeroHook(t *testing.T) {
 	hook := AdaptWriteOptions[*builderTestEntity](nil)

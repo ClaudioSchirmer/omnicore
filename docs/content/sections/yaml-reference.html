@@ -82,6 +82,36 @@ http:
   readTimeoutSeconds: 15                # transport-level: max time to read the full request off the socket (slowloris defense); unset/0 → none. Breach → 408 Request Timeout (client too slow), written best-effort before the connection closes
   idleTimeoutSeconds: 60               # transport-level: max keep-alive idle before the connection is closed; unset/0 → none. Silent close, no response (normal keep-alive reaping)
   accessLog: true                       # inbound request log (msg: "http.inbound", one JSON record per request, with threadId); unset → on. false silences it where the ingress/mesh already logs
+  trustProxy:                           # reverse-proxy topology; ABSENT (the default) → request origin read from the SOCKET: c.IP() is the peer,
+                                        # c.Host()/c.Scheme() the values it connected with. Spoof-proof, and correct for a directly exposed service —
+                                        # but behind a load balancer the access-log ip field and the server span's client.address then name the BALANCER,
+                                        # and url.scheme reports http for a connection the client made over TLS.
+    enabled: true                       # MANDATORY to activate; declaring any field below without it aborts the boot (a list that does nothing reads as protection)
+    proxies: ["10.0.0.7", "fc00::/7"]   # explicit allowlist: bare IPs and/or CIDR ranges, v4 or v6; malformed entries abort the boot
+    private: true                       # also trust 10/8, 172.16/12, 192.168/16, fc00::/7 — read the WARNING below before using it
+    loopback: false                     # also trust 127.0.0.0/8, ::1/128 — a sidecar proxy in the same network namespace
+    linkLocal: false                    # also trust 169.254.0.0/16, fe80::/10
+    unixSocket: false                   # trust a peer arriving over a Unix domain socket
+    header: X-Forwarded-For             # header carrying the chain; unset → X-Forwarded-For. Use X-Real-IP / CF-Connecting-IP / True-Client-IP per edge
+                                        #
+                                        # At least ONE of proxies/private/loopback/linkLocal/unixSocket is REQUIRED when enabled: an empty allowlist would
+                                        # make every peer's header believable, which is the spoofing hole the block exists to close. A deployment that
+                                        # genuinely wants that says so explicitly with proxies: ["0.0.0.0/0"]. A peer OUTSIDE the allowlist is never read
+                                        # from the header at all, so a caller reaching the service directly cannot forge its own origin.
+                                        #
+                                        # HOW THE ADDRESS IS PICKED — rightmost-untrusted, and it is not Fiber's rule. The header is a CHAIN
+                                        # ("client, proxy1, proxy2"). The framework walks it RIGHT to left, skips every entry that is in the allowlist,
+                                        # and takes the first that is not — the last hop the trusted infrastructure can actually vouch for. Fiber's own
+                                        # rule is leftmost-valid, which on an edge running nginx's DEFAULT proxy_add_x_forwarded_for (an APPEND) returns
+                                        # the entry the CALLER typed; that is why the framework resolves it instead of delegating. Consequence: the edge
+                                        # may append or overwrite, both are safe. If the chain is empty, entirely trusted, or contains a malformed entry
+                                        # (chain of custody broken), the address falls back to the socket peer — the conservative answer, never a guess.
+                                        #
+                                        # WARNING — `private: true` with clients on private networks. The allowlist means "these are PROXIES", and the
+                                        # walk skips anything in it. If your callers also come from RFC1918 space (an internal API, a VPN, a mesh),
+                                        # private: true makes their addresses look like proxy hops and the resolution falls through to the peer. Name the
+                                        # balancer's range in `proxies:` instead — private: true is for the case where the ingress IP is platform-assigned
+                                        # and your clients are external.
 
 relational:                              # the relational backend — system of record + framework control plane
   dialect: postgres                      # MANDATORY — postgres | mysql | sqlserver | oracle | sqlite. NO default: the

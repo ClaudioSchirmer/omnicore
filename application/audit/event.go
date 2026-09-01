@@ -57,7 +57,17 @@ type AuditEvent struct {
 	// slog attribute. Customized claim names (auth.authorization.tenant.claim)
 	// are NOT honored by audit today — the column stays empty for services
 	// that diverge from the default convention.
-	TenantID string                  `json:"tenantId,omitempty"`
+	TenantID string `json:"tenantId,omitempty"`
+	// ClientIP is the request's network origin as the framework resolved it —
+	// the socket peer by default, the rightmost untrusted entry of the
+	// forwarded chain once http.trustProxy is declared. Empty when the write
+	// did not come from an inbound HTTP request (a consumer handler, a
+	// background job) or when the middleware did not run.
+	//
+	// Rides the payload JSON rather than a dedicated column: unlike tenant_id
+	// it is forensic detail read WITH an event, not a scope events are
+	// filtered by.
+	ClientIP string                  `json:"clientIp,omitempty"`
 	DateTime time.Time               `json:"dateTime"`
 	Snapshot map[string]any          `json:"snapshot,omitempty"`
 	Changes  []FieldChange           `json:"changes,omitempty"`

@@ -11,6 +11,89 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-09-01
+
+### Changed
+
+- **`persistence.RequestContext` gained a `ClientIP() string` method.** Breaking
+  only for a service that implements the port itself (`*configuration.AppContext`
+  is the framework's only implementation); the fix is one method returning `""`.
+
+### Added
+
+- **`AppContext.ClientIP()` — the request's network origin, above the
+  transport.** The framework resolved the address for the access log and the
+  server span but never handed it to the layers that cannot import Fiber, so a
+  service needing it (an IP allow-list on a token endpoint, a per-origin limit)
+  had to read `c.IP()` in its own middleware and stash it — reimplementing, by
+  hand, the thing the framework already knew. `AppContextMiddleware` now
+  captures it once, at the single choke point every request passes. `""`
+  outside an inbound HTTP request: the gRPC and integration-receiver entry
+  points build their `AppContext` without one. It inherits the resolution
+  above — the socket peer with no `http.trustProxy` block, the rightmost
+  untrusted entry of the forwarded chain with it.
+- **The audit trail records where a write came from.** `AuditEvent` carries
+  `clientIp`, populated from the `RequestContext` alongside the actor, so the
+  trail answers "from where" and not only "who". It rides the `payload` blob
+  rather than a dedicated column — unlike `tenant_id` it is detail read WITH an
+  event, not a scope events are filtered by — so **no migration is involved**
+  and existing rows stay valid. Both destinations carry it: the `database`
+  payload and the `slog` echo, the latter under the key `ip`, matching the
+  access log so one value pivots across both streams. Empty for a write off the
+  request path (consumer handler, background job).
+
+- **`http.trustProxy` — the reverse-proxy topology the service sits behind.**
+  The framework built its `fiber.Config` from five fields and exposed neither
+  `TrustProxy` nor `ProxyHeader`, so the request's origin was always read from
+  the socket. Spoof-proof, and right for a directly exposed service — but behind
+  a load balancer it made `c.IP()` (and with it the access log's `ip` field and
+  the server span's `client.address`) name the BALANCER on every request, and
+  `c.Scheme()` report `http` for a connection the client made over TLS. There
+  was no way around it from the service either: `fiber.New` precompiles the
+  allowlist into unexported fields, so `Wiring.BeforeServe` came too late.
+  The new block declares it where the rest of the deployment posture lives:
+  `enabled`, `proxies` (IPs and/or CIDR ranges), `private`, `loopback`,
+  `linkLocal`, `unixSocket`, `header` (default `X-Forwarded-For`). Absent, the
+  behavior is byte-for-byte what it was. Two rules keep it honest and are
+  enforced at boot: declaring any field without `enabled: true` is refused (a
+  proxies list that does nothing reads as protection and isn't), and `enabled`
+  with no trusted peer is refused too — an empty allowlist makes Fiber trust
+  every peer's `X-Forwarded-For`, which is the hole the block exists to close.
+  Peers outside the allowlist always keep the socket values, so a caller
+  reaching the service directly cannot forge its own origin.
+  The address itself is resolved **rightmost-untrusted**, not by Fiber: the
+  header is a chain, and Fiber's rule is leftmost-valid — which on an edge
+  running nginx's default `proxy_add_x_forwarded_for` (an append) returns the
+  entry the CALLER typed, reopening the spoof the block exists to close. The
+  framework walks the chain right to left, skips allowlisted hops and takes
+  the first that is not one, so the edge may append or overwrite and both are
+  safe. An empty, fully trusted, or malformed chain falls back to the socket
+  peer rather than guessing. `EnableIPValidation` is set alongside, without
+  which `c.IP()` returns the raw comma-separated header instead of an address.
+  Note that the allowlist means "these are proxies": `private: true` with
+  callers that are themselves on RFC1918 space makes their addresses look like
+  proxy hops, so name the balancer's range in `proxies:` instead.
+- **`Wiring.FiberConfig func(*fiber.Config)`** — the escape hatch for the long
+  tail of `fiber.Config` (`StreamRequestBody`, `ReadBufferSize`, `ServerHeader`,
+  `JSONEncoder`, the routing flags…), so a service is never blocked on a
+  framework release for a Fiber field nobody anticipated. It runs FIRST, on a
+  zero config, before the framework writes anything: `FiberConfig` < the `http:`
+  yaml block < the framework. An operator's yaml therefore outranks a value
+  hardcoded here, and `AppName` + `ErrorHandler` are written last and are not
+  overridable — the error envelope of every route is built on the framework's
+  handler. The one field group it may NOT reach is Fiber's trusted-proxy trio
+  (`TrustProxy`, `TrustProxyConfig`, `ProxyHeader`): setting those from the hook
+  aborts the boot, naming `http.trustProxy`. They are half of a mechanism whose
+  other half is a middleware registered from the yaml block, so a hook can only
+  produce the insecure half — the forwarded header trusted by Fiber's leftmost
+  rule — and it would boot silently.
+- **The inbound server span carries the request's origin.** It recorded only
+  `http.route`, `http.request.method` and `http.response.status_code`; it now
+  adds `url.scheme`, `server.address`, `client.address` and
+  `user_agent.original` (OTel semconv). All four resolve through the
+  trusted-proxy rules above, so they describe the caller once `http.trustProxy`
+  is declared and the proxy itself until then.
+
 ## [0.68.0] - 2026-08-31
 
 ### Changed

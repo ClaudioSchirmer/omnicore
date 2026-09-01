@@ -137,6 +137,23 @@ type Config struct {
 		// keep-alive (normal — the client reconnects), so there is no client-visible
 		// error at all. nil (unset) / 0 → no idle timeout (the default).
 		IdleTimeoutSeconds *int `yaml:"idleTimeoutSeconds"`
+
+		// TrustProxy declares the reverse-proxy topology the service sits
+		// behind. Left unset (nil) the service reads every request's origin
+		// from the socket itself: c.IP() is the peer, c.Host()/c.Scheme() the
+		// values the peer connected with. That is the spoof-proof default and
+		// the RIGHT one for a service exposed directly — but behind a load
+		// balancer or ingress it makes the framework describe the BALANCER on
+		// every access-log line and every server span, and report http:// for
+		// a connection the client made over TLS.
+		//
+		// Declaring the block flips the request-origin accessors to the
+		// forwarded headers, but ONLY for peers the allowlist trusts — an
+		// untrusted peer keeps the socket values, so a direct caller cannot
+		// forge its own origin by sending X-Forwarded-For. This is why the
+		// allowlist is mandatory (see TrustProxyConfig.validate): trusting
+		// the header unconditionally is the vulnerability, not the feature.
+		TrustProxy *TrustProxyConfig `yaml:"trustProxy"`
 	} `yaml:"http"`
 
 	// Relational selects AND connects the relational backend — the system of
@@ -1083,6 +1100,9 @@ func (c *Config) Validate() error {
 	}
 	if v := c.HTTP.IdleTimeoutSeconds; v != nil && *v < 0 {
 		return fmt.Errorf("bootstrap: http.idleTimeoutSeconds must be >= 0 (got %d)", *v)
+	}
+	if err := c.HTTP.TrustProxy.validate(); err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
 	}
 	if err := c.Observability.validate(); err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
