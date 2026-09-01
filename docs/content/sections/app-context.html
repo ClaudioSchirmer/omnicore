@@ -3,13 +3,14 @@
   <ul>
     <li><strong>ID</strong> — UUID from the <code>X-Request-ID</code> header (or a new one if missing/invalid). Always returned in the response for correlation.</li>
     <li><strong>Language</strong> — prefix match of <code>Accept-Language</code> against the <code>configuration.Language</code> enum (built-ins: <code>pt</code>→<code>LangPTBR</code>, <code>en</code>→<code>LangENG</code>, <code>es</code>→<code>LangES</code>, <code>fr</code>→<code>LangFR</code>, <code>de</code>→<code>LangDE</code>, <code>it</code>→<code>LangIT</code>, <code>nl</code>→<code>LangNL</code>). Default <code>LangENG</code> — header absent or naming a language the framework does not ship a catalog for both resolve to English.</li>
+    <li><strong>ClientIP</strong> — the request's network origin, resolved once here so everything above the transport reads the same value the access log and the server span do, without importing Fiber. <strong>Without an <a href="#yaml-reference"><code>http.trustProxy</code></a> block it is the socket peer</strong> — spoof-proof, and behind a load balancer that means the BALANCER; with the block declared it is the rightmost untrusted entry of the forwarded chain. <code>""</code> outside an inbound HTTP request (the gRPC and integration-receiver entry points below build their <code>AppContext</code> without one). A service building a network control on it — an IP allow-list, a per-origin limit — is therefore also depending on that block being declared correctly: the framework resolves the address, it cannot make an undeclared topology trustworthy. Consumed by the <a href="#audit">audit trail</a> as the event's <code>clientIp</code>.</li>
     <li><strong>Identity</strong> — the authenticated principal of the request (<code>*configuration.Identity</code>). Populated by the auth middleware after a successful JWT validation; <code>nil</code> when the route is public, <code>auth.mode=disabled</code>, or the middleware has not yet run. See <a href="#bootstrap~microservice-yaml">microservice.&lt;profile&gt;.yaml</a> for how to wire the <code>auth:</code> block.</li>
   </ul>
 
   <p>In any Fiber handler:</p>
   <pre><code>func myHandler(c fiber.Ctx) error {
     ctx := fwweb.AppContext(c)  // *configuration.AppContext
-    // ctx.ID(), ctx.Language()
+    // ctx.ID(), ctx.Language(), ctx.ClientIP()
     if id := ctx.Identity(); id != nil {
         // id.Subject, id.Issuer, id.ExpiresAt, id.Claims (map[string]any)
     }

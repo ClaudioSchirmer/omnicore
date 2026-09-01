@@ -122,6 +122,21 @@
     service continues the very same trace.
 </p>
 
+<p>
+    The server span carries the request's <strong>origin</strong> alongside its route, in OpenTelemetry
+    semconv spelling: <code>http.request.method</code>, <code>http.route</code> (the low-cardinality
+    template, also the span name), <code>http.response.status_code</code>, <code>url.scheme</code>,
+    <code>server.address</code>, <code>client.address</code> and <code>user_agent.original</code>.
+    The last four are resolved through Fiber's trusted-proxy rules — the same ones the access log's
+    <code>ip</code> field follows — so <strong>behind a load balancer they describe the balancer until
+    <a href="#yaml-reference"><code>http.trustProxy</code></a> is declared</strong>, and the caller
+    afterwards. That is the spoof-proof default, not an oversight: without an allowlist any client
+    could name its own <code>client.address</code> by sending <code>X-Forwarded-For</code>. With the
+    block declared, the address is the <strong>rightmost untrusted</strong> entry of the chain — the
+    last hop the trusted infrastructure vouches for — so an edge that appends cannot let a caller
+    write its own <code>client.address</code> either.
+</p>
+
 <h3 id="tracing-async">The asynchronous trace (CDC relay → transport)</h3>
 <p>
     The eventually-consistent projection (outbox → CDC relay → transport → read model) is reconnected to its
