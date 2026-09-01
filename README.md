@@ -39,7 +39,7 @@ Each row links to its manual page.
 | Transactional outbox | Domain rows + outbox row + audit row in a single `pgx.Tx` | [write lifecycle](https://claudioschirmer.github.io/omnicore/#lifecycle-map) |
 | Criteria — the query DSL | One backend-neutral tree behind every relational read and every predicated write: Go field names, parameterized values, the envelope (order, limit/offset, archive scope) on the query rather than in the predicate — and **subqueries**, where `InSub` / `EqSub` / `Exists` compare against another SELECT and `criteria.Outer("ID")` correlates, which is what expresses a filter on the MANY side of a 1:N | [criteria](https://claudioschirmer.github.io/omnicore/#criteria) |
 | Tables without an aggregate | `core.NewDirectSchema[T]` + `read.NewDirectRepository[T]` point the same criteria engine, read joins and aggregate DSL at a table with no entity over it — a control table, or an aggregate's child counted as a fact. The read keeps its full horizontal reach; the write is one statement against the anchor table, with no outbox, audit, revision guard or cascade — including `Upsert`, keyed on a declared conflict target rather than on the identity | [direct-schema](https://claudioschirmer.github.io/omnicore/#direct-schema) |
-| Audit | One event per write; `snapshot` / `delta` / `transition` bodies; DB + slog routing; optional framework-served read endpoint over the trail | [audit](https://claudioschirmer.github.io/omnicore/#audit) |
+| Audit | One event per write, answering who AND from where; `snapshot` / `delta` / `transition` bodies; DB + slog routing; optional framework-served read endpoint over the trail | [audit](https://claudioschirmer.github.io/omnicore/#audit) |
 
 ### Read side (CQRS)
 | Capability | In one line | Docs |
@@ -70,6 +70,7 @@ Each row links to its manual page.
 | Authorization | 3 concentric layers: permission gate · owner rules · tenant scoping | [authz-seams](https://claudioschirmer.github.io/omnicore/#authz-seams) |
 | Outbound HTTP | `httpclient` from YAML: retry, cache, breaker, HMAC, OAuth2, streaming | [httpclient](https://claudioschirmer.github.io/omnicore/#httpclient) |
 | Cache | One `cache.Cache` port; private vs shared enforced by DI; memory/redis/custom | [cache-subsystem](https://claudioschirmer.github.io/omnicore/#cache-subsystem) |
+| Request origin | `http.trustProxy` declares the proxies in front, and the client address is then resolved **rightmost-untrusted** — an edge that appends cannot let a caller forge it. Absent, the spoof-proof socket peer. Reaches `c.IP()`, the access log, the server span, `AppContext.ClientIP()` and the audit trail from one declaration | [yaml](https://claudioschirmer.github.io/omnicore/#yaml-reference) · [app-context](https://claudioschirmer.github.io/omnicore/#app-context) |
 | Bootstrap & YAML | `Run` / `Build` / `Serve`; one profile file drives everything | [bootstrap](https://claudioschirmer.github.io/omnicore/#bootstrap) · [yaml](https://claudioschirmer.github.io/omnicore/#yaml-reference) |
 | Migrations · Tracing · i18n | Numbered SQL migrations · OTel opt-in · 7 translation catalogs | [migrations](https://claudioschirmer.github.io/omnicore/#migrations) · [tracing](https://claudioschirmer.github.io/omnicore/#tracing) |
 
