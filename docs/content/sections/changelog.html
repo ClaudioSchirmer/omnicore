@@ -9,6 +9,79 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">on the next tag</span></div>
         <ul>
+            <li><strong>Added</strong> — <strong><code>http.trustProxy</code>: the reverse-proxy topology the
+                service sits behind.</strong> The framework built its <code>fiber.Config</code> from five fields
+                and exposed neither <code>TrustProxy</code> nor <code>ProxyHeader</code>, so the request's origin
+                was always read from the socket. Spoof-proof, and right for a directly exposed service — but
+                behind a load balancer it made <code>c.IP()</code> (and with it the access log's <code>ip</code>
+                field and the server span's <code>client.address</code>) name the <em>balancer</em> on every
+                request, and <code>c.Scheme()</code> report <code>http</code> for a connection the client made
+                over TLS. There was no way around it from the service either: <code>fiber.New</code> precompiles
+                the allowlist into unexported fields, so <code>Wiring.BeforeServe</code> came too late. The block
+                declares it where the rest of the deployment posture lives — <code>enabled</code>,
+                <code>proxies</code> (IPs and/or CIDR ranges), <code>private</code>, <code>loopback</code>,
+                <code>linkLocal</code>, <code>unixSocket</code>, <code>header</code> (default
+                <code>X-Forwarded-For</code>). <strong>Absent, the behavior is byte-for-byte what it was.</strong>
+                Two rules are enforced at boot: declaring any field without <code>enabled: true</code> is refused
+                (a proxies list that does nothing reads as protection and isn't), and <code>enabled</code> with no
+                trusted peer is refused too — an empty allowlist makes Fiber trust every peer's
+                <code>X-Forwarded-For</code>, the hole the block exists to close. Peers outside the allowlist keep
+                the socket values, so a caller reaching the service directly cannot forge its own origin.
+                The address is resolved <strong>rightmost-untrusted</strong>, not by Fiber: the header is a
+                chain, and Fiber's rule is leftmost-valid — which on an edge running nginx's default
+                <code>proxy_add_x_forwarded_for</code> (an append) returns the entry the <em>caller</em> typed,
+                reopening the very spoof the block closes. The framework walks the chain right to left, skips
+                allowlisted hops and takes the first that is not one, so the edge may append or overwrite and
+                both are safe; an empty, fully trusted or malformed chain falls back to the socket peer rather
+                than guessing. <code>EnableIPValidation</code> is set alongside, without which
+                <code>c.IP()</code> returns the raw comma-separated header instead of an address. Note that the
+                allowlist means "these are proxies": <code>private: true</code> with callers that are themselves
+                on RFC1918 space makes their addresses look like proxy hops — name the balancer's range in
+                <code>proxies:</code> instead. See <a href="#yaml-reference">YAML reference</a>.</li>
+            <li><strong>Added</strong> — <strong><code>Wiring.FiberConfig func(*fiber.Config)</code></strong>, the
+                escape hatch for the long tail of <code>fiber.Config</code> (<code>StreamRequestBody</code>,
+                <code>ReadBufferSize</code>, <code>ServerHeader</code>, <code>JSONEncoder</code>, the routing
+                flags…), so a service is never blocked on a framework release for a Fiber field nobody
+                anticipated. It runs FIRST, on a zero config, before the framework writes anything:
+                <code>FiberConfig</code> &lt; the <code>http:</code> yaml block &lt; the framework. An operator's
+                yaml therefore outranks a value hardcoded here, and <code>AppName</code> +
+                <code>ErrorHandler</code> are written last and are not overridable — the error envelope of every
+                route is built on the framework's handler. The one field group it may NOT reach is Fiber's
+                trusted-proxy trio (<code>TrustProxy</code>, <code>TrustProxyConfig</code>,
+                <code>ProxyHeader</code>): setting those from the hook <strong>aborts the boot</strong>, naming
+                <code>http.trustProxy</code> — they are half of a mechanism whose other half is a middleware
+                registered from the yaml block, so a hook can only produce the insecure half (the forwarded
+                header trusted by Fiber's leftmost rule) and it would boot silently.
+                See <a href="#bootstrap">Bootstrap</a>.</li>
+            <li><strong>Added</strong> — <strong><code>AppContext.ClientIP()</code>: the request's network origin,
+                above the transport.</strong> The framework resolved the address for the access log and the server
+                span but never handed it to the layers that cannot import Fiber, so a service needing it (an IP
+                allow-list on a token endpoint, a per-origin limit) had to read <code>c.IP()</code> in its own
+                middleware and stash it — reimplementing by hand what the framework already knew.
+                <code>AppContextMiddleware</code> now captures it once, at the single choke point every request
+                passes; <code>""</code> outside an inbound HTTP request (the gRPC and integration-receiver entry
+                points build their <code>AppContext</code> without one). It inherits the resolution above.
+                See <a href="#app-context">AppContext</a>.</li>
+            <li><strong>Added</strong> — <strong>the audit trail records where a write came from.</strong>
+                <code>AuditEvent</code> carries <code>clientIp</code>, populated from the
+                <code>RequestContext</code> alongside the actor, so the trail answers "from where" and not only
+                "who". It rides the <code>payload</code> blob rather than a dedicated column — unlike
+                <code>tenantId</code> it is detail read WITH an event, not a scope events are filtered by — so
+                <strong>no migration is involved</strong> and existing rows stay valid. Both destinations carry it:
+                the <code>database</code> payload and the <code>slog</code> echo, the latter under the key
+                <code>ip</code>, matching the access log so one value pivots across both streams.
+                See <a href="#audit">Audit</a>.</li>
+            <li><strong>Changed</strong> — <code>persistence.RequestContext</code> gained a
+                <code>ClientIP() string</code> method. Breaking only for a service that implements the port itself
+                (<code>*configuration.AppContext</code> is the framework's only implementation); the fix is one
+                method returning <code>""</code>.</li>
+            <li><strong>Added</strong> — <strong>the inbound server span carries the request's origin.</strong>
+                It recorded only <code>http.route</code>, <code>http.request.method</code> and
+                <code>http.response.status_code</code>; it now adds <code>url.scheme</code>,
+                <code>server.address</code>, <code>client.address</code> and <code>user_agent.original</code>
+                (OTel semconv). All four resolve through the trusted-proxy rules above, so they describe the
+                caller once <code>http.trustProxy</code> is declared and the proxy itself until then.
+                See <a href="#tracing">Distributed tracing</a>.</li>
         </ul>
     </div>
     <div class="release">
