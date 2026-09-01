@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-08-31
+
 ### Changed
 
 - **A read join's target and a subquery's source take a DIRECT schema.**

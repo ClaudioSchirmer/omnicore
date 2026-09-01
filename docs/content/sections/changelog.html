@@ -9,6 +9,11 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">on the next tag</span></div>
         <ul>
+        </ul>
+    </div>
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.68.0</span><span class="release-date">August 31, 2026</span></div>
+        <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a read join's target and a subquery's
                 source take a DIRECT schema.</strong> <code>read.InnerJoin</code> / <code>LeftJoin</code> (every hop of
                 a chain included) and <code>criteria.Sub</code> put exactly one table in their <code>FROM</code>, and
