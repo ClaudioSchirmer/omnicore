@@ -89,4 +89,25 @@ type Wiring struct {
 	// nil (default) leaves externalValidator, if any, as the only
 	// revocation check.
 	TokenChecker authcore.TokenChecker
+
+	// FiberConfig is the escape hatch for the long tail of fiber.Config —
+	// the fields the framework has no opinion about and no YAML spelling for
+	// (StreamRequestBody, ReadBufferSize, ServerHeader, JSONEncoder, the
+	// routing flags…). It runs FIRST, on a zero fiber.Config, before the
+	// framework writes anything, which fixes the precedence:
+	//
+	//	FiberConfig  <  the http.* YAML block  <  the framework
+	//
+	// So an operator's YAML still wins over a value hardcoded here — the
+	// deployment posture stays in the deployment's file — and AppName +
+	// ErrorHandler are written last and are not overridable at all, because
+	// the whole error envelope, the typed 4xx mapping and the 500 path are
+	// built on the framework's handler.
+	//
+	// Prefer YAML whenever a knob has one. This exists so a service is never
+	// BLOCKED on a framework release for a Fiber field nobody anticipated —
+	// it is not the place to configure things the framework already models.
+	// It is also the one part of Wiring that pins the service to Fiber's own
+	// API: what you set here is what a Fiber major version can break.
+	FiberConfig func(cfg *fiber.Config)
 }

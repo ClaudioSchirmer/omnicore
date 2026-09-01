@@ -206,6 +206,7 @@ func populateContext(ev *audit.AuditEvent, ctx persistence.RequestContext, audit
 	rawClaims := ctx.ActorClaims()
 	ev.ActorClaims = filterClaims(rawClaims, auditClaims)
 	ev.TenantID = extractTenantID(rawClaims)
+	ev.ClientIP = ctx.ClientIP()
 }
 
 // extractTenantID returns the value of the "tenant_id" claim coerced to

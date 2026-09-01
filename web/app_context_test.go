@@ -195,3 +195,46 @@ func TestAppContext_NoMiddlewareFallback(t *testing.T) {
 		t.Fatal("fallback AppContext.ID() is zero UUID")
 	}
 }
+
+// The middleware is what puts the resolved origin where the layers above the
+// transport can read it: the audit trail reads AppContext, never fiber.Ctx.
+// Without this the whole ClientIP chain is dead wiring.
+func TestAppContextMiddleware_CapturesClientIP(t *testing.T) {
+	app := fiber.New()
+	app.Use(AppContextMiddleware())
+	var got string
+	app.Get("/x", func(c fiber.Ctx) error {
+		got = AppContext(c).ClientIP()
+		return c.SendStatus(fiber.StatusOK)
+	})
+	if _, err := app.Test(httptest.NewRequest("GET", "/x", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if got == "" {
+		t.Fatal("AppContext.ClientIP() is empty — the middleware never captured it")
+	}
+	// No trustProxy here, so it must be the socket peer and nothing else.
+	if got != "0.0.0.0" {
+		t.Errorf("ClientIP() = %q, want the socket peer", got)
+	}
+}
+
+// An untrusted caller cannot move it by sending a forwarded header — the
+// AppContext value inherits the same spoof-proof default c.IP() has.
+func TestAppContextMiddleware_ClientIPIgnoresForwardedHeaderByDefault(t *testing.T) {
+	app := fiber.New()
+	app.Use(AppContextMiddleware())
+	var got string
+	app.Get("/x", func(c fiber.Ctx) error {
+		got = AppContext(c).ClientIP()
+		return c.SendStatus(fiber.StatusOK)
+	})
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set(fiber.HeaderXForwardedFor, "1.2.3.4")
+	if _, err := app.Test(req); err != nil {
+		t.Fatal(err)
+	}
+	if got == "1.2.3.4" {
+		t.Fatal("AppContext.ClientIP() took an unverified forwarded header")
+	}
+}

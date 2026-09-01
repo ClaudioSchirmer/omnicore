@@ -77,6 +77,10 @@ func AppContextMiddleware(opts ...AppContextOption) fiber.Handler {
 		id := parseRequestID(c.Get("X-Request-ID"))
 		lang := parseLanguage(c.Get("Accept-Language"))
 		ctx := configuration.NewAppContext(id, lang)
+		// The resolved origin, captured once here so everything downstream of
+		// the transport — the audit trail above all — reads the same value the
+		// access log and the server span do, without importing Fiber.
+		ctx.SetClientIP(c.IP())
 		if span != nil {
 			// The pipeline starts the business span from this context, making it a
 			// child of the server span (fiber's Ctx.Value does not delegate to the
@@ -115,10 +119,24 @@ func AppContextMiddleware(opts ...AppContextOption) fiber.Handler {
 				span.SetName(method + " " + route.Path)
 				span.SetAttributes(attribute.String("http.route", route.Path))
 			}
-			span.SetAttributes(
+			// Request origin, OTel semconv spelling. Each of these reads
+			// through Fiber's trusted-proxy resolution, so behind a proxy
+			// they describe the CALLER once http.trustProxy is declared,
+			// and the proxy itself (the spoof-proof reading) until then —
+			// the same rule the access log's ip field follows.
+			attrs := []attribute.KeyValue{
 				attribute.String("http.request.method", method),
 				attribute.Int("http.response.status_code", c.Response().StatusCode()),
-			)
+				attribute.String("url.scheme", c.Scheme()),
+				attribute.String("server.address", c.Host()),
+			}
+			if ip := c.IP(); ip != "" {
+				attrs = append(attrs, attribute.String("client.address", ip))
+			}
+			if ua := c.Get(fiber.HeaderUserAgent); ua != "" {
+				attrs = append(attrs, attribute.String("user_agent.original", ua))
+			}
+			span.SetAttributes(attrs...)
 			// Record the outcome on the ROOT span so a 5xx is visible at the trace
 			// root, not only on the child dispatch span. A handler-returned error
 			// is the reliable signal (the ErrorHandler sets the numeric status only

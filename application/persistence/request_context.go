@@ -24,6 +24,11 @@ type RequestContext interface {
 	ActorSubject() string
 	ActorIssuer() string
 	ActorClaims() map[string]any
+	// ClientIP is the request's network origin as the framework resolved it,
+	// or "" outside an inbound HTTP request (background job, consumer handler,
+	// test fixture). Consumed by the audit pipeline so the trail answers "from
+	// where", not only "who".
+	ClientIP() string
 }
 
 // AnonymousActor is the ActorSubject value returned when no Identity is

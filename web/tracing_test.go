@@ -176,3 +176,46 @@ func TestFiberHeaderCarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The server span has to carry the request's origin, not just its route: an
+// operator reading a trace needs the caller, the host it asked for and the
+// scheme it used. All three resolve through Fiber's trusted-proxy rules, so
+// this asserts the untrusted default — socket values, forwarded headers
+// ignored — which is what a service without http.trustProxy must record.
+func TestAppContextMiddleware_ServerSpanRecordsRequestOrigin(t *testing.T) {
+	sr := installTestTracer(t)
+
+	app := fiber.New()
+	app.Use(AppContextMiddleware(WithServerSpanTracing(true)))
+	app.Get("/users/:id", func(c fiber.Ctx) error { return c.SendStatus(fiber.StatusOK) })
+
+	req := httptest.NewRequest("GET", "/users/42", nil)
+	req.Header.Set(fiber.HeaderUserAgent, "omnicore-qa/1.0")
+	req.Header.Set(fiber.HeaderXForwardedFor, "198.51.100.23")
+	if _, err := app.Test(req); err != nil {
+		t.Fatal(err)
+	}
+
+	ended := sr.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("want 1 recorded span, got %d", len(ended))
+	}
+	attrs := map[string]string{}
+	for _, kv := range ended[0].Attributes() {
+		attrs[string(kv.Key)] = kv.Value.Emit()
+	}
+	for _, key := range []string{"url.scheme", "server.address", "client.address", "user_agent.original"} {
+		if attrs[key] == "" {
+			t.Errorf("span is missing %s — recorded: %v", key, attrs)
+		}
+	}
+	if attrs["user_agent.original"] != "omnicore-qa/1.0" {
+		t.Errorf("user_agent.original = %q, want the request's UA", attrs["user_agent.original"])
+	}
+	if attrs["url.scheme"] != "http" {
+		t.Errorf("url.scheme = %q, want http", attrs["url.scheme"])
+	}
+	if attrs["client.address"] == "198.51.100.23" {
+		t.Fatal("client.address took X-Forwarded-For from an untrusted peer — origin is spoofable")
+	}
+}
