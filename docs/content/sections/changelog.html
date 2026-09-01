@@ -9,6 +9,11 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">on the next tag</span></div>
         <ul>
+        </ul>
+    </div>
+    <div class="release">
+        <div class="release-head"><span class="release-tag">v0.69.0</span><span class="release-date">September 1, 2026</span></div>
+        <ul>
             <li><strong>Added</strong> — <strong><code>http.trustProxy</code>: the reverse-proxy topology the
                 service sits behind.</strong> The framework built its <code>fiber.Config</code> from five fields
                 and exposed neither <code>TrustProxy</code> nor <code>ProxyHeader</code>, so the request's origin
@@ -71,7 +76,7 @@
                 the <code>database</code> payload and the <code>slog</code> echo, the latter under the key
                 <code>ip</code>, matching the access log so one value pivots across both streams.
                 See <a href="#audit">Audit</a>.</li>
-            <li><strong>Changed</strong> — <code>persistence.RequestContext</code> gained a
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <code>persistence.RequestContext</code> gained a
                 <code>ClientIP() string</code> method. Breaking only for a service that implements the port itself
                 (<code>*configuration.AppContext</code> is the framework's only implementation); the fix is one
                 method returning <code>""</code>.</li>

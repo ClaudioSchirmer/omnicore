@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-09-01
+
 ### Changed
 
 - **`persistence.RequestContext` gained a `ClientIP() string` method.** Breaking
