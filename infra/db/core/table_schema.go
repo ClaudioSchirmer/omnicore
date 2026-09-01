@@ -1477,8 +1477,10 @@ func (s *TableSchema) AsDirectSchema() *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
 			"infra.TableSchema(%s): AsDirectSchema on a SIBLING — a sibling borrows its owner's primary "+
-				"key (declaring ID on it is refused), so it is not a row source on its own. Convert the "+
-				"OWNER's schema, whose table carries the identity.", s.table))
+				"key (declaring ID on it is refused), so it is not a row source on its own. Reducing the "+
+				"OWNER would not help either: that produces the OWNER's table, and a sibling's columns "+
+				"leave with the sibling. To read this table on its own, declare it as its own anchor with "+
+				"core.NewDirectSchema, naming the shared id column in ID(...).", s.table))
 	}
 	if s.isUpstreamExternal() {
 		panic(fmt.Sprintf(

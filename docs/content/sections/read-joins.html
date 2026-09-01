@@ -14,11 +14,11 @@
     )
     r.WithSchema(schemas.OrderSchema())   // how THIS entity is read and written
     r.WithJoins(                          // what it may reach in a query
-        read.InnerJoin(schemas.CustomerSchema()).On("customer_id").
+        read.InnerJoin(schemas.CustomerSchema().AsDirectSchema()).On("customer_id").
             Field("CustomerName", "nome").
             Field("CustomerDoc", "documento"),
 
-        read.LeftJoin(schemas.CarrierSchema()).On("carrier_id").
+        read.LeftJoin(schemas.CarrierSchema().AsDirectSchema()).On("carrier_id").
             Field("CarrierCode", "codigo"),
     )
     return r
@@ -42,6 +42,29 @@
     Where(criteria.Eq("CustomerName", "ana")).
     OrderBy("CustomerName").
     Limit(20))</code></pre>
+
+<h3>The target is one table — a Direct schema</h3>
+
+<p>
+    A traversal puts the target in the <code>FROM</code> as one table under one alias. So it takes a schema that
+    <em>is</em> one table: a <a href="#direct-schema">Direct schema</a>. A schema carrying children, siblings or a
+    shared base is refused at the declaration, because it could only be traversed in part — and that part used to be
+    taken in silence, with a column of the target's own sibling accepted here and then qualified by the target's
+    alias, where it does not exist.
+</p>
+
+<p>Any schema becomes a target, at the call site, where the reduction is visible:</p>
+
+<pre><code>read.InnerJoin(schemas.CustomerSchema().AsDirectSchema()).On("customer_id").
+    Field("CustomerName", "nome")</code></pre>
+
+<p>
+    <code>AsDirectSchema()</code> returns a copy reduced to the schema's own table — the original is untouched, and an
+    aggregate root, a child, a role, a shared base and a Direct schema all convert, so nothing you could join to
+    before is out of reach. A sibling and an external schema do not convert, and say why (see
+    <a href="#criteria">Criteria</a>). What the target declares about its own children or satellites simply is not
+    part of what a join reads.
+</p>
 
 <h3>Why the repository, and not the schema or the view</h3>
 <p>
@@ -102,7 +125,7 @@
     <a href="#table-schema"><code>TableSchema.Field</code></a>: the Go field on <em>your</em> entity, then the column on
     the joined table. The joined side's spelling never surfaces above infrastructure, so renaming is free:
 </p>
-<pre><code>read.LeftJoin(schemas.ProfessorSchema()).On("professor_id").
+<pre><code>read.LeftJoin(schemas.ProfessorSchema().AsDirectSchema()).On("professor_id").
     Field("Pessoa", "professor")     // criteria and DTOs speak "Pessoa"</code></pre>
 <p>
     Call it once per column. A join that maps no field reaches nothing and is refused at construction — and so is a Go
@@ -152,7 +175,7 @@
     the form the target stores and actually matches.
 </div>
 
-<pre><code>read.InnerJoin(schemas.CampusSchema()).On("campus_id").
+<pre><code>read.InnerJoin(schemas.CampusSchema().AsDirectSchema()).On("campus_id").
     Field("CampusOwnerID", "owner_id")   // owner_id is a domain.ID on the Campus schema
 
 // on the entity — arrives as "0e5a1f6c-…", on all four engines:
@@ -172,11 +195,11 @@ CampusOwnerID string</code></pre>
     reached, and from there onward — there is no depth limit, because how far a read reaches is the caller's
     decision, not the framework's.
 </p>
-<pre><code>read.LeftJoin(schemas.VendorSchema()).On("vendor_id").
+<pre><code>read.LeftJoin(schemas.VendorSchema().AsDirectSchema()).On("vendor_id").
     Field("VendorName", "name").
-    Then(read.InnerJoin(schemas.OwnerSchema()).On("owner_id").
+    Then(read.InnerJoin(schemas.OwnerSchema().AsDirectSchema()).On("owner_id").
         Field("OwnerName", "name").
-        Then(read.LeftJoin(schemas.TerritorySchema()).On("territory_id").
+        Then(read.LeftJoin(schemas.TerritorySchema().AsDirectSchema()).On("territory_id").
             Field("TerritoryCode", "code")))</code></pre>
 <p>
     Two rules make the rest follow. A hop's <code>.On(...)</code> names a foreign key <strong>of the previous
@@ -257,7 +280,7 @@ LEFT JOIN (vendors j_vendor_id
             column the target does not have</td>
         <td>—</td></tr>
 </tbody></table>
-<pre><code>read.LeftJoin(schemas.CustomerSchema()).On("customer_id").
+<pre><code>read.LeftJoin(schemas.CustomerSchema().AsDirectSchema()).On("customer_id").
     Field("CustomerName",       "name").
     Field("CustomerArchivedAt", "deleted_at").   // a managed slot of the TARGET
     Field("CustomerCreatedAt",  "created_at")

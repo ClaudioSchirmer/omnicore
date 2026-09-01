@@ -11,6 +11,33 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A read join's target and a subquery's source take a DIRECT schema.**
+  `read.InnerJoin`/`LeftJoin` (every hop of a chain included) and `criteria.Sub`
+  put exactly one table in their `FROM`, and used to accept a whole schema —
+  children, siblings, shared base — and read a slice of it without saying so.
+  Worse than silently on the join: `validateJoins` resolved the mapped column
+  through `GoNameForRead`, which merges the target's satellites, so
+  `.Field("Doc", "documento")` naming a column of the target's SIBLING was
+  accepted at boot and then emitted as `alias.documento` against the target's own
+  table — a SQL error on every read through that loader, `FindByID` included.
+  The argument's TYPE now answers it: anything that is not a Direct schema is
+  refused where it is declared, and the message names the reduction.
+- **`TableSchema.AsDirectSchema()`** is that reduction: a COPY of the schema
+  limited to its own table (its columns, id, managed slots and composite
+  decompositions), with children, siblings, the shared-base link and the base's
+  registry of referencing roles dropped. The receiver is untouched. An aggregate
+  root, an aggregate child, a role, a shared base and a Direct schema all
+  convert, so requiring it costs no reach — every target and source reachable
+  before is reachable now, through a reduction the developer writes and can see.
+  A **sibling** panics (it borrows its owner's primary key, so it is not a row
+  source) and an **external** schema panics (its table is an upstream service's
+  mirrored collection, absent from this connection). The result is an ordinary
+  Direct schema, including as a `DirectRepository` anchor — writing an
+  aggregate's table through the Direct path skips the outbox, audit, revision
+  guard and cascade, and that escape hatch is left open on purpose.
+
 ### Added
 
 - **Subqueries in a criteria — the right-hand side of a comparison stops being

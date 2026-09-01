@@ -189,12 +189,12 @@ func joinFixture(t *testing.T, pg *postgres.Postgres) (*read.AggregateLoader[*jo
 	loader := read.NewAggregateLoader[*joinOrderRoot](pg, func() *joinOrderRoot { return &joinOrderRoot{} }).
 		WithSchema(joinOrderSchema()).
 		WithJoins(
-			read.InnerJoin(joinCustomerSchema()).On("customer_id").
+			read.InnerJoin(joinCustomerSchema().AsDirectSchema()).On("customer_id").
 				Field("CustomerName", "nome").
 				Field("CustomerCredito", "credito"),
-			read.LeftJoin(joinCarrierSchema()).On("carrier_id").
+			read.LeftJoin(joinCarrierSchema().AsDirectSchema()).On("carrier_id").
 				Field("CarrierCode", "codigo"),
-			read.InnerJoinInChild(joinLineSchema()).To(joinCitySchema()).On("city_id").
+			read.InnerJoinInChild(joinLineSchema()).To(joinCitySchema().AsDirectSchema()).On("city_id").
 				Field("CityName", "nome"),
 		)
 	return loader, ids

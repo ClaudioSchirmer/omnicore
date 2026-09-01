@@ -116,6 +116,31 @@
     OwnerName string     // filled by a declared join, never persisted
 }</code></pre>
 
+<h3 id="from-an-existing-schema">The other way to get one — reducing a schema you already have</h3>
+
+<p>
+    <code>NewDirectSchema</code> declares a table that never had an aggregate. The second road starts from a schema
+    that does: <code>TableSchema.AsDirectSchema()</code> returns a COPY of any schema limited to its own table, with
+    the children, siblings and shared base dropped and the original untouched.
+</p>
+
+<pre><code>read.InnerJoin(schemas.CustomerSchema().AsDirectSchema()).On("customer_id")
+criteria.Sub(schemas.PhoneSchema().AsDirectSchema()).Select("UserID")</code></pre>
+
+<p>
+    It exists because two consumers put exactly one table in their <code>FROM</code> — a
+    <a href="#read-joins">read join</a>'s target and a <a href="#criteria">criteria subquery</a>'s source — and
+    therefore take a Direct schema rather than a node they could only read in part. The full rules, including the two
+    kinds that do not convert, are on <a href="#table-schema~as-direct-schema">TableSchema</a>.
+</p>
+
+<p>
+    A reduced schema is an ordinary Direct one: it reads through this repository, and it can anchor a write here as
+    well — with everything a Direct write does not carry (§<a href="#direct-schema~writing">writing</a>), against a
+    table whose aggregate normally provides all of it. That combination is a deliberate escape hatch, not an
+    oversight.
+</p>
+
 <h3 id="how-it-differs-from-its-neighbours">How it differs from its neighbours</h3>
 <p>The framework has five schema constructors. They are told apart by two independent questions:</p>
 <table>

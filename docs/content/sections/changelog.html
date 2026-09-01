@@ -7,6 +7,83 @@
 </div>
 <div class="changelog">
     <div class="release">
+        <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">on the next tag</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a read join's target and a subquery's
+                source take a DIRECT schema.</strong> <code>read.InnerJoin</code> / <code>LeftJoin</code> (every hop of
+                a chain included) and <code>criteria.Sub</code> put exactly one table in their <code>FROM</code>, and
+                used to accept a whole schema — children, siblings, shared base — and read a slice of it without
+                saying so. Worse than silently on the join: the mapped column was resolved through
+                <code>GoNameForRead</code>, which merges the target's satellites, so
+                <code>.Field("Doc", "documento")</code> naming a column of the target's SIBLING was accepted at boot
+                and then emitted as <code>alias.documento</code> against the target's own table — a SQL error on every
+                read through that loader, <code>FindByID</code> included. The argument's TYPE now answers it: anything
+                that is not a Direct schema is refused where it is declared, and the message names the reduction.
+                <ul>
+                    <li><strong><code>TableSchema.AsDirectSchema()</code></strong> is that reduction — a COPY limited
+                        to the schema's own table (its columns, id, managed slots, composite decompositions), with
+                        children, siblings, the shared-base link and the base's registry of roles dropped. The
+                        receiver is untouched.</li>
+                    <li>An aggregate root, an aggregate child, a role, a shared base and a Direct schema all convert,
+                        so the requirement costs no reach: every target and source reachable before is reachable now,
+                        through a reduction written at the call site instead of taken inside a translator.</li>
+                    <li>A <strong>sibling</strong> panics (it borrows its owner's primary key, so it is not a row
+                        source on its own) and an <strong>external</strong> schema panics (its table is an upstream
+                        service's mirrored collection, absent from this connection).</li>
+                    <li>The result is an ordinary Direct schema, including as a <code>DirectRepository</code> anchor.
+                        Writing an aggregate's table through the Direct path skips the outbox, the audit row, the
+                        revision guard and the cascade — a real escape hatch, left open on purpose.</li>
+                    <li>Migration: add <code>.AsDirectSchema()</code> to every join target and subquery source. The
+                        refusal names it.</li>
+                </ul>
+            </li>
+            <li><strong>Added</strong> — <strong>subqueries in a criteria: the right-hand side of a comparison stops
+                being only literals.</strong> A predicate could compare a column against values and nothing else, so
+                every question shaped "against the result of another SELECT" — the roles a user holds directly or
+                through their groups, the users with at least one active phone, the row carrying the newest revision —
+                cost several round trips and lost its snapshot. <code>criteria.Sub(schema)</code> opens a nested SELECT
+                and eight builders put it on the right of the operators that already existed:
+                <code>InSub</code>/<code>NinSub</code> for set membership,
+                <code>EqSub</code>/<code>NeSub</code>/<code>GtSub</code>/<code>GteSub</code>/<code>LtSub</code>/<code>LteSub</code>
+                for the scalar forms, plus <code>Exists</code>/<code>NotExists</code>, which project nothing.
+                <ul>
+                    <li><strong>Correlation costs no new builders.</strong> <code>criteria.Outer(goField)</code> is a
+                        VALUE, so every operator that takes one correlates — <code>Eq</code>, <code>In</code>,
+                        <code>Between</code>, <code>Contains</code> alike. It reaches exactly one level, the
+                        immediately enclosing scope, and a name that does not resolve there is refused rather than
+                        searched for further out. This is what finally expresses the 1:N reverse filter a single root
+                        SELECT cannot: <code>Exists(Sub(phones).Where(Eq("UserID", Outer("ID"))))</code>.</li>
+                    <li><strong>The archive gate is automatic here too.</strong> A <code>Sub</code> starts on the
+                        active scope, so a source declaring <code>DeletedAt</code> gets its own
+                        <code>deleted_at IS NULL</code> without the developer writing it — and a source declaring none
+                        gets no gate. <code>IncludeArchived()</code> / <code>OnlyArchived()</code> are the opt-outs,
+                        with the same names as on <code>Query</code>.</li>
+                    <li>The subquery carries its own projection (<code>Select</code>, or
+                        <code>SelectCount/Max/Min/Sum/Avg</code>), order, <code>Limit</code> and quantifier
+                        (<code>Any()</code> / <code>All()</code>). It reads ONE table: an entity schema, an aggregate
+                        child, a sibling, a shared base or a <code>DirectSchema</code> — never an external schema,
+                        whose columns belong to an upstream service.</li>
+                    <li><strong>Refused rather than silently wrong:</strong> a missing or duplicated projection, a
+                        <code>Select</code> on an <code>Exists</code>, a <code>Limit</code> with no order, a satellite's
+                        field inside a subquery whose FROM cannot carry it, and <code>NinSub</code> over a nullable
+                        column — SQL's <code>NOT IN</code> matches no rows at all when the set contains one NULL, so
+                        the message points at <code>NotExists</code>.</li>
+                    <li><strong>Writes:</strong> a subquery works in an <code>UPDATE</code>/<code>DELETE</code>
+                        predicate on every engine; on MySQL the one case the engine itself forbids — reading the
+                        statement's own target table (error 1093) — is refused at compile time, naming the engine.
+                        <code>core.Dialect</code> gains <code>AllowsSubqueryOnWriteTarget()</code> so a backend answers
+                        that for itself, and <code>criteria.Visitor</code> gains <code>VisitSubquery</code> /
+                        <code>VisitExistence</code>: the nodes are members of the sealed algebra, so they are members
+                        of the seam, and the compiler keeps proving every backend handles every node. Both interfaces
+                        are the framework's own extension points for adding a backend — a consumer implements neither.</li>
+                    <li>It is an infrastructure API, not a wire vocabulary: only Go code builds a subquery, so the
+                        read-model filter operators are unchanged and the Mongo and relational backings cannot
+                        diverge.</li>
+                </ul>
+            </li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.67.1</span><span class="release-date">August 31, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>a Direct write made of stamp verbs alone is accepted.</strong> Any
