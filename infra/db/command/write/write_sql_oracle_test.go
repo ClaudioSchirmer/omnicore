@@ -188,3 +188,5 @@ func TestBuildInsert_Oracle_TypedIDFields(t *testing.T) {
 		t.Errorf("legacy_ref arg = %v (%T), want the untouched text (string field)", args[3], args[3])
 	}
 }
+
+func (testOracleDialect) AllowsSubqueryOnWriteTarget() bool { return true }

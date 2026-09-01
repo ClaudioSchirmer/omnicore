@@ -186,3 +186,5 @@ func TestBuildInsert_SQLServer_TypedIDFields(t *testing.T) {
 		t.Errorf("legacy_ref arg = %v (%T), want the untouched text (string field)", args[3], args[3])
 	}
 }
+
+func (testSQLServerDialect) AllowsSubqueryOnWriteTarget() bool { return true }

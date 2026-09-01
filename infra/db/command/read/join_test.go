@@ -145,7 +145,8 @@ func joinTargetSchema(table string) *TableSchema {
 	return NewTableSchema[*joinCustomer](table).ID("id").Field("Name", "nome").
 		Field("OwnerID", "owner_id").
 		Field("AltOwnerID", "alt_owner_id").
-		Field("Nickname", "nickname")
+		Field("Nickname", "nickname").
+		AsDirectSchema()
 }
 
 func joinLoader(schema *TableSchema) *AggregateLoader[*joinOrder] {
@@ -1178,7 +1179,8 @@ func TestJoinScanTargets_EmptyWithoutRootJoins(t *testing.T) {
 func collidingTargetSchema(table string) *TableSchema {
 	return NewTableSchema[*joinCustomer](table).ID("id").
 		Field("Name", "code"). // the SAME column the anchor has
-		DeletedAt("deleted_at")
+		DeletedAt("deleted_at").
+		AsDirectSchema()
 }
 
 func collidingOrderSchema() *TableSchema {
@@ -1635,4 +1637,45 @@ func TestChain_SkipsNilHops(t *testing.T) {
 	if got := len(l.Joins()[0].Through); got != 1 {
 		t.Fatalf("nil hops must be skipped, got %d", got)
 	}
+}
+
+// The target of a read join is one table in the FROM, so it takes a schema that
+// IS one table. Handing over a node used to be accepted and then traversed in
+// part — and a column of the target's own sibling resolved on the NODE, so the
+// declaration passed here and produced SQL qualified by an alias that has no such
+// column. The type of the argument now answers that, before any of it.
+func TestJoins_TargetMustBeDirect(t *testing.T) {
+	node := NewTableSchema[*joinCustomer]("customers").ID("id").
+		Field("Name", "nome").
+		Sibling(core.NewSiblingSchema[*joinCustomer]("customer_extras").Field("Nickname", "nickname"))
+
+	wantPanic(t, "takes a DIRECT schema", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(node).On("customer_id").Field("CustomerName", "nome"))
+	})
+
+	wantPanic(t, "AsDirectSchema()", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(node).On("customer_id").Field("CustomerName", "nome"))
+	})
+
+	// A hop is a target too.
+	wantPanic(t, "takes a DIRECT schema", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(joinTargetSchema("customers")).On("customer_id").
+				Field("CustomerName", "nome").
+				Then(InnerJoin(node).On("owner_id").Field("OwnerName", "nome")))
+	})
+
+	// Reduced, it is accepted — and the satellite's column is no longer part of
+	// the target, so naming it is the ordinary "not a column of" refusal instead
+	// of SQL that cannot run.
+	flat := node.AsDirectSchema()
+	joinLoader(joinOrderSchema()).WithJoins(
+		InnerJoin(flat).On("customer_id").Field("CustomerName", "nome"))
+
+	wantPanic(t, "is not a column of", func() {
+		joinLoader(joinOrderSchema()).WithJoins(
+			InnerJoin(flat).On("customer_id").Field("CustomerNick", "nickname"))
+	})
 }

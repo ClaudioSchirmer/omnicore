@@ -33,5 +33,7 @@
   "microservice-yaml": "bootstrap",
   "transport": "transport",
   "transport-seam": "architecture",
-  "transport-build-tag": "bootstrap"
+  "transport-build-tag": "bootstrap",
+  "as-direct-schema": "table-schema",
+  "from-an-existing-schema": "direct-schema"
 }

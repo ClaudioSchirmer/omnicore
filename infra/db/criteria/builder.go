@@ -65,6 +65,129 @@ func And(operands ...Expr) Expr { return Logical{Op: LogicalAnd, Operands: opera
 func Or(operands ...Expr) Expr  { return Logical{Op: LogicalOr, Operands: operands} }
 func Not(inner Expr) Expr       { return Negation{Inner: inner} }
 
+// ─── Subquery builders ───────────────────────────────────────────────────────
+//
+// Sub(...) opens a nested SELECT over another table; the …Sub builders put it on
+// the right-hand side of a comparison; Exists / NotExists ask only whether a row
+// is there. Every refusal (no projected item, two of them, a source the backend
+// cannot read, a field that does not belong to the source) is reported by the
+// translator at compile time, with the offending name in the message — this
+// package builds the tree and never panics.
+
+// Sub starts a subquery over src — any schema naming a real table in this
+// database. Its scope starts ACTIVE, exactly like Where's, so the framework's
+// archive gate applies inside the subquery without the caller writing it.
+func Sub(src Source) *SubQuery { return &SubQuery{Src: src} }
+
+// Select projects one column, named by its GO FIELD name. Mandatory for every
+// form but Exists / NotExists, which project nothing.
+func (s *SubQuery) Select(goField string) *SubQuery {
+	s.Func, s.Field, s.selects = AggNone, goField, s.selects+1
+	return s
+}
+
+// SelectCount projects COUNT(*) — the scalar form of "how many rows match".
+func (s *SubQuery) SelectCount() *SubQuery {
+	s.Func, s.Field, s.selects = AggCount, "", s.selects+1
+	return s
+}
+
+// SelectMax projects MAX over goField. The classic use is the newest revision:
+// EqSub("Version", Sub(rev).SelectMax("Version").Where(Eq("DocID", Outer("ID")))).
+func (s *SubQuery) SelectMax(goField string) *SubQuery { return s.agg(AggMax, goField) }
+
+// SelectMin projects MIN over goField.
+func (s *SubQuery) SelectMin(goField string) *SubQuery { return s.agg(AggMin, goField) }
+
+// SelectSum projects SUM over goField.
+func (s *SubQuery) SelectSum(goField string) *SubQuery { return s.agg(AggSum, goField) }
+
+// SelectAvg projects AVG over goField.
+func (s *SubQuery) SelectAvg(goField string) *SubQuery { return s.agg(AggAvg, goField) }
+
+func (s *SubQuery) agg(fn AggFunc, goField string) *SubQuery {
+	s.Func, s.Field, s.selects = fn, goField, s.selects+1
+	return s
+}
+
+// Where sets the subquery's predicate. Inside it, Outer(goField) refers to the
+// enclosing statement — that is how a subquery correlates.
+func (s *SubQuery) Where(e Expr) *SubQuery { s.Predicate = e; return s }
+
+// OrderBy / OrderByDesc order the subquery's rows, which only matters together
+// with Limit — "the first row by this order".
+func (s *SubQuery) OrderBy(goField string) *SubQuery {
+	s.Order = append(s.Order, OrderField{Field: goField})
+	return s
+}
+
+func (s *SubQuery) OrderByDesc(goField string) *SubQuery {
+	s.Order = append(s.Order, OrderField{Field: goField, Desc: true})
+	return s
+}
+
+// Limit caps the subquery's rows. It REQUIRES an order — an unordered "first
+// n" is undefined, the same rule Query.Offset already enforces.
+func (s *SubQuery) Limit(n int64) *SubQuery { s.LimitN = n; return s }
+
+// IncludeArchived / OnlyArchived move the subquery off the active scope. Same
+// names, same meaning, same default as on Query.
+func (s *SubQuery) IncludeArchived() *SubQuery { s.Scope = ScopeIncludeArchived; return s }
+func (s *SubQuery) OnlyArchived() *SubQuery    { s.Scope = ScopeOnlyArchived; return s }
+
+// Any / All quantify a scalar comparison over EVERY row the subquery returns —
+// GtSub("Price", sub.All()) is "greater than all of them".
+func (s *SubQuery) Any() *SubQuery { s.Quant = QuantAny; return s }
+func (s *SubQuery) All() *SubQuery { s.Quant = QuantAll; return s }
+
+// InSub / NinSub are set membership against the subquery's rows.
+//
+// NinSub over a NULLABLE column is refused by the translator: SQL's NOT IN
+// yields no rows at all when the set contains a single NULL, which is a silent
+// wrong answer rather than an error. NotExists says the same thing safely.
+func InSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpIn, Sub: q}
+}
+func NinSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpNin, Sub: q}
+}
+
+// EqSub / NeSub / GtSub / GteSub / LtSub / LteSub compare against a SCALAR
+// subquery — one that returns a single row and a single column, unless it is
+// quantified with Any / All.
+func EqSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpEq, Sub: q}
+}
+func NeSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpNe, Sub: q}
+}
+func GtSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpGt, Sub: q}
+}
+func GteSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpGte, Sub: q}
+}
+func LtSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpLt, Sub: q}
+}
+func LteSub(goField string, q *SubQuery) Expr {
+	return SubqueryComparison{Field: goField, Op: OpLte, Sub: q}
+}
+
+// Exists / NotExists ask only whether the subquery matches a row. They project
+// nothing (a Select on them is refused), and they are the canonical way to
+// filter by the MANY side of a 1:N relation — the pushdown a single root SELECT
+// cannot otherwise express:
+//
+//	Exists(Sub(phoneSchema).Where(Eq("UserID", Outer("ID"))))
+func Exists(q *SubQuery) Expr    { return Existence{Sub: q} }
+func NotExists(q *SubQuery) Expr { return Existence{Negated: true, Sub: q} }
+
+// Outer references a field of the ENCLOSING statement from inside a subquery's
+// predicate. It is a VALUE, so every operator that takes one correlates without
+// a builder of its own: Eq("RoleID", Outer("ID")).
+func Outer(goField string) OuterRef { return OuterRef{Field: goField} }
+
 // ─── Query envelope ──────────────────────────────────────────────────────────
 
 // Scope governs the DeletedAt gate applied around the boolean predicate. It

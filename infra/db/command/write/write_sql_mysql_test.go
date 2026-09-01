@@ -210,3 +210,9 @@ func TestBuildInsert_MySQL_TypedIDFields(t *testing.T) {
 		t.Errorf("partner_id arg = %v (%T), want 16 bytes (*domain.ID)", args[4], args[4])
 	}
 }
+
+// AllowsSubqueryOnWriteTarget mirrors the real MySQL dialect: it is the one
+// supported engine that refuses a subquery reading the statement's own write
+// target (error 1093), and the fake has to say so for that refusal to be
+// exercised here.
+func (testMySQLDialect) AllowsSubqueryOnWriteTarget() bool { return false }

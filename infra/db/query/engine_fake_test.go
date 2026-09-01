@@ -328,3 +328,5 @@ func mapsFromColsData(cols []string, data [][]any) []map[string]any {
 func (builderTestEntity) CollectionName() string { return "BuilderTestEntities" }
 
 func (schemaSample) CollectionName() string { return "SchemaSamples" }
+
+func (fakeDialect) AllowsSubqueryOnWriteTarget() bool { return true }

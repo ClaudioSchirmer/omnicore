@@ -202,3 +202,5 @@ func TestExecute_ListErrorPropagates(t *testing.T) {
 		t.Fatal("expected the list error")
 	}
 }
+
+func (lfDialect) AllowsSubqueryOnWriteTarget() bool { return true }

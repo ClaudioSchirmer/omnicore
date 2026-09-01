@@ -56,3 +56,45 @@ func TestChildScopeFilter_NoDeletedAt(t *testing.T) {
 		t.Errorf("no-DeletedAt child must yield no filter, got %q", got)
 	}
 }
+
+// The two subquery nodes are members of the same sealed algebra, so they are
+// members of the same Visitor — and the seam stays exhaustively exercised only
+// if the error branches of both are walked here alongside the other three.
+
+func TestPgVisitor_SubqueryErrorsPropagate(t *testing.T) {
+	users, phones := subUserSchema(), subPhoneSchema()
+
+	// An unknown field on the LEFT of a subquery comparison — the enclosing
+	// scope's resolution failure, not the subquery's.
+	if _, _, err := CompileWhere(
+		criteria.InSub("Nope", criteria.Sub(phones).Select("UserID")),
+		outerResolver(users), testPGDialect{}, nil); err == nil {
+		t.Error("expected error: unknown field on the left of InSub")
+	}
+
+	// An inner predicate error propagates out of the nested visitor.
+	if _, _, err := CompileWhere(
+		criteria.Exists(criteria.Sub(phones).Where(criteria.Not(nil))),
+		outerResolver(users), testPGDialect{}, nil); err == nil {
+		t.Error("expected the subquery to propagate its inner NOT error")
+	}
+
+	// A subquery node built with no Sub at all.
+	if _, _, err := CompileWhere(
+		criteria.SubqueryComparison{Field: "Name", Op: criteria.OpIn},
+		outerResolver(users), testPGDialect{}, nil); err == nil {
+		t.Error("expected error: subquery node with no Sub")
+	}
+	if _, _, err := CompileWhere(
+		criteria.Existence{},
+		outerResolver(users), testPGDialect{}, nil); err == nil {
+		t.Error("expected error: existence node with no Sub")
+	}
+
+	// An order field that does not resolve on the subquery's source.
+	if _, _, err := CompileWhere(
+		criteria.EqSub("Name", criteria.Sub(phones).Select("Number").OrderBy("Nope").Limit(1)),
+		outerResolver(users), testPGDialect{}, nil); err == nil {
+		t.Error("expected error: subquery order field that does not resolve")
+	}
+}

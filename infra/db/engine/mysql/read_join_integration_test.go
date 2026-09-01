@@ -233,14 +233,14 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 	loader := read.NewAggregateLoader[*rjOrder](eng, func() *rjOrder { return &rjOrder{} }).
 		WithSchema(rjOrderSchema()).
 		WithJoins(
-			read.InnerJoin(rjCustomerSchema()).On("customer_id").
+			read.InnerJoin(rjCustomerSchema().AsDirectSchema()).On("customer_id").
 				Field("CustomerName", "nome").
 				Field("CustomerCredito", "credito").
 				Field("CustomerOwner", "owner_id"),
-			read.LeftJoin(rjCarrierSchema()).On("carrier_id").
+			read.LeftJoin(rjCarrierSchema().AsDirectSchema()).On("carrier_id").
 				Field("CarrierCode", "codigo").
 				Field("CarrierOwner", "owner_id"),
-			read.InnerJoinInChild(rjLineSchema()).To(rjCitySchema()).On("city_id").
+			read.InnerJoinInChild(rjLineSchema()).To(rjCitySchema().AsDirectSchema()).On("city_id").
 				Field("CityName", "nome"),
 		)
 	return loader

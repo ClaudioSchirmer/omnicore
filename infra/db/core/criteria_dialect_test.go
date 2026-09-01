@@ -71,3 +71,5 @@ func (testPGDialect) IsForeignKeyViolation(err error) (string, bool) {
 func (testPGDialect) BuildUpsert(table string, _, _ []string, _ []UpsertSet) string {
 	return "INSERT " + table
 }
+
+func (testPGDialect) AllowsSubqueryOnWriteTarget() bool { return true }

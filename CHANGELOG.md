@@ -11,6 +11,85 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-08-31
+
+### Changed
+
+- **A read join's target and a subquery's source take a DIRECT schema.**
+  `read.InnerJoin`/`LeftJoin` (every hop of a chain included) and `criteria.Sub`
+  put exactly one table in their `FROM`, and used to accept a whole schema —
+  children, siblings, shared base — and read a slice of it without saying so.
+  Worse than silently on the join: `validateJoins` resolved the mapped column
+  through `GoNameForRead`, which merges the target's satellites, so
+  `.Field("Doc", "documento")` naming a column of the target's SIBLING was
+  accepted at boot and then emitted as `alias.documento` against the target's own
+  table — a SQL error on every read through that loader, `FindByID` included.
+  The argument's TYPE now answers it: anything that is not a Direct schema is
+  refused where it is declared, and the message names the reduction.
+- **`TableSchema.AsDirectSchema()`** is that reduction: a COPY of the schema
+  limited to its own table (its columns, id, managed slots and composite
+  decompositions), with children, siblings, the shared-base link and the base's
+  registry of referencing roles dropped. The receiver is untouched. An aggregate
+  root, an aggregate child, a role, a shared base and a Direct schema all
+  convert, so requiring it costs no reach — every target and source reachable
+  before is reachable now, through a reduction the developer writes and can see.
+  A **sibling** panics (it borrows its owner's primary key, so it is not a row
+  source) and an **external** schema panics (its table is an upstream service's
+  mirrored collection, absent from this connection). The result is an ordinary
+  Direct schema, including as a `DirectRepository` anchor — writing an
+  aggregate's table through the Direct path skips the outbox, audit, revision
+  guard and cascade, and that escape hatch is left open on purpose.
+
+### Added
+
+- **Subqueries in a criteria — the right-hand side of a comparison stops being
+  only literals.** A predicate could compare a column against values and nothing
+  else, so every question shaped "against the result of another SELECT" cost
+  several round trips and lost its snapshot. `criteria.Sub(schema)` opens a
+  nested SELECT; eight builders put it on the right of operators that already
+  existed — `InSub`/`NinSub` for set membership,
+  `EqSub`/`NeSub`/`GtSub`/`GteSub`/`LtSub`/`LteSub` for the scalar forms — plus
+  `Exists`/`NotExists`, which project nothing.
+  - `criteria.Outer(goField)` correlates. It is a VALUE, not a builder, so every
+    operator that takes one correlates for free (`Eq`, `In`, `Between`,
+    `Contains`). It reaches exactly one level — the immediately enclosing scope
+    — and a name that does not resolve there is refused rather than searched for
+    further out. This is what expresses the 1:N reverse filter a single root
+    SELECT cannot: `Exists(Sub(phones).Where(Eq("UserID", Outer("ID"))))`.
+  - The archive gate is automatic inside a subquery: `Sub` starts on the active
+    scope, so a source declaring `DeletedAt` carries its own
+    `deleted_at IS NULL` unwritten, and a source declaring none carries no gate.
+    `IncludeArchived()` / `OnlyArchived()` are the opt-outs, same names as on
+    `Query`.
+  - A subquery carries its own projection (`Select`, or
+    `SelectCount`/`SelectMax`/`SelectMin`/`SelectSum`/`SelectAvg`), order,
+    `Limit` and quantifier (`Any()` / `All()`), and reads ONE table: an entity
+    schema, an aggregate child, a sibling, a shared base or a `DirectSchema` —
+    never an external schema, whose columns belong to an upstream service.
+  - Refused instead of silently wrong: a missing or duplicated projection, a
+    `Select` on an `Exists`, a `Limit` with no order, a satellite's field inside
+    a subquery whose FROM cannot carry it, and `NinSub` over a nullable column
+    (SQL's `NOT IN` matches no rows at all when the set contains one NULL — the
+    message points at `NotExists`).
+  - The source is always rendered under a derived alias (`phones_sq1`) and every
+    column inside is qualified by it, so an inner name can never drift out and
+    bind to an outer table, and a subquery over the statement's own table is
+    correct by construction. The enclosing statement's SQL is unchanged;
+    arguments are numbered in emission order across nesting levels, so positional
+    dialects stay correct.
+  - A subquery works in an `UPDATE`/`DELETE` predicate on every engine. On MySQL
+    the one case the engine itself forbids — reading the statement's own target
+    table (error 1093) — is refused at compile time, naming the engine.
+    `core.Dialect` gains `AllowsSubqueryOnWriteTarget()` so each backend answers
+    that for itself, and `criteria.Visitor` gains `VisitSubquery` /
+    `VisitExistence` — the nodes belong to the sealed algebra, so they belong to
+    the seam, and the compiler keeps proving every backend handles every node.
+    Both interfaces are the framework's own extension points for adding a
+    backend; a consumer implements neither.
+  - Infrastructure API, not wire vocabulary: only Go code builds a subquery, so
+    the read-model filter operators are unchanged and the Mongo and relational
+    read backings cannot diverge.
+
 ## [0.67.1] - 2026-08-31
 
 ### Fixed

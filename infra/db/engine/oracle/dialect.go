@@ -77,6 +77,10 @@ func (oracleDialect) ApplyLimitOffset(sqlText string, limit, offset int) string 
 	return sqlText + " OFFSET " + strconv.Itoa(offset) + " ROWS FETCH NEXT " + strconv.Itoa(limit) + " ROWS ONLY"
 }
 
+// AllowsSubqueryOnWriteTarget — Oracle puts no restriction on reading the
+// updated table from a subquery of the same statement.
+func (oracleDialect) AllowsSubqueryOnWriteTarget() bool { return true }
+
 // Savepoint statements, Oracle flavor: the standard SAVEPOINT / ROLLBACK TO
 // SAVEPOINT forms — and, like T-SQL, NO release statement (a savepoint is
 // simply discarded at COMMIT), so ReleaseSavepoint returns "" and the caller

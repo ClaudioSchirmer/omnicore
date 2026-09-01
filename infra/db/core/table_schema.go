@@ -1235,6 +1235,33 @@ func (s *TableSchema) ColumnOf(goName string) (string, bool) {
 	return f.column, ok
 }
 
+// fieldIsNullable reports whether a Go field can hold an ABSENCE, and whether
+// that could be determined at all.
+//
+// The Go type is the declaration, exactly as the read joins read it: a pointer
+// holds NULL, a value does not. known is false when there is no struct to ask —
+// a type-less schema, or a field that resolves to no struct position — and a
+// caller then leaves the question unenforced rather than guessing, which is the
+// stance the join validation already takes for a column its target's struct
+// does not expose.
+func (s *TableSchema) fieldIsNullable(goField string) (nullable, known bool) {
+	if s == nil || s.typ == nil {
+		return false, false
+	}
+	if goField == s.idGo {
+		return s.IDKindOf(goField) == IDPointer, true
+	}
+	f, ok := s.byGo[goField]
+	if !ok {
+		return false, false
+	}
+	ft, ok := f.path.TypeIn(s.typ)
+	if !ok {
+		return false, false
+	}
+	return ft.Kind() == reflect.Pointer, true
+}
+
 // GoOf returns the Go field name for a physical column (ID included). The
 // inverse of ColumnOf — lossless because the map is complete.
 func (s *TableSchema) GoOf(column string) (string, bool) {
@@ -1399,6 +1426,94 @@ func (s *TableSchema) Resolve(goName string) (ResolvedField, bool) {
 // from this: an external schema describes an upstream Mongo collection
 // (JoinUpstream → external Mongo collection), a type-anchored schema a local relational table.
 func (s *TableSchema) isExternal() bool { return s.typ == nil }
+
+// isUpstreamExternal narrows isExternal to the schema kind that names a table
+// this connection CANNOT read: an upstream service's mirrored collection
+// (NewExternalSchema).
+//
+// The distinction matters because type-less is not one thing. A shared base is
+// type-less too — it carries no Go struct until a role resolves it — and it is a
+// real table in this database, written and read by this service. A refusal that
+// tests isExternal alone rejects it with the wrong reason, which is why the two
+// declaration guards above spell out the same pair (typ == nil && !isSharedBase)
+// rather than asking isExternal.
+func (s *TableSchema) isUpstreamExternal() bool {
+	return s != nil && s.typ == nil && !s.isSharedBase
+}
+
+// AsDirectSchema returns a COPY of this schema reduced to its own table: the
+// anchor's columns, its id, its managed slots and its composite decompositions —
+// with the vertical composition dropped (children, siblings, shared base, and the
+// base's registry of referencing roles). The receiver is untouched.
+//
+// It exists because a read that reaches ACROSS into another schema — a declared
+// read join's target, a criteria subquery's source — puts exactly one table in
+// its FROM. Handed a whole node, such a read could only use a slice of it, and a
+// slice taken in silence is the failure mode this framework refuses everywhere
+// else. So those verbs demand a Direct schema, and this is how any schema becomes
+// one: the reduction happens where the developer can see it, at the call site,
+// instead of inside a translator.
+//
+// The result is an ordinary Direct schema, with everything that follows from
+// that — including anchoring a DirectRepository. Writing an aggregate's table
+// through the Direct path skips the outbox, the audit row, the revision guard and
+// the cascade; that is a real escape hatch and it is deliberately left open, the
+// same way core.Exec is. It is not the framework's business to forbid a decision
+// it can carry out correctly.
+//
+// Two kinds do NOT convert, because the result would not be a readable table:
+//
+//   - a SIBLING has no identity of its own (it borrows the owner's primary key,
+//     and declaring ID on it is refused), so on its own it is not a row source;
+//   - an EXTERNAL schema names an upstream service's mirrored collection, which
+//     does not exist on this connection at all.
+//
+// Both panic, naming the reason — a declaration mistake, reported like every
+// other one on this type.
+func (s *TableSchema) AsDirectSchema() *TableSchema {
+	if s == nil {
+		panic("infra.TableSchema: AsDirectSchema on a nil schema")
+	}
+	if s.secondary {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): AsDirectSchema on a SIBLING — a sibling borrows its owner's primary "+
+				"key (declaring ID on it is refused), so it is not a row source on its own. Reducing the "+
+				"OWNER would not help either: that produces the OWNER's table, and a sibling's columns "+
+				"leave with the sibling. To read this table on its own, declare it as its own anchor with "+
+				"core.NewDirectSchema, naming the shared id column in ID(...).", s.table))
+	}
+	if s.isUpstreamExternal() {
+		panic(fmt.Sprintf(
+			"infra.TableSchema(%s): AsDirectSchema on an EXTERNAL schema — its columns belong to an "+
+				"upstream service and describe a locally materialized Mongo collection, so there is no "+
+				"such table on this connection to read from.", s.table))
+	}
+
+	c := *s
+	c.direct = true
+	c.children = map[string]*TableSchema{}
+	c.siblings = nil
+	c.sharedBaseLink = nil
+	c.referencingRoleLinks = nil
+	c.isSharedBase = false
+	c.naturalIDCol = ""
+	c.orphanPolicy = OrphanPolicy(0)
+
+	// The maps and slices are copied, not shared: a Direct schema is an ordinary
+	// schema and may be declared onto further, and a Field(...) on the copy must
+	// not appear on the original.
+	c.fields = append([]schemaField(nil), s.fields...)
+	c.byGo = make(map[string]schemaField, len(s.byGo))
+	for k, v := range s.byGo {
+		c.byGo[k] = v
+	}
+	c.byCol = make(map[string]schemaField, len(s.byCol))
+	for k, v := range s.byCol {
+		c.byCol[k] = v
+	}
+	c.composites = append([]*compositeDecl(nil), s.composites...)
+	return &c
+}
 
 // typeName returns the schema's Go type name ("Address"), or "" for a type-less
 // external schema. A local view embed derives its Go segment from this; an

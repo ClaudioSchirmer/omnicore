@@ -84,6 +84,10 @@ func (sqliteDialect) ApplyLimitOffset(sql string, limit, offset int) string {
 	return sql + " LIMIT " + strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
 }
 
+// AllowsSubqueryOnWriteTarget — SQLite puts no restriction on reading the
+// updated table from a subquery of the same statement.
+func (sqliteDialect) AllowsSubqueryOnWriteTarget() bool { return true }
+
 func (sqliteDialect) Savepoint(name string) string           { return "SAVEPOINT " + name }
 func (sqliteDialect) RollbackToSavepoint(name string) string { return "ROLLBACK TO SAVEPOINT " + name }
 func (sqliteDialect) ReleaseSavepoint(name string) string    { return "RELEASE SAVEPOINT " + name }

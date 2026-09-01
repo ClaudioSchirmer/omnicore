@@ -383,59 +383,23 @@ distinctCategories := len(groups)              // itself a business fact</code><
 
     <h4 id="criteria-engine">Loading by criteria — <code>FindOne</code> / <code>FindAll</code></h4>
     <p>
-        <code>omnicore/infra/db/criteria</code> is a small, pure DSL (stdlib only) you compose in Go inside your
-        <code>infra</code> repository. It is the developer-facing, compile-time way to load the
-        authoritative aggregate — distinct from the Mongo read side, which is the end-user-facing query
-        facade over the eventually-consistent projection. Your <em>repository interface</em> stays in
-        business vocabulary (<code>FindByID</code>, <code>FindByEmail</code>, …); the engine is how the
-        <code>infra</code> implementation fulfills it.
+        The loader takes a <code>criteria.Query</code>: <code>criteria.ByID(id)</code> for the primary key,
+        <code>criteria.Where(...)</code> for anything else, with the boolean composition, the ordering, the
+        limit/offset window and the archived scope set on the query itself.
     </p>
-    <pre><code>// Primary-key shortcut (assumes the ID↔id convention):
-u, err := repo.FindOne(ctx, criteria.ByID(id))
-
-// Any alternate key — no hand-rolled SQL:
+    <pre><code>u, err := repo.FindOne(ctx, criteria.ByID(id))
 u, err := repo.FindOne(ctx, criteria.Where(criteria.Eq("Email", email)))
 
-// Boolean composition + order + limit; FindAll returns []*User (children batched):
 users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
     criteria.Eq("TenantID", t),
     criteria.Or(criteria.Eq("Status", "active"), criteria.ILike("Name", "bob%")),
-    criteria.IsNull("DeletedReason"),
-)).OrderByDesc("CreatedAt").Limit(50))
-
-// Offset pagination — page 3 of 50/page. Offset REQUIRES a positive Limit AND an
-// OrderBy (a skip is undefined without a deterministic order):
-page3, err := repo.FindAll(ctx, criteria.Where(criteria.Eq("TenantID", t)).
-    OrderByDesc("CreatedAt").Limit(50).Offset(100))
-
-// Archived scope (DeletedAt gate) lives on the Query, not in the predicate:
-archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre>
+)).OrderByDesc("CreatedAt").Limit(50))</code></pre>
     <p>
-        Operators: <code>Eq/Ne/In/Nin/Gt/Gte/Lt/Lte/Like/ILike/IsNull/NotNull</code>, combinators
-        <code>And/Or/Not</code> (nestable), and sugar <code>Contains/StartsWith/EndsWith</code>
-        (case-insensitive, wildcards escaped) + <code>Between</code>. Field names are your <strong>Go field
-        names</strong> ("Email"), resolved to columns by the same <code>TableSchema</code> auto-scan uses
-        (declared in the schema via <code>Field("Email", "email")</code>). Values are always parameterized;
-        a <code>domain.ID</code> value is unwrapped automatically. <code>FindByID</code> /
-        <code>FindArchivedByID</code> (promoted by <code>BaseAggregateRepository</code>) are themselves
-        thin wrappers over <code>FindOne(criteria.ByID(id))</code> — one SQL-building path for every load.
-    </p>
-    <p>
-        The <strong>query envelope</strong> — the concerns that are not part of the boolean predicate — is
-        set fluently on the <code>Query</code>: <code>OrderBy</code> / <code>OrderByDesc</code> (declaration
-        order = <code>ORDER BY</code> order), <code>Limit(n)</code> (the row cap; <code>0</code> = no cap),
-        <code>Offset(n)</code> (the row skip for offset pagination; <code>0</code> = no skip), and the
-        archived scope (<code>IncludeArchived</code> / <code>OnlyArchived</code>). <code>Offset</code> is
-        rendered in each engine's native form (<code>LIMIT n OFFSET m</code> on Postgres/MySQL,
-        <code>OFFSET m ROWS FETCH NEXT n ROWS ONLY</code> on Oracle/SQL&nbsp;Server), so it works
-        identically across backends. Because a row skip over an arbitrary physical order is meaningless — and
-        SQL&nbsp;Server's <code>OFFSET…FETCH</code> mandates it — a non-zero <code>Offset</code> <strong>requires
-        both a positive <code>Limit</code> and at least one <code>OrderBy</code></strong>; violating either is
-        a loud error on <code>FindAll</code>, never a silently wrong page. <code>Offset</code> applies to
-        <code>FindAll</code> only — <code>FindOne</code> is single-row by definition and ignores it. For
-        end-user-facing listings prefer the Mongo read side's
-        <a href="#auto-query-handlers~qry-keyset">keyset pagination</a>; reach for
-        <code>Offset</code> here when you are iterating the authoritative aggregate on the write side.
+        The DSL itself — every operator, the Go-name resolution, the query envelope and its rules, and
+        subqueries — is one section of its own: <a href="#criteria">Criteria — the query DSL</a>.
+        <code>FindByID</code> / <code>FindArchivedByID</code> (promoted by
+        <code>BaseAggregateRepository</code>) are themselves thin wrappers over
+        <code>FindOne(criteria.ByID(id))</code> — one SQL-building path for every load.
     </p>
 
     <h4 id="aggregate-loader-auto">Automatic scan mode (recommended default)</h4>

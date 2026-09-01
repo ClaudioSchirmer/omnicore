@@ -63,6 +63,13 @@ func (mysqlDialect) ApplyLimitOffset(sql string, limit, offset int) string {
 	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
 }
 
+// AllowsSubqueryOnWriteTarget — MySQL is the one supported engine that refuses
+// it: an UPDATE or DELETE whose predicate contains a subquery reading the same
+// table fails with error 1093, "You can't specify target table 'x' for update in
+// FROM clause". It restricts nothing else about subqueries, so the translator's
+// refusal is exactly this case and no wider.
+func (mysqlDialect) AllowsSubqueryOnWriteTarget() bool { return false }
+
 func (mysqlDialect) Savepoint(name string) string           { return "SAVEPOINT " + name }
 func (mysqlDialect) RollbackToSavepoint(name string) string { return "ROLLBACK TO SAVEPOINT " + name }
 func (mysqlDialect) ReleaseSavepoint(name string) string    { return "RELEASE SAVEPOINT " + name }

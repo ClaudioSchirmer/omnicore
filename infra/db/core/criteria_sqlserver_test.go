@@ -149,3 +149,5 @@ func TestSQLServerVisitor_DomainIDArgEncodedToBinary(t *testing.T) {
 		t.Fatalf("args[0] = %v (%T), want a 16-byte BINARY(16) form", args[0], args[0])
 	}
 }
+
+func (testSQLServerDialect) AllowsSubqueryOnWriteTarget() bool { return true }

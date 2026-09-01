@@ -1,0 +1,326 @@
+<h2>Criteria — the query DSL</h2>
+
+<p>
+    <code>omnicore/infra/db/criteria</code> is a small, pure DSL (stdlib only) you compose in Go inside your
+    <code>infra</code> layer. It is the developer-facing, compile-time way to ask the <strong>authoritative</strong>
+    store a question — distinct from the Mongo read side, which is the end-user-facing query facade over the
+    eventually-consistent projection. Your <em>repository interface</em> stays in business vocabulary
+    (<code>FindByID</code>, <code>FindByEmail</code>, …); criteria is how the <code>infra</code> implementation
+    fulfills it.
+</p>
+
+<p>It emits no SQL of its own. You compose a tree; the translator renders it in the active dialect.</p>
+
+<pre><code>// Primary-key shortcut (the fixed ID↔id convention):
+u, err := repo.FindOne(ctx, criteria.ByID(id))
+
+// Any alternate key — no hand-rolled SQL:
+u, err := repo.FindOne(ctx, criteria.Where(criteria.Eq("Email", email)))
+
+// Boolean composition + order + limit; FindAll returns []*User (children batched):
+users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
+    criteria.Eq("TenantID", t),
+    criteria.Or(criteria.Eq("Status", "active"), criteria.ILike("Name", "bob%")),
+    criteria.IsNull("DeletedReason"),
+)).OrderByDesc("CreatedAt").Limit(50))
+
+// Archived scope (the DeletedAt gate) lives on the Query, not in the predicate:
+archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre>
+
+<h3>Who consumes it</h3>
+
+<p>One tree, every relational entry point — which is why the vocabulary is worth learning once:</p>
+
+<ul>
+    <li>
+        the <a href="#custom-command-handler~aggregate-loader">AggregateLoader</a> —
+        <code>FindOne</code>, <code>FindAll</code>, <code>Exists</code>, <code>Aggregate</code>,
+        <code>AggregateBy</code>;
+    </li>
+    <li>
+        a <a href="#direct-schema">DirectRepository</a>, with the same read verbs, and as the predicate of its
+        writes (<code>UpdateOne</code>, <code>Delete</code>, <code>Archive</code>, <code>UpdateAll</code>, …);
+    </li>
+    <li>
+        a <a href="#relational-view">relational view</a>, which compiles the wire request into this same tree.
+    </li>
+</ul>
+
+<h3>Names are Go field names</h3>
+
+<p>
+    A criteria never mentions a column. Field names are your <strong>Go field names</strong>
+    (<code>"Email"</code>), resolved by the same <a href="#table-schema"><code>TableSchema</code></a> the write path
+    and the scanner use — declared there as <code>Field("Email", "email")</code>. A name the schema does not
+    declare is an error at compile time, never a guess. The fields a
+    <a href="#read-joins">read join</a> declares answer under the Go name <em>you</em> chose for them, so a join
+    field filters and sorts like any other.
+</p>
+
+<p>
+    Values are always <strong>parameterized</strong> — never concatenated — and typed by the schema, not by shape: a
+    probe against a <code>domain.ID</code>-typed field binds in the dialect's native id form (uuid text on Postgres,
+    <code>BINARY(16)</code> on MySQL, <code>RAW(16)</code> on Oracle) even when you hand it a bare string. A
+    <code>string</code>-typed field is text, always.
+</p>
+
+<h3>Operators</h3>
+
+<table>
+    <thead>
+        <tr><th>Family</th><th>Builders</th></tr>
+    </thead>
+    <tbody>
+        <tr><td>Equality / ordering</td><td><code>Eq</code>, <code>Ne</code>, <code>Gt</code>, <code>Gte</code>, <code>Lt</code>, <code>Lte</code></td></tr>
+        <tr><td>Sets</td><td><code>In</code>, <code>Nin</code></td></tr>
+        <tr><td>Text</td><td><code>Like</code>, <code>ILike</code> (raw patterns), and the escaped sugar <code>Contains</code>, <code>StartsWith</code>, <code>EndsWith</code></td></tr>
+        <tr><td>Absence</td><td><code>IsNull</code>, <code>NotNull</code></td></tr>
+        <tr><td>Range</td><td><code>Between(lo, hi)</code> — inclusive, sugar for <code>Gte</code> AND <code>Lte</code></td></tr>
+        <tr><td>Composition</td><td><code>And</code>, <code>Or</code> (n-ary), <code>Not</code> — nestable to any depth</td></tr>
+        <tr><td>Subqueries</td><td><code>InSub</code>, <code>NinSub</code>, <code>EqSub</code>/<code>NeSub</code>/<code>GtSub</code>/<code>GteSub</code>/<code>LtSub</code>/<code>LteSub</code>, <code>Exists</code>, <code>NotExists</code> — below</td></tr>
+    </tbody>
+</table>
+
+<p>
+    Two behaviors worth knowing because they are decisions, not accidents. <strong>An empty set is a predicate, not
+    an error</strong>: <code>In(f)</code> with no values matches nothing and <code>Nin(f)</code> with none matches
+    everything — the same semantics MongoDB gives <code>$in:[]</code>/<code>$nin:[]</code>, so the two read backings
+    agree. And the <strong>sugar escapes your value</strong>: <code>Contains("Name", "50%")</code> matches the
+    literal <code>50%</code>, not "starts with 50" — <code>Like</code>/<code>ILike</code> take the raw pattern
+    instead, and <code>EscapeLike</code> is exported for when you assemble one yourself.
+</p>
+
+<h3>The query envelope</h3>
+
+<p>
+    The concerns that are <em>not</em> part of the boolean predicate are set fluently on the <code>Query</code>:
+    <code>OrderBy</code> / <code>OrderByDesc</code> (declaration order = <code>ORDER BY</code> order),
+    <code>Limit(n)</code> (the row cap; <code>0</code> = no cap), <code>Offset(n)</code> (the row skip;
+    <code>0</code> = none), and the archived scope — <code>IncludeArchived()</code> / <code>OnlyArchived()</code>,
+    with active-only as the default.
+</p>
+
+<pre><code>// Offset pagination — page 3 of 50/page:
+page3, err := repo.FindAll(ctx, criteria.Where(criteria.Eq("TenantID", t)).
+    OrderByDesc("CreatedAt").Limit(50).Offset(100))</code></pre>
+
+<p>
+    <code>Offset</code> renders in each engine's native form (<code>LIMIT n OFFSET m</code> on Postgres/MySQL,
+    <code>OFFSET m ROWS FETCH NEXT n ROWS ONLY</code> on Oracle/SQL&nbsp;Server). Because a row skip over an
+    arbitrary physical order is meaningless — and SQL&nbsp;Server's <code>OFFSET…FETCH</code> mandates it — a
+    non-zero <code>Offset</code> <strong>requires both a positive <code>Limit</code> and at least one
+    <code>OrderBy</code></strong>; violating either is a loud error on <code>FindAll</code>, never a silently wrong
+    page. It applies to <code>FindAll</code> only. For end-user-facing listings prefer the read side's
+    <a href="#auto-query-handlers~qry-keyset">keyset pagination</a>; reach for <code>Offset</code> here when you are
+    iterating the authoritative aggregate on the write side.
+</p>
+
+<div class="box">
+    <p>
+        <strong>The archive gate is not part of the predicate.</strong> The where-tree stays
+        <code>DeletedAt</code>-agnostic and the scope decides what happens around it — which is why an archived
+        record is unreachable to every verb but Unarchive without a single handler writing
+        <code>deleted_at IS NULL</code>. A schema that declares no <code>DeletedAt</code> has no marker column, so
+        no gate is emitted at all.
+    </p>
+</div>
+
+<h3>Subqueries — comparing against another SELECT</h3>
+
+<p>
+    Everything above compares a column against a <em>value</em>. A <strong>subquery</strong> makes the right-hand
+    side the result of another SELECT, which is what reaches the questions no list of literals can answer: the roles
+    a user holds directly or through their groups, the users with at least one active phone, the row carrying the
+    newest revision.
+</p>
+
+<p>
+    The operator set does not change — <code>eq</code>, <code>ne</code>, <code>gt</code>, <code>gte</code>,
+    <code>lt</code>, <code>lte</code>, <code>in</code> and <code>nin</code> all take a subquery the moment the
+    operand can be one. Only <code>EXISTS</code> is genuinely new, because it has no left-hand side at all.
+</p>
+
+<pre><code>// users who hold at least one ACTIVE phone — the 1:N reverse filter
+users, err := repo.Loader.FindAll(ctx, criteria.Where(
+    criteria.Exists(criteria.Sub(schemas.PhoneSchema().AsDirectSchema()).
+        Where(criteria.Eq("UserID", criteria.Outer("ID")))),
+))</code></pre>
+
+<p><code>Sub(source)</code> opens the nested SELECT; the fluent setters describe it.</p>
+
+<table>
+    <thead>
+        <tr><th>Call</th><th>What it does</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>Sub(src)</code></td><td>Opens a subquery over <code>src</code>, a <strong>Direct schema</strong> — see below.</td></tr>
+        <tr><td><code>Select(goField)</code></td><td>The one projected column, by Go field name. Mandatory except for <code>Exists</code>.</td></tr>
+        <tr><td><code>SelectCount()</code>, <code>SelectMax/Min/Sum/Avg(goField)</code></td><td>Projects an aggregate instead of a plain column.</td></tr>
+        <tr><td><code>Where(expr)</code></td><td>The subquery's own predicate. <code>Outer(...)</code> inside it correlates.</td></tr>
+        <tr><td><code>OrderBy</code> / <code>OrderByDesc</code> / <code>Limit(n)</code></td><td>"The first row by this order". A <code>Limit</code> with no order is refused.</td></tr>
+        <tr><td><code>IncludeArchived()</code> / <code>OnlyArchived()</code></td><td>Moves the subquery off the active scope — same names and meaning as on the outer <code>Query</code>.</td></tr>
+        <tr><td><code>Any()</code> / <code>All()</code></td><td>Quantifies a scalar comparison: <code>GtSub("Price", sub.All())</code>.</td></tr>
+    </tbody>
+</table>
+
+<h4>Correlation — <code>Outer</code> is a value, not a builder</h4>
+
+<p>
+    <code>Outer(goField)</code> refers to a field of the <em>enclosing</em> statement. It travels as an ordinary
+    comparison value, which is why correlation costs no new operators: every builder that takes a value takes an
+    outer reference, <code>In</code>, <code>Gte</code>, <code>Between</code> and <code>Contains</code> included.
+</p>
+
+<pre><code>criteria.Eq("RoleID", criteria.Outer("ID"))</code></pre>
+
+<div class="box">
+    <p>
+        <strong>It reaches exactly one level — the immediately enclosing scope.</strong> SQL itself would resolve an
+        unqualified name against the innermost scope that happens to have it, silently picking a different table when
+        two levels both declare the field. This framework declares names instead of inferring them, so a reference
+        that does not resolve one level up is refused rather than searched for further out.
+    </p>
+</div>
+
+<h4>The archive gate is automatic here too</h4>
+
+<p>
+    A subquery is scoped like every other read. When its source schema declares <code>DeletedAt</code>, the framework
+    adds that table's <code>deleted_at IS NULL</code> to the subquery's own WHERE — you never write it. When the
+    source declares no archive marker there is no column to gate on and nothing is emitted.
+</p>
+
+<h4>Worked example — permissions through roles and groups</h4>
+
+<p>
+    Anchored on the join table with <a href="#read-joins">read joins</a> forward to <code>roles</code> and
+    <code>permissions</code>, the whole authorization read is one statement:
+</p>
+
+<pre><code>q := criteria.Where(criteria.Or(
+    // roles the user holds directly
+    criteria.InSub("RoleID",
+        criteria.Sub(schemas.UserRoleSchema().AsDirectSchema()).Select("RoleID").
+            Where(criteria.Eq("UserID", userID))),
+
+    // roles the user holds through a group
+    criteria.InSub("RoleID",
+        criteria.Sub(schemas.GroupRoleSchema().AsDirectSchema()).Select("RoleID").
+            Where(criteria.InSub("GroupID",
+                criteria.Sub(schemas.UserGroupSchema().AsDirectSchema()).Select("GroupID").
+                    Where(criteria.And(
+                        criteria.Eq("UserID", userID),
+                        criteria.Exists(criteria.Sub(schemas.GroupSchema().AsDirectSchema()).
+                            Where(criteria.Eq("ID", criteria.Outer("GroupID")))),
+                    ))))),
+))</code></pre>
+
+<p>Five archive gates ride along — the anchor's and one per subquery — and none of them is written above.</p>
+
+<div class="box">
+    <p>
+        <strong>A join that only filters is a subquery.</strong> Written by hand, that query joins
+        <code>user_groups</code> and <code>groups</code> inside the second subselect. Neither contributes a column to
+        the result: they are there to filter, and filtering is what <code>IN</code> and <code>EXISTS</code> say. The
+        rewrite is the standard semi-join transformation and every engine's planner moves between the two forms. It
+        generalizes, because a subquery projects <em>one</em> column, so that column comes from <em>one</em> table:
+        make that table the source and everything else in the original join is a filter.
+    </p>
+</div>
+
+<h4>One table per subquery, and the type says so</h4>
+
+<p>
+    A <code>Sub</code> reads a single table, so it takes a schema that <em>is</em> a single table: a
+    <a href="#direct-schema">Direct schema</a>. Any other schema is refused at the call, because a node handed to a
+    subquery could only be read in part — and a part taken in silence is what this framework refuses everywhere else.
+</p>
+
+<p>Every schema becomes one, at the call site, where you can see the reduction happen:</p>
+
+<pre><code>criteria.Sub(schemas.PhoneSchema().AsDirectSchema()).Select("UserID")</code></pre>
+
+<p>
+    <code>AsDirectSchema()</code> returns a <strong>copy</strong> reduced to its own table — the anchor's columns, its
+    id, its managed slots, its composite decompositions — with children, siblings and the shared base dropped. The
+    schema you called it on is untouched. An aggregate root, an aggregate child, a role, a shared base and a Direct
+    schema all convert, so requiring it costs no reach.
+</p>
+
+<p>Two kinds do not convert, and say why:</p>
+
+<ul>
+    <li>a <strong>sibling</strong> borrows its owner's primary key (declaring <code>ID</code> on it is refused), so on its own it is not a row source — and reducing its owner gives the OWNER's table, not the sibling's; to read that table standalone, declare it with <code>core.NewDirectSchema</code> naming the shared id column;</li>
+    <li>an <strong>external schema</strong> names an upstream service's mirrored collection, which is not a table on this connection at all.</li>
+</ul>
+
+<p>
+    The one thing no reduction can give you is a column of another table:
+    <code>SUM(a.qty * b.price)</code> has no subquery form here. Everything reachable by filtering does.
+</p>
+
+<div class="box">
+    <p>
+        The result is an ordinary Direct schema, so it can also anchor a <code>DirectRepository</code> — which writes
+        one statement with no outbox, audit row, revision guard or cascade. That is a real escape hatch over an
+        aggregate's table, and it is left open on purpose: the framework says clearly what the Direct path does not
+        carry, and does not forbid a decision it can carry out correctly.
+    </p>
+</div>
+
+<h4>Refusals — never a silently wrong answer</h4>
+
+<table>
+    <thead>
+        <tr><th>What</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+        <tr><td>No <code>Select</code>, or more than one</td><td>A subquery compares one column; which one was meant is not guessed.</td></tr>
+        <tr><td><code>Select</code> on an <code>Exists</code></td><td>The question is whether a row is there, so the item is the literal <code>1</code>.</td></tr>
+        <tr><td><code>NinSub</code> over a <strong>nullable</strong> column</td><td>SQL's <code>NOT IN</code> matches <em>no rows at all</em> when the set contains one NULL — silently. <code>NotExists</code> says the same thing safely, and the message points there.</td></tr>
+        <tr><td><code>Limit</code> with no <code>OrderBy</code></td><td>The first n rows of an unordered set are undefined — the rule <code>Query.Offset</code> already enforces.</td></tr>
+        <tr><td><code>Outer</code> outside a subquery, or naming a field the enclosing scope lacks</td><td>An outer reference reaches one level and is never searched further out.</td></tr>
+        <tr><td>A source that is not a Direct schema</td><td>A subquery reads one table; the message names <code>AsDirectSchema()</code>.</td></tr>
+    </tbody>
+</table>
+
+<h4>Writes, and the one engine difference</h4>
+
+<p>
+    A subquery works in the predicate of an <code>UPDATE</code> or <code>DELETE</code> as well.
+    <strong>MySQL</strong> is the one supported engine with a restriction, and it is narrow: a statement may not read
+    <em>its own target table</em> from a subquery (error 1093, <em>"You can't specify target table 'x' for update in
+    FROM clause"</em>). The framework refuses exactly that case on MySQL, at compile time, naming the engine — a
+    subquery over any other table renders there like everywhere else, and the other three engines have no restriction
+    at all.
+</p>
+
+<h4>What the SQL looks like</h4>
+
+<p>
+    A subquery's source is always rendered under a derived alias (<code>phones_sq1</code> — the table, its nesting
+    depth), and every column inside it is qualified by that alias. That is not cosmetic: an unqualified column in a
+    subquery whose own table lacks it binds <em>silently</em> to the enclosing table in SQL, which is the classic
+    <code>NOT IN</code> footgun. Qualifying always makes accidental correlation impossible and makes a subquery over
+    the same table as the statement correct by construction.
+</p>
+
+<pre><code>EXISTS (SELECT 1 FROM phones phones_sq1
+         WHERE phones_sq1.user_id = users.id
+           AND phones_sq1.deleted_at IS NULL)</code></pre>
+
+<p>
+    The enclosing statement renders its own columns exactly as it did before — a subquery beside it changes nothing.
+    Bound arguments are numbered in emission order across every nesting level, so positional dialects
+    (<code>$1</code>, <code>:1</code>, <code>@p1</code>) stay correct.
+</p>
+
+<div class="box">
+    <p>
+        <strong>This whole DSL is an infrastructure API, not a wire vocabulary.</strong> Only Go code builds a
+        criteria — an end user's filter is the Request DTO's <code>filter:</code> allowlist, which some layer above
+        deliberately declared and which the read side compiles into this tree. Nothing reaches <code>Sub</code> from
+        an HTTP, GraphQL or gRPC filter, so the Mongo and relational read backings cannot diverge on something one
+        can express and the other silently ignores.
+    </p>
+</div>

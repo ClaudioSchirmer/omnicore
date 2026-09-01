@@ -50,6 +50,10 @@ func (pgDialect) ApplyLimitOffset(sql string, limit, offset int) string {
 	return fmt.Sprintf("%s LIMIT %d OFFSET %d", sql, limit, offset)
 }
 
+// AllowsSubqueryOnWriteTarget — Postgres puts no restriction on reading the
+// updated table from a subquery of the same statement.
+func (pgDialect) AllowsSubqueryOnWriteTarget() bool { return true }
+
 func (pgDialect) Savepoint(name string) string           { return "SAVEPOINT " + name }
 func (pgDialect) RollbackToSavepoint(name string) string { return "ROLLBACK TO SAVEPOINT " + name }
 func (pgDialect) ReleaseSavepoint(name string) string    { return "RELEASE SAVEPOINT " + name }

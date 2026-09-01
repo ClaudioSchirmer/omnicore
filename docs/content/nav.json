@@ -137,6 +137,10 @@
         "label": "TableSchema"
       },
       {
+        "id": "criteria",
+        "label": "Criteria — the query DSL"
+      },
+      {
         "id": "direct-schema",
         "label": "DirectSchema"
       },

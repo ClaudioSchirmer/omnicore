@@ -1531,6 +1531,86 @@ RedactedField("RecoveryPhrase", "recovery_phrase",
     refusal above.
 </div>
 
+<h3 id="as-direct-schema">AsDirectSchema — the same schema, reduced to its own table</h3>
+
+<p>
+    A schema is a <strong>node</strong>: its own table plus whatever vertical composition it declares — aggregate
+    children, 1:1 siblings, a shared base. Most consumers read the whole node, which is the point of declaring it.
+    Two do not: a <a href="#read-joins">read join</a>'s <strong>target</strong> and a
+    <a href="#criteria">criteria subquery</a>'s <strong>source</strong> each put exactly ONE table in their
+    <code>FROM</code>.
+</p>
+
+<p>
+    Handed a node, those two could only use a slice of it — and a slice taken in silence is what this framework
+    refuses everywhere else. So they demand a <a href="#direct-schema">Direct schema</a>, the kind that is one table
+    by construction, and <code>AsDirectSchema()</code> is how any schema becomes one:
+</p>
+
+<pre><code>read.InnerJoin(schemas.CustomerSchema().AsDirectSchema()).On("customer_id").
+    Field("CustomerName", "nome")
+
+criteria.Sub(schemas.PhoneSchema().AsDirectSchema()).Select("UserID")</code></pre>
+
+<p>
+    It returns a <strong>copy</strong> carrying the schema's own table, its id, its mapped columns, its managed slots
+    and its composite decompositions — with the children, the siblings, the shared-base link and (on a base) its
+    registry of referencing roles dropped. <strong>The schema you called it on is untouched</strong>, so one
+    declaration keeps serving its repository, its view and its writes exactly as before. The satellites' own fields go
+    with them for free: those are declared on the satellite schemas, never on the owner.
+</p>
+
+<p>
+    The reduction happens at the CALL SITE on purpose. The alternative — letting the verb accept a node and quietly
+    read part of it — is the same information, hidden: a reader of the declaration could not tell that the target's
+    children and satellites play no part in it.
+</p>
+
+<h4>What converts</h4>
+
+<table>
+    <thead>
+        <tr><th>Kind</th><th>Converts?</th></tr>
+    </thead>
+    <tbody>
+        <tr><td>Aggregate root (<code>NewTableSchema</code>)</td><td>yes</td></tr>
+        <tr><td>Aggregate child (<code>parent.Child(...)</code>)</td><td>yes — its table, id and <code>ParentID</code> are its own</td></tr>
+        <tr><td>Role (a schema declaring <code>SharedBase</code>)</td><td>yes — the role's table, with its foreign key to the base</td></tr>
+        <tr><td>Shared base (<code>NewSharedBaseSchema</code>)</td><td>yes — a real table with its own id, type-less or not</td></tr>
+        <tr><td>Direct (<code>NewDirectSchema</code>)</td><td>yes — a copy of itself</td></tr>
+        <tr><td><strong>Sibling</strong> (<code>NewSiblingSchema</code>)</td><td><strong>no</strong> — panics</td></tr>
+        <tr><td><strong>External</strong> (<code>NewExternalSchema</code>)</td><td><strong>no</strong> — panics</td></tr>
+    </tbody>
+</table>
+
+<p>
+    The two refusals are about the result not being a readable table, and each names its reason. A <strong>sibling</strong>
+    borrows its owner's primary key — declaring <code>ID</code> on one is refused — so on its own it is not a row
+    source. An <strong>external</strong> schema names an upstream service's mirrored collection, which is not a table
+    on this connection at all. Everything else converts, which is why requiring the reduced form costs no reach: every
+    target and source reachable before is reachable now.
+</p>
+
+<div class="box">
+    <p>
+        <strong>Reducing the owner is not a way around the sibling refusal.</strong> A sibling's columns are declared
+        on the SIBLING's schema, never on the owner's, so the owner's reduced form carries the owner's table and
+        nothing else — the satellite leaves with its fields. If you need to read a sibling table on its own, declare
+        it as its own anchor with <code>core.NewDirectSchema</code>, naming the shared id column in <code>ID(...)</code>:
+        physically it is an ordinary table with a primary key, and only the DECLARATION said the key was borrowed.
+    </p>
+</div>
+
+<div class="box">
+    <p>
+        <strong>The result is an ordinary Direct schema</strong> — including as a <code>DirectRepository</code>
+        anchor. Writing an aggregate's table through the Direct path skips the outbox, the audit row, the revision
+        guard and the cascade, so a write made that way never feeds a view. That is a real escape hatch and it is left
+        open deliberately: the framework says plainly what the Direct path does not carry, and does not forbid a
+        decision it can carry out correctly.
+    </p>
+</div>
+
 <h3 id="supported-column-shapes">Supported column shapes</h3>
 <div class="box">
     <strong>The relational store is PostgreSQL, MySQL, SQL Server, Oracle, <em>or</em> SQLite; the read projection is MongoDB — except for a <a href="#relational-view">relational view</a>, which serves straight from the relational store.</strong>
