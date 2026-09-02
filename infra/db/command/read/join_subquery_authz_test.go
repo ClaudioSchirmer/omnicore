@@ -161,7 +161,7 @@ func authzSQL(t *testing.T, q *criteria.Query) (string, []any) {
 }
 
 func TestAuthzQuery_WholeStatement(t *testing.T) {
-	sql, args := authzSQL(t, authzCriteria("u-1"))
+	sql, args := authzSQL(t, authzCriteria("7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"))
 
 	// ── the join blocks, under aliases derived from the foreign keys ──────────
 	for _, want := range []string{
@@ -217,7 +217,7 @@ func TestAuthzQuery_WholeStatement(t *testing.T) {
 		t.Fatalf("args = %d (%v), want 2", len(args), args)
 	}
 	for i, a := range args {
-		if a != "u-1" {
+		if a != "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51" {
 			t.Errorf("arg %d = %v, want the user id", i+1, a)
 		}
 	}
@@ -227,7 +227,7 @@ func TestAuthzQuery_WholeStatement(t *testing.T) {
 // role_permissions rows come back, never the rows a foreign key reaches into.
 // Five gates, and none of them on roles or permissions.
 func TestAuthzQuery_JoinTargetsAreNotGated(t *testing.T) {
-	sql, _ := authzSQL(t, authzCriteria("u-1"))
+	sql, _ := authzSQL(t, authzCriteria("7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"))
 	for _, alias := range []string{"j_role_id.deleted_at", "j_permission_id.deleted_at"} {
 		if strings.Contains(sql, alias) {
 			t.Errorf("the join target must not be archive-gated, found %q in:\n%s", alias, sql)
@@ -238,7 +238,7 @@ func TestAuthzQuery_JoinTargetsAreNotGated(t *testing.T) {
 // The archive scope of the OUTER query moves the anchor's gate and leaves every
 // subquery's own gate alone — each subquery carries its own scope.
 func TestAuthzQuery_OuterScopeDoesNotReachIntoTheSubqueries(t *testing.T) {
-	sql, _ := authzSQL(t, authzCriteria("u-1").IncludeArchived())
+	sql, _ := authzSQL(t, authzCriteria("7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51").IncludeArchived())
 
 	// The column itself stays in the SELECT list — it is a mapped field. What must
 	// be gone is the GATE.
@@ -258,7 +258,7 @@ func TestAuthzQuery_JoinFieldBesideASubquery(t *testing.T) {
 	q := criteria.Where(criteria.And(
 		criteria.Eq("RoleKey", "admin"),
 		criteria.InSub("RoleID", criteria.Sub(userRoles).Select("RoleID").
-			Where(criteria.Eq("UserID", "u-1"))),
+			Where(criteria.Eq("UserID", "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"))),
 	))
 
 	sql, args := authzSQL(t, q)
@@ -268,7 +268,7 @@ func TestAuthzQuery_JoinFieldBesideASubquery(t *testing.T) {
 	if !strings.Contains(sql, "role_permissions.role_id IN (SELECT user_roles_sq1.role_id") {
 		t.Errorf("the anchor side of the subquery must stay qualified by its table:\n%s", sql)
 	}
-	if len(args) != 2 || args[0] != "admin" || args[1] != "u-1" {
+	if len(args) != 2 || args[0] != "admin" || args[1] != "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51" {
 		t.Errorf("args = %v, want [admin u-1] in emission order", args)
 	}
 }
@@ -276,7 +276,7 @@ func TestAuthzQuery_JoinFieldBesideASubquery(t *testing.T) {
 // Ordering and paging ride on top of a subquery predicate untouched — the
 // envelope is not part of the predicate algebra.
 func TestAuthzQuery_EnvelopeRidesOnTop(t *testing.T) {
-	sql, _ := authzSQL(t, authzCriteria("u-1").OrderBy("RoleID").Limit(50))
+	sql, _ := authzSQL(t, authzCriteria("7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51").OrderBy("RoleID").Limit(50))
 
 	if !strings.Contains(sql, "ORDER BY role_permissions.role_id ASC") {
 		t.Errorf("ordering missing or unqualified:\n%s", sql)

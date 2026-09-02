@@ -97,3 +97,21 @@ func UnresolvedFieldPathError(goPath string) *InfrastructureError {
 		Notification: domain.SchemaViolationNotification{},
 	})
 }
+
+// InvalidFilterValueError packages a probe the reader cannot bind in the
+// canonical Schema envelope — the sibling of LimitExceededError and
+// InvalidCursorError, and the reason a mistyped filter is a 400 rather than
+// the 500 a driver error becomes.
+//
+// FieldName is the GO field name: this layer knows the schema, not the wire
+// key the consumer typed. queryschema refuses first wherever it can (it knows
+// the wire key AND the declared kind), so this message is what reaches a
+// consumer only when the wire could not tell — an identity column behind a
+// string-typed filter leaf.
+func InvalidFilterValueError(goField, value string) *InfrastructureError {
+	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
+		FieldName:    goField,
+		FieldValue:   value,
+		Notification: domain.InvalidFilterValueNotification{},
+	})
+}

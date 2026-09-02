@@ -91,8 +91,8 @@ func CommandWithBody[
 		}
 
 		var req TReq
-		if badField, ok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !ok {
-			return respondSchemaViolation[TResult](c, pipe, badField)
+		if v := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); v != nil {
+			return respondViolation[TResult](c, pipe, v)
 		}
 		if len(body) > 0 {
 			if err := c.Bind().Body(&req); err != nil {
@@ -161,8 +161,15 @@ func CommandWithBodyID[
 		}
 
 		var req TReq
-		if badField, ok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !ok {
-			return respondSchemaViolation[TResult](c, pipe, badField)
+		if v := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); v != nil {
+			return respondViolation[TResult](c, pipe, v)
+		}
+		// After the other path segments (a malformed one of those is a 400 the
+		// consumer can act on) and before the body is bound: parsing a payload
+		// aimed at no record is work nobody asked for.
+		rawID := c.Params("id")
+		if queryschema.IsMalformedPathID(rawID) {
+			return respondViolation[TResult](c, pipe, queryschema.MalformedPathID(queryschema.KeyPathID, rawID))
 		}
 		if len(body) > 0 {
 			if err := c.Bind().Body(&req); err != nil {
@@ -172,7 +179,7 @@ func CommandWithBodyID[
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
 		cmd := req.ToCommand()
-		cmd.SetPathID(c.Params("id"))
+		cmd.SetPathID(rawID)
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return respondWithProjection(c, result, successStatus, responseProjection)
 	}
@@ -260,7 +267,7 @@ func respondViolation[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline, v *querysc
 	if v == nil {
 		v = queryschema.SchemaViolation("")
 	}
-	ctx := domain.NewNotificationContext("Schema")
+	ctx := domain.NewNotificationContext(v.ContextName())
 	ctx.AddNotificationMessage(v.Message())
 	err := domain.NewDomainError([]*domain.NotificationContext{ctx})
 	result := pipeline.Run(pipe, AppContext(c), func() (TRes, error) {

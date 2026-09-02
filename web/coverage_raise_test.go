@@ -44,7 +44,7 @@ func TestHandleCommandByID_FailureBranch(t *testing.T) {
 	app := fiber.New()
 	app.Patch("/things/:id/archive", CommandByID(newTestPipeline(), responses.NoBody, failingNoBodyHandler{}, fiber.StatusOK))
 
-	resp, _ := app.Test(httptest.NewRequest("PATCH", "/things/x/archive", nil))
+	resp, _ := app.Test(httptest.NewRequest("PATCH", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34/archive", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 422 from Failure, got %d (body=%s)", resp.StatusCode, b)
@@ -96,7 +96,7 @@ func TestHandleCommandWithBodyID_PathBindingFailure_400(t *testing.T) {
 	app := fiber.New()
 	app.Put("/things/:id/extra/:num", CommandWithBodyID(newTestPipeline(), pathNumUpdateReq{}, responses.NoBody, lenientUpdateHandler{}, fiber.StatusOK))
 
-	resp, _ := app.Test(httptest.NewRequest("PUT", "/things/x/extra/abc", nil))
+	resp, _ := app.Test(httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34/extra/abc", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 400, got %d (body=%s)", resp.StatusCode, b)
@@ -116,7 +116,7 @@ func TestHandleCommandWithBodyID_BodyBindFailure_400(t *testing.T) {
 
 	// age declared int; pass a string → c.Bind().Body fails → 400.
 	body, _ := json.Marshal(map[string]string{"age": "not-an-int"})
-	req := httptest.NewRequest("PUT", "/things/x", bytes.NewReader(body))
+	req := httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -257,7 +257,7 @@ func TestHandleQueryByID_FailureBranch(t *testing.T) {
 	app := fiber.New()
 	app.Get("/users/:id", QueryByID(newTestPipeline(), testFindIDRequest{}, rawItem, failingIDHandler{}))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil))
 	if resp.StatusCode != fiber.StatusUnprocessableEntity {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 422 from Failure, got %d (body=%s)", resp.StatusCode, b)

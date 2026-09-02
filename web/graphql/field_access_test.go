@@ -150,7 +150,7 @@ func (h *restrictByIDHandler) Handle(ctx *configuration.AppContext, q *restrictB
 		return execResult{}, err
 	}
 	h.saw = crit
-	return execResult{ID: sp("i1"), Name: sp("Ana")}, nil
+	return execResult{ID: sp("11111111-1111-4111-8111-111111111111"), Name: sp("Ana")}, nil
 }
 
 func restrictByIDRegistry(h *restrictByIDHandler) *Registry {
@@ -167,7 +167,7 @@ func restrictByIDRegistry(h *restrictByIDHandler) *Registry {
 func TestFieldAccess_ByIDExplicitSelectionOfRestrictedFieldIsForbidden(t *testing.T) {
 	reg := restrictByIDRegistry(&restrictByIDHandler{})
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG) // non-admin
-	resp := reg.Execute(ctx, `query { item(id: "i1") { name age } }`, nil, "")
+	resp := reg.Execute(ctx, `query { item(id: "11111111-1111-4111-8111-111111111111") { name age } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("explicitly selecting a restricted field on the by-id field must be forbidden")
 	}
@@ -188,7 +188,7 @@ func TestFieldAccess_ByIDExplicitSelectionOfRestrictedFieldIsForbidden(t *testin
 func TestFieldAccess_ByIDPassiveOmissionResolves(t *testing.T) {
 	reg := restrictByIDRegistry(&restrictByIDHandler{})
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
-	resp := reg.Execute(ctx, `query { item(id: "i1") { name } }`, nil, "")
+	resp := reg.Execute(ctx, `query { item(id: "11111111-1111-4111-8111-111111111111") { name } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("not selecting the restricted field must resolve; got %+v", resp.Errors)
 	}
@@ -205,7 +205,7 @@ func TestFieldAccess_ByIDSelectionReachesTheReaderAsAProjection(t *testing.T) {
 	ctx.SetIdentity(&configuration.Identity{
 		Claims: map[string]any{"permissions": []string{"data:admin"}},
 	})
-	if resp := reg.Execute(ctx, `query { item(id: "i1") { name } }`, nil, ""); len(resp.Errors) != 0 {
+	if resp := reg.Execute(ctx, `query { item(id: "11111111-1111-4111-8111-111111111111") { name } }`, nil, ""); len(resp.Errors) != 0 {
 		t.Fatalf("admin read must resolve; got %+v", resp.Errors)
 	}
 	if !h.saw.Projection.Selects("Name") {

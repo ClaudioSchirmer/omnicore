@@ -2,10 +2,12 @@ package core
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
 
@@ -92,13 +94,26 @@ func TestIDLift_MySQL(t *testing.T) {
 		}
 	})
 
-	t.Run("synthetic (non-uuid) id degrades to text inside the codec", func(t *testing.T) {
-		_, args, err := CompileWhere(criteria.Eq("BuyerID", "the-id"), liftResolver(), d, testIDKinds())
-		if err != nil {
-			t.Fatalf("CompileWhere: %v", err)
+	// A non-uuid probe on an identity column used to degrade to text and let
+	// the COLUMN reject it — which reaches the consumer as a 500, since a
+	// driver error carries no notification. The reader refuses it instead, so
+	// the same typo answers 400 on every engine rather than 500 on Postgres
+	// and a codec failure on MySQL/SQL Server/Oracle.
+	t.Run("synthetic (non-uuid) id is refused, not bound", func(t *testing.T) {
+		_, _, err := CompileWhere(criteria.Eq("BuyerID", "the-id"), liftResolver(), d, testIDKinds())
+		if err == nil {
+			t.Fatal("expected a typed refusal for a non-uuid probe on an identity column")
 		}
-		if got, ok := args[0].(string); !ok || got != "the-id" {
-			t.Fatalf("arg = %v (%T), want text (the column rejects, never the codec)", args[0], args[0])
+		var infra *InfrastructureError
+		if !errors.As(err, &infra) {
+			t.Fatalf("expected *InfrastructureError, got %T", err)
+		}
+		msgs := infra.Contexts[0].Messages()
+		if got := domain.NotificationKey(msgs[0].Notification); got != "InvalidFilterValueNotification" {
+			t.Fatalf("notification = %q, want InvalidFilterValueNotification", got)
+		}
+		if msgs[0].FieldValue != "the-id" {
+			t.Fatalf("echo = %q, want the rejected probe", msgs[0].FieldValue)
 		}
 	})
 

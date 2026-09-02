@@ -87,6 +87,9 @@ func (coreDE) Translations() map[string]string {
 		// Server / routing
 		"InternalServerErrorNotification": "Interner Serverfehler.",
 		"RouteNotFoundNotification":       "Route nicht gefunden.",
+		"MalformedIDNotification":         "Die Datensatzkennung ist keine gültige UUID.",
+		"UnknownIDAddressNotification":    "Unter dieser Adresse existiert kein Datensatz.",
+		"InvalidFilterValueNotification":  "Der Filterwert ist für dieses Feld ungültig.",
 		"MethodNotAllowedNotification":    "HTTP-Methode für diese Route nicht erlaubt.",
 		"PayloadTooLargeNotification":     "Anfragerumpf überschreitet die zulässige Größe.",
 		// Transport semantics the framework maps but does not emit itself

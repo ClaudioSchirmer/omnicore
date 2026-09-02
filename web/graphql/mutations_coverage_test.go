@@ -231,7 +231,7 @@ func covDelRegistry(err error) (*Registry, *configuration.AppContext) {
 func TestMutationByID_DomainFailureSurfacesNotification(t *testing.T) {
 	reg, ctx := covDelRegistry(
 		domain.SingleNotificationError("Thing", "id", domain.RecordNotFoundNotification{}))
-	resp := reg.Execute(ctx, `mutation { deleteThing(id: "u1") { success } }`, nil, "")
+	resp := reg.Execute(ctx, `mutation { deleteThing(id: "22222222-2222-4222-8222-222222222222") { success } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("a domain failure must surface in errors[]")
 	}
@@ -242,7 +242,7 @@ func TestMutationByID_DomainFailureSurfacesNotification(t *testing.T) {
 
 func TestMutationByID_RawErrorIsOpaqueInternal(t *testing.T) {
 	reg, ctx := covDelRegistry(errors.New("boom"))
-	resp := reg.Execute(ctx, `mutation { deleteThing(id: "u1") { success } }`, nil, "")
+	resp := reg.Execute(ctx, `mutation { deleteThing(id: "22222222-2222-4222-8222-222222222222") { success } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("an exception must surface in errors[]")
 	}
@@ -275,7 +275,7 @@ func TestMutationWithBodyID_ResolverRejectsBadInput(t *testing.T) {
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
 	out, gerrs := res(ctx, map[string]any{
-		"id":    "u1",
+		"id":    "22222222-2222-4222-8222-222222222222",
 		"input": map[string]any{"name": 123},
 	}, nil, nil)
 	if len(gerrs) == 0 {

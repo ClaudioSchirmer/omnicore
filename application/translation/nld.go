@@ -87,6 +87,9 @@ func (coreNL) Translations() map[string]string {
 		// Server / routing
 		"InternalServerErrorNotification": "Interne serverfout.",
 		"RouteNotFoundNotification":       "Route niet gevonden.",
+		"MalformedIDNotification":         "De record-id is geen geldige UUID.",
+		"UnknownIDAddressNotification":    "Er bestaat geen record op dit adres.",
+		"InvalidFilterValueNotification":  "De filterwaarde is ongeldig voor dit veld.",
 		"MethodNotAllowedNotification":    "HTTP-methode niet toegestaan voor deze route.",
 		"PayloadTooLargeNotification":     "Verzoekbody overschrijdt de toegestane omvang.",
 		// Transport semantics the framework maps but does not emit itself

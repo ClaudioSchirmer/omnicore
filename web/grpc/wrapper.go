@@ -227,7 +227,11 @@ func handleCommandWithBodyID[
 		if err != nil {
 			return nil, conversionError[TResult](pipe, appCtx, err)
 		}
-		cmd.SetPathID(idFrom(req.Msg))
+		rawID := idFrom(req.Msg)
+		if queryschema.IsMalformedPathID(rawID) {
+			return nil, failureError[TResult](pipe, appCtx, violationError(queryschema.MalformedPathID(queryschema.KeyPathID, rawID)))
+		}
+		cmd.SetPathID(rawID)
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return responseFromResult(result, fromResult)
 	}
@@ -252,9 +256,14 @@ func handleCommandByID[
 	fromResult func(TResult) (*RPB, error),
 ) func(context.Context, *connect.Request[PB]) (*connect.Response[RPB], error) {
 	return func(ctx context.Context, req *connect.Request[PB]) (*connect.Response[RPB], error) {
+		appCtx := AppContextFrom(ctx)
+		rawID := idFrom(req.Msg)
+		if queryschema.IsMalformedPathID(rawID) {
+			return nil, failureError[TResult](pipe, appCtx, violationError(queryschema.MalformedPathID(queryschema.KeyPathID, rawID)))
+		}
 		cmd := TCmdPtr(new(TCmd))
-		cmd.SetPathID(idFrom(req.Msg))
-		result := pipeline.Dispatch(pipe, AppContextFrom(ctx), cmd, h)
+		cmd.SetPathID(rawID)
+		result := pipeline.Dispatch(pipe, appCtx, cmd, h)
 		return responseFromResult(result, fromResult)
 	}
 }
@@ -282,7 +291,11 @@ func handleQueryByID[
 		if err != nil {
 			return nil, conversionError[TResult](pipe, appCtx, err)
 		}
-		q.SetPathID(idFrom(req.Msg))
+		rawID := idFrom(req.Msg)
+		if queryschema.IsMalformedPathID(rawID) {
+			return nil, failureError[TResult](pipe, appCtx, violationError(queryschema.UnknownPathIDAddress(queryschema.KeyPathID, rawID)))
+		}
+		q.SetPathID(rawID)
 		result := pipeline.Dispatch(pipe, appCtx, q, h)
 		return responseFromResult(result, fromResult)
 	}

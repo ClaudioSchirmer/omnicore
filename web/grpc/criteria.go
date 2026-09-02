@@ -534,7 +534,7 @@ func violationError(v *queryschema.Violation) error {
 	if token, wrapped := queryschema.OrderByToken(msg.FieldName); wrapped {
 		msg.FieldName = token
 	}
-	nctx := domain.NewNotificationContext("Schema")
+	nctx := domain.NewNotificationContext(v.ContextName())
 	nctx.AddNotificationMessage(msg)
 	return domain.NewDomainError([]*domain.NotificationContext{nctx})
 }

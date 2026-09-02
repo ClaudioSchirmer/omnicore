@@ -87,6 +87,9 @@ func (corePTBR) Translations() map[string]string {
 		// Server / routing
 		"InternalServerErrorNotification": "Erro interno do servidor.",
 		"RouteNotFoundNotification":       "Rota não encontrada.",
+		"MalformedIDNotification":         "O identificador do registro não é um UUID válido.",
+		"UnknownIDAddressNotification":    "Nenhum registro existe neste endereço.",
+		"InvalidFilterValueNotification":  "O valor do filtro não é válido para este campo.",
 		"MethodNotAllowedNotification":    "Método HTTP não permitido para esta rota.",
 		"PayloadTooLargeNotification":     "Corpo da requisição excede o tamanho permitido.",
 		// Transport semantics the framework maps but does not emit itself

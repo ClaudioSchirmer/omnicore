@@ -128,8 +128,8 @@ func QueryExport[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResult],
 			return respondViolation[queries.PageOf[TResult]](c, pipe, violation)
 		}
 		var req TReq
-		if bad, bok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !bok {
-			return respondSchemaViolation[queries.PageOf[TResult]](c, pipe, bad)
+		if v := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); v != nil {
+			return respondViolation[queries.PageOf[TResult]](c, pipe, v)
 		}
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)

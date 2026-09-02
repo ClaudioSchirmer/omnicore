@@ -213,6 +213,15 @@
         <li><code>fwweb.CommandWithBody(pipe, sample, responseProjection, h, status)</code> — endpoint with body, without path ID (POST). Allocates <code>TReq</code> via <code>new</code>, validates schema, calls <code>req.ToCommand()</code> on the web→application boundary (no ctx — Request DTO is body-only), Dispatch (handler receives ctx and forwards to <code>cmd.ToEntity(ctx)</code>).</li>
         <li><code>fwweb.CommandWithBodyID(pipe, sample, responseProjection, h, status)</code> — endpoint with body, with path ID (PUT/PATCH). Same + <code>cmd.SetPathID(c.Params("id"))</code> before Dispatch.</li>
         <li><code>fwweb.CommandByID(pipe, responseProjection, h, status)</code> — endpoint <strong>without body</strong>, with path ID (Archive/Unarchive/Delete). Does not call <code>Bind().Body()</code>, does not inspect FullBody.</li>
+        <li><strong>Both id-carrying wrappers refuse a malformed segment before the handler.</strong> A present
+            <code>:id</code> that is not a UUID answers 400 <code>MalformedIDNotification</code> (semantic
+            Schema) — a write states an intention about a record, so naming no record is a request-shape
+            violation, not an absence. <code>CommandWithBodyID</code> refuses it BEFORE binding the body:
+            parsing a payload aimed at no record is work nobody asked for. The read-side wrappers answer 404
+            <code>UnknownIDAddressNotification</code> to the same segment — see
+            <a href="#status-mapping">status mapping</a>. An EMPTY segment is not refused: it means the route
+            was mounted without <code>:id</code>, which <code>RequirePathID</code> diagnoses as the developer
+            error it is.</li>
     </ul>
     <p>
         The <code>responseProjection</code> is a <code>func(TResult) TResp</code> — typically a method value like

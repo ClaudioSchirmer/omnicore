@@ -102,7 +102,9 @@ func BuildCriteria(s *RequestSchema, proj *ProjectionSchema, in Read) (queries.R
 		if !declared || !spec.Ops[op] {
 			return crit, nil, SchemaViolation(term.Raw), false
 		}
-		ApplyFilterValues(crit.Filter, spec, op, term.Values)
+		if v := ApplyFilterValues(crit.Filter, spec, term.Raw, op, term.Values); v != nil {
+			return crit, nil, v, false
+		}
 	}
 
 	crit.Search = in.Search

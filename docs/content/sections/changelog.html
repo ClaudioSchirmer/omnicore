@@ -12,6 +12,58 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.70.0</span><span class="release-date">September 2, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a by-id route no longer answers
+                500 for a <code>:id</code> that is not a UUID.</strong> The wrappers bound
+                <code>c.Params("id")</code> and handed it straight on; <code>domain.ID</code> is an opaque
+                wrapper by design, so the segment travelled to the store and the answer depended on where the
+                view lived — a relational backing raised <code>SQLSTATE 22P02</code> on Postgres and rendered it
+                as a 500, the other engines degraded the probe to text and matched nothing, and a Mongo-backed
+                view of the same route answered 404 because the string matched no <code>_id</code>. One request,
+                three contracts. It is now refused at the wrapper, before the handler, on REST, GraphQL and
+                gRPC alike: a READ answers <strong>404</strong> <code>UnknownIDAddressNotification</code> (it
+                named no record), a WRITE answers <strong>400</strong> <code>MalformedIDNotification</code> (it
+                violated the request shape). An EMPTY segment is not refused — that means the route was mounted
+                without <code>:id</code>, which <code>RequirePathID</code> already diagnoses as the developer
+                error it is. The framework's own audit endpoint follows the same rule and moved from 400 to 404
+                for a malformed <code>aggregateId</code>. See <a href="#status-mapping">Status mapping</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <code>fwweb.BindPath</code> returns
+                <code>*queryschema.Violation</code> instead of <code>(badField, ok)</code>. A field name can
+                only ever produce one answer, and an identity segment needs two. The violation carries the
+                notification that decides the status, so a manual handler stops writing status literals:
+                <code>if v := fwweb.BindPath(c, &amp;req); v != nil { return fwweb.RespondViolation(c, pipe, v) }</code>.
+                A <code>uuid.UUID</code> / <code>domain.ID</code> path tag is classified exactly like the
+                <code>:id</code> segment. See <a href="#custom-query-handler">Manual query handler</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>a filter value the leaf cannot
+                take is refused instead of passed through.</strong> <code>?age=abc</code> on an
+                <code>int64</code>-declared leaf fell through as the raw string, which was only harmless on
+                Mongo, where it matched nothing; on every relational backing it reached the driver and came
+                back as a 500. It is now <strong>400</strong>
+                <code>InvalidFilterValueNotification</code>, named by the wire key. A leaf the DTO declares as
+                a plain string over an IDENTITY column is invisible to the wire, so the relational reader
+                guards that one — the only layer that knows the column's type, and one that already mints
+                typed Schema refusals (<code>LimitExceeded</code>, <code>InvalidCursor</code>) rather than
+                letting a bad wire value become a 500. No primary key can be affected: every id is minted by
+                the framework as uuid v7 and a caller-supplied id is refused outright.</li>
+            <li><strong>Added</strong> — <strong>three notifications, translated in all seven catalogs:</strong>
+                <code>MalformedIDNotification</code> (Schema → 400),
+                <code>UnknownIDAddressNotification</code> (NotFound → 404) and
+                <code>InvalidFilterValueNotification</code> (Schema → 400).
+                <code>InvalidIDUUIDNotification</code> is untouched and keeps its meaning — the
+                domain-validation key an aggregate raises through <code>ID.IsValid</code> (422). Three
+                questions, three keys, so a consumer can tell a bad address from an unknown one from a bad
+                value inside a payload. <code>domain.ID.IsUUID()</code> is the silent half of
+                <code>IsValid</code>, for the wire guards that mint their own notification.</li>
+            <li><strong>Added</strong> — <code>queryschema.Violation</code> gained <code>Value</code> and
+                <code>Context</code>: the rejected value is echoed back, and a refusal that is not a schema
+                violation can say so — the by-id refusals carry <code>"context": "Request"</code> instead of
+                labelling an address problem as a payload problem. Routes with a path id now declare
+                <strong>400</strong> in the OpenAPI document too: the bodyless by-id commands (archive /
+                unarchive / delete) can answer it, which the body-shaped rule alone left undeclared.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.69.0</span><span class="release-date">September 1, 2026</span></div>
         <ul>
             <li><strong>Added</strong> — <strong><code>http.trustProxy</code>: the reverse-proxy topology the

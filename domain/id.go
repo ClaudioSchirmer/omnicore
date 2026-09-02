@@ -56,6 +56,17 @@ func (id ID) UUID() (uuid.UUID, error) {
 	return uuid.Parse(id.value)
 }
 
+// IsUUID reports whether the wrapped value parses as a UUID.
+//
+// It is the silent half of IsValid: the wire wrappers refuse a malformed path
+// id BEFORE dispatch and mint their own notification, because the refusal
+// differs by verb — a write is a schema violation, a read names no record — so
+// they need the fact, not an entry on a NotificationContext.
+func (id ID) IsUUID() bool {
+	_, err := uuid.Parse(id.value)
+	return err == nil
+}
+
 func (id ID) IsValid(fieldName string, ctx *NotificationContext) bool {
 	if _, err := uuid.Parse(id.value); err != nil {
 		ctx.AddNotificationMessage(NotificationMessage{

@@ -131,3 +131,32 @@ func TestJoinPath_GroupWithTrailingSlash(t *testing.T) {
 		t.Fatalf("got %q, want /api/users", got)
 	}
 }
+
+// TestStandardErrors_ByIDRouteDeclaresBothRefusals pins the document against
+// what a by-id route now answers for a malformed `:id`: 404 on a read, 400 on
+// a write. The bodyless commands (archive / unarchive / delete) reach that 400
+// with no body at all, so the body-shaped rule alone would have left it
+// undeclared — a status the service emits and the contract does not name.
+func TestStandardErrors_ByIDRouteDeclaresBothRefusals(t *testing.T) {
+	s := &Spec{}
+	got := s.standardErrors(Operation{Spec: RouteSpec{SuccessStatus: 200, HasPathID: true}})
+
+	for _, want := range []int{400, 404} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("status %d must be declared on a by-id route, got %v", want, got)
+		}
+	}
+}
+
+// A route with no path id and no body declares neither: nothing on it can
+// produce those refusals.
+func TestStandardErrors_BodylessRootRouteDeclaresNoPathRefusals(t *testing.T) {
+	s := &Spec{}
+	got := s.standardErrors(Operation{Spec: RouteSpec{SuccessStatus: 200}})
+
+	for _, absent := range []int{400, 404} {
+		if _, ok := got[absent]; ok {
+			t.Errorf("status %d must not be declared here, got %v", absent, got)
+		}
+	}
+}

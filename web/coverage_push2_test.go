@@ -132,7 +132,7 @@ func TestQueryByID_UndeclaredIncludeArchivedRejects(t *testing.T) {
 	pipe := newTestPipeline()
 	app.Get("/users/:id", QueryByID(pipe, bareByIDRequest{}, rawItem, &bareByIDHandler{}))
 
-	resp, err := app.Test(httptest.NewRequest("GET", "/users/abc?includeArchived=true", nil))
+	resp, err := app.Test(httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34?includeArchived=true", nil))
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
 	}

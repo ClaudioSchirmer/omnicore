@@ -161,8 +161,8 @@ func TestInspectPathTags_Panics(t *testing.T) {
 // --- BindPath: nil + non-pointer/non-struct panics ---
 
 func TestBindPath_NilReqNoop(t *testing.T) {
-	if bad, ok := BindPath(nil, nil); !ok || bad != "" {
-		t.Errorf("nil req must be a no-op, got (%q,%v)", bad, ok)
+	if v := BindPath(nil, nil); v != nil {
+		t.Errorf("nil req must be a no-op, got %+v", v)
 	}
 }
 

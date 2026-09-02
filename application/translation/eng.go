@@ -87,8 +87,15 @@ func (coreENG) Translations() map[string]string {
 		// Server / routing
 		"InternalServerErrorNotification": "Internal server error.",
 		"RouteNotFoundNotification":       "Route not found.",
-		"MethodNotAllowedNotification":    "HTTP method not allowed for this route.",
-		"PayloadTooLargeNotification":     "Request payload exceeds the allowed size.",
+		// Malformed `:id` path segment: the write side refuses the SHAPE
+		// (Schema/400), the read side answers absence (NotFound/404). Both are
+		// distinct from InvalidIDUUIDNotification, the domain-validation key for
+		// an id carried INSIDE a payload.
+		"MalformedIDNotification":        "The record identifier is not a valid UUID.",
+		"UnknownIDAddressNotification":   "No record exists at this address.",
+		"InvalidFilterValueNotification": "The filter value is not valid for this field.",
+		"MethodNotAllowedNotification":   "HTTP method not allowed for this route.",
+		"PayloadTooLargeNotification":    "Request payload exceeds the allowed size.",
 		// Transport semantics the framework maps but does not emit itself
 		"TooManyRequestsNotification":             "Too many requests. Try again later.",
 		"ResourceGoneNotification":                "This resource is no longer available.",

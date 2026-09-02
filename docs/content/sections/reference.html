@@ -64,7 +64,12 @@
     <p class="note"><code>ApplicationError</code> lives in <code>omnicore/application/exception/</code>.</p>
 
     <h3>Built-in notification types</h3>
-    <p><strong>Domain (21):</strong> RequiredField, UnableToInsertWithID, UnableToUpdateWithoutID, UnableToDeleteWithoutID, InsertNotAllowed, UpdateNotAllowed, DeleteNotAllowed, ArchiveNotAllowed, UnarchiveNotAllowed, ServiceIsRequired, EntityAlreadyAdded, EntityDoesNotExist, EntityIsNotActive, RepositoryFunctionNotImplemented, InvalidIDUUID, InvalidEventType, RecordNotFound, InvalidAggregateChild, NaturalIDImmutable, LimitExceeded, SchemaViolation.</p>
+    <p><strong>Domain (25):</strong> RequiredField, UnableToInsertWithID, UnableToUpdateWithoutID, UnableToDeleteWithoutID, InsertNotAllowed, UpdateNotAllowed, DeleteNotAllowed, ArchiveNotAllowed, UnarchiveNotAllowed, ServiceIsRequired, EntityAlreadyAdded, EntityDoesNotExist, EntityIsNotActive, ConcurrentModification, RepositoryFunctionNotImplemented, InvalidIDUUID, MalformedID, UnknownIDAddress, InvalidFilterValue, InvalidEventType, RecordNotFound, InvalidAggregateChild, NaturalIDImmutable, LimitExceeded, SchemaViolation.</p>
+    <p class="note">The three id-shaped keys answer three different questions and are deliberately distinct:
+        <code>MalformedID</code> — the <code>:id</code> segment of a WRITE is not a UUID (Schema → 400);
+        <code>UnknownIDAddress</code> — the same segment on a READ, which therefore names no record (NotFound → 404);
+        <code>InvalidIDUUID</code> — an id INSIDE a payload failed <code>ID.IsValid</code> in the domain (Validation → 422).
+        <code>InvalidFilterValue</code> is their filter-side sibling: a query-string value the column it probes cannot hold.</p>
     <p><strong>Application (32):</strong> ContextNotInitialized, ServiceUnavailable, InvalidLanguageDomain, MissingAuthorization, InvalidToken, ExpiredToken, MissingPermission, TenantMissing, TenantMismatch, FieldAccessForbidden, RequestTimeout, ReadTimeout, RouteNotFound, MethodNotAllowed, PayloadTooLarge, InternalServerError, UnsupportedCapability, TooManyRequests, ResourceGone, PreconditionFailed, UnsupportedMediaType, NotImplemented, BadGateway, PaymentRequired, NotAcceptable, RangeNotSatisfiable, ResourceLocked, PreconditionRequired, UnavailableForLegalReasons, InsufficientStorage, RequestHeaderFieldsTooLarge, MalformedRequest.</p>
     <p><strong>Infrastructure (2):</strong> MigrationDownMissing, MigrationFilenameInvalid.</p>
 

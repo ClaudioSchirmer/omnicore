@@ -338,8 +338,17 @@ func QueryByID[TReq HasToIDQuery[TQ], TResult any, R any, TQ queries.QueryByID[T
 				if proj := projectionFromNode(sel, frags, byIDProjSchema); proj.Narrows() {
 					crit.Projection = proj
 				}
+				// Same refusal REST answers on this route, in this wire's
+				// idiom: GraphQL always returns HTTP 200, so the semantic is
+				// data — the error carries notificationKey + semantic
+				// "NotFound" instead of the untyped internal error a driver
+				// failure used to produce here.
+				rawID := asString(args["id"])
+				if queryschema.IsMalformedPathID(rawID) {
+					return nil, renderViolation(pipe, ctx, queryschema.UnknownPathIDAddress(queryschema.KeyPathID, rawID))
+				}
 				q := req.ToQuery(crit)
-				q.SetPathID(asString(args["id"]))
+				q.SetPathID(rawID)
 				res := pipeline.Dispatch(pipe, ctx, q, h)
 				switch {
 				case res.IsSuccess():
@@ -456,7 +465,7 @@ func schemaViolation(pipe *pipeline.Pipeline, ctx *configuration.AppContext, fie
 // default lives on the Violation, so it cannot drift per surface.
 func renderViolation(pipe *pipeline.Pipeline, ctx *configuration.AppContext, v *queryschema.Violation) []GraphQLError {
 	res := pipeline.Run(pipe, ctx, func() (any, error) {
-		nc := domain.NewNotificationContext("Schema")
+		nc := domain.NewNotificationContext(v.ContextName())
 		nc.AddNotificationMessage(v.Message())
 		return nil, domain.NewDomainError([]*domain.NotificationContext{nc})
 	})

@@ -258,19 +258,86 @@ type Violation struct {
 	Field string
 	// Notification explains the refusal; nil → SchemaViolationNotification.
 	Notification domain.Notification
+	// Value echoes the rejected wire value back to the consumer. Optional: a
+	// refusal about the PRESENCE of a control (an undeclared key, a direction
+	// conflict) has no value worth echoing, while one about its CONTENT does.
+	Value string
+	// Context names the notification context the refusal is grouped under;
+	// empty means DefaultViolationContext. It exists because not every refusal
+	// this carrier renders is a schema violation: a malformed path id on a read
+	// answers 404, and grouping that under "Schema" would label an address
+	// problem as a payload problem on every surface at once.
+	Context string
 }
+
+// DefaultViolationContext is the notification context a Violation is grouped
+// under when it names none — the canonical schema-guard context every surface
+// has always used.
+const DefaultViolationContext = "Schema"
+
+// KeyPathID is the wire spelling of the by-id segment: the `:id` Fiber
+// parameter, the `id` GraphQL argument and the `id` field of a by-id proto
+// message are one contract, so the refusals name it from one constant.
+const KeyPathID = "id"
 
 // SchemaViolation builds the generic rejection for an offending wire field.
 func SchemaViolation(field string) *Violation { return &Violation{Field: field} }
 
+// MalformedPathID is the WRITE-side refusal of an identity segment that is not
+// a UUID. field is the wire spelling of the segment — KeyPathID for the by-id
+// wrappers, the `path:` tag's name for a manually bound one. The segment is part of the Request shape, so this is a schema
+// violation → 400 / InvalidArgument / semantic "Schema".
+func MalformedPathID(field, value string) *Violation {
+	return &Violation{
+		Field:        field,
+		Notification: domain.MalformedIDNotification{},
+		Value:        value,
+		Context:      "Request",
+	}
+}
+
+// UnknownPathIDAddress is the READ-side refusal of the same segment. A read
+// answers absence with absence → 404 / NotFound / semantic "NotFound": the
+// consumer named no record, which is exactly what a read reports when the id
+// is well-formed and matches nothing.
+func UnknownPathIDAddress(field, value string) *Violation {
+	return &Violation{
+		Field:        field,
+		Notification: domain.UnknownIDAddressNotification{},
+		Value:        value,
+		Context:      "Request",
+	}
+}
+
+// IsMalformedPathID reports whether a by-id wire segment must be refused:
+// PRESENT, and not a UUID.
+//
+// An EMPTY segment is deliberately not a refusal. It means the route was
+// mounted without the `:id` parameter (or the message left the field unset),
+// which is a WIRING mistake the framework already diagnoses at the handler
+// through handlers.RequirePathID's developer panic — and which some services
+// fill from a non-URL source in ToCommand instead. Answering a wiring mistake
+// with a 400 would blame the caller for something the caller cannot fix.
+func IsMalformedPathID(raw string) bool {
+	return raw != "" && !domain.NewID(raw).IsUUID()
+}
+
+// ContextName is the notification context this violation is grouped under.
+func (v Violation) ContextName() string {
+	if v.Context == "" {
+		return DefaultViolationContext
+	}
+	return v.Context
+}
+
 // Message renders the violation as the notification message a surface adds to
-// its "Schema" context.
+// the context ContextName reports.
 func (v Violation) Message() domain.NotificationMessage {
 	n := v.Notification
 	if n == nil {
 		n = domain.SchemaViolationNotification{}
 	}
-	return domain.NotificationMessage{FieldName: v.Field, Notification: n}
+	return domain.NotificationMessage{FieldName: v.Field, FieldValue: v.Value, Notification: n}
 }
 
 // SelectedComputedPaths returns the Go field paths of the COMPUTED fields the
