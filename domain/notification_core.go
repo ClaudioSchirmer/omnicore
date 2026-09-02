@@ -91,6 +91,44 @@ type RepositoryFunctionNotImplementedNotification struct{ DomainNotificationBase
 
 type InvalidIDUUIDNotification struct{ DomainNotificationBase }
 
+// MalformedIDNotification is emitted by the wire wrappers when the `:id` path
+// segment of a WRITE route is not a UUID. The segment is part of the Request
+// SHAPE, so the refusal is a schema violation: SemanticSchema → 400 on HTTP,
+// InvalidArgument on gRPC, semantic "Schema" on GraphQL. FieldName carries the
+// wire spelling of the segment, FieldValue echoes what arrived.
+//
+// It is deliberately not InvalidIDUUIDNotification: that one is the
+// domain-validation key an aggregate raises through ID.IsValid when a value
+// INSIDE a payload is wrong (422). This one says the ADDRESS the consumer
+// wrote is not an address at all.
+type MalformedIDNotification struct{ DomainNotificationBase }
+
+// UnknownIDAddressNotification is the read-side sibling of
+// MalformedIDNotification: a malformed `:id` on a read names no record, and a
+// read answers absence with absence — SemanticNotFound → 404 on HTTP, NotFound
+// on gRPC, semantic "NotFound" on GraphQL. Answering 400 there would make the
+// same id return two different statuses depending on the view's backing, which
+// is the divergence this whole refusal exists to remove.
+//
+// It stays distinct from RecordNotFoundNotification on purpose: both answer
+// 404, and the separate key is what lets a consumer tell "no record has this
+// id" from "what you sent is not an id" without parsing the message.
+type UnknownIDAddressNotification struct{ DomainNotificationBase }
+
+// InvalidFilterValueNotification is emitted when a filter value on the query
+// string cannot be the thing the column it probes holds — "abc" against an
+// integer column, a non-uuid against an identity one.
+//
+// It is a schema violation (400): the consumer wrote a value the endpoint's
+// declared vocabulary cannot take. Before it existed, such a probe travelled to
+// the driver and came back as a 500 on every relational backing, while a
+// Mongo-backed view of the same view answered 200 with an empty page — the
+// same request, two contracts.
+//
+// FieldName carries the wire key when the wire caught it and the Go field name
+// when the reader did; FieldValue echoes the rejected value.
+type InvalidFilterValueNotification struct{ DomainNotificationBase }
+
 type InvalidEventTypeNotification struct{ DomainNotificationBase }
 
 type RecordNotFoundNotification struct{ DomainNotificationBase }
@@ -110,8 +148,11 @@ type ConcurrentModificationNotification struct{ DomainNotificationBase }
 
 // Kernel notification Semantic overrides — encapsulate the natural HTTP/transport
 // semantics in the notification itself, so no global registry is needed.
-func (RecordNotFoundNotification) Semantic() NotificationSemantic    { return SemanticNotFound }
-func (EntityIsNotActiveNotification) Semantic() NotificationSemantic { return SemanticStateConflict }
+func (RecordNotFoundNotification) Semantic() NotificationSemantic     { return SemanticNotFound }
+func (MalformedIDNotification) Semantic() NotificationSemantic        { return SemanticSchema }
+func (UnknownIDAddressNotification) Semantic() NotificationSemantic   { return SemanticNotFound }
+func (InvalidFilterValueNotification) Semantic() NotificationSemantic { return SemanticSchema }
+func (EntityIsNotActiveNotification) Semantic() NotificationSemantic  { return SemanticStateConflict }
 func (ConcurrentModificationNotification) Semantic() NotificationSemantic {
 	return SemanticStateConflict
 }

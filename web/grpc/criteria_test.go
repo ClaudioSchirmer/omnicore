@@ -161,7 +161,7 @@ func TestCriteriaStringParityWithRESTEmitter(t *testing.T) {
 	spec := queryschema.FilterSpec{DocPath: "Name", GoKind: reflect.String}
 
 	viaREST := map[string]any{}
-	queryschema.ApplyFilterValues(viaREST, spec, queryschema.OpContains, []string{"Dri.ll"})
+	queryschema.ApplyFilterValues(viaREST, spec, "probe", queryschema.OpContains, []string{"Dri.ll"})
 
 	crit, err := NewCriteria().String("Name", &pb.StringFilter{Conditions: []*pb.StringCondition{
 		{Op: pb.StringOp_STRING_OP_CONTAINS, Values: []string{"Dri.ll"}},

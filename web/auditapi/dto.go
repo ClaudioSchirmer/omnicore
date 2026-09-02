@@ -27,10 +27,12 @@ import (
 // FindAuditByAggregateRequest binds the two path segments the timeline read
 // takes plus the one window control it accepts.
 //
-// AggregateID is typed uuid.UUID so a malformed segment is rejected upfront
-// with the canonical 400 SchemaViolationNotification envelope; left as a
-// string it would reach the driver and surface as a 500 from the exception
-// path. EntityType stays a string — it is a Go type name, not an id.
+// AggregateID is typed uuid.UUID so a malformed segment is rejected at the
+// wire by BindPath; left as a string it would reach the driver and surface as
+// a 500 from the exception path. The STATUS is not this package's to choose:
+// an identity segment on a read answers 404 UnknownIDAddressNotification, the
+// same as every by-id route. EntityType stays a string — it is a Go type name,
+// not an id.
 //
 // First DECLARES the window control — it is the endpoint's contract that
 // `?first=` exists, which is what the spec generator reflects and what makes

@@ -167,14 +167,14 @@ func TestRegisterFullFamily(t *testing.T) {
 
 	update := connect.NewClient[testpb.UpdateGadgetRequest, testpb.CreateGadgetResponse](srv.Client(), base+"UpdateGadget")
 	res, err := update.CallUnary(context.Background(), connect.NewRequest(&testpb.UpdateGadgetRequest{
-		Id: proto.String("g-7"), Name: proto.String("Renamed"),
+		Id: proto.String("a4444444-4444-4444-8444-444444444444"), Name: proto.String("Renamed"),
 	}))
-	if err != nil || sawID != "g-7" || res.Msg.GetName() != "Renamed" {
+	if err != nil || sawID != "a4444444-4444-4444-8444-444444444444" || res.Msg.GetName() != "Renamed" {
 		t.Fatalf("WithBodyID via Register: res=%v err=%v sawID=%q", res, err, sawID)
 	}
 
 	archive := connect.NewClient[testpb.ArchiveGadgetRequest, testpb.ArchiveGadgetResponse](srv.Client(), base+"ArchiveGadget")
-	if _, err := archive.CallUnary(context.Background(), connect.NewRequest(&testpb.ArchiveGadgetRequest{Id: proto.String("g-9")})); err != nil {
+	if _, err := archive.CallUnary(context.Background(), connect.NewRequest(&testpb.ArchiveGadgetRequest{Id: proto.String("a2222222-2222-4222-8222-222222222222")})); err != nil {
 		t.Fatalf("ByID via Register: err=%v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestRegisterFullFamily(t *testing.T) {
 	}
 
 	get := connect.NewClient[testpb.GetGadgetRequest, testpb.GetGadgetResponse](srv.Client(), base+"GetGadget")
-	if res, err := get.CallUnary(context.Background(), connect.NewRequest(&testpb.GetGadgetRequest{Id: proto.String("g-42")})); err != nil || res.Msg.GetId() != "g-42" {
+	if res, err := get.CallUnary(context.Background(), connect.NewRequest(&testpb.GetGadgetRequest{Id: proto.String("a3333333-3333-4333-8333-333333333333")})); err != nil || res.Msg.GetId() != "a3333333-3333-4333-8333-333333333333" {
 		t.Fatalf("QueryByID via Register: res=%v err=%v", res, err)
 	}
 }

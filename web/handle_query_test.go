@@ -123,7 +123,7 @@ func (h *capturingParamsHandler) Handle(ctx *configuration.AppContext, q *testFi
 	h.got = q
 	_, _ = q.ToCriteria(ctx)
 	return queries.PageOf[testUserResult]{
-		Items:       []testUserResult{{ID: strPtr("abc")}},
+		Items:       []testUserResult{{ID: strPtr("9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34")}},
 		HasNextPage: true,
 		TotalCount:  1,
 	}, nil
@@ -374,7 +374,7 @@ func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 
 	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?includeArchived=true", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34?includeArchived=true", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d (body=%s)", resp.StatusCode, b)
@@ -385,8 +385,8 @@ func TestHandleQueryByID_AcceptsIncludeArchivedParam(t *testing.T) {
 	if !h.got.Criteria.IncludeArchived {
 		t.Error("expected Criteria.IncludeArchived=true to flow from ?includeArchived=true")
 	}
-	if h.got.PathID().Value() != "abc" {
-		t.Errorf("expected PathID()='abc', got %q", h.got.PathID().Value())
+	if h.got.PathID().Value() != "9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34" {
+		t.Errorf("expected PathID()='9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34', got %q", h.got.PathID().Value())
 	}
 }
 
@@ -397,7 +397,7 @@ func TestHandleQueryByID_RejectsExtraParamWith400(t *testing.T) {
 
 	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc?role=admin", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34?role=admin", nil))
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400 for extra query param, got %d", resp.StatusCode)
 	}
@@ -413,7 +413,7 @@ func TestHandleQueryByID_NoQueryStringDefaults(t *testing.T) {
 
 	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil))
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -430,7 +430,7 @@ func TestHandleQueryByID_AppContextFlowsIntoToCriteria(t *testing.T) {
 
 	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, rawItem, h))
 
-	req := httptest.NewRequest("GET", "/users/abc", nil)
+	req := httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil)
 	req.Header.Set("Accept-Language", "fr")
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusOK {
@@ -458,7 +458,7 @@ func TestHandleQueryByID_ResponseProjectionReshapesData(t *testing.T) {
 
 	app.Get("/users/:id", QueryByID(pipe, testFindIDRequest{}, testUserSummary{}.FromResult, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/users/abc", nil))
+	resp, _ := app.Test(httptest.NewRequest("GET", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil))
 	body, _ := io.ReadAll(resp.Body)
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -468,7 +468,7 @@ func TestHandleQueryByID_ResponseProjectionReshapesData(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected data object, got %T", parsed["data"])
 	}
-	if data["id"] != "abc" || data["name"] != "Carol" {
+	if data["id"] != "9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34" || data["name"] != "Carol" {
 		t.Errorf("data mismatch: %v", data)
 	}
 	if _, leaked := data["email"]; leaked {

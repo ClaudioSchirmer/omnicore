@@ -65,9 +65,9 @@ func TestBindPath_NoTags_IsNoop(t *testing.T) {
 	var captured string
 	app.Get("/x/:id", func(c fiber.Ctx) error {
 		var req emptyReq
-		bad, ok := BindPath(c, &req)
-		if !ok {
-			t.Fatalf("BindPath returned !ok with empty Request (badField=%q)", bad)
+		v := BindPath(c, &req)
+		if v != nil {
+			t.Fatalf("BindPath returned !ok with empty Request (field=%q)", v.Field)
 		}
 		captured = "ran"
 		return c.SendString("ok")
@@ -84,9 +84,9 @@ func TestBindPath_SingleSegmentString(t *testing.T) {
 	var got string
 	app.Get("/users/:email", func(c fiber.Ctx) error {
 		var req stringPathReq
-		bad, ok := BindPath(c, &req)
-		if !ok {
-			t.Fatalf("BindPath unexpected !ok badField=%q", bad)
+		v := BindPath(c, &req)
+		if v != nil {
+			t.Fatalf("BindPath unexpected !ok field=%q", v.Field)
 		}
 		got = req.Email
 		return c.SendString("ok")
@@ -103,9 +103,9 @@ func TestBindPath_MultiSegment(t *testing.T) {
 	var tenant, user string
 	app.Get("/tenants/:tenantId/users/:userId", func(c fiber.Ctx) error {
 		var req multiSegmentReq
-		bad, ok := BindPath(c, &req)
-		if !ok {
-			t.Fatalf("BindPath !ok badField=%q", bad)
+		v := BindPath(c, &req)
+		if v != nil {
+			t.Fatalf("BindPath !ok field=%q", v.Field)
 		}
 		tenant = req.TenantID
 		user = req.UserID
@@ -125,13 +125,13 @@ func TestBindPath_UUIDAndDomainID(t *testing.T) {
 	var gotDomain domain.ID
 	app.Get("/u/:id", func(c fiber.Ctx) error {
 		var r1 uuidPathReq
-		if bad, ok := BindPath(c, &r1); !ok {
-			t.Fatalf("uuid BindPath !ok badField=%q", bad)
+		if v := BindPath(c, &r1); v != nil {
+			t.Fatalf("uuid BindPath !ok field=%q", v.Field)
 		}
 		gotUUID = r1.ID
 		var r2 domainIDPathReq
-		if bad, ok := BindPath(c, &r2); !ok {
-			t.Fatalf("domain.ID BindPath !ok badField=%q", bad)
+		if v := BindPath(c, &r2); v != nil {
+			t.Fatalf("domain.ID BindPath !ok field=%q", v.Field)
 		}
 		gotDomain = r2.ID
 		return c.SendString("ok")
@@ -151,8 +151,8 @@ func TestBindPath_ScalarTypes(t *testing.T) {
 	var captured scalarsReq
 	app.Get("/x/:page/:version/:rate/:flag", func(c fiber.Ctx) error {
 		var req scalarsReq
-		if bad, ok := BindPath(c, &req); !ok {
-			t.Fatalf("BindPath !ok badField=%q", bad)
+		if v := BindPath(c, &req); v != nil {
+			t.Fatalf("BindPath !ok field=%q", v.Field)
 		}
 		captured = req
 		return c.SendString("ok")
@@ -170,12 +170,17 @@ func TestBindPath_BadUUID_ReturnsBadField(t *testing.T) {
 	app := fiber.New()
 	app.Get("/u/:id", func(c fiber.Ctx) error {
 		var req uuidPathReq
-		bad, ok := BindPath(c, &req)
-		if ok {
-			t.Fatalf("expected BindPath !ok for non-uuid segment, got ok with field=%q", bad)
+		v := BindPath(c, &req)
+		if v == nil {
+			t.Fatal("expected a violation for a non-uuid segment, got nil")
 		}
-		if bad != "id" {
-			t.Fatalf("expected badField=id, got %q", bad)
+		if v.Field != "id" {
+			t.Fatalf("expected field=id, got %q", v.Field)
+		}
+		// An identity segment on a READ names no record: the same 404 the
+		// by-id wrappers answer, not the generic schema violation.
+		if _, isUnknown := v.Notification.(domain.UnknownIDAddressNotification); !isUnknown {
+			t.Fatalf("expected UnknownIDAddressNotification on a read, got %T", v.Notification)
 		}
 		return c.SendString("ok")
 	})
@@ -189,12 +194,17 @@ func TestBindPath_BadInt_ReturnsBadField(t *testing.T) {
 		var req struct {
 			Page int64 `path:"page"`
 		}
-		bad, ok := BindPath(c, &req)
-		if ok {
-			t.Fatalf("expected !ok; got bad=%q", bad)
+		v := BindPath(c, &req)
+		if v == nil {
+			t.Fatal("expected a violation for a non-numeric segment, got nil")
 		}
-		if bad != "page" {
-			t.Fatalf("badField mismatch: %q", bad)
+		if v.Field != "page" {
+			t.Fatalf("field mismatch: %q", v.Field)
+		}
+		// Not an identity segment: an int that is not a number stays the
+		// canonical schema violation, which a nil Notification spells.
+		if v.Notification != nil {
+			t.Fatalf("expected the canonical schema violation, got %T", v.Notification)
 		}
 		return c.SendString("ok")
 	})
@@ -208,9 +218,9 @@ func TestBindPath_BadBool_ReturnsBadField(t *testing.T) {
 		var req struct {
 			Flag bool `path:"flag"`
 		}
-		bad, ok := BindPath(c, &req)
-		if ok || bad != "flag" {
-			t.Fatalf("expected !ok flag, got ok=%v bad=%q", ok, bad)
+		v := BindPath(c, &req)
+		if v == nil || v.Field != "flag" {
+			t.Fatalf("expected a violation on flag, got %+v", v)
 		}
 		return c.SendString("ok")
 	})
@@ -305,9 +315,8 @@ func TestBindPath_NilRequest_NoOp(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	app.Get("/x", func(c fiber.Ctx) error {
-		bad, ok := BindPath(c, nil)
-		if !ok || bad != "" {
-			t.Fatalf("nil should be no-op; got bad=%q ok=%v", bad, ok)
+		if v := BindPath(c, nil); v != nil {
+			t.Fatalf("nil should be a no-op; got %+v", v)
 		}
 		return c.SendString("ok")
 	})
@@ -354,4 +363,25 @@ func doRequest(t *testing.T, app *fiber.App, method, target string) (int, string
 	buf := make([]byte, 4096)
 	n, _ := resp.Body.Read(buf)
 	return resp.StatusCode, string(buf[:n])
+}
+
+// TestBindPath_BadUUIDOnWrite_IsMalformedID is the write-side twin of
+// TestBindPath_BadUUID_ReturnsBadField: the SAME malformed segment, refused as
+// a request-shape violation because the caller stated an intention about a
+// record instead of asking for one.
+func TestBindPath_BadUUIDOnWrite_IsMalformedID(t *testing.T) {
+	resetPathSchemaCache()
+	app := fiber.New()
+	app.Patch("/u/:id", func(c fiber.Ctx) error {
+		var req uuidPathReq
+		v := BindPath(c, &req)
+		if v == nil {
+			t.Fatal("expected a violation for a non-uuid segment, got nil")
+		}
+		if _, isMalformed := v.Notification.(domain.MalformedIDNotification); !isMalformed {
+			t.Fatalf("expected MalformedIDNotification on a write, got %T", v.Notification)
+		}
+		return c.SendString("ok")
+	})
+	doRequest(t, app, "PATCH", "/u/not-a-uuid")
 }

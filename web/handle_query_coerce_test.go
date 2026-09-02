@@ -107,17 +107,15 @@ func TestCoerce_Int64LeafParsesDecimal(t *testing.T) {
 	}
 }
 
-func TestCoerce_Int64LeafFallsBackToStringOnParseFailure(t *testing.T) {
-	// Non-numeric value on an int leaf falls through as string (the
-	// downstream query will return zero hits — the wrapper does not 400).
-	// Documents the fail-soft behavior; the existing wrapper has always
-	// degraded silently here.
-	crit, status := dispatchCoerce(t, "?age=abc")
-	if status != fiber.StatusOK {
-		t.Fatalf("expected 200, got %d", status)
-	}
-	if crit.Filter["Age"] != "abc" {
-		t.Errorf("expected string fallback 'abc', got %v (%T)", crit.Filter["Age"], crit.Filter["Age"])
+func TestCoerce_Int64LeafRefusesANonNumericValue(t *testing.T) {
+	// A non-numeric value on an int leaf is refused at the wire, where the
+	// declared kind AND the wire key are both known. It used to fall through
+	// as a string, which only looked fail-soft: a Mongo-backed view matched
+	// nothing, while a relational one bound "abc" against an integer column
+	// and answered 500.
+	_, status := dispatchCoerce(t, "?age=abc")
+	if status != fiber.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", status)
 	}
 }
 

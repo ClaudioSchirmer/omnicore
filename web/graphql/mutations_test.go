@@ -125,15 +125,15 @@ func TestMutationByID_BodylessReturnsNamedPayload(t *testing.T) {
 		t.Errorf("shared MutationResult must be gone from the SDL:\n%s", sdl)
 	}
 
-	resp := reg.Execute(ctx, `mutation { deleteThing(id: "u9") { success id } }`, nil, "")
+	resp := reg.Execute(ctx, `mutation { deleteThing(id: "99999999-9999-4999-8999-999999999999") { success id } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("errors: %+v", resp.Errors)
 	}
-	if h.capturedID != "u9" {
+	if h.capturedID != "99999999-9999-4999-8999-999999999999" {
 		t.Errorf("path id not injected, got %q", h.capturedID)
 	}
 	out := resp.Data["deleteThing"].(map[string]any)
-	if out["success"] != true || out["id"] != "u9" {
+	if out["success"] != true || out["id"] != "99999999-9999-4999-8999-999999999999" {
 		t.Errorf("deleteThing = %v, want {success:true id:u9}", out)
 	}
 }
@@ -207,18 +207,18 @@ func TestMutationWithBodyID_InjectsPathIDAndInput(t *testing.T) {
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 
-	resp := reg.Execute(ctx, `mutation { updateThing(id: "u7", input: { name: "Renamed" }) { id name } }`, nil, "")
+	resp := reg.Execute(ctx, `mutation { updateThing(id: "77777777-7777-4777-8777-777777777777", input: { name: "Renamed" }) { id name } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("errors: %+v", resp.Errors)
 	}
-	if h.captured == nil || h.captured.PathID() != "u7" {
+	if h.captured == nil || h.captured.PathID() != "77777777-7777-4777-8777-777777777777" {
 		t.Fatalf("path id not injected via SetPathID, got %+v", h.captured)
 	}
 	if h.captured.Name != "Renamed" {
 		t.Errorf("input not decoded into the command, got name=%q", h.captured.Name)
 	}
 	out := resp.Data["updateThing"].(map[string]any)
-	if out["id"] != "u7" || out["name"] != "Renamed" {
+	if out["id"] != "77777777-7777-4777-8777-777777777777" || out["name"] != "Renamed" {
 		t.Errorf("updateThing output = %v, want {id:u7 name:Renamed}", out)
 	}
 }

@@ -57,7 +57,7 @@ func TestControlBool_ListAndByIDAgreeOnEverySpelling(t *testing.T) {
 		{"", fiber.StatusBadRequest},
 	} {
 		q := "?includeArchived=" + tc.value
-		for path, label := range map[string]string{"/users": "listing", "/users/abc": "by-id"} {
+		for path, label := range map[string]string{"/users": "listing", "/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34": "by-id"} {
 			resp, err := app.Test(httptest.NewRequest("GET", path+q, nil))
 			if err != nil {
 				t.Fatalf("%s %s: %v", label, q, err)

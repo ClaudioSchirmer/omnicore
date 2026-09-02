@@ -24,7 +24,12 @@ func (r idPathBindReq) ToQuery(criteria queries.ReadCriteria) *testFindIDQuery {
 	return &testFindIDQuery{Criteria: criteria}
 }
 
-func TestHandleQueryByID_PathBindFailureReturns400(t *testing.T) {
+// TestHandleQueryByID_IdentityPathBindFailureReturns404 pins the rule the
+// wrappers and BindPath now share: a malformed IDENTITY segment on a read
+// names no record, whichever segment carried it. The tenant here is declared
+// `uuid.UUID`, so it answers the same 404 the `:id` segment does — one
+// malformed uuid, one contract.
+func TestHandleQueryByID_IdentityPathBindFailureReturns404(t *testing.T) {
 	resetPathSchemaCache()
 	app := fiber.New()
 	pipe := pipeline.New(translation.Default())
@@ -32,9 +37,9 @@ func TestHandleQueryByID_PathBindFailureReturns400(t *testing.T) {
 
 	app.Get("/t/:tenantId/users/:id", QueryByID(pipe, idPathBindReq{}, rawItem, h))
 
-	resp, _ := app.Test(httptest.NewRequest("GET", "/t/not-a-uuid/users/abc", nil))
-	if resp.StatusCode != fiber.StatusBadRequest {
-		t.Fatalf("expected 400 on path conversion failure, got %d", resp.StatusCode)
+	resp, _ := app.Test(httptest.NewRequest("GET", "/t/not-a-uuid/users/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil))
+	if resp.StatusCode != fiber.StatusNotFound {
+		t.Fatalf("expected 404 on a malformed identity segment, got %d", resp.StatusCode)
 	}
 	if h.got != nil {
 		t.Error("handler must not run when path binding fails")

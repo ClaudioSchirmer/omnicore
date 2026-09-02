@@ -104,3 +104,29 @@ func TestID_UnmarshalJSON(t *testing.T) {
 		}
 	})
 }
+
+func TestID_IsUUID(t *testing.T) {
+	cases := []struct {
+		name string
+		id   ID
+		want bool
+	}{
+		{"random", NewRandomID(), true},
+		{"canonical text", NewID("7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"), true},
+		// Accepted on purpose: uuid.Parse takes the unhyphenated form, and so
+		// do the storage layers this guard stands in front of (Postgres' uuid
+		// input and the engines' uuidBytes both go through the same parser).
+		// Refusing it here would reject an address the database would have
+		// served.
+		{"unhyphenated", NewID("7b3c1f103c7e4a8d9f0e9d2a8e6d4b51"), true},
+		{"not a uuid", NewID("not-a-uuid"), false},
+		{"empty", NewID(""), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.id.IsUUID(); got != tc.want {
+				t.Errorf("IsUUID(%q) = %v, want %v", tc.id.Value(), got, tc.want)
+			}
+		})
+	}
+}

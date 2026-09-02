@@ -215,13 +215,17 @@ func TestMount_NegativeFirstIs400(t *testing.T) {
 
 // ─── binding + failure paths ─────────────────────────────────────────────────
 
-func TestMount_MalformedAggregateIDIs400(t *testing.T) {
+// TestMount_MalformedAggregateIDIs404 pins this route on the framework-wide
+// rule for a malformed identity segment: a READ names no record. It is the
+// same answer the by-id wrappers give, reached through the same BindPath
+// classification — this package writes no status of its own.
+func TestMount_MalformedAggregateIDIs404(t *testing.T) {
 	reader := &stubReader{}
 	app := mountOn(t, Config{}, reader, openapi.NewRegistry())
 
 	status, _, body := get(t, app, "/audit/User/not-a-uuid")
-	if status != 400 {
-		t.Fatalf("status = %d, want 400 (body: %s)", status, body)
+	if status != 404 {
+		t.Fatalf("status = %d, want 404 (body: %s)", status, body)
 	}
 	if reader.calls != 0 {
 		t.Errorf("a malformed id must never reach the port, got %d call(s)", reader.calls)

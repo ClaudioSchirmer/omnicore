@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/ClaudioSchirmer/omnicore/web/responses"
 	"github.com/gofiber/fiber/v3"
 )
@@ -56,8 +57,12 @@ func CommandByID[
 ) fiber.Handler {
 	validateResponseMapping(reflect.TypeOf((*TResult)(nil)).Elem(), reflect.TypeOf((*TResp)(nil)).Elem())
 	return func(c fiber.Ctx) error {
+		rawID := c.Params("id")
+		if queryschema.IsMalformedPathID(rawID) {
+			return respondViolation[TResult](c, pipe, queryschema.MalformedPathID(queryschema.KeyPathID, rawID))
+		}
 		cmd := TCmdPtr(new(TCmd))
-		cmd.SetPathID(c.Params("id"))
+		cmd.SetPathID(rawID)
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
 		result := pipeline.Dispatch(pipe, appCtx, cmd, h)

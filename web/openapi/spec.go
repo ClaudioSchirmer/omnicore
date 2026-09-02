@@ -820,8 +820,13 @@ func appendPermissionSuffix(base, permission string) string {
 // standardErrors returns the status→description map for the standard
 // error envelopes a route can emit. Heuristics:
 //   - 422 + 500 universally (wrapper validation + recovered panic)
-//   - 404 when HasPathID (route addresses a single record by id)
-//   - 400 universally for body-carrying routes (Schema violation)
+//   - 404 when HasPathID (route addresses a single record by id) — both the
+//     record that does not exist and the `:id` that is not an id at all, since
+//     a read answers absence with absence
+//   - 400 universally for body-carrying routes (Schema violation) AND for any
+//     route with a path id, whose WRITE verbs refuse a malformed `:id` with
+//     MalformedIDNotification even when they carry no body (archive /
+//     unarchive / delete)
 //   - 401 when auth is enabled AND the route is not public (the
 //     AuthMiddleware can reject the request with MissingAuthorization
 //     / InvalidToken / ExpiredToken)
@@ -839,6 +844,13 @@ func (s *Spec) standardErrors(op Operation) map[int]string {
 	}
 	if op.Spec.HasPathID || (op.Raw != nil && hasPathInParameters(op.Raw.Parameters)) {
 		out[http.StatusNotFound] = http.StatusText(http.StatusNotFound)
+	}
+	// A by-id route refuses a malformed segment before the handler: 404 on a
+	// read (covered above), 400 on a write. The bodyless commands — archive,
+	// unarchive, delete — reach that 400 without a body, so the body-shaped
+	// condition below would never declare it for them.
+	if op.Spec.HasPathID {
+		out[http.StatusBadRequest] = http.StatusText(http.StatusBadRequest)
 	}
 	if op.Spec.RequestType != nil && hasBodyFields(op.Spec.RequestType) {
 		out[http.StatusBadRequest] = http.StatusText(http.StatusBadRequest)

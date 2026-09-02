@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
@@ -158,9 +159,9 @@ func classifyPathFieldType(ft reflect.Type) (pathFieldKind, int, string) {
 // to RespondSchemaViolation); returns ("", true) on success or empty schema.
 // req must be addressable — wrappers pass &req via reflect.ValueOf which
 // the caller already prepared.
-func applyPathBinding(c fiber.Ctx, schema *pathSchema, reqVal reflect.Value) (string, bool) {
+func applyPathBinding(c fiber.Ctx, schema *pathSchema, reqVal reflect.Value) *queryschema.Violation {
 	if schema == nil || len(schema.fields) == 0 {
-		return "", true
+		return nil
 	}
 	if reqVal.Kind() == reflect.Pointer {
 		reqVal = reqVal.Elem()
@@ -169,10 +170,37 @@ func applyPathBinding(c fiber.Ctx, schema *pathSchema, reqVal reflect.Value) (st
 		raw := c.Params(plan.segment)
 		fv := reqVal.Field(plan.fieldIndex)
 		if err := setPathField(fv, plan, raw); err {
-			return plan.segment, false
+			return pathBindingViolation(c, plan, raw)
 		}
 	}
-	return "", true
+	return nil
+}
+
+// pathBindingViolation classifies a segment that would not convert.
+//
+// An IDENTITY segment (uuid.UUID / domain.ID) is the same thing the by-id
+// wrappers guard, so it answers the same way: a read names no record (404), a
+// write violated the request shape (400). Without this, one malformed uuid
+// would mean two different things depending on whether the route took it from
+// `:id` or declared it with a `path:` tag — the same address, two contracts.
+//
+// Every other kind stays the generic schema violation it has always been: an
+// int segment that is not a number is not an address problem.
+func pathBindingViolation(c fiber.Ctx, plan pathFieldPlan, raw string) *queryschema.Violation {
+	if plan.kind != pathKindUUID && plan.kind != pathKindDomainID {
+		return queryschema.SchemaViolation(plan.segment)
+	}
+	if isReadMethod(c.Method()) {
+		return queryschema.UnknownPathIDAddress(plan.segment, raw)
+	}
+	return queryschema.MalformedPathID(plan.segment, raw)
+}
+
+// isReadMethod reports whether the request only READS. GET and HEAD are the
+// framework's read verbs on every route it mounts; anything else states an
+// intention about the addressed record and is refused as a bad request.
+func isReadMethod(method string) bool {
+	return method == fiber.MethodGet || method == fiber.MethodHead
 }
 
 // setPathField runs the conversion + assignment for one field. Returns true
@@ -254,17 +282,19 @@ func formatPathBootError(t reflect.Type, f reflect.StructField, reason string) s
 // closures that opt out of CommandWith*/QueryWith* but still
 // want the declarative binding the wrappers do automatically.
 //
-// On the first type-conversion failure returns (badField, false). Callers
-// forward badField to RespondSchemaViolation to emit the canonical 400
-// envelope — same shape the wrapper produces. req must be a pointer to a
-// struct; returns ("", true) when the struct has no `path:` tags.
+// Returns nil when every segment bound. On the first type-conversion failure
+// returns the Violation that explains it — forward it to RespondViolation,
+// which emits the canonical envelope the wrappers produce. The violation is
+// typed: a malformed IDENTITY segment answers 404 on a read and 400 on a
+// write, every other kind the canonical 400 schema violation. req must be a
+// pointer to a struct; returns nil when the struct has no `path:` tags.
 //
 // Same cached pathSchema the wrapper uses; mirrors fwweb.QueryParser.Parse
 // and fwweb.RespondPaged — manual handlers chain BindPath → Parse →
 // ToCommand/ToQuery → Dispatch.
-func BindPath(c fiber.Ctx, req any) (string, bool) {
+func BindPath(c fiber.Ctx, req any) *queryschema.Violation {
 	if req == nil {
-		return "", true
+		return nil
 	}
 	v := reflect.ValueOf(req)
 	if v.Kind() != reflect.Pointer || v.IsNil() {

@@ -105,7 +105,7 @@ func TestQueryByID_IncludeArchivedObeysDTO(t *testing.T) {
 	// argument…
 	pipe := pipeline.New(translation.Default())
 	reg := New(pipe).Register(
-		QueryByID[bareRequest]("user", "User", byIDResponse{}.FromResult, &fakeByIDHandler{result: execResult{ID: sp("u1")}}),
+		QueryByID[bareRequest]("user", "User", byIDResponse{}.FromResult, &fakeByIDHandler{result: execResult{ID: sp("22222222-2222-4222-8222-222222222222")}}),
 	)
 	ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 	sdl, err := reg.SDL()
@@ -116,7 +116,7 @@ func TestQueryByID_IncludeArchivedObeysDTO(t *testing.T) {
 		t.Errorf("no DTO opt-in → no includeArchived argument:\n%s", sdl)
 	}
 	// …and gqlparser rejects it as an unknown argument before any resolver runs.
-	resp := reg.Execute(ctx, `{ user(id: "u1", includeArchived: true) { id } }`, nil, "")
+	resp := reg.Execute(ctx, `{ user(id: "22222222-2222-4222-8222-222222222222", includeArchived: true) { id } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("undeclared includeArchived must be rejected by validation")
 	}
@@ -130,15 +130,15 @@ func (bareRequest) ToQuery(criteria queries.ReadCriteria) *byIDQuery {
 }
 
 func TestQueryByID_ExecuteEndToEnd(t *testing.T) {
-	h := &fakeByIDHandler{result: execResult{ID: sp("u1"), Name: sp("alice"), Age: ip(30)}}
+	h := &fakeByIDHandler{result: execResult{ID: sp("22222222-2222-4222-8222-222222222222"), Name: sp("alice"), Age: ip(30)}}
 	reg, ctx := newByIDRegistry(&fakeReadHandler{}, h)
 
-	resp := reg.Execute(ctx, `{ user(id: "u1", includeArchived: true) { id name } }`, nil, "")
+	resp := reg.Execute(ctx, `{ user(id: "22222222-2222-4222-8222-222222222222", includeArchived: true) { id name } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("unexpected errors: %+v", resp.Errors)
 	}
-	if h.capturedID != "u1" {
-		t.Errorf("path id = %q, want u1 (SetPathID injection)", h.capturedID)
+	if h.capturedID != "22222222-2222-4222-8222-222222222222" {
+		t.Errorf("path id = %q, want the argument verbatim (SetPathID injection)", h.capturedID)
 	}
 	if !h.capturedArch {
 		t.Error("includeArchived: true did not reach the Query")
@@ -147,7 +147,7 @@ func TestQueryByID_ExecuteEndToEnd(t *testing.T) {
 	if !ok {
 		t.Fatalf("data.user = %#v, want object", resp.Data["user"])
 	}
-	if user["id"] != "u1" || user["name"] != "alice" {
+	if user["id"] != "22222222-2222-4222-8222-222222222222" || user["name"] != "alice" {
 		t.Errorf("node = %v, want {id:u1 name:alice}", user)
 	}
 	if _, present := user["age"]; present {
@@ -156,10 +156,10 @@ func TestQueryByID_ExecuteEndToEnd(t *testing.T) {
 }
 
 func TestQueryByID_IncludeArchivedDefaultsFalse(t *testing.T) {
-	h := &fakeByIDHandler{result: execResult{ID: sp("u1")}}
+	h := &fakeByIDHandler{result: execResult{ID: sp("22222222-2222-4222-8222-222222222222")}}
 	reg, ctx := newByIDRegistry(&fakeReadHandler{}, h)
 
-	resp := reg.Execute(ctx, `{ user(id: "u1") { id } }`, nil, "")
+	resp := reg.Execute(ctx, `{ user(id: "22222222-2222-4222-8222-222222222222") { id } }`, nil, "")
 	if len(resp.Errors) != 0 {
 		t.Fatalf("unexpected errors: %+v", resp.Errors)
 	}
@@ -172,7 +172,7 @@ func TestQueryByID_NotFoundIsNullPlusCanonicalError(t *testing.T) {
 	h := &fakeByIDHandler{notFound: true}
 	reg, ctx := newByIDRegistry(&fakeReadHandler{}, h)
 
-	resp := reg.Execute(ctx, `{ user(id: "missing") { id } }`, nil, "")
+	resp := reg.Execute(ctx, `{ user(id: "00000000-0000-4000-8000-000000000000") { id } }`, nil, "")
 	if len(resp.Errors) == 0 {
 		t.Fatal("a missing document must surface the canonical not-found error")
 	}

@@ -115,15 +115,48 @@ func QualifyCol(rf ResolvedField, q ColQual, dialect Dialect) string {
 // non-string probes (LIKE %patterns% never reach here as ids in practice —
 // they stay strings on string-typed fields) and already-typed values pass to
 // EncodeArg untouched.
-func (v *sqlVisitor) place(goField string, val any) string {
+func (v *sqlVisitor) place(goField string, val any) (string, error) {
 	if v.idKind != nil {
 		switch v.idKind(goField) {
 		case IDValue, IDPointer:
+			// The LAST line of defense for a probe the wire could not type.
+			// A filter leaf is declared on the Request DTO, most often as a
+			// plain string, so queryschema cannot know this column holds an
+			// identity — only the schema does, which is why the lift lives
+			// here. Without the check the probe binds anyway and the DATABASE
+			// refuses it: SQLSTATE 22P02 on Postgres, a uuid parse failure in
+			// the BINARY(16) codec on MySQL/SQL Server/Oracle. Both arrive as
+			// a plain error, which the pipeline can only render as a 500 —
+			// a consumer's typo answered as a server fault.
+			if bad, ok := malformedIDProbe(val); ok {
+				return "", InvalidFilterValueError(goField, bad)
+			}
 			val = liftIDProbe(val)
 		}
 	}
 	v.args = append(v.args, v.dialect.EncodeArg(val))
-	return v.dialect.Placeholder(v.base + len(v.args))
+	return v.dialect.Placeholder(v.base + len(v.args)), nil
+}
+
+// malformedIDProbe reports whether a probe bound against an IDENTITY column
+// carries a value that is not a uuid, returning it for the echo.
+//
+// Only bare string forms are judged: a domain.ID or uuid.UUID already in hand
+// came from a typed path the framework itself filled, and an empty string is a
+// caller asking for "no id" (SQL NULL), which is a legitimate predicate rather
+// than a malformed address.
+func malformedIDProbe(val any) (string, bool) {
+	switch t := val.(type) {
+	case string:
+		return t, t != "" && !domain.NewID(t).IsUUID()
+	case *string:
+		if t == nil {
+			return "", false
+		}
+		return *t, *t != "" && !domain.NewID(*t).IsUUID()
+	default:
+		return "", false
+	}
 }
 
 // liftIDProbe lifts a bare probe value into the identity type: string →
@@ -198,7 +231,7 @@ func (v *sqlVisitor) operand(goField string, val any) (string, error) {
 	if ref, ok := val.(criteria.OuterRef); ok {
 		return v.outerColumn(ref)
 	}
-	return v.place(goField, val), nil
+	return v.place(goField, val)
 }
 
 func (v *sqlVisitor) VisitComparison(c criteria.Comparison) error {

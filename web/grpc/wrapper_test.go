@@ -302,12 +302,12 @@ func TestHandleCommandWithBodyIDInjectsID(t *testing.T) {
 		nil,
 	)
 	res, err := fn(context.Background(), connect.NewRequest(&testpb.UpdateGadgetRequest{
-		Id: proto.String("g-77"), Name: proto.String("Renamed"),
+		Id: proto.String("a1111111-1111-4111-8111-111111111111"), Name: proto.String("Renamed"),
 	}))
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	if sawID != "g-77" || res.Msg.GetId() != "g-77" || res.Msg.GetName() != "Renamed" {
+	if sawID != "a1111111-1111-4111-8111-111111111111" || res.Msg.GetId() != "a1111111-1111-4111-8111-111111111111" || res.Msg.GetName() != "Renamed" {
 		t.Fatalf("SetPathID seam broken: sawID=%q res=%v", sawID, res.Msg)
 	}
 }
@@ -342,7 +342,7 @@ type archiveGadgetCommand struct {
 type archiveGadgetHandler struct{}
 
 func (archiveGadgetHandler) Handle(_ *configuration.AppContext, cmd *archiveGadgetCommand) (*gadgetResult, error) {
-	if cmd.PathID() == "legacy" {
+	if cmd.PathID() == "a5555555-5555-4555-8555-555555555555" {
 		nctx := domain.NewNotificationContext("Gadget")
 		nctx.AddNotificationMessage(domain.NotificationMessage{
 			Notification: domain.EntityIsNotActiveNotification{},
@@ -360,14 +360,14 @@ func TestHandleCommandByIDNoMapper(t *testing.T) {
 		fromGadgetResult,
 	)
 	res, err := fn(context.Background(), connect.NewRequest(&testpb.ArchiveGadgetRequest{
-		Id: proto.String("g-9"),
+		Id: proto.String("a2222222-2222-4222-8222-222222222222"),
 	}))
-	if err != nil || res.Msg.GetId() != "g-9" {
+	if err != nil || res.Msg.GetId() != "a2222222-2222-4222-8222-222222222222" {
 		t.Fatalf("byID flow: res=%v err=%v", res, err)
 	}
 
 	_, err = fn(context.Background(), connect.NewRequest(&testpb.ArchiveGadgetRequest{
-		Id: proto.String("legacy"),
+		Id: proto.String("a5555555-5555-4555-8555-555555555555"),
 	}))
 	var cerr *connect.Error
 	if !errors.As(err, &cerr) || cerr.Code() != connect.CodeFailedPrecondition {
@@ -427,9 +427,9 @@ func TestHandleQueryByID(t *testing.T) {
 	)
 
 	res, err := fn(context.Background(), connect.NewRequest(&testpb.GetGadgetRequest{
-		Id: proto.String("g-42"), IncludeArchived: true,
+		Id: proto.String("a3333333-3333-4333-8333-333333333333"), IncludeArchived: true,
 	}))
-	if err != nil || res.Msg.GetId() != "g-42" || res.Msg.GetName() != "Found Gadget" {
+	if err != nil || res.Msg.GetId() != "a3333333-3333-4333-8333-333333333333" || res.Msg.GetName() != "Found Gadget" {
 		t.Fatalf("get flow: res=%v err=%v", res, err)
 	}
 
@@ -512,7 +512,7 @@ func TestQueryByID_IncludeArchivedReachesCriteria(t *testing.T) {
 		srv.Client(), srv.URL+"/omnicore.grpctest.v1.GadgetService/GetGadget")
 
 	if _, err := client.CallUnary(context.Background(), connect.NewRequest(
-		&testpb.GetGadgetRequest{Id: proto.String("g-1"), IncludeArchived: true})); err != nil {
+		&testpb.GetGadgetRequest{Id: proto.String("a6666666-6666-4666-8666-666666666666"), IncludeArchived: true})); err != nil {
 		t.Fatalf("call with include_archived=true: %v", err)
 	}
 	if !saw.IncludeArchived {
@@ -521,7 +521,7 @@ func TestQueryByID_IncludeArchivedReachesCriteria(t *testing.T) {
 
 	saw = queries.ReadCriteria{}
 	if _, err := client.CallUnary(context.Background(), connect.NewRequest(
-		&testpb.GetGadgetRequest{Id: proto.String("g-1")})); err != nil {
+		&testpb.GetGadgetRequest{Id: proto.String("a6666666-6666-4666-8666-666666666666")})); err != nil {
 		t.Fatalf("call without include_archived: %v", err)
 	}
 	if saw.IncludeArchived {

@@ -257,7 +257,7 @@ func TestSubquery_PlaceholderNumberingAcrossNesting(t *testing.T) {
 			Where(criteria.And(
 				criteria.Eq("Number", "555"),
 				criteria.InSub("UserID", criteria.Sub(rp).Select("RoleID").
-					Where(criteria.Eq("RoleID", "r1"))),
+					Where(criteria.Eq("RoleID", "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"))),
 			))),
 	)
 
@@ -272,7 +272,7 @@ func TestSubquery_PlaceholderNumberingAcrossNesting(t *testing.T) {
 	}
 	// Emission order is what makes the numbering right: the outer literal first,
 	// then the subquery's, then the nested one's.
-	if got := []any{args[0], args[1], args[2]}; got[0] != "Bob" || got[1] != "555" || got[2] != "r1" {
+	if got := []any{args[0], args[1], args[2]}; got[0] != "Bob" || got[1] != "555" || got[2] != "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51" {
 		t.Errorf("args out of emission order: %v", got)
 	}
 	if strings.Index(sql, "$1") > strings.Index(sql, "$2") ||

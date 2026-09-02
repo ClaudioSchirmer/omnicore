@@ -337,14 +337,14 @@ func TestHandleCommandWithBodyID_HappyPath(t *testing.T) {
 	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	body, _ := json.Marshal(map[string]string{"name": "bob", "email": "b@x.com"})
-	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader(body))
+	req := httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d (body=%s)", resp.StatusCode, b)
 	}
-	if h.gotPathID != "abc" {
+	if h.gotPathID != "9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34" {
 		t.Errorf("expected PathID=abc, got %q", h.gotPathID)
 	}
 	if h.gotCmd.Name != "bob" || h.gotCmd.Email != "b@x.com" {
@@ -360,7 +360,7 @@ func TestHandleCommandWithBodyID_MissingField_400_SchemaContext(t *testing.T) {
 	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
 	body, _ := json.Marshal(map[string]string{"name": "bob"}) // missing email
-	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader(body))
+	req := httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -386,7 +386,7 @@ func TestHandleCommandWithBodyID_MissingMultipleFields_400(t *testing.T) {
 
 	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
-	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader([]byte("{}")))
+	req := httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", bytes.NewReader([]byte("{}")))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -407,7 +407,7 @@ func TestHandleCommandWithBodyID_EmptyBody_400(t *testing.T) {
 
 	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
-	req := httptest.NewRequest("PUT", "/things/abc", nil)
+	req := httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil)
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
@@ -421,7 +421,7 @@ func TestHandleCommandWithBodyID_MalformedJSON_400(t *testing.T) {
 
 	app.Put("/things/:id", CommandWithBodyID(pipe, testUpdateRequest{}, responses.NoBody, h, fiber.StatusOK))
 
-	req := httptest.NewRequest("PUT", "/things/abc", bytes.NewReader([]byte("{nope")))
+	req := httptest.NewRequest("PUT", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", bytes.NewReader([]byte("{nope")))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusBadRequest {

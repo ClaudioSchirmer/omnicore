@@ -9,6 +9,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/ClaudioSchirmer/omnicore/application/pipeline"
+	"github.com/ClaudioSchirmer/omnicore/web/queryschema"
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
@@ -99,8 +100,12 @@ func MutationWithBodyID[
 				if gerr != nil {
 					return nil, []GraphQLError{*gerr}
 				}
+				rawID := asString(args["id"])
+				if queryschema.IsMalformedPathID(rawID) {
+					return nil, renderViolation(pipe, ctx, queryschema.MalformedPathID(queryschema.KeyPathID, rawID))
+				}
 				cmd := req.ToCommand()
-				cmd.SetPathID(asString(args["id"]))
+				cmd.SetPathID(rawID)
 				res := pipeline.Dispatch(pipe, ctx, cmd, h)
 				return mutationOutput(res, project)
 			}
@@ -134,8 +139,11 @@ func MutationByID[
 		},
 		makeResolve: func(pipe *pipeline.Pipeline) resolver {
 			return func(ctx *configuration.AppContext, args map[string]any, _ ast.SelectionSet, _ ast.FragmentDefinitionList) (any, []GraphQLError) {
-				cmd := TCmdPtr(new(TCmd))
 				id := asString(args["id"])
+				if queryschema.IsMalformedPathID(id) {
+					return nil, renderViolation(pipe, ctx, queryschema.MalformedPathID(queryschema.KeyPathID, id))
+				}
+				cmd := TCmdPtr(new(TCmd))
 				cmd.SetPathID(id)
 				res := pipeline.Dispatch(pipe, ctx, cmd, h)
 				switch {

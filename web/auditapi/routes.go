@@ -89,8 +89,8 @@ func findByAggregateHandler(cfg Config, deps Deps) fiber.Handler {
 		appCtx.SetParent(c)
 
 		var req FindAuditByAggregateRequest
-		if badField, ok := fwweb.BindPath(c, &req); !ok {
-			return fwweb.RespondSchemaViolation(c, deps.Pipeline, badField)
+		if v := fwweb.BindPath(c, &req); v != nil {
+			return fwweb.RespondViolation(c, deps.Pipeline, v)
 		}
 		first, ok := parseFirst(c)
 		if !ok {

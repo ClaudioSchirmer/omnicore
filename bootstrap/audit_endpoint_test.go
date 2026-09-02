@@ -217,13 +217,16 @@ func TestBuildApp_AuditEndpoint_NonNumericFirstIs400(t *testing.T) {
 
 // A malformed aggregate id is rejected at the wire boundary, so a driver never
 // sees it and the consumer gets a 400 instead of a 500.
-func TestBuildApp_AuditEndpoint_MalformedAggregateIDIs400(t *testing.T) {
+// The framework-served audit route inherits the framework-wide rule for a
+// malformed identity segment: a READ names no record. It writes no status of
+// its own — BindPath classifies, RespondViolation renders.
+func TestBuildApp_AuditEndpoint_MalformedAggregateIDIs404(t *testing.T) {
 	reader := &stubAuditReader{}
 	app := buildAuditApp(t, auditDeps(t, reader, defaultedREST(), 20, true))
 
 	status, _ := getJSON(t, app, "/audit/User/not-a-uuid")
-	if status != 400 {
-		t.Fatalf("malformed aggregate id = %d, want 400", status)
+	if status != 404 {
+		t.Fatalf("malformed aggregate id = %d, want 404", status)
 	}
 	if reader.gotAggregateID != "" {
 		t.Errorf("the read must never reach the reader, got %q", reader.gotAggregateID)

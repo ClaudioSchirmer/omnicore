@@ -194,8 +194,8 @@ func QueryWithParams[TReq HasToParamsQuery[TQ], TQ queries.QueryWithParams[TResu
 		// projection, so `?fields=` shapes the wire even when a source shares it.
 		hidden := queryschema.UnrequestedComputedSources(projSchema, selectedWire)
 		var req TReq
-		if bad, ok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !ok {
-			return respondSchemaViolation[queries.PageOf[TResult]](c, pipe, bad)
+		if v := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); v != nil {
+			return respondViolation[queries.PageOf[TResult]](c, pipe, v)
 		}
 		appCtx := AppContext(c)
 		appCtx.SetParentIfAbsent(c)
@@ -264,8 +264,17 @@ func QueryByID[TReq HasToIDQuery[TQ], TQ queries.QueryByID[TResult], TResult any
 		if err := c.Bind().Query(&req); err != nil {
 			return respondSchemaViolation[TResult](c, pipe, "includeArchived")
 		}
-		if bad, ok := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); !ok {
-			return respondSchemaViolation[TResult](c, pipe, bad)
+		if v := applyPathBinding(c, pathSchema, reflect.ValueOf(&req)); v != nil {
+			return respondViolation[TResult](c, pipe, v)
+		}
+		// The `:id` segment is refused HERE or nowhere: domain.ID is an opaque
+		// wrapper, so a non-uuid segment travels intact to the reader and
+		// surfaces as a driver error (a 500) on a relational backing, while a
+		// Mongo-backed view of the same route answers 404 because the string
+		// simply matches no _id. Refusing at the wire is what makes the two
+		// postures answer one contract.
+		if rawID := c.Params("id"); queryschema.IsMalformedPathID(rawID) {
+			return respondViolation[TResult](c, pipe, queryschema.UnknownPathIDAddress(queryschema.KeyPathID, rawID))
 		}
 		// One reserved control is this route's whole wire vocabulary, but it
 		// goes through the SAME assembler a listing does, so the opt-in gate
@@ -385,11 +394,17 @@ func (p *QueryParser[Req, Resp]) Parse(c fiber.Ctx) (queries.ReadCriteria, *quer
 	return crit, violation, ok
 }
 
-// RespondViolation emits the canonical 400 envelope for a typed read-control
-// rejection produced by [QueryParser.Parse] — the violation carries both the
-// wire spelling of the offending field and the notification explaining it, so
-// a manual query handler renders the SAME message the auto wrapper does
-// (ordering by a computed field, say, instead of a generic schema error):
+// RespondViolation emits the canonical envelope for a typed rejection the
+// caller assembled — from [QueryParser.Parse] on the read controls, or from
+// [BindPath] on the path segments. The violation carries both the wire
+// spelling of the offending field and the notification explaining it, so a
+// manual handler renders the SAME message the auto wrapper does (ordering by a
+// computed field, say, instead of a generic schema error).
+//
+// The STATUS comes from that notification, not from this call: a read-control
+// rejection is the canonical 400, while a malformed identity segment answers
+// 404 on a read and 400 on a write. A manual handler therefore never writes a
+// status literal for a refusal.
 //
 //	crit, violation, ok := parser.Parse(c)
 //	if !ok {

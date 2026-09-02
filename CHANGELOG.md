@@ -11,6 +11,83 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — `fwweb.BindPath` returns `*queryschema.Violation` instead of
+  `(string, bool)`.** The bad-field name alone could only ever produce one
+  answer, and a malformed identity segment needs two: 404 on a read, 400 on a
+  write. The violation carries the notification that decides it, so a manual
+  handler stops writing status literals. The fix at each call site is
+  mechanical:
+
+  ```go
+  // before
+  if badField, ok := fwweb.BindPath(c, &req); !ok {
+      return fwweb.RespondSchemaViolation(c, pipe, badField)
+  }
+  // after
+  if v := fwweb.BindPath(c, &req); v != nil {
+      return fwweb.RespondViolation(c, pipe, v)
+  }
+  ```
+
+- **BREAKING (behavior) — a by-id route no longer answers 500 for a `:id` that
+  is not a UUID.** A read answers **404** `UnknownIDAddressNotification`, a
+  write **400** `MalformedIDNotification`, on REST, GraphQL and gRPC alike. The
+  refusal happens at the wrapper, before the handler. Services whose read model
+  is Mongo-backed already answered 404 here (the string matched no `_id`) and
+  keep answering 404; services on a relational backing answered 500 (SQLSTATE
+  22P02 on Postgres, a uuid-codec failure on the other engines) and now answer
+  the contract. The framework's own audit endpoint follows the same rule and
+  moved from 400 to **404** for a malformed `aggregateId`.
+
+- **BREAKING (behavior) — a filter value the leaf cannot take is refused
+  instead of passed through.** `?age=abc` on an `int64`-declared leaf used to
+  fall through as the raw string; that was only harmless on Mongo, where it
+  matched nothing. On every relational backing it reached the driver and came
+  back as a 500. It is now **400** `InvalidFilterValueNotification`, named by
+  the wire key. A service on a Mongo-backed view therefore sees a request that
+  answered `200` with an empty page answer `400`.
+
+- **BREAKING (behavior) — a non-uuid probe on an identity column is refused by
+  the relational reader.** It used to degrade to text and let the column decide,
+  which on Postgres reaches the consumer as a 500 (SQLSTATE 22P02) and on
+  MySQL / SQL Server / Oracle silently matches nothing (`EncodeArg` returns the
+  raw string when `uuidBytes` fails). `?someId=lixo` now answers 400
+  `InvalidFilterValueNotification` on every engine.
+
+  This cannot affect a primary key the framework wrote: every id is minted by
+  `newWriteID()` (uuid v7) and a caller-supplied id is refused outright. It
+  reaches two cases only — rows written OUTSIDE the framework (a raw SQL seed, a
+  migration, another service writing the same table) under a non-uuid key, and a
+  `domain.ID`-typed FOREIGN KEY fed a non-uuid value from a payload. In the
+  second, the 400 replaces an empty page that could never have matched anything.
+
+- **`ApplyFilterValues` takes the wire key and returns `*Violation`.** It is
+  the one place the canonical filter clauses are built, so it is the one place
+  that knows both the declared kind and the spelling the consumer wrote.
+
+### Added
+
+- **`domain.ID.IsUUID() bool`** — the silent half of `IsValid`, for the wire
+  guards that mint their own notification instead of adding to a
+  `NotificationContext`.
+
+- **Three notifications, translated in all seven catalogs:**
+  `MalformedIDNotification` (Schema → 400), `UnknownIDAddressNotification`
+  (NotFound → 404) and `InvalidFilterValueNotification` (Schema → 400).
+  `InvalidIDUUIDNotification` is untouched and keeps its meaning: the
+  domain-validation key an aggregate raises through `ID.IsValid` (422).
+
+- **`queryschema.Violation` gained `Value` and `Context`.** The rejected value
+  is echoed back to the consumer, and a refusal that is not a schema violation
+  can say so — `"context": "Request"` on the by-id refusals instead of labelling
+  an address problem as a payload problem.
+
+- **`HasPathID` routes declare 400 in the OpenAPI document.** The bodyless
+  by-id commands (archive / unarchive / delete) can now answer 400, which the
+  body-shaped rule alone would have left undeclared.
+
 ## [0.69.0] - 2026-09-01
 
 ### Changed

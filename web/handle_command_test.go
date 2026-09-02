@@ -47,7 +47,7 @@ func TestHandleCommandByID_InjectsPathID(t *testing.T) {
 
 	app.Patch("/things/:id/archive", CommandByID(pipe, responses.NoBody, cap, fiber.StatusOK))
 
-	req := httptest.NewRequest("PATCH", "/things/xyz/archive", nil)
+	req := httptest.NewRequest("PATCH", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34/archive", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("app.Test err: %v", err)
@@ -56,7 +56,7 @@ func TestHandleCommandByID_InjectsPathID(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d (body=%s)", resp.StatusCode, b)
 	}
-	if cap.gotPathID != "xyz" {
+	if cap.gotPathID != "9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34" {
 		t.Errorf("expected PathID=xyz, got %q", cap.gotPathID)
 	}
 }
@@ -69,7 +69,7 @@ func TestHandleCommandByID_IgnoresBody(t *testing.T) {
 	app.Delete("/things/:id", CommandByID(pipe, responses.NoBody, cap, fiber.StatusNoContent))
 
 	// Body is provided but the wrapper does not parse it — should still 204.
-	req := httptest.NewRequest("DELETE", "/things/abc", nil)
+	req := httptest.NewRequest("DELETE", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34", nil)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestHandleCommandByID_IgnoresBody(t *testing.T) {
 	if resp.StatusCode != fiber.StatusNoContent {
 		t.Fatalf("expected 204, got %d", resp.StatusCode)
 	}
-	if cap.gotPathID != "abc" {
+	if cap.gotPathID != "9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34" {
 		t.Errorf("expected PathID=abc, got %q", cap.gotPathID)
 	}
 }
@@ -94,7 +94,7 @@ func TestHandleCommandByID_NoBodyOmitsDataField(t *testing.T) {
 
 	app.Patch("/things/:id/archive", CommandByID(pipe, responses.NoBody, cap, fiber.StatusOK))
 
-	req := httptest.NewRequest("PATCH", "/things/xyz/archive", nil)
+	req := httptest.NewRequest("PATCH", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34/archive", nil)
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -125,7 +125,7 @@ func TestHandleCommandByID_CustomProjection(t *testing.T) {
 		func(_ fwresults.None) customResp { return customResp{ID: "demo"} },
 		cap, fiber.StatusOK))
 
-	req := httptest.NewRequest("PATCH", "/things/xyz/archive", nil)
+	req := httptest.NewRequest("PATCH", "/things/9a1f6e2c-8b47-4d3a-9c5e-1f0b7d2a6e34/archive", nil)
 	resp, _ := app.Test(req)
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
