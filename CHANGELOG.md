@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-09-02
+
 ### Changed
 
 - **BREAKING — `fwweb.BindPath` returns `*queryschema.Violation` instead of

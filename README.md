@@ -203,6 +203,8 @@ users.Post("/", fwweb.CommandWithBody(d.Pipeline,
 That single call gives you, for free:
 
 - ✅ **Schema validation** at the wire → `400` + `SchemaViolationNotification`
+- ✅ **Address validation** on every by-id route → a `:id` that is not a UUID never reaches the
+  store: `404` on a read, `400` on a write, the same answer on every backing
 - ✅ **Business validation** via `BuildRules` → `422` + typed notification
 - ✅ **Unique-constraint mapping** (PG `23505`) → `409`
 - ✅ **Aggregate persistence** — root + every child row in one `pgx.Tx`

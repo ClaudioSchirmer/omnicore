@@ -184,10 +184,10 @@ func (FindUserByEmailCustomResponse) FromResult(
         dispatch, and project on success. <strong>Facilitators</strong> (each replaces one hidden wrapper step):
     </p>
     <ul>
-        <li><code>fwweb.BindPath(c, &amp;req)</code> — fills <code>path:</code>-tagged fields from <code>c.Params</code>.</li>
+        <li><code>fwweb.BindPath(c, &amp;req)</code> — fills <code>path:</code>-tagged fields from <code>c.Params</code>. Returns <code>nil</code> when every segment bound, or the <code>*queryschema.Violation</code> that explains the first one that did not.</li>
         <li><code>fwweb.NewQueryParser[Req, Resp]()</code> — constructed once at Mount; <code>parser.Parse(c)</code> applies the same allowlist + wire→doc translation the wrapper runs (see <a href="#custom-query-handler~cqry-blocks">building blocks</a>).</li>
-        <li><code>fwweb.RespondViolation(c, pipe, violation)</code> — the canonical 400 envelope for a rejected read control, carrying the notification the parser chose.</li>
-        <li><code>fwweb.RespondSchemaViolation(c, pipe, badField)</code> — the same envelope for a plain bad key (what <code>BindPath</code> reports).</li>
+        <li><code>fwweb.RespondViolation(c, pipe, violation)</code> — the canonical envelope for a rejected read control OR a path segment, carrying the notification its producer chose. The STATUS comes from that notification, not from this call: a read control is the canonical 400, while a malformed IDENTITY segment (<code>uuid.UUID</code> / <code>domain.ID</code>) answers 404 on a read and 400 on a write. A manual handler therefore writes no status literal for a refusal.</li>
+        <li><code>fwweb.RespondSchemaViolation(c, pipe, badField)</code> — the same envelope for a plain bad key, when the handler itself names the offending field.</li>
         <li><code>Resp{}.FromResult</code> — the shared wire mapping seat (over
             <code>fwresponses.Map[Resp]</code>).</li>
     </ul>
@@ -200,8 +200,8 @@ g.Get("/:email", func(c fiber.Ctx) error {
     appCtx.SetParent(c)                          // propagate request cancellation
 
     var req requests.FindUserByEmailCustomRequest
-    if badField, ok := fwweb.BindPath(c, &amp;req); !ok {   // :email → req.Email
-        return fwweb.RespondSchemaViolation(c, pipe, badField)
+    if v := fwweb.BindPath(c, &amp;req); v != nil {         // :email → req.Email
+        return fwweb.RespondViolation(c, pipe, v)
     }
     crit, violation, ok := byEmailParser.Parse(c)       // allowlist + translation
     if !ok {

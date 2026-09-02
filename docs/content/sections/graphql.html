@@ -525,7 +525,12 @@ reg.Register(fwgraphql.MutationByID(
     <code>fieldLabel</code> / <code>value</code> / <code>funcName</code> are
     emitted only when present (omitempty parity), so services that don't use them keep a byte-identical envelope.
     A recovered panic surfaces as an opaque <code>{ semantic: "Internal" }</code> error; the panic value
-    and stack stay server-side, mirroring the REST 500 posture.
+    and stack stay server-side, mirroring the REST 500 posture. That bucket is for genuine server faults
+    only: an <code>id</code> argument that is not a UUID is refused by the field itself and carries the
+    typed identity like any other notification — <code>UnknownIDAddressNotification</code> with
+    <code>semantic: "NotFound"</code> on a query, <code>MalformedIDNotification</code> with
+    <code>semantic: "Schema"</code> on a mutation — so a consumer can tell a bad address from a broken
+    server.
 </p>
 
 <h3>Introspection &amp; playground</h3>
