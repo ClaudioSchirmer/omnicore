@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
 )
@@ -78,11 +80,16 @@ type FilterSpec struct {
 }
 
 // timeType / idType are the concrete leaf types that carry a coercion rule of
-// their own. Held as package vars so the lookup in coerceDeclaredType is a
-// pointer compare rather than a reflection call per probe.
+// their own. Held as package vars so the lookup in coerceLeaf is a pointer
+// compare rather than a reflection call per probe. uuid.UUID sits beside
+// domain.ID because the framework already validates both in a `path:` segment
+// (web.classifyPathFieldType) — a filter that judged only one of them would be
+// the same surface answering the same type two ways.
 var (
-	timeType = reflect.TypeOf(time.Time{})
-	idType   = reflect.TypeOf(domain.ID{})
+	timeType     = reflect.TypeOf(time.Time{})
+	idType       = reflect.TypeOf(domain.ID{})
+	uuidType     = reflect.TypeOf(uuid.UUID{})
+	durationType = reflect.TypeOf(time.Duration(0))
 )
 
 // knownOps is the membership set of every declared operator constant. Drives
@@ -176,7 +183,7 @@ func ApplyFilterValues(filter map[string]any, spec FilterSpec, wireKey, op strin
 	var clause any
 	switch op {
 	case "", OpEq:
-		coerced, ok := coerceLeaf(value, spec)
+		coerced, ok := coerceLeaf(value, spec.GoType, spec.GoKind)
 		if !ok {
 			return invalid(value)
 		}
@@ -194,31 +201,31 @@ func ApplyFilterValues(filter map[string]any, spec FilterSpec, wireKey, op strin
 		}
 		clause = queries.Clause{Op: queries.FilterNin, Values: items}
 	case OpNe:
-		coerced, ok := coerceLeaf(value, spec)
+		coerced, ok := coerceLeaf(value, spec.GoType, spec.GoKind)
 		if !ok {
 			return invalid(value)
 		}
 		clause = queries.Clause{Op: queries.FilterNe, Values: []any{coerced}}
 	case OpGte:
-		coerced, ok := coerceLeaf(value, spec)
+		coerced, ok := coerceLeaf(value, spec.GoType, spec.GoKind)
 		if !ok {
 			return invalid(value)
 		}
 		clause = queries.Clause{Op: queries.FilterGte, Values: []any{coerced}}
 	case OpLte:
-		coerced, ok := coerceLeaf(value, spec)
+		coerced, ok := coerceLeaf(value, spec.GoType, spec.GoKind)
 		if !ok {
 			return invalid(value)
 		}
 		clause = queries.Clause{Op: queries.FilterLte, Values: []any{coerced}}
 	case OpGt:
-		coerced, ok := coerceLeaf(value, spec)
+		coerced, ok := coerceLeaf(value, spec.GoType, spec.GoKind)
 		if !ok {
 			return invalid(value)
 		}
 		clause = queries.Clause{Op: queries.FilterGt, Values: []any{coerced}}
 	case OpLt:
-		coerced, ok := coerceLeaf(value, spec)
+		coerced, ok := coerceLeaf(value, spec.GoType, spec.GoKind)
 		if !ok {
 			return invalid(value)
 		}
@@ -287,7 +294,7 @@ func mergeClause(filter map[string]any, field string, clause any) {
 func coerceValues(values []string, spec FilterSpec) (items []any, bad string, ok bool) {
 	items = make([]any, len(values))
 	for i, v := range values {
-		coerced, valid := coerceLeaf(v, spec)
+		coerced, valid := coerceLeaf(v, spec.GoType, spec.GoKind)
 		if !valid {
 			return nil, v, false
 		}
@@ -296,76 +303,93 @@ func coerceValues(values []string, spec FilterSpec) (items []any, bad string, ok
 	return items, "", true
 }
 
-// coerceLeaf is the entry point every filter coercion goes through. It tries
-// the leaf's DECLARED TYPE first and falls back to the kind-only switch.
+// coerceLeaf converts ONE wire value into the Go type a filter leaf declares.
+// It is the ONLY place that decision is made, and it returns ok=false when the
+// value cannot be that type — the refusal the caller renders as a typed 400,
+// instead of handing a backing a value nobody validated.
 //
-// The split exists because reflect.Kind cannot tell time.Time from domain.ID
-// from any other struct: both used to land in coerceValue's default branch and
-// come back as the verbatim wire string with ok=true — the framework reporting
-// a conversion it had not performed. On a Mongo view that string silently
-// matched nothing; on every relational backing it bound as text against a typed
-// column and the driver refused it, which the pipeline could only render as a
-// 500 for what is a consumer typo.
-func coerceLeaf(s string, spec FilterSpec) (any, bool) {
-	if spec.GoType != nil {
-		if v, handled, ok := coerceDeclaredType(s, spec.GoType); handled {
-			return v, ok
-		}
-	}
-	return coerceValue(s, spec.GoKind)
-}
-
-// coerceDeclaredType applies the rules that need the leaf's concrete type
-// rather than its kind. handled=false means "no rule for this type" and hands
-// the value back to the kind switch — a type this function does not know is
-// NOT refused here, so a leaf the framework has no rule for keeps working
-// exactly as it does today.
+// It takes the declared type and its kind rather than the FilterSpec so that a
+// LIST leaf can reuse it verbatim for its element type. The two are passed
+// together because neither answers the question alone:
 //
-// time.Time parses as RFC3339 and nothing else: it is the format the OpenAPI
-// spec advertises for these leaves and the one the JSON body already uses, so
-// a date-only spelling is a consumer error rather than a second dialect to
-// support.
+//	Kind  — "what shape of memory is this?"   → struct, array, slice, int64 …
+//	Type  — "WHICH one?"                      → time.Time, domain.ID, []int64 …
 //
-// domain.ID reuses the identity check the relational compiler already performs
-// in core.place(). It runs HERE as well because that one is the last line of
-// defense — it only fires on a TableSchema-backed read that knows the column
-// is an identity, so a Mongo view never reached it. Refusing at the wire also
-// names the key the consumer actually wrote, which the compiler cannot know.
-func coerceDeclaredType(s string, t reflect.Type) (value any, handled, ok bool) {
+// reflect.Kind is a closed enum of Go's primitive shapes and has no member for
+// a date, an identity or a duration. time.Time and domain.ID are both
+// Kind=struct, uuid.UUID is Kind=array, and time.Duration is Kind=int64 —
+// indistinguishable, at that level, from each other and from anything a
+// developer invents. So a switch on Kind alone was never missing a case (no
+// such case exists to write): those types fell through to the passthrough at
+// the bottom, which reported success on a conversion it had not performed. On
+// a Mongo view the raw string then matched nothing — a WELL-FORMED date filter
+// answering an empty page — and on every relational backing it bound as text
+// against a typed column and came back as a 500 for what is a consumer typo.
+//
+// Asking the type first, and only then the kind, is the same order
+// web.classifyPathFieldType uses for a `path:` segment, for the same reason.
+func coerceLeaf(s string, t reflect.Type, k reflect.Kind) (any, bool) {
+	// ── 1. Types the kind cannot name ───────────────────────────────────────
+	// A hand-built FilterSpec (web/grpc constructs five) carries no type; a nil
+	// matches no case here and falls through to the kind switch below.
 	switch t {
 	case timeType:
+		// RFC3339 and nothing else: it is the format the OpenAPI spec
+		// advertises for these leaves and the one the JSON body already uses,
+		// so a date-only spelling is a consumer error rather than a second
+		// dialect to support.
 		v, err := time.Parse(time.RFC3339, s)
-		return v, true, err == nil
-	case idType:
-		// An EMPTY probe is a caller asking for "no id" (SQL NULL / absent),
-		// which is a legitimate predicate rather than a malformed address —
-		// the same carve-out core.malformedIDProbe makes.
-		if s == "" {
-			return s, true, true
-		}
-		// The value emitted is the canonical STRING, never the domain.ID: the
-		// type carries its value in an unexported field and implements only
-		// MarshalJSON, so BSON encodes it as an EMPTY sub-document and a Mongo
-		// view would match nothing. The relational side wants the string too —
-		// core.place() lifts it into the dialect's native id form, which is the
-		// path a `*string` id leaf already takes. What this rule adds is the
-		// REFUSAL, not a change of wire type.
-		return s, true, domain.NewID(s).IsUUID()
-	}
-	return nil, false, false
-}
+		return v, err == nil
 
-// coerceValue converts a wire string into the Go type declared by the leaf.
-// String-typed leaves keep the value verbatim (no silent int/float parse —
-// "95014" stays "95014" so it matches a string-typed Mongo field). A typed leaf
-// attempts the matching parse and REFUSES on failure (ok=false): the old
-// fallback to the string verbatim was only harmless on Mongo, where a mistyped
-// probe matches nothing — on every relational backing it reached the driver and
-// came back as a 500. The kind is the leaf's base kind after pointer stripping
-// (collected in walkSchemaLevel).
-func coerceValue(s string, kind reflect.Kind) (any, bool) {
-	switch kind {
+	case durationType:
+		// The Go spelling ("90s", "5m", "1h30m") is the contract, and a bare
+		// number is refused on purpose. Kind=int64 means the switch below would
+		// otherwise ACCEPT `?ttl=300` and mean 300 NANOseconds — a wrong answer
+		// delivered as a 200, which is worse than the 500 this function exists
+		// to prevent. The emitted value is the underlying int64: it encodes
+		// byte-for-byte like time.Duration in BSON and needs no driver to
+		// reflect a named type.
+		d, err := time.ParseDuration(s)
+		return int64(d), err == nil
+
+	case idType, uuidType:
+		// An EMPTY probe is a caller asking for "no id" (SQL NULL / absent) — a
+		// legitimate predicate, not a malformed address. Same carve-out
+		// core.malformedIDProbe makes.
+		if s == "" {
+			return s, true
+		}
+		// The value emitted is the canonical STRING, never the identity type:
+		// domain.ID keeps its value in an unexported field and implements only
+		// MarshalJSON, so BSON encodes it as an EMPTY sub-document and a Mongo
+		// view would match nothing at all. The relational side wants the string
+		// too — core.place() lifts it into the dialect's native id form. What
+		// this rule adds is the REFUSAL, not a change of wire type.
+		return s, domain.NewID(s).IsUUID()
+	}
+
+	// ── 2. A list leaf is judged one ELEMENT at a time ──────────────────────
+	// `Codes []int64` declares a list of int64, not a value of type []int64:
+	// every operand on the wire is one element. Judging the slice itself found
+	// no rule and passed the operands through as strings, so `?codes.in=10,20`
+	// reached a bigint column as text (500) and a Mongo numeric field as
+	// strings (matches nothing). Recursing costs one frame and makes a list
+	// leaf inherit every rule above and below, identity and date included.
+	if t != nil && t.Kind() == reflect.Slice {
+		elem := t.Elem()
+		for elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
+		}
+		return coerceLeaf(s, elem, elem.Kind())
+	}
+
+	// ── 3. The primitive shapes ─────────────────────────────────────────────
+	switch k {
 	case reflect.String:
+		// Verbatim, with no silent numeric parse: "95014" stays "95014" so it
+		// matches a string-typed column. A named type over a scalar (a scalar
+		// value object, `type Status string`) resolves to its underlying kind
+		// and lands here correctly.
 		return s, true
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(s, 10, 64)
@@ -384,12 +408,15 @@ func coerceValue(s string, kind reflect.Kind) (any, bool) {
 			return false, true
 		}
 		return nil, false
-	default:
-		// Unknown / composite kinds (slice, struct surrogates) — pass through
-		// as string. The walker only stores scalar leaves today, so this
-		// branch is defensive. An identity or time leaf lands here as a plain
-		// string and is guarded by the reader instead, which is the only layer
-		// that knows the column's real type.
-		return s, true
 	}
+
+	// ── 4. The one passthrough, and a deliberate one ────────────────────────
+	// What reaches here is neither a primitive nor a type the framework knows
+	// how to read, so there is no conversion to attempt and no basis to judge
+	// the value. Refusing would fail EVERY value for that leaf, which disables
+	// the developer's declaration — a decision about their design, not this
+	// layer's to make. The value travels as the string it arrived as, exactly
+	// as it did before any rule above existed. What this branch must not do is
+	// grow silently: a type worth converting gets a case in section 1.
+	return s, true
 }

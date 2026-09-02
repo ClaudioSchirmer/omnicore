@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
 	"github.com/ClaudioSchirmer/omnicore/domain"
+	"github.com/google/uuid"
 )
 
 // timeSpec / idSpec mirror what walkSchemaLevel builds for a `*time.Time` and a
@@ -171,5 +172,92 @@ func TestCoerceLeaf_NilGoTypeFallsBackToKind(t *testing.T) {
 	}
 	if f["Age"] != int64(25) {
 		t.Errorf("clause = %#v, want int64(25)", f["Age"])
+	}
+}
+
+// ─── uuid.UUID — the type the path binding already judged ───────────────────
+
+// A leaf declared uuid.UUID is judged exactly like domain.ID. Before, only the
+// path segment was: web.classifyPathFieldType has always checked both, while
+// the filter judged neither — the same surface answering the same type two ways.
+func TestCoerceLeaf_BareUUIDTypeIsJudgedLikeIdentity(t *testing.T) {
+	ut := reflect.TypeOf(uuid.UUID{})
+	if _, ok := coerceLeaf("not-a-uuid", ut, ut.Kind()); ok {
+		t.Error("a non-uuid on a uuid.UUID leaf must be refused")
+	}
+	id := "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"
+	got, ok := coerceLeaf(id, ut, ut.Kind())
+	if !ok {
+		t.Fatal("a well-formed uuid on a uuid.UUID leaf must be accepted")
+	}
+	// The canonical string, for the same BSON reason domain.ID carries.
+	if got != id {
+		t.Errorf("emitted %#v (%T), want the canonical string", got, got)
+	}
+}
+
+// ─── list leaves — every operand judged as the ELEMENT type ─────────────────
+
+// `Codes []int64` declares a list OF int64, not a value of type []int64. Judging
+// the slice itself found no rule and passed the operands through as strings, so
+// ?codes.in=10,20 reached a bigint column as text — a 500 — and a Mongo numeric
+// field as strings, matching nothing.
+func TestCoerceLeaf_ListLeafCoercesPerElement(t *testing.T) {
+	lt := reflect.TypeOf([]int64{})
+	got, ok := coerceLeaf("10", lt, lt.Kind())
+	if !ok {
+		t.Fatal("a well-formed element must be accepted")
+	}
+	if got != int64(10) {
+		t.Errorf("emitted %#v (%T), want int64(10) — the ELEMENT type", got, got)
+	}
+	if _, ok := coerceLeaf("abc", lt, lt.Kind()); ok {
+		t.Error("a non-numeric element on a []int64 leaf must be refused")
+	}
+}
+
+// A list leaf inherits EVERY rule, not just the primitive ones — recursing is
+// what buys that for free.
+func TestCoerceLeaf_ListLeafInheritsTheTypeRules(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		typ  reflect.Type
+		bad  string
+		good string
+	}{
+		{"[]time.Time", reflect.TypeOf([]time.Time{}), "not-a-date", "2024-01-02T03:04:05Z"},
+		{"[]domain.ID", reflect.TypeOf([]domain.ID{}), "nope", "7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"},
+		{"[]*int64 (pointer element)", reflect.TypeOf([]*int64{}), "abc", "42"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, ok := coerceLeaf(c.bad, c.typ, c.typ.Kind()); ok {
+				t.Errorf("%q must be refused on a %s leaf", c.bad, c.name)
+			}
+			if _, ok := coerceLeaf(c.good, c.typ, c.typ.Kind()); !ok {
+				t.Errorf("%q must be accepted on a %s leaf", c.good, c.name)
+			}
+		})
+	}
+}
+
+// ─── time.Duration — the silent wrong answer, not a 500 ────────────────────
+
+// Kind=int64, so the primitive switch ACCEPTED a bare number and meant
+// NANOseconds: ?ttl=300 answered 200 with rows nobody asked for. The Go spelling
+// is the contract, and a unitless number is refused.
+func TestCoerceLeaf_DurationTakesTheGoSpellingOnly(t *testing.T) {
+	dt := reflect.TypeOf(time.Duration(0))
+	got, ok := coerceLeaf("5m", dt, dt.Kind())
+	if !ok {
+		t.Fatal(`"5m" must be accepted on a time.Duration leaf`)
+	}
+	if got != int64(5*time.Minute) {
+		t.Errorf("emitted %#v, want the underlying int64 of 5m", got)
+	}
+	if _, ok := coerceLeaf("300", dt, dt.Kind()); ok {
+		t.Error(`a unitless "300" must be refused — it used to mean 300 nanoseconds`)
+	}
+	if _, ok := coerceLeaf("teucu", dt, dt.Kind()); ok {
+		t.Error("garbage must be refused")
 	}
 }

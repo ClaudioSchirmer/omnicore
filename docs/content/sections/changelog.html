@@ -28,12 +28,20 @@
                 text against a timestamp column, every relational backing answered with a driver error the
                 pipeline could only render as a <strong>500</strong> — a consumer typo reported as a server
                 fault. On a Mongo view the same string compared against a BSON datetime and matched nothing,
-                so a <em>well-formed</em> date filter silently answered an empty page. The declared Go type is
-                now consulted before the kind: <code>time.Time</code> parses as RFC3339 and
-                <code>domain.ID</code> applies the identity check the relational compiler already performed —
-                which never ran on a Mongo view, and could not name the wire key the consumer wrote. Both
-                refuse with the typed <strong>400</strong> <code>InvalidFilterValueNotification</code> on
-                every surface, since REST, GraphQL and gRPC share one filter assembler. A leaf whose type
+                so a <em>well-formed</em> date filter silently answered an empty page. The defect was the AXIS, not a
+                missing case: <code>reflect.Kind</code> is a closed enum of Go's primitive shapes with no
+                member for a date, an identity or a duration — <code>time.Time</code> and
+                <code>domain.ID</code> are both <code>Kind=struct</code>, <code>uuid.UUID</code> is
+                <code>Kind=array</code>, <code>time.Duration</code> is <code>Kind=int64</code>. The declared
+                TYPE is now consulted before the kind, the order <code>path:</code> binding already used:
+                <code>time.Time</code> parses as RFC3339; <code>domain.ID</code> and <code>uuid.UUID</code>
+                apply the identity check the relational compiler performed too late to name the consumer's
+                key and never reached on a Mongo view; <code>time.Duration</code> takes the Go spelling and
+                refuses a bare number, which used to be accepted as that many <em>nanoseconds</em>; and a
+                LIST leaf (<code>[]T</code>) is judged one element at a time, where judging the slice passed
+                every operand through as text. All refuse with the typed <strong>400</strong>
+                <code>InvalidFilterValueNotification</code> on every surface, since REST, GraphQL and gRPC
+                share one filter assembler. A leaf whose type
                 carries no rule keeps its existing passthrough, so no declaration that worked before is
                 refused now. See <a href="#auto-query-handlers">Auto query handlers</a>.</li>
         </ul>

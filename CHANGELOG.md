@@ -44,14 +44,31 @@ with `1.0.0`.
   Mongo view the same string compared against a BSON datetime and silently
   matched nothing, so a **well-formed** date filter answered an empty page.
 
-  `FilterSpec` now carries the leaf's `GoType` alongside `GoKind`, and the
-  coercion consults it first: `time.Time` parses as RFC3339, `domain.ID`
-  applies the identity check the relational compiler already performed in
-  `core.place()` — which never ran on a Mongo view, and could not name the
-  wire key the consumer wrote. Both refuse with the typed 400
-  (`InvalidFilterValueNotification`) the pipeline already translated, on every
-  surface, since REST, GraphQL and gRPC all reach
-  `queryschema.ApplyFilterValues`.
+  The defect was the axis, not a missing case: `reflect.Kind` is a closed enum
+  of Go's primitive shapes and has no member for a date, an identity or a
+  duration. `time.Time` and `domain.ID` are both `Kind=struct`, `uuid.UUID` is
+  `Kind=array` and `time.Duration` is `Kind=int64` — indistinguishable at that
+  level from each other and from anything a consumer declares. `FilterSpec`
+  now carries the leaf's `GoType`, and the single coercion asks the concrete
+  TYPE before the kind — the order `web.classifyPathFieldType` already uses
+  for a `path:` segment:
+
+  - **`time.Time`** parses as RFC3339 and nothing else.
+  - **`domain.ID` and `uuid.UUID`** apply the identity check the relational
+    compiler already performed in `core.place()` — which never ran on a Mongo
+    view and could not name the wire key the consumer wrote. The path binding
+    has always judged both spellings; the filter judged neither.
+  - **`time.Duration`** takes the Go spelling (`90s`, `1h30m`) and refuses a
+    bare number. `Kind=int64` meant `?ttl=300` was ACCEPTED and meant 300
+    *nanoseconds* — a wrong answer delivered as a 200.
+  - **A list leaf (`[]T`)** is judged one ELEMENT at a time. `Codes []int64`
+    declares a list of int64, not a value of type `[]int64`; judging the slice
+    found no rule and passed every operand through as text, so
+    `?codes.in=10,20` reached a bigint column as strings.
+
+  All of them refuse with the typed 400 (`InvalidFilterValueNotification`) the
+  pipeline already translated, on every surface, since REST, GraphQL and gRPC
+  all reach `queryschema.ApplyFilterValues`.
 
   A leaf whose type carries no rule keeps the existing passthrough, and a
   `FilterSpec` built without a `GoType` (what `web/grpc` constructs by hand)
