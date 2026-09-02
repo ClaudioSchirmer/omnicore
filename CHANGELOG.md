@@ -33,6 +33,21 @@ with `1.0.0`.
 
 ### Fixed
 
+- **Oracle: a date predicate now agrees with the row that was written.**
+  `go-ora` renders a comparison bind in the PROCESS's local zone while an
+  `INSERT` binds the value's own location, so a row written from a UTC
+  `time.Time` stored the UTC wall clock and a predicate carrying that same
+  `time.Time` was compared as the local wall clock — the two disagreed by the
+  host's offset and an equality on a date column matched nothing. A
+  `TIMESTAMP` column has no time zone, so the value it holds IS a wall clock:
+  `oracleDialect.EncodeArg` now relabels a bound instant into the process
+  location, keeping its wall clock, which reproduces what Postgres and MySQL
+  already do against their tz-less columns rather than inventing a third
+  semantic. Only the criteria path is affected — the write path does not go
+  through `EncodeArg` — so stored values are unchanged and the predicate is
+  what moves to meet them. The divergence had never surfaced because no
+  `*time.Time` filter leaf existed anywhere to exercise it.
+
 - **A filter value the framework could not type no longer reaches the driver.**
   `queryschema.coerceValue` switched on `reflect.Kind` alone and its `default`
   branch returned the wire string verbatim with `ok=true` — reporting a

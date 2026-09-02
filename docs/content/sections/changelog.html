@@ -19,6 +19,17 @@
                 <code>instrument: [http, relational, mongo, kafka, httpclient]</code>; an unknown token still
                 aborts the boot naming the valid set, so a config that was not migrated fails loudly instead
                 of silently tracing nothing. See <a href="#tracing">Distributed tracing</a>.</li>
+            <li><strong>Fixed</strong> — <strong>Oracle: a date predicate now agrees with the row that
+                was written.</strong> <code>go-ora</code> renders a comparison bind in the PROCESS's local
+                zone while an <code>INSERT</code> binds the value's own location, so a row written from a
+                UTC <code>time.Time</code> stored the UTC wall clock while a predicate carrying that same
+                value was compared as the local wall clock — the two disagreed by the host's offset and an
+                equality on a date column matched nothing. A <code>TIMESTAMP</code> column carries no time
+                zone, so what it holds IS a wall clock: the Oracle dialect now relabels a bound instant into
+                the process location, keeping its wall clock, reproducing what Postgres and MySQL already do
+                against their tz-less columns. Only the criteria path moves — the write path does not encode
+                through the dialect — so stored values are untouched. It had never surfaced because no
+                <code>*time.Time</code> filter leaf existed anywhere to exercise it.</li>
             <li><strong>Fixed</strong> — <strong>a filter value the framework could not type no longer
                 reaches the driver.</strong> The read-side coercion switched on <code>reflect.Kind</code>
                 alone, and its fallback returned the wire string verbatim while reporting success — a
