@@ -354,15 +354,20 @@ func ExtractRequestSchema(t reflect.Type) *RequestSchema {
 			for _, op := range leaf.Ops {
 				ops[op] = true
 			}
-			// Capture the leaf's base kind for type-driven value coercion.
-			// Pointer indirection is collapsed — `*string` leaves coerce
-			// identically to `string`. Composite kinds (slices, structs)
-			// fall back to string at the coercion site.
+			// Capture the leaf's base kind AND concrete type for value
+			// coercion. Pointer indirection is collapsed — `*string` leaves
+			// coerce identically to `string`. The type is what lets the
+			// coercion site tell time.Time and domain.ID apart from every
+			// other struct; a type carrying no rule still falls back to the
+			// kind switch.
 			leafType := leaf.Field.Type
 			for leafType.Kind() == reflect.Pointer {
 				leafType = leafType.Elem()
 			}
-			s.Filters[leaf.WirePath] = FilterSpec{Ops: ops, DocPath: leaf.GoPath, GoKind: leafType.Kind()}
+			s.Filters[leaf.WirePath] = FilterSpec{
+				Ops: ops, DocPath: leaf.GoPath,
+				GoKind: leafType.Kind(), GoType: leafType,
+			}
 		case leaf.Sort != nil:
 			classified.Kind = LeafOrdering
 		case leaf.TopLevel && ControlKeys[key]:

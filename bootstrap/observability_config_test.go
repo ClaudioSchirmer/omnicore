@@ -82,7 +82,7 @@ func TestTracingProfileInsecureDefaults(t *testing.T) {
 }
 
 func TestTracingValidate(t *testing.T) {
-	ok := ObservabilityConfig{Tracing: TracingConfig{Enabled: true, Exporter: "otlp", Sampler: "always_on", Ratio: 0.5, Instrument: []string{"http", "pgx"}}}
+	ok := ObservabilityConfig{Tracing: TracingConfig{Enabled: true, Exporter: "otlp", Sampler: "always_on", Ratio: 0.5, Instrument: []string{"http", "relational"}}}
 	if err := ok.validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
@@ -119,12 +119,12 @@ func TestTracingResolve(t *testing.T) {
 		}
 	}
 	// Explicit list = allowlist; explicit serviceName wins.
-	o2 := TracingConfig{Enabled: true, ServiceName: "custom", Instrument: []string{"pgx"}}
+	o2 := TracingConfig{Enabled: true, ServiceName: "custom", Instrument: []string{"relational"}}
 	cfg2 := o2.Resolve("billing")
 	if cfg2.ServiceName != "custom" {
 		t.Errorf("explicit serviceName lost: %q", cfg2.ServiceName)
 	}
-	if !cfg2.Instrument[tracing.SubPgx] || cfg2.Instrument[tracing.SubMongo] {
+	if !cfg2.Instrument[tracing.SubRelational] || cfg2.Instrument[tracing.SubMongo] {
 		t.Errorf("allowlist not honored: %+v", cfg2.Instrument)
 	}
 

@@ -24,7 +24,7 @@
     sampler: parentbased_traceratio   # dev default always_on; else this
     ratio: 0.1              # keep fraction for the *traceratio samplers
     serviceName: "${service}"         # defaults to the top-level service identity
-    instrument: [http, pgx, mongo, kafka, httpclient]   # empty list = all</code></pre>
+    instrument: [http, relational, mongo, kafka, httpclient]   # empty list = all</code></pre>
 <ul>
     <li><strong><code>enabled</code></strong> — master switch. Off installs no SDK, no exporter, no
         propagation.</li>
@@ -59,7 +59,7 @@
         instead of re-wrapping it. The explicit <code>serviceName</code> still wins on the
         <code>service.name</code> key.</li>
     <li><strong><code>instrument</code></strong> — the edge-subsystem allowlist (the full set today is in
-        the table below). An empty list enables all; drop <code>pgx</code>/<code>mongo</code> on a
+        the table below). An empty list enables all; drop <code>relational</code>/<code>mongo</code> on a
         high-QPS service to cut the per-query span volume.</li>
 </ul>
 
@@ -70,7 +70,7 @@
     </thead>
     <tbody>
         <tr><td><code>http</code></td><td>the inbound server span (one per request)</td><td>web</td></tr>
-        <tr><td><code>pgx</code></td><td>one span per relational statement (Postgres via <code>otelpgx</code>, MySQL, SQL Server, Oracle and SQLite via <code>otelsql</code>) — the toggle name is a legacy artifact from the PG-only era and gates every engine</td><td>infra</td></tr>
+        <tr><td><code>relational</code></td><td>one span per relational statement, on whichever engine the service runs (Postgres via <code>otelpgx</code>; MySQL, SQL Server, Oracle and SQLite via <code>otelsql</code>)</td><td>infra</td></tr>
         <tr><td><code>mongo</code></td><td>one span per Mongo command</td><td>infra</td></tr>
         <tr><td><code>kafka</code></td><td>consumer spans on the async paths (SyncEngine, integration Receiver, UpstreamSubscriber)</td><td>infra</td></tr>
         <tr><td><code>httpclient</code></td><td>the outbound client span + W3C <code>traceparent</code> injection</td><td>infra</td></tr>
@@ -80,7 +80,7 @@
     The business <strong><code>dispatch &lt;Command/Query&gt;</code> span is NOT a toggle</strong> — it is
     always on when tracing is enabled. It is one span per request (cheap) and the highest-value level, so
     it is never opted out. The five toggles above are the <em>edge</em> spans, whose volume (a span per
-    query for <code>pgx</code>/<code>mongo</code>) or library maturity warrants the fine-grained control.
+    query for <code>relational</code>/<code>mongo</code>) or library maturity warrants the fine-grained control.
 </p>
 <p class="note">
     <strong><code>exporter: stdout</code> is debug-only — it is your right to use it, but it is not the
@@ -110,8 +110,8 @@
 <p>A request produces one continuous trace, automatically:</p>
 <pre><code>POST /users                         server span        (web)
   └─ dispatch InsertUserCommand     business unit       (application)
-      ├─ pg INSERT users            query span          (pgx)
-      ├─ pg INSERT outbox           query span          (pgx)
+      ├─ pg INSERT users            query span          (relational)
+      ├─ pg INSERT outbox           query span          (relational)
       ├─ call keycloak/getUser      client span → continues in the downstream service
       └─ mongo find                 command span        (mongo)</code></pre>
 <p>

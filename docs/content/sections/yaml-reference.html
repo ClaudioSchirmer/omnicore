@@ -303,7 +303,7 @@ query:
     sampler: parentbased_traceratio      # always_on | always_off | traceratio | parentbased_traceratio — dev default always_on; else parentbased_traceratio
     ratio: 0.1                           # keep fraction (0..1) for the *traceratio samplers; 0 treated as unset
     serviceName: "${service}"            # label in the collector; defaults to the top-level service identity
-    instrument: [http, pgx, mongo, kafka, httpclient]   # edge-subsystem allowlist; empty/absent → all five</code></pre>
+    instrument: [http, relational, mongo, kafka, httpclient]   # edge-subsystem allowlist; empty/absent → all five</code></pre>
     <p>
         Defaults (applied only when <code>enabled: true</code>): <code>exporter=otlp</code>, <code>endpoint=localhost:4317</code>,
         <code>ratio=0.1</code>, and the profile-aware <code>sampler</code> and <code>insecure</code> (dev → plaintext, else → TLS). The <strong>dispatch</strong> span (one business

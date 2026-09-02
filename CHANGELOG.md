@@ -11,6 +11,52 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING — the `pgx` tracing instrument token is now `relational`.** The
+  token never selected Postgres: `bootstrap` feeds
+  `Instruments(tracing.SubPgx)` into `core.NewEngine` for whatever dialect the
+  service declares, and all five engines read that one flag — Postgres through
+  `otelpgx`, MySQL / SQL Server / Oracle / SQLite through `otelsql`. The name
+  was a leftover from the PG-only era and told operators of the other four
+  engines that per-statement tracing was not for them. `tracing.SubPgx` is now
+  `tracing.SubRelational`. The fix is one word in the YAML:
+
+  ```yaml
+  observability:
+    tracing:
+      instrument: [http, relational, mongo, kafka, httpclient]   # was: pgx
+  ```
+
+  An unknown token still aborts the boot with the valid set named, so a config
+  that was not migrated fails loudly instead of silently tracing nothing.
+
+### Fixed
+
+- **A filter value the framework could not type no longer reaches the driver.**
+  `queryschema.coerceValue` switched on `reflect.Kind` alone and its `default`
+  branch returned the wire string verbatim with `ok=true` — reporting a
+  conversion it had not performed. A `*time.Time` leaf collapses to
+  `reflect.Struct`, so `?createdAt=not-a-date` and `?createdAt.gte=not-a-date`
+  both emitted a clause carrying the raw string: bound as text against a
+  timestamp column, every relational backing answered with a driver error the
+  pipeline could only render as a **500** for what is a consumer typo. On a
+  Mongo view the same string compared against a BSON datetime and silently
+  matched nothing, so a **well-formed** date filter answered an empty page.
+
+  `FilterSpec` now carries the leaf's `GoType` alongside `GoKind`, and the
+  coercion consults it first: `time.Time` parses as RFC3339, `domain.ID`
+  applies the identity check the relational compiler already performed in
+  `core.place()` — which never ran on a Mongo view, and could not name the
+  wire key the consumer wrote. Both refuse with the typed 400
+  (`InvalidFilterValueNotification`) the pipeline already translated, on every
+  surface, since REST, GraphQL and gRPC all reach
+  `queryschema.ApplyFilterValues`.
+
+  A leaf whose type carries no rule keeps the existing passthrough, and a
+  `FilterSpec` built without a `GoType` (what `web/grpc` constructs by hand)
+  still coerces by kind — no declaration that worked before is refused now.
+
 ## [0.70.0] - 2026-09-02
 
 ### Changed
