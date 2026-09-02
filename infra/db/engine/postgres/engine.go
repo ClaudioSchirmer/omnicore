@@ -86,7 +86,7 @@ type postgresOptions struct {
 }
 
 // WithPgxTracing wires the otelpgx query tracer onto the pool so every
-// statement emits a span. bootstrap passes tracing.Instruments(SubPgx); false
+// statement emits a span. bootstrap passes tracing.Instruments(SubRelational); false
 // (the default) leaves the pool untraced and pays nothing.
 func WithPgxTracing(enabled bool) PostgresOption {
 	return func(o *postgresOptions) { o.tracePgx = enabled }

@@ -39,12 +39,12 @@ func TestCoerceValue_AllKinds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := coerceValue(c.in, c.kind)
+			got, ok := coerceLeaf(c.in, nil, c.kind)
 			if ok != c.ok {
-				t.Fatalf("coerceValue(%q,%v) ok = %v, want %v", c.in, c.kind, ok, c.ok)
+				t.Fatalf("coerceLeaf(%q,%v) ok = %v, want %v", c.in, c.kind, ok, c.ok)
 			}
 			if ok && got != c.want {
-				t.Errorf("coerceValue(%q,%v) = %v (%T), want %v (%T)", c.in, c.kind, got, got, c.want, c.want)
+				t.Errorf("coerceLeaf(%q,%v) = %v (%T), want %v (%T)", c.in, c.kind, got, got, c.want, c.want)
 			}
 		})
 	}

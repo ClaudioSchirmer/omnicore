@@ -11,6 +11,86 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-09-02
+
+### Changed
+
+- **BREAKING — the `pgx` tracing instrument token is now `relational`.** The
+  token never selected Postgres: `bootstrap` feeds
+  `Instruments(tracing.SubPgx)` into `core.NewEngine` for whatever dialect the
+  service declares, and all five engines read that one flag — Postgres through
+  `otelpgx`, MySQL / SQL Server / Oracle / SQLite through `otelsql`. The name
+  was a leftover from the PG-only era and told operators of the other four
+  engines that per-statement tracing was not for them. `tracing.SubPgx` is now
+  `tracing.SubRelational`. The fix is one word in the YAML:
+
+  ```yaml
+  observability:
+    tracing:
+      instrument: [http, relational, mongo, kafka, httpclient]   # was: pgx
+  ```
+
+  An unknown token still aborts the boot with the valid set named, so a config
+  that was not migrated fails loudly instead of silently tracing nothing.
+
+### Fixed
+
+- **Oracle: a date predicate now agrees with the row that was written.**
+  `go-ora` renders a comparison bind in the PROCESS's local zone while an
+  `INSERT` binds the value's own location, so a row written from a UTC
+  `time.Time` stored the UTC wall clock and a predicate carrying that same
+  `time.Time` was compared as the local wall clock — the two disagreed by the
+  host's offset and an equality on a date column matched nothing. A
+  `TIMESTAMP` column has no time zone, so the value it holds IS a wall clock:
+  `oracleDialect.EncodeArg` now relabels a bound instant into the process
+  location, keeping its wall clock, which reproduces what Postgres and MySQL
+  already do against their tz-less columns rather than inventing a third
+  semantic. Only the criteria path is affected — the write path does not go
+  through `EncodeArg` — so stored values are unchanged and the predicate is
+  what moves to meet them. The divergence had never surfaced because no
+  `*time.Time` filter leaf existed anywhere to exercise it.
+
+- **A filter value the framework could not type no longer reaches the driver.**
+  `queryschema.coerceValue` switched on `reflect.Kind` alone and its `default`
+  branch returned the wire string verbatim with `ok=true` — reporting a
+  conversion it had not performed. A `*time.Time` leaf collapses to
+  `reflect.Struct`, so `?createdAt=not-a-date` and `?createdAt.gte=not-a-date`
+  both emitted a clause carrying the raw string: bound as text against a
+  timestamp column, every relational backing answered with a driver error the
+  pipeline could only render as a **500** for what is a consumer typo. On a
+  Mongo view the same string compared against a BSON datetime and silently
+  matched nothing, so a **well-formed** date filter answered an empty page.
+
+  The defect was the axis, not a missing case: `reflect.Kind` is a closed enum
+  of Go's primitive shapes and has no member for a date, an identity or a
+  duration. `time.Time` and `domain.ID` are both `Kind=struct`, `uuid.UUID` is
+  `Kind=array` and `time.Duration` is `Kind=int64` — indistinguishable at that
+  level from each other and from anything a consumer declares. `FilterSpec`
+  now carries the leaf's `GoType`, and the single coercion asks the concrete
+  TYPE before the kind — the order `web.classifyPathFieldType` already uses
+  for a `path:` segment:
+
+  - **`time.Time`** parses as RFC3339 and nothing else.
+  - **`domain.ID` and `uuid.UUID`** apply the identity check the relational
+    compiler already performed in `core.place()` — which never ran on a Mongo
+    view and could not name the wire key the consumer wrote. The path binding
+    has always judged both spellings; the filter judged neither.
+  - **`time.Duration`** takes the Go spelling (`90s`, `1h30m`) and refuses a
+    bare number. `Kind=int64` meant `?ttl=300` was ACCEPTED and meant 300
+    *nanoseconds* — a wrong answer delivered as a 200.
+  - **A list leaf (`[]T`)** is judged one ELEMENT at a time. `Codes []int64`
+    declares a list of int64, not a value of type `[]int64`; judging the slice
+    found no rule and passed every operand through as text, so
+    `?codes.in=10,20` reached a bigint column as strings.
+
+  All of them refuse with the typed 400 (`InvalidFilterValueNotification`) the
+  pipeline already translated, on every surface, since REST, GraphQL and gRPC
+  all reach `queryschema.ApplyFilterValues`.
+
+  A leaf whose type carries no rule keeps the existing passthrough, and a
+  `FilterSpec` built without a `GoType` (what `web/grpc` constructs by hand)
+  still coerces by kind — no declaration that worked before is refused now.
+
 ## [0.70.0] - 2026-09-02
 
 ### Changed

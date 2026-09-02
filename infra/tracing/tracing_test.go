@@ -20,7 +20,7 @@ func enabled(mut func(*Config)) Config {
 		Sampler:     SamplerParentBasedTraceRatio,
 		Ratio:       0.1,
 		ServiceName: "svc",
-		Instrument:  map[Subsystem]bool{SubPgx: true},
+		Instrument:  map[Subsystem]bool{SubRelational: true},
 	}
 	if mut != nil {
 		mut(&c)
@@ -58,8 +58,8 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestInstruments(t *testing.T) {
-	c := enabled(func(c *Config) { c.Instrument = map[Subsystem]bool{SubPgx: true, SubMongo: false} })
-	if !c.Instruments(SubPgx) {
+	c := enabled(func(c *Config) { c.Instrument = map[Subsystem]bool{SubRelational: true, SubMongo: false} })
+	if !c.Instruments(SubRelational) {
 		t.Fatal("pgx should be instrumented")
 	}
 	if c.Instruments(SubMongo) {
@@ -69,7 +69,7 @@ func TestInstruments(t *testing.T) {
 		t.Fatal("absent subsystem off")
 	}
 	off := enabled(func(c *Config) { c.Enabled = false })
-	if off.Instruments(SubPgx) {
+	if off.Instruments(SubRelational) {
 		t.Fatal("disabled tracing instruments nothing")
 	}
 }

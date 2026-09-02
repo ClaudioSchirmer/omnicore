@@ -535,7 +535,7 @@ func buildDeps(cfg *Config) (Deps, error) {
 	}
 	eng, err := core.NewEngine(cfg.Relational.Dialect, ctx, core.EngineConfig{
 		DSN:     cfg.Relational.DSN,
-		Tracing: tracingCfg.Instruments(tracing.SubPgx),
+		Tracing: tracingCfg.Instruments(tracing.SubRelational),
 		Clock:   clock,
 		Pool: core.PoolConfig{
 			MaxOpenConns:    *cfg.Relational.Pool.MaxOpenConns,

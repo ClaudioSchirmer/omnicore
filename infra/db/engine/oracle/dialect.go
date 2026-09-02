@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sijms/go-ora/v2/network"
@@ -279,9 +280,44 @@ func (oracleDialect) EncodeArg(val any) any {
 		return v[:]
 	case json.RawMessage:
 		return string(v)
+	case time.Time:
+		return bindWallClock(v)
+	case *time.Time:
+		if v == nil {
+			return (*time.Time)(nil)
+		}
+		t := bindWallClock(*v)
+		return &t
 	default:
 		return val
 	}
+}
+
+// bindWallClock relabels an instant into the PROCESS's location, keeping its
+// wall clock (2026-04-06 00:00 UTC becomes 2026-04-06 00:00 local — a different
+// instant, deliberately).
+//
+// go-ora renders a comparison bind in the process's local zone, while an INSERT
+// binds the value's OWN location: a row written from a UTC time.Time stores the
+// UTC wall clock, and a predicate carrying that same time.Time is compared as
+// the local wall clock, so the two disagree by the host's offset and an equality
+// on a date column matched nothing. It is a real divergence, not a rounding
+// artifact — verified against Oracle in the integration suite, where binding the
+// same wall clock as local is what selects the stored row.
+//
+// A TIMESTAMP column has no time zone: the value it holds IS a wall clock, so
+// preserving the caller's wall clock is what makes this dialect agree with the
+// others. Postgres and MySQL bind the value's own wall clock against their
+// equivalent tz-less columns, which is why the same filter already worked there
+// and why the fix reproduces their behavior rather than inventing a third
+// semantic (an offset spelling keeps meaning its own wall clock here too).
+//
+// Only the criteria path is touched — the write path does not go through
+// EncodeArg — so stored values keep the shape they already have and this makes
+// the predicate agree with them.
+func bindWallClock(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(),
+		t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.Local)
 }
 
 // DecodeID converts a scanned leading key back to the canonical UUID string. A

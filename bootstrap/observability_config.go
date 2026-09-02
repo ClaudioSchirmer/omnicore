@@ -129,7 +129,7 @@ func (o *ObservabilityConfig) validate() error {
 	}
 	for _, tok := range t.Instrument {
 		if !validSubsystem(tok) {
-			return fmt.Errorf("observability.tracing.instrument %q invalid (want http|pgx|mongo|kafka|httpclient)", tok)
+			return fmt.Errorf("observability.tracing.instrument %q invalid (want http|relational|mongo|kafka|httpclient)", tok)
 		}
 	}
 	return nil

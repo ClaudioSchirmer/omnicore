@@ -181,7 +181,7 @@ observability:                           # optional; omitted block = tracing off
     endpoint: "${OTEL_EXPORTER_OTLP_ENDPOINT:localhost:4317}"
     sampler: parentbased_traceratio      # dev default always_on; else parentbased_traceratio
     ratio: 0.1                           # keep fraction for the *traceratio samplers
-    instrument: [http, pgx, mongo, kafka, httpclient]   # empty → all five</code></pre>
+    instrument: [http, relational, mongo, kafka, httpclient]   # empty → all five</code></pre>
 
     <h3>Audit routing — <code>audit.destinations</code></h3>
     <p>

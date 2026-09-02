@@ -31,8 +31,11 @@ type Subsystem string
 const (
 	// SubHTTP is the inbound server span (one per request).
 	SubHTTP Subsystem = "http"
-	// SubPgx is one span per PostgreSQL statement (highest volume).
-	SubPgx Subsystem = "pgx"
+	// SubRelational is one span per RELATIONAL statement, on whichever engine
+	// the service is configured for — Postgres (otelpgx), MySQL, SQL Server,
+	// Oracle and SQLite (otelsql) all read this one toggle. Highest volume of
+	// the set.
+	SubRelational Subsystem = "relational"
 	// SubMongo is one span per Mongo command (high volume on the read side).
 	SubMongo Subsystem = "mongo"
 	// SubKafka is the produce/consume spans on the async paths.
@@ -44,7 +47,7 @@ const (
 // AllSubsystems is the full toggle set, used as the default instrument list
 // and to validate operator-supplied tokens.
 func AllSubsystems() []Subsystem {
-	return []Subsystem{SubHTTP, SubPgx, SubMongo, SubKafka, SubHTTPClient}
+	return []Subsystem{SubHTTP, SubRelational, SubMongo, SubKafka, SubHTTPClient}
 }
 
 // Exporter selects where recorded spans go.
