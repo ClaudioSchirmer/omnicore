@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-09-02
+
 ### Changed
 
 - **BREAKING — the `pgx` tracing instrument token is now `relational`.** The
