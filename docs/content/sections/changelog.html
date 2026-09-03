@@ -9,6 +9,30 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">on the next tag</span></div>
         <ul>
+            <li><strong>Fixed</strong> — <strong>the GraphQL documentation surface is now as public as the
+                Swagger one.</strong> Under <code>auth.mode: jwt</code> the framework appended
+                <code>/openapi.json</code> and <code>openapi.uiPath</code> to the bypass list at boot, so the
+                Swagger UI opened without a bearer — but nothing was appended for GraphQL, so
+                <code>graphql.uiPath</code> answered 401. Naming it in <code>auth.publicRoutes</code> only
+                moved the failure: the page loaded and then could not fetch its schema, because GraphiQL's
+                introspection travels through <code>POST graphql.path</code>, still guarded. One rule now
+                covers both surfaces — <code>playground: true</code> appends <code>GET graphql.uiPath</code>
+                (and <code>rootRedirect</code> appends <code>GET /</code>), while
+                <code>introspection: true</code> additionally makes an introspection-ONLY <code>POST</code>
+                public, the analogue of a public <code>/openapi.json</code> and the same disclosure. A data
+                field beside <code>__schema</code>, a decoy operation, a mutation, a root fragment spread and
+                an unparsable document all stay behind the bearer; with introspection off the endpoint is
+                wholly guarded. The GraphiQL page persists its request headers, so a pasted bearer survives a
+                reload — the counterpart of Swagger UI's <em>Authorize</em> button. Per-field authorization is
+                unchanged. See <a href="#auth-middleware">Authentication middleware</a> ·
+                <a href="#graphql">GraphQL</a>.</li>
+            <li><strong>Added</strong> — <strong><code>web.AuthOptions.PublicWhen</code></strong>, an optional
+                <code>func(fiber.Ctx) bool</code> consulted only after the exact <code>METHOD /path</code> list
+                misses — the seam behind the introspection grant above, available to a consumer wiring
+                <code>fwweb.AuthMiddleware</code> by hand. A predicate returning <code>true</code> skips
+                authentication entirely, so it must prove the request cannot reach data. The predicate itself
+                ships as <code>graphql.IsIntrospectionOnlyRequest</code>. See
+                <a href="#auth-middleware">Authentication middleware</a>.</li>
         </ul>
     </div>
     <div class="release">

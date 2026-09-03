@@ -11,6 +11,45 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The GraphQL documentation surface is now as public as the Swagger one.**
+  Under `auth.mode: jwt` the framework appended `/openapi.json` and
+  `openapi.uiPath` to the bypass list at boot, so the Swagger UI opened without
+  a bearer — but nothing was appended for GraphQL, so `graphql.uiPath` answered
+  401. Naming it in `auth.publicRoutes` only moved the failure: the page loaded
+  and then could not fetch its schema, because GraphiQL's introspection travels
+  through `POST graphql.path`, which was still guarded. The two surfaces now
+  follow one rule:
+
+  - `graphql.playground: true` appends `GET graphql.uiPath` to the bypass list,
+    exactly as `Wiring.OpenAPI` appends `GET openapi.uiPath`
+    (`graphql.rootRedirect` appends `GET /`, like its OpenAPI twin). Declaring
+    them in `auth.publicRoutes` is still accepted, never required.
+  - `graphql.introspection: true` additionally makes an **introspection-only**
+    `POST` public — the analogue of a public `/openapi.json`, and the same
+    disclosure. A document qualifies only when every operation is a `query`
+    whose root selections are all `__schema` / `__type` / `__typename`; a data
+    field beside `__schema`, a decoy operation next to a real one, a mutation, a
+    root fragment spread and an unparsable document all stay behind the bearer.
+    With introspection off the endpoint is wholly guarded.
+
+  The GraphiQL page now persists its request headers, so a bearer pasted into
+  the Headers tab survives a reload — the counterpart of Swagger UI's
+  *Authorize* button. Per-field authorization is unchanged.
+
+### Added
+
+- **`web.AuthOptions.PublicWhen`** — an optional `func(fiber.Ctx) bool`
+  consulted only after the exact `METHOD /path` list misses, for a route whose
+  public half depends on what the request asks for rather than where it is
+  addressed. It is the seam behind the introspection grant above, and is
+  available to a consumer wiring `fwweb.AuthMiddleware` by hand. A predicate
+  returning `true` skips authentication entirely (the handler sees no
+  `Identity`), so it must prove the request cannot reach data.
+- **`graphql.IsIntrospectionOnlyRequest([]byte) bool`** — the predicate itself,
+  over a raw GraphQL `POST` body.
+
 ## [0.71.0] - 2026-09-02
 
 ### Changed

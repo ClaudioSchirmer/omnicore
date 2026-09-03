@@ -822,3 +822,68 @@ func TestAuthMiddleware_TenantRequired_CustomTenantClaim(t *testing.T) {
 		t.Fatalf("expected 200 with custom claim 'org' set, got %d; body=%s", status, body)
 	}
 }
+
+// --- PublicWhen: the request-shaped bypass ----------------------------------
+
+// The predicate is the seam that lets a route be public for SOME requests and
+// guarded for others — what the framework needs so GraphQL introspection can be
+// as reachable as /openapi.json while the data queries sharing that POST are
+// not.
+
+func TestAuthMiddleware_PublicWhen_TrueSkipsValidation(t *testing.T) {
+	signer := newTokenSigner(t)
+	opts := newOpts(signer.pemPub)
+	opts.PublicWhen = func(c fiber.Ctx) bool { return c.Path() == "/protected" }
+	app := makeApp(t, opts)
+
+	status, body := sendRequest(t, app, "GET", "/protected", "")
+	// The handler needs an Identity to answer 200; a cleared request carries
+	// none, so 500 here IS the proof the middleware let it through untouched
+	// (401 would mean the predicate was never consulted).
+	if status == fiber.StatusUnauthorized {
+		t.Fatalf("PublicWhen=true must bypass validation, got 401; body=%s", body)
+	}
+}
+
+func TestAuthMiddleware_PublicWhen_FalseStillValidates(t *testing.T) {
+	signer := newTokenSigner(t)
+	opts := newOpts(signer.pemPub)
+	opts.PublicWhen = func(fiber.Ctx) bool { return false }
+	app := makeApp(t, opts)
+
+	status, body := sendRequest(t, app, "GET", "/protected", "")
+	if status != fiber.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 when the predicate declines; body=%s", status, body)
+	}
+}
+
+// The exact METHOD/path list is consulted first, so a path that is already
+// public never pays for the predicate.
+func TestAuthMiddleware_PublicWhen_NotConsultedForListedRoutes(t *testing.T) {
+	signer := newTokenSigner(t)
+	opts := newOpts(signer.pemPub)
+	consulted := false
+	opts.PublicWhen = func(fiber.Ctx) bool { consulted = true; return false }
+	app := makeApp(t, opts)
+
+	if status, body := sendRequest(t, app, "GET", "/health", ""); status != fiber.StatusOK {
+		t.Fatalf("public route status = %d, want 200; body=%s", status, body)
+	}
+	if consulted {
+		t.Error("PublicWhen must not be consulted for a route already in PublicRoutes")
+	}
+}
+
+// A valid token still authenticates normally on a route the predicate declines
+// — the seam adds a bypass, it does not replace the middleware's job.
+func TestAuthMiddleware_PublicWhen_DoesNotDisturbNormalValidation(t *testing.T) {
+	signer := newTokenSigner(t)
+	opts := newOpts(signer.pemPub)
+	opts.PublicWhen = func(fiber.Ctx) bool { return false }
+	app := makeApp(t, opts)
+
+	status, body := sendRequest(t, app, "GET", "/protected", signer.sign(t, standardClaims()))
+	if status != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200 for a valid token; body=%s", status, body)
+	}
+}
