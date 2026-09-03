@@ -1138,4 +1138,4 @@ require.NoError(t, fake.AssertExpectations())</code></pre>
 
   <p><strong>Sentinel.</strong> Unmatched calls return <code>*HttpError{Status: 0, Cause: httpclient.ErrFakeUnstubbed}</code> — branch with <code>errors.Is(err, httpclient.ErrFakeUnstubbed)</code>.</p>
 
-  <p><strong>Trade-off (deliberate).</strong> The fake tests <em>intent</em> — request shape, code path, error handling — not <em>runtime middleware behavior</em> (retry / cache / breaker / auth acquisition). Verifying middleware semantics belongs to integration tests against <code>httptest.Server</code> or to the <code>omnicore-example-users/qa/</code> suite. The fake stays small, deterministic, and free of timers / clocks.</p>
+  <p><strong>Trade-off (deliberate).</strong> The fake tests <em>intent</em> — request shape, code path, error handling — not <em>runtime middleware behavior</em> (retry / cache / breaker / auth acquisition). Verifying middleware semantics belongs to integration tests against <code>httptest.Server</code>, or to an end-to-end suite driving the real service. The fake stays small, deterministic, and free of timers / clocks.</p>

@@ -12,6 +12,37 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.72.1</span><span class="release-date">September 3, 2026</span></div>
+        <ul>
+            <li><strong>Fixed</strong> — <strong>GraphQL <code>__typename</code> is resolved everywhere it
+                is selected.</strong> The specification's <code>String!</code> meta-field — the name of the
+                type the selection is made on, answerable on every object type in every selection set — was
+                accepted by the parser and by the introspection gate but answered by nothing: at the root it
+                returned <code>null</code> plus an internal <code>"no resolver for field __typename"</code>
+                error (reachable with no bearer whenever <code>introspection: true</code>), and nested it
+                returned a silent <code>null</code> with no <code>errors[]</code> at all, because the executor
+                looked it up as a key of the wire-shaped response. It is now answered from the schema position
+                — at the root (<code>Query</code> / <code>Mutation</code>) and at every nested level
+                (connection, edge, node, <code>PageInfo</code>), aliases honored — and it is <em>not</em>
+                gated by <code>graphql.introspection</code>, which governs <code>__schema</code> /
+                <code>__type</code> only, so it resolves with introspection off (the default). The
+                introspection-only auth grant is unchanged: a public <code>{ __typename }</code> discloses the
+                root type's name instead of an internal error string, and every document that reaches data
+                still requires its bearer. See <a href="#graphql">GraphQL</a>.</li>
+            <li><strong>Fixed</strong> — <strong><code>__typename</code> no longer widens the read it rides
+                along with.</strong> Selected inside a node it was folded into the selection's wire paths,
+                which made the projection parse fail and silently dropped both effects that projection
+                carries: field pushdown (the read widened to whole-document) and
+                <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a>'s active-reference
+                <code>FieldAccessForbiddenNotification</code> (403), which stopped firing for an explicitly
+                selected restricted field — the value was still scrubbed, but the Query's declared contract
+                was no longer enforced. Apollo Client, urql and Relay append <code>__typename</code> to every
+                selection set for cache normalization, so this reached effectively every real client. A
+                selection carrying it now produces the same projection, the same pushdown and the same 403 as
+                the identical selection without it. See <a href="#graphql">GraphQL</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.72.0</span><span class="release-date">September 3, 2026</span></div>
         <ul>
             <li><strong>Fixed</strong> — <strong>the GraphQL documentation surface is now as public as the

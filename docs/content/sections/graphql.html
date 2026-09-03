@@ -149,6 +149,22 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
     <li><strong><code>rootRedirect</code></strong> registers <code>GET /</code> → 302 <code>path</code>. The boot <strong>panics</strong> when both <code>openapi.rootRedirect</code> and <code>graphql.rootRedirect</code> are enabled (and both surfaces present) — only one surface can own <code>/</code>.</li>
 </ul>
 
+<div class="box">
+    <strong><code>__typename</code> is a meta-field, not introspection.</strong> The GraphQL
+    specification makes it a <code>String!</code> that <em>every</em> object type answers in
+    <em>every</em> selection set, carrying the name of the type the selection is made on — at the root
+    (<code>Query</code> / <code>Mutation</code>), on a connection (<code>UserConnection</code>), on an
+    edge, on a node, on <code>PageInfo</code> — and it honors an alias like any other field. The
+    <code>introspection</code> switch above governs <code>__schema</code> / <code>__type</code> only, so
+    <code>__typename</code> resolves with introspection <em>off</em>, which is the default. It costs the
+    read nothing: it is answered from the schema position, never from the document, so it does not enter
+    <code>ReadCriteria.Projection</code> — the pushdown a selection produces, and the
+    <a href="#authz-seams"><code>ReadCriteria.Restrict</code></a> 403 an explicitly selected restricted
+    field trips, are both exactly what the same query without it produces. That matters because Apollo
+    Client, urql and Relay append <code>__typename</code> to every selection set for cache
+    normalization: on this surface a normalized client cache works with no server-side accommodation.
+</div>
+
 <h3>The registry — attach queries and mutations</h3>
 <p>
     The framework builds the registry (<code>fwgraphql.New(pipe)</code>, surfaced on

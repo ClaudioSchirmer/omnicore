@@ -12,8 +12,8 @@ import (
 // foreign + what the framework does about them in each profile) is
 // covered without an active Mongo connection. The Mongo round-trips
 // (upsertServiceMarker, listCollectionNames, listOtherServices) are
-// exercised by the omnicore-example-users E2E suite once Phase D wires
-// CheckServiceRegistry into bootstrap.Run.
+// exercised by the end-to-end QA suites, which drive CheckServiceRegistry
+// through bootstrap.Run against a real Mongo.
 
 // ─── filterForeignCollections ────────────────────────────────────────────────
 

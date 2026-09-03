@@ -194,7 +194,7 @@ BeforeServe: func(app *fiber.App, d bootstrap.Deps) error {
     return nil
 },</code></pre>
 
-  <p>A working version of all of this — login, refresh, logout, access-token revocation and the TTL routes — is the <code>/qa/auth/*</code> fixture in <code>omnicore-example-users</code>, exercised end to end by <code>qa/auth_selfissued.sh</code> against a real database on every supported engine.</p>
+  <p>All of this — login, refresh, logout, access-token revocation and the TTL seam — is exercised end to end against a real database on every supported engine by the project's own QA suites, with tokens minted by this <code>Issuer</code> and validated by an unmodified <code>auth.jwt</code> block.</p>
 
   <h3>Multi-service topology</h3>
   <p>Per consumer service, the entire integration is configuration — no framework change:</p>

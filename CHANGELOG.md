@@ -11,6 +11,42 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.72.1] - 2026-09-03
+
+### Fixed
+
+- **GraphQL `__typename` is resolved everywhere it is selected.** The spec's
+  `String!` meta-field — the type name of the selection's own type, answerable
+  on every object type in every selection set — was accepted by the parser and
+  by the introspection gate but answered by nothing: at the root it produced
+  `{"data":{"__typename":null}}` plus an internal `"no resolver for field
+  __typename"` error (reachable with no bearer whenever
+  `graphql.introspection: true`), and nested it produced a silent `null` with
+  no `errors[]` at all, because the executor looked the meta-field up as a key
+  of the wire-shaped response map. It is now answered from the schema position
+  the selection is made on, at the root (`Query` / `Mutation`) and at every
+  nested level (connection, edge, node, `PageInfo`), honoring aliases.
+
+  It is **not** gated by `graphql.introspection` — that switch governs
+  `__schema` / `__type` only, so `__typename` resolves with introspection off,
+  which is the default. The introspection-only auth grant is unchanged: a
+  public `{ __typename }` now discloses the root type's name instead of an
+  internal error string, and every document that reaches data still requires
+  its bearer.
+
+- **`__typename` no longer widens the read it rides along with.** Selected
+  inside a node, it was folded into the selection's wire paths, which made the
+  projection parse fail and silently drop BOTH effects that projection carries:
+  Mongo/relational field pushdown (the read widened to whole-document) and
+  `ReadCriteria.Restrict`'s active-reference `FieldAccessForbiddenNotification`
+  (403), which stopped firing for an explicitly selected restricted field — the
+  value was still scrubbed from the response, but the Query's declared
+  contract was not enforced. Since Apollo Client, urql and Relay append
+  `__typename` to every selection set for cache normalization, this affected
+  effectively every real client. The meta-field is now excluded from the wire
+  paths, so a selection carrying it produces the same projection, the same
+  pushdown and the same 403 as the identical selection without it.
+
 ## [0.72.0] - 2026-09-03
 
 ### Fixed

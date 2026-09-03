@@ -78,6 +78,6 @@ from the tag.
    - `go tool cover -func=/tmp/cx.out | tail -1` (pure unit, all non-generated packages in the denominator)
 5. **Tag (maintainer only):** `git commit` → `git tag vX.Y.Z` → push. The Go module
    version IS the tag — there is no version constant in code.
-6. **`../../omnicore-example-users/go.mod`** — bump `require …/omnicore vX.Y.Z` once the
-   tag is published, so the consumer's clean-clone / CI builds against the release
-   (locally `go.work` overlays the in-tree checkout and masks a stale `require`).
+6. **The reference consumer's `go.mod`** — bump `require …/omnicore vX.Y.Z` once the
+   tag is published, so its clean-clone / CI builds against the release (locally
+   `go.work` overlays the in-tree checkout and masks a stale `require`).

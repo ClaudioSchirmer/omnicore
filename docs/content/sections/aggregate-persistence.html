@@ -615,8 +615,8 @@ r.WithSchema(UserSchema())
     </p>
     <p>
         Inside the AVO's <code>BuildRules</code>, <code>r.IfInsert/IfUpdate/IfDelete/IfArchive/IfUnarchive/IfInsertOrUpdate</code> dispatches by mode —
-        same DSL as the root. For example, <code>Address.BuildRules</code> in <code>omnicore-example-users</code> only runs
-        rules inside <code>r.IfInsertOrUpdate</code>, but the framework doesn't enforce that —
+        same DSL as the root. An <code>Address</code> AVO typically runs its rules only inside
+        <code>r.IfInsertOrUpdate</code>, but the framework doesn't enforce that —
         entities may have Delete-specific rules (e.g., "cannot delete primary address"),
         or general cross-mode rules applied to the item.
     </p>

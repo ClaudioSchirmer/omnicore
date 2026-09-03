@@ -14,9 +14,7 @@
         vocabulary — what <code>ReadCriteria</code> carries, the <a href="#query-side~qry-operators">filter
         operators</a>, and the <a href="#query-side~qry-tocriteria"><code>ToCriteria(ctx)</code></a> overlay +
         field-restriction seam — lives on the <a href="#query-side">QueryHandler · CQRS</a> trunk and is not
-        repeated here. For a complete runnable reference, see
-        <code>omnicore-example-users/web/user_custom_routes.go</code> and the hand-written query handlers
-        under <code>application/queries/handlers/*_custom_handler.go</code>.
+        repeated here.
     </p>
 
     <h3 id="cqry-example">Full example — read a user by email</h3>
@@ -343,8 +341,7 @@ type UpdateOnTenantRequest struct {
     <p>
         Manual <code>fiber.Handler</code> closures opt out of the wrappers — call
         <code>fwweb.BindPath(c, &amp;req)</code> explicitly (the same helper <code>NewQueryParser</code>
-        sits beside). See <code>omnicore-example-users/web/user_custom_routes.go</code>
-        for the canonical <code>BindPath → Parse → ToQuery → Dispatch</code> chain.
+        sits beside). The canonical chain is <code>BindPath → Parse → ToQuery → Dispatch</code>.
     </p>
     <p>
         <strong>Supported field types:</strong> <code>string</code>, signed/unsigned ints of any width,

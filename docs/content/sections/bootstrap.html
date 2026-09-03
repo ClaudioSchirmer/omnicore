@@ -309,7 +309,7 @@ func (f *UsersFeature) Mount(app *fiber.App, d bootstrap.Deps) {
 
     <p class="note"><strong>Common layouts</strong> (all supported, none required):</p>
     <ul>
-        <li><strong>Consolidated:</strong> <code>bootstrap/</code> (<code>package main</code>) with <code>main.go</code> + <code>wire.go</code> + <code>&lt;aggregate&gt;_feature.go</code> side by side. Run: <code>go run ./bootstrap</code>. It's the layout used by <code>omnicore-example-users</code> (canonical reference)</li>
+        <li><strong>Consolidated:</strong> <code>bootstrap/</code> (<code>package main</code>) with <code>main.go</code> + <code>wire.go</code> + <code>&lt;aggregate&gt;_feature.go</code> side by side. Run: <code>go run ./bootstrap</code>. It's the layout this manual's examples assume</li>
         <li><strong>Go <code>cmd/</code> convention:</strong> <code>cmd/&lt;binary&gt;/main.go</code> + separate package (<code>app/</code>, <code>boot/</code>, etc.) for Wire and Features. Useful for services with multiple binaries</li>
         <li><strong>Flat:</strong> <code>main.go</code> at the root + Wire/Features in a sibling package. Useful for small services</li>
     </ul>
