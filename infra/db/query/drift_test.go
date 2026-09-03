@@ -8,7 +8,7 @@ import (
 // The drift detection's pure decision logic (decideDrift) and the
 // diagnostic formatters are covered here. The PG + Mongo round-trip
 // (DetectViewDrift, hasUserDocuments, ReadViewRegistry) is exercised by
-// the omnicore-example-users E2E suite (qa/schema_evolution.sh).
+// the end-to-end schema-evolution QA suite.
 
 // ─── decideDrift — the 8 branches of §9.1 ────────────────────────────────────
 

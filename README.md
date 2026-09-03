@@ -36,10 +36,13 @@ Each row links to its manual page.
 | Auto command handlers | The 6 write verbs, generic over your entity — no handler code | [auto-handlers](https://claudioschirmer.github.io/omnicore/#auto-handlers) |
 | Sealed domain | `ValidEntity` only produced by `domain`; boundaries checked at compile time | [architecture](https://claudioschirmer.github.io/omnicore/#architecture) |
 | Aggregate persistence | Root + children in one write; universal symmetric archive/unarchive cascade | [aggregate-persistence](https://claudioschirmer.github.io/omnicore/#aggregate-persistence) |
-| Transactional outbox | Domain rows + outbox row + audit row in a single `pgx.Tx` | [write lifecycle](https://claudioschirmer.github.io/omnicore/#lifecycle-map) |
+| Transactional outbox | Domain rows + outbox row + audit row in a single relational transaction, on every engine | [write lifecycle](https://claudioschirmer.github.io/omnicore/#lifecycle-map) |
 | Criteria — the query DSL | One backend-neutral tree behind every relational read and every predicated write: Go field names, parameterized values, the envelope (order, limit/offset, archive scope) on the query rather than in the predicate — and **subqueries**, where `InSub` / `EqSub` / `Exists` compare against another SELECT and `criteria.Outer("ID")` correlates, which is what expresses a filter on the MANY side of a 1:N | [criteria](https://claudioschirmer.github.io/omnicore/#criteria) |
 | Tables without an aggregate | `core.NewDirectSchema[T]` + `read.NewDirectRepository[T]` point the same criteria engine, read joins and aggregate DSL at a table with no entity over it — a control table, or an aggregate's child counted as a fact. The read keeps its full horizontal reach; the write is one statement against the anchor table, with no outbox, audit, revision guard or cascade — including `Upsert`, keyed on a declared conflict target rather than on the identity | [direct-schema](https://claudioschirmer.github.io/omnicore/#direct-schema) |
+| Stamped fields | The domain says WHEN (`Stamp("PaidAt")`), the schema says what filling the column means — the operation's instant, or `col = col + 1` computed server-side; an unrequested stamped column stays out of the statement entirely | [table-schema](https://claudioschirmer.github.io/omnicore/#table-schema) |
+| Field redaction | The real value stays in the column and in the hydrated entity; every copy the framework makes — payload, topic, projected document, audit event — carries a mask, declared per field on two mandatory axes | [table-schema](https://claudioschirmer.github.io/omnicore/#table-schema) |
 | Audit | One event per write, answering who AND from where; `snapshot` / `delta` / `transition` bodies; DB + slog routing; optional framework-served read endpoint over the trail | [audit](https://claudioschirmer.github.io/omnicore/#audit) |
+| Domain events | The fact the ENTITY authors (`RegisterEvent`), published post-commit through a publisher port — neither audit nor an integration event | [domain-events](https://claudioschirmer.github.io/omnicore/#domain-events) |
 
 ### Read side (CQRS)
 | Capability | In one line | Docs |
@@ -65,7 +68,7 @@ Each row links to its manual page.
 ### Security, config & ops
 | Capability | In one line | Docs |
 |---|---|---|
-| JWT authentication | Local validation (JWKS / PEM, RSA·ECDSA·Ed25519); optional revocation cache | [auth-middleware](https://claudioschirmer.github.io/omnicore/#auth-middleware) |
+| JWT authentication | Local validation (JWKS / PEM, RSA·ECDSA·Ed25519) or an external validator; optional revocation cache | [auth-middleware](https://claudioschirmer.github.io/omnicore/#auth-middleware) |
 | Token issuance | A service mints its own JWTs — key rotation, opaque rotating refresh tokens; validate side unchanged | [token-issuance](https://claudioschirmer.github.io/omnicore/#token-issuance) |
 | Authorization | 3 concentric layers: permission gate · owner rules · tenant scoping | [authz-seams](https://claudioschirmer.github.io/omnicore/#authz-seams) |
 | Outbound HTTP | `httpclient` from YAML: retry, cache, breaker, HMAC, OAuth2, streaming | [httpclient](https://claudioschirmer.github.io/omnicore/#httpclient) |
@@ -108,7 +111,7 @@ channel by attaching the same instance to another wrapper.
 | Handler family | Attaches to | Same instance across |
 |---|---|---|
 | **Command** (write) | HTTP · broker (Kafka/NATS) · GraphQL mutation · gRPC unary | one `pipeline.Handler[TCmd, TResult]` |
-| **Query** (read) | HTTP · CSV · Excel · GraphQL query · gRPC unary | one `pipeline.Handler[TQ, queries.Page]` |
+| **Query** (read) | HTTP · CSV · Excel · GraphQL query · gRPC unary | one `pipeline.Handler[TQ, queries.PageOf[TResult]]` |
 
 ```go
 // one handler instance...
@@ -156,8 +159,10 @@ func Wire(d bootstrap.Deps) bootstrap.Wiring {
 ```
 
 `bootstrap.Run` reads `microservice.${APP_PROFILE}.yaml`, wires the relational backend
-(Postgres/MySQL/SQL Server/Oracle) + Mongo + the message transport (Kafka or NATS) + Fiber, applies migrations, registers the `GET /livez` + `GET /readyz` probes, mounts your Features, starts the `SyncEngine`
-when views exist, and serves until `SIGINT`/`SIGTERM`.
+(Postgres/MySQL/SQL Server/Oracle/SQLite) + Fiber — plus Mongo and the message transport (Kafka or NATS)
+when the profile declares them — applies migrations, registers the `GET /livez` + `GET /readyz` probes,
+mounts your Features, starts the `SyncEngine` when projected views exist, and serves until
+`SIGINT`/`SIGTERM`.
 → [Bootstrap](https://claudioschirmer.github.io/omnicore/#bootstrap)
 
 ## A complete endpoint, end to end
@@ -206,10 +211,10 @@ That single call gives you, for free:
 - ✅ **Address validation** on every by-id route → a `:id` that is not a UUID never reaches the
   store: `404` on a read, `400` on a write, the same answer on every backing
 - ✅ **Business validation** via `BuildRules` → `422` + typed notification
-- ✅ **Unique-constraint mapping** (PG `23505`) → `409`
-- ✅ **Aggregate persistence** — root + every child row in one `pgx.Tx`
+- ✅ **Unique-constraint mapping** — each engine's violation classified through its own dialect seam → `409`
+- ✅ **Aggregate persistence** — root + every child row in one relational transaction
 - ✅ **Transactional outbox + audit** row in the same transaction
-- ✅ **Async projection** — Debezium → the broker (Kafka/NATS) → `SyncEngine` upserts the Mongo view
+- ✅ **Async projection** — outbox → CDC relay → the broker (Kafka/NATS) → `SyncEngine` upserts the Mongo view
 - ✅ **Typed Result** projected to the wire (no JSON tags below `web/`)
 
 Swap in `UpdateCommandHandler`, `PartialUpdateCommandHandler`, `ArchiveCommandHandler`,
@@ -223,7 +228,6 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 
 - 📖 **[Documentation site](https://claudioschirmer.github.io/omnicore/)** — the public manual (published from [`docs/`](docs/) via GitHub Pages); the consumer's source of truth for every exported API.
 - 📝 **[`CHANGELOG.md`](CHANGELOG.md)** — release notes (Keep a Changelog, SemVer; the API may evolve through `0.x.y`).
-- 🧪 **[`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users)** — reference service exercising every feature, plus end-to-end QA suites against real Postgres/MySQL/SQL Server/Oracle + Mongo + Kafka/NATS + Debezium + Keycloak + Redis.
 
 ## Stack
 

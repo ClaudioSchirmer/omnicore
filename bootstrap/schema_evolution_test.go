@@ -11,8 +11,8 @@ import (
 // The pure decision functions in schema_evolution.go are covered here
 // (diagnostic formatters for the migration paths). The Mongo and
 // Postgres round-trips (applyMigrations strict path, reconcileViewDrift
-// dispatch over the 8-case matrix) are exercised by the
-// omnicore-example-users E2E suite once qa/schema_evolution.sh lands.
+// dispatch over the 8-case matrix) are exercised by the end-to-end
+// schema-evolution QA suite.
 
 // ─── formatMigrationPendingDiagnostic ────────────────────────────────────────
 

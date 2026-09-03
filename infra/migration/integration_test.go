@@ -49,7 +49,7 @@ func newTestDB(t *testing.T) (*pgxpool.Pool, func()) {
 
 	adminPool, err := pgxpool.New(ctx, adminDSN())
 	if err != nil {
-		t.Skipf("skipping integration test: cannot reach Postgres at %s (%v) — set OMNICORE_TEST_PG_DSN or run `docker compose -f omnicore-example-users/devops/docker-compose.yml up -d`", adminDSN(), err)
+		t.Skipf("skipping integration test: cannot reach Postgres at %s (%v) — start a local Postgres or point OMNICORE_TEST_PG_DSN at one", adminDSN(), err)
 	}
 	defer adminPool.Close()
 

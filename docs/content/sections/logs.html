@@ -115,10 +115,8 @@
 <h3 id="logs-collector">The collector reads the stream directly</h3>
 <p>
     Nothing in the service knows the store exists. The service writes JSON to stdout; the collector, a
-    separate process, tails that stream and forwards it. The reference bench ships a working
-    <strong>Filebeat</strong> config in <code>omnicore-example-users/devops/elk/</code>
-    (<code>filebeat.yml</code> + <code>es-template.json</code> + a Kibana setup) — copy it as a starting
-    point. The essential part is the JSON decode:
+    separate process, tails that stream and forwards it. A collector config is short — with
+    <strong>Filebeat</strong>, the essential part is the JSON decode:
 </p>
 <pre><code>parsers:
   - ndjson:                      # each stdout line is one JSON object → decoded to the document root
@@ -142,7 +140,7 @@
 <table>
     <thead><tr><th>Goal</th><th>Query</th></tr></thead>
     <tbody>
-        <tr><td>All errors from this service</td><td><code>service: "omnicore-example-users" and level: "ERROR"</code></td></tr>
+        <tr><td>All errors from this service</td><td><code>service: "orders-api" and level: "ERROR"</code></td></tr>
         <tr><td>Every line of one request</td><td><code>traceId: "4bf92f3577b34da6a3ce929d0e0e4736"</code></td></tr>
         <tr><td>Failing outbound calls</td><td><code>msg: "http.outbound" and status &gt;= 500</code></td></tr>
         <tr><td>One request across services</td><td><code>threadId: "5f25e8b0-*"</code></td></tr>

@@ -14,9 +14,8 @@ import (
 // index-name derivation, error classification) is covered here without
 // an active Mongo connection. The IO sequence (listCollections →
 // CreateCollection / collMod / createIndexes) is exercised by the
-// omnicore-example-users E2E suite once Phase E declares a TextIndex
-// on UserView and the framework boot drives the apply step end-to-end
-// against the docker-compose Mongo.
+// end-to-end QA suites, where a view declaring a TextIndex has the apply
+// step driven by the framework boot against a real Mongo.
 
 // ─── derivedName ─────────────────────────────────────────────────────────
 

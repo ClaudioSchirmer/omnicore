@@ -23,10 +23,10 @@ cases that pin down existing behavior.
 
 - **Go**: see the `go` directive in [`go.mod`](go.mod) for the pinned toolchain
   (1.26.x); the framework targets Go 1.21+.
-- **Workspace**: omnicore is developed alongside its reference consumer,
-  [`omnicore-example-users`](https://github.com/ClaudioSchirmer/omnicore-example-users),
-  via a local `go.work` (gitignored — each developer keeps their own). The example is
-  the sandbox and the home of the end-to-end QA suites.
+- **Workspace**: omnicore is developed alongside a private reference consumer via a
+  local `go.work` (gitignored — each developer keeps their own). That consumer is the
+  sandbox and the home of the end-to-end QA suites; it is not part of this repository,
+  and nothing here depends on it to build or to run the unit suite.
 - **Build tags are mandatory.** Every build links **two** tags — a relational engine
   (`postgres`, `mysql` or `sqlserver`) **and** a message transport (`kafka` or `nats`). A tagless
   build aborts at boot. The [`Makefile`](Makefile) encapsulates the matrix so you
@@ -50,11 +50,12 @@ cases that pin down existing behavior.
 - **Every change ships with tests.** The project holds a **95% unit-coverage floor**;
   do not lower it. `make cover` prints the total.
 - Tests sit beside the file under test (`foo.go` ↔ `foo_test.go`).
-- Integration tests opt in via `//go:build integration` and need the example's Docker
-  bench up (`docker compose up` in `../omnicore-example-users/devops`), then
+- Integration tests opt in via `//go:build integration` and need a Docker bench
+  offering the backing services (a relational engine, MongoDB, a broker), reachable at
+  the endpoints the `OMNICORE_TEST_*` environment variables name; then
   `make integration`.
-- The end-to-end QA suites live in the example (`omnicore-example-users/qa/`) and are
-  an oracle — don't edit an expectation to make a suite pass; investigate the cause.
+- The end-to-end QA suites live in the private reference consumer and are an oracle —
+  don't edit an expectation to make a suite pass; investigate the cause.
 
 ## Coding standards
 

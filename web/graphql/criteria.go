@@ -259,6 +259,16 @@ func keysOnlyProjection(orderBy []queries.OrderByField) queries.Projection {
 func flattenWirePaths(prefix string, sel ast.SelectionSet, frags ast.FragmentDefinitionList) []string {
 	var out []string
 	for _, f := range collectFields(sel, frags) {
+		// `__typename` is a meta-field, not a projectable leaf: it backs no
+		// column and resolves from the selection's type (see typenameField).
+		// Emitting it as a wire path would make ParseProjection reject the
+		// whole set, which silently drops BOTH effects this projection carries
+		// — Mongo pushdown and ReadCriteria.Restrict's active-reference 403 —
+		// for every Apollo / urql / Relay client, since all three append
+		// `__typename` to every selection set for cache normalization.
+		if f.Name == typenameField {
+			continue
+		}
 		wp := f.Name
 		if prefix != "" {
 			wp = prefix + "." + f.Name
