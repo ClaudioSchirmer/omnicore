@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-09-03
+
 ### Fixed
 
 - **The GraphQL documentation surface is now as public as the Swagger one.**
