@@ -545,3 +545,17 @@ reg.Register(fwgraphql.MutationByID(
     toggled independently in YAML, the same on/off posture as the Swagger UI. With introspection off, an
     <code>__schema</code> query simply does not resolve.
 </p>
+<p>
+    <strong>Under <code>auth.mode: jwt</code> both reach a tokenless caller</strong>, the way the Swagger UI
+    and <code>/openapi.json</code> do — neither has to be named in <code>auth.publicRoutes</code>. The page is
+    appended to the bypass list at boot whenever <code>playground: true</code>; the schema behind it is granted
+    per request, because introspection travels through the same <code>POST</code> that serves data: with
+    <code>introspection: true</code>, a document whose every operation is a <code>query</code> selecting only
+    <code>__schema</code> / <code>__type</code> / <code>__typename</code> skips authentication, and nothing
+    else does — a data field beside <code>__schema</code>, a decoy operation, a mutation and an unparsable
+    document all stay behind the bearer, as does every request once <code>introspection</code> is off. The
+    per-field permission gate below is untouched by this: it runs on authenticated data queries, which is the
+    only kind that gets that far. The playground persists its request headers, so a bearer pasted into
+    GraphiQL's <em>Headers</em> tab survives a reload — the counterpart of Swagger UI's <em>Authorize</em>
+    button. Full posture table: <a href="#auth-middleware">Authentication middleware</a>.
+</p>

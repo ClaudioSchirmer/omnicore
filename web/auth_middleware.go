@@ -53,6 +53,20 @@ type AuthOptions struct {
 	// entirely (health probes, login endpoints, etc.).
 	PublicRoutes []string
 
+	// PublicWhen is the request-shaped bypass PublicRoutes cannot express: a
+	// predicate consulted only after the exact METHOD/path list misses, for a
+	// route whose public half depends on WHAT the request asks for rather than
+	// where it is addressed. The framework's own use is the GraphQL schema —
+	// introspection travels through the same POST the data queries do, so the
+	// analogue of a public /openapi.json is "this POST is introspection-only",
+	// not "this path is open" (bootstrap wires it from graphql.introspection).
+	//
+	// nil (the common case) leaves the exact list as the only bypass. A
+	// predicate that returns true skips authentication entirely — the request
+	// reaches its handler with no Identity — so it must prove the request
+	// cannot reach data, never merely guess.
+	PublicWhen func(c fiber.Ctx) bool
+
 	// ExternalValidator, when non-nil, makes the middleware also call the IdP
 	// (token introspection, RFC 7662 or compatible) after local JWT validation
 	// passes — so revoked tokens are caught immediately. Optional; absent
@@ -127,7 +141,8 @@ func NewAuthCoreValidator(opts AuthOptions) (*authcore.Validator, error) {
 }
 
 // AuthMiddleware returns a Fiber middleware that validates the bearer JWT on
-// every request whose method+path is not in opts.PublicRoutes. On success it
+// every request whose method+path is not in opts.PublicRoutes and that
+// opts.PublicWhen does not clear. On success it
 // populates AppContext.Identity with the standard claims (sub/iss/exp) plus
 // the raw claim map. On failure it short-circuits the request with the
 // canonical envelope carrying one of:
@@ -158,6 +173,11 @@ func AuthMiddleware(opts AuthOptions, pipe *pipeline.Pipeline) (fiber.Handler, e
 
 	return func(c fiber.Ctx) error {
 		if matchPublic(c.Method(), c.Path(), routes) {
+			return c.Next()
+		}
+		// Consulted only after the exact list misses, so a path that is
+		// already public never pays for the predicate.
+		if opts.PublicWhen != nil && opts.PublicWhen(c) {
 			return c.Next()
 		}
 		identity, token, verr := core.ValidateAuthorization(c.Context(), c.Get("Authorization"))

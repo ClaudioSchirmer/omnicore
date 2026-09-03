@@ -44,8 +44,20 @@ func graphiqlHTML(endpoint string) string {
   <script src="https://unpkg.com/graphiql@3/graphiql.min.js"></script>
   <script>
     const fetcher = GraphiQL.createFetcher({ url: '` + safe + `' });
+    // shouldPersistHeaders is this page's "Authorize" button. Swagger UI gets
+    // one for free from the spec's bearerAuth security scheme; GraphiQL has no
+    // such control, so the Headers tab IS the control — and without persistence
+    // the token evaporates on every reload, which is not parity with a Swagger
+    // UI that remembers it. defaultHeaders seeds the tab so the affordance is
+    // discoverable instead of folklore; an empty bearer is refused by the auth
+    // middleware exactly like any other invalid token, while the schema still
+    // loads (introspection is public whenever graphql.introspection is on).
     ReactDOM.render(
-      React.createElement(GraphiQL, { fetcher }),
+      React.createElement(GraphiQL, {
+        fetcher,
+        shouldPersistHeaders: true,
+        defaultHeaders: '{\n  "Authorization": "Bearer "\n}',
+      }),
       document.getElementById('graphiql'),
     );
   </script>

@@ -354,8 +354,10 @@ query:
 graphql:                                 # ignored unless a feature implements GraphQLFeature
   path: /graphql                         # default. POST endpoint route
   uiPath: /graphql/ui                    # default. GET GraphiQL playground (when playground: true)
-  playground: false                      # default off — serve GraphiQL at uiPath
-  introspection: false                   # default off — answer __schema / __type
+  playground: false                      # default off — serve GraphiQL at uiPath (auto-public under auth.mode=jwt,
+                                         # like openapi.uiPath — never named in auth.publicRoutes)
+  introspection: false                   # default off — answer __schema / __type. ON also makes an
+                                         # introspection-ONLY POST public, the /openapi.json analogue
   rootRedirect: false                    # default off — GET / → 302 path; both this + openapi.rootRedirect → boot panic
 
 grpc:                                    # ignored unless a feature implements GRPCFeature

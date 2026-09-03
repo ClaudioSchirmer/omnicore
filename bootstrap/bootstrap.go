@@ -34,6 +34,7 @@ import (
 	fwweb "github.com/ClaudioSchirmer/omnicore/web"
 	"github.com/ClaudioSchirmer/omnicore/web/auditapi"
 	"github.com/ClaudioSchirmer/omnicore/web/authcore"
+	"github.com/ClaudioSchirmer/omnicore/web/graphql"
 	fwgrpc "github.com/ClaudioSchirmer/omnicore/web/grpc"
 	"github.com/ClaudioSchirmer/omnicore/web/openapi"
 
@@ -829,6 +830,14 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	if uiPath == "" {
 		uiPath = defaultOpenAPIUIPath
 	}
+	// Resolved here rather than at the GraphQL mount below because the bypass
+	// list is frozen when the middleware is constructed: the route the list
+	// names and the route the framework serves have to be the SAME string, or
+	// the playground ends up behind auth while the Swagger UI is not.
+	gqlUIPath := deps.Config.GraphQL.UIPath
+	if gqlUIPath == "" {
+		gqlUIPath = defaultGraphQLUIPath
+	}
 
 	// augmentedPublicRoutes is the canonical bypass list shared by the
 	// AuthMiddleware AND the authz scan, so both honor the documentation
@@ -840,6 +849,21 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		if deps.Config.OpenAPI.RootRedirect {
 			augmentedPublicRoutes = append(augmentedPublicRoutes, "GET /")
 		}
+	}
+	// The GraphQL documentation surface, held to the SAME posture as the
+	// OpenAPI one above: an operator who turns a documentation page on gets a
+	// page that opens, on either surface, without naming it in
+	// auth.publicRoutes. The page alone is inert — it renders nothing until
+	// the schema loads, which is the introspection bypass installed on
+	// authOpts.PublicWhen below. Keyed off the config (not deps.GraphQLRegistry,
+	// which mountSurfaceFeatures only builds further down) because the list has
+	// to be complete before the middleware is constructed; an entry for a route
+	// no feature ends up serving matches nothing and costs nothing.
+	if deps.Config.GraphQL.Playground {
+		augmentedPublicRoutes = append(augmentedPublicRoutes, "GET "+gqlUIPath)
+	}
+	if deps.Config.GraphQL.RootRedirect {
+		augmentedPublicRoutes = append(augmentedPublicRoutes, "GET /")
 	}
 	// The JWKS document has to be fetchable without a token — registered as
 	// a public route automatically, like the OpenAPI spec/UI paths above
@@ -859,6 +883,34 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		// common case) leaves auth.jwt.externalValidator, if configured,
 		// as the only revocation check.
 		authOpts.TokenChecker = wiring.TokenChecker
+		// The GraphQL schema document, made reachable the way /openapi.json is.
+		// REST publishes its schema on a route of its own, so a path entry in
+		// the list above is enough; GraphQL answers introspection through the
+		// same POST that serves data, so the equivalent grant has to be shaped
+		// by the DOCUMENT — hence the predicate. Installed only under
+		// graphql.introspection (already an explicit, typically dev-only
+		// opt-in): with introspection off there is no schema to publish and
+		// the endpoint stays wholly behind the bearer.
+		//
+		// deps is captured by pointer because GraphQLRegistry is built by
+		// mountSurfaceFeatures further down — after this middleware exists but
+		// long before any request runs the closure.
+		if deps.Config.GraphQL.Introspection {
+			depsRef := &deps
+			gqlPath := deps.Config.GraphQL.Path
+			if gqlPath == "" {
+				gqlPath = defaultGraphQLPath
+			}
+			authOpts.PublicWhen = func(c fiber.Ctx) bool {
+				if depsRef.GraphQLRegistry == nil {
+					return false
+				}
+				if c.Method() != fiber.MethodPost || c.Path() != gqlPath {
+					return false
+				}
+				return graphql.IsIntrospectionOnlyRequest(c.Body())
+			}
+		}
 		mw, err := fwweb.AuthMiddleware(authOpts, deps.Pipeline)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: auth middleware: %w", err)
@@ -1033,15 +1085,16 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 	if wiring.OpenAPI != nil {
 		opts := []openapi.RegisterOption{openapi.WithUIPath(uiPath)}
 		if deps.Config.Auth.Mode == AuthModeJWT {
-			// Auth context for the spec uses the SAME augmented allowlist
-			// the AuthMiddleware sees, so /openapi.json + uiPath are
-			// declared public on both sides of the wire (middleware lets
-			// them through, spec does not advertise bearerAuth on them).
-			publicRoutes := append([]string{}, deps.Config.Auth.PublicRoutes...)
-			publicRoutes = append(publicRoutes, "GET "+openapi.SpecPath, "GET "+uiPath)
+			// Auth context for the spec is the SAME augmented allowlist the
+			// AuthMiddleware sees — the variable itself, not a second one
+			// assembled from the same parts, so "public in the spec" and
+			// "public at the door" cannot drift apart as the list grows.
+			// (The framework's own extras carry RawSpec.Public and are
+			// covered either way; a route that gets its public status ONLY
+			// from this list would not have been.)
 			authzEnabled := deps.Config.Auth.Authorization != nil && deps.Config.Auth.Authorization.Enabled
 			opts = append(opts, openapi.WithAuth(openapi.AuthContext{
-				PublicRoutes:         publicRoutes,
+				PublicRoutes:         augmentedPublicRoutes,
 				AuthorizationEnabled: authzEnabled,
 			}))
 		}
@@ -1090,8 +1143,8 @@ func buildApp(ctx context.Context, deps Deps, wiring Wiring) (*fiber.App, error)
 		deps.Logger.Info("graphql served", "path", gqlCfg.Path,
 			"introspection", gqlCfg.Introspection, "playground", gqlCfg.Playground)
 		if gqlCfg.Playground {
-			app.Get(gqlCfg.UIPath, deps.GraphQLRegistry.Playground(gqlCfg.Path))
-			deps.Logger.Info("graphql playground served", "ui", gqlCfg.UIPath)
+			app.Get(gqlUIPath, deps.GraphQLRegistry.Playground(gqlCfg.Path))
+			deps.Logger.Info("graphql playground served", "ui", gqlUIPath)
 		}
 		if gqlCfg.RootRedirect {
 			registerRootRedirect(app, gqlCfg.Path, deps.Logger)

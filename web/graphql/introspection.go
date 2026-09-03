@@ -1,10 +1,12 @@
 package graphql
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/ClaudioSchirmer/omnicore/application/configuration"
 	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/vektah/gqlparser/v2/parser"
 )
 
 // introspectionResolvers returns the `__schema` / `__type` root resolvers that
@@ -188,4 +190,68 @@ func introspectionKind(k ast.DefinitionKind) string {
 	default:
 		return "SCALAR"
 	}
+}
+
+// ── The public-introspection gate ───────────────────────────────────────────
+
+// introspectionRootFields is the exact set of root fields an introspection-only
+// document may select. `__typename` is included because tooling appends it to
+// the introspection query; every other `__`-prefixed name is a field of the
+// introspection TYPES (reached under one of these roots), never a root of its
+// own.
+var introspectionRootFields = map[string]bool{
+	"__schema":   true,
+	"__type":     true,
+	"__typename": true,
+}
+
+// IsIntrospectionOnlyRequest reports whether a raw GraphQL POST body carries a
+// document that can ONLY describe the schema — never read or write data. It is
+// the GraphQL analogue of "this request is just fetching /openapi.json", and
+// bootstrap uses it to let the schema through the auth middleware when
+// graphql.introspection is on, so the playground reaches parity with Swagger UI
+// (whose spec document is public by the same reasoning).
+//
+// The predicate is deliberately unforgiving — anything it cannot prove is
+// introspection-only is NOT (false), so a document that mixes `__schema` with a
+// real field, spreads a fragment at the root, mutates, or fails to parse stays
+// behind the bearer. It never touches the schema or the resolvers: a document
+// that passes here still goes through the executor's own parse + validation.
+func IsIntrospectionOnlyRequest(body []byte) bool {
+	var req gqlRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return false
+	}
+	return isIntrospectionOnlyQuery(req.Query)
+}
+
+// isIntrospectionOnlyQuery applies the rule to the query document itself: EVERY
+// operation must be a query whose root selections are all plain introspection
+// fields. Judging every operation (not just the one operationName selects)
+// keeps the decision independent of the operationName the caller sends — the
+// bypass cannot be smuggled past by naming a decoy operation.
+func isIntrospectionOnlyQuery(query string) bool {
+	if strings.TrimSpace(query) == "" {
+		return false
+	}
+	doc, err := parser.ParseQuery(&ast.Source{Input: query})
+	if err != nil || doc == nil || len(doc.Operations) == 0 {
+		return false
+	}
+	for _, op := range doc.Operations {
+		if op.Operation != ast.Query || len(op.SelectionSet) == 0 {
+			return false
+		}
+		for _, sel := range op.SelectionSet {
+			// Only a plain field qualifies. A fragment spread or inline
+			// fragment at the root is refused rather than followed: the
+			// gate answers a security question, and "cheap and obviously
+			// correct" beats "clever" here.
+			fld, ok := sel.(*ast.Field)
+			if !ok || !introspectionRootFields[fld.Name] {
+				return false
+			}
+		}
+	}
+	return true
 }
