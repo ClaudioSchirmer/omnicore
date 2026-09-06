@@ -11,6 +11,8 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-09-06
+
 ### Changed
 
 - **Notification `field` is wire-format camelCase everywhere the FRAMEWORK
