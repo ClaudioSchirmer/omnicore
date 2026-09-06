@@ -19,7 +19,7 @@
     <table>
         <tbody><tr><th>Semantic</th><th>HTTP</th><th>Kernel notifications</th></tr>
         <tr><td><code>SemanticValidation</code> (default)</td><td>422 Unprocessable Entity</td><td>all field validations emitted by <code>BuildRules</code></td></tr>
-        <tr><td><code>SemanticSchema</code></td><td><strong>400 Bad Request</strong></td><td><code>SchemaViolationNotification</code> (malformed JSON, type mismatch, pagination keys: malformed <code>?after=</code> / <code>?before=</code>, invalid <code>?first=</code>, <code>after</code>+<code>before</code> conflict, cursor↔orderBy mismatch); <code>RequiredFieldNotification</code> with <code>WithSemantic(SemanticSchema)</code> emitted by the strict body check of the <code>FullBody</code> marker in the wire wrapper; <code>LimitExceededNotification</code> emitted by the read side when <code>?first=N</code> / <code>?last=N</code> exceeds the resolved per-view ceiling (<code>fieldName</code> names the control sent; translatable per language; <code>FieldValue</code> carries the effective max); <code>SchemaViolationNotification</code> again when <code>?orderBy=</code> names a token outside the endpoint's <a href="#auto-query-handlers~qry-sort">declared ordering vocabulary</a>, or asks for a direction that declaration does not admit (<code>fieldName</code> carries the wire token verbatim, <code>-</code> prefix included, e.g. <code>orderBy[-display]</code>; the gRPC plane answers <code>INVALID_ARGUMENT</code>); <code>UnsupportedCapabilityNotification</code> raised by a read engine when the request asks for something the store the view is read from cannot serve — <code>?search=</code>, or a filter/sort on a field a single-root read cannot reach, on a <a href="#relational-view">relational view</a> (<code>fieldName</code> carries the offending capability or Go field path). It names no backing on purpose: every engine raises this same one, and the refusal happens at the engine's entry point, before any IO; <code>MalformedIDNotification</code> when a by-id <strong>write</strong> (PUT/PATCH/DELETE, archive, unarchive) carries an <code>:id</code> segment that is not a UUID — the read side of the same route answers <code>UnknownIDAddressNotification</code> → 404 instead, because a read names no record while a write states an intention about one; <code>InvalidFilterValueNotification</code> when a filter value cannot be what the column it probes holds (<code>?age=abc</code> on an int leaf, a non-uuid on an identity column) — raised at the wire when the Request DTO declares the kind, and by the relational reader when it does not, so the probe never reaches the driver</td></tr>
+        <tr><td><code>SemanticSchema</code></td><td><strong>400 Bad Request</strong></td><td><code>SchemaViolationNotification</code> (malformed JSON, type mismatch, pagination keys: malformed <code>?after=</code> / <code>?before=</code>, invalid <code>?first=</code>, <code>after</code>+<code>before</code> conflict, cursor↔orderBy mismatch); <code>RequiredFieldNotification</code> with <code>WithSemantic(SemanticSchema)</code> emitted by the strict body check of the <code>FullBody</code> marker in the wire wrapper; <code>LimitExceededNotification</code> emitted by the read side when <code>?first=N</code> / <code>?last=N</code> exceeds the resolved per-view ceiling (<code>fieldName</code> names the control sent; translatable per language; <code>FieldValue</code> carries the effective max); <code>SchemaViolationNotification</code> again when <code>?orderBy=</code> names a token outside the endpoint's <a href="#auto-query-handlers~qry-sort">declared ordering vocabulary</a>, or asks for a direction that declaration does not admit (<code>fieldName</code> carries the wire token verbatim, <code>-</code> prefix included, e.g. <code>orderBy[-display]</code>; the gRPC plane answers <code>INVALID_ARGUMENT</code>); <code>UnsupportedCapabilityNotification</code> raised by a read engine when the request asks for something the store the view is read from cannot serve — <code>?search=</code>, or a filter/sort on a field a single-root read cannot reach, on a <a href="#relational-view">relational view</a> (<code>fieldName</code> carries the offending capability or field path in the wire casing — <code>"addresses.zipCode"</code>, never the Go identifier). It names no backing on purpose: every engine raises this same one, and the refusal happens at the engine's entry point, before any IO; <code>MalformedIDNotification</code> when a by-id <strong>write</strong> (PUT/PATCH/DELETE, archive, unarchive) carries an <code>:id</code> segment that is not a UUID — the read side of the same route answers <code>UnknownIDAddressNotification</code> → 404 instead, because a read names no record while a write states an intention about one; <code>InvalidFilterValueNotification</code> when a filter value cannot be what the column it probes holds (<code>?age=abc</code> on an int leaf, a non-uuid on an identity column) — raised at the wire when the Request DTO declares the kind, and by the relational reader when it does not, so the probe never reaches the driver</td></tr>
         <tr><td><code>SemanticNotFound</code></td><td>404 Not Found</td><td><code>RecordNotFoundNotification</code>, <code>RouteNotFoundNotification</code>, <code>UnknownIDAddressNotification</code> — a by-id <strong>read</strong> whose <code>:id</code> segment is not a UUID. The three keys stay distinct on purpose: the route did not exist, the record does not exist, or what you sent is not an address at all</td></tr>
         <tr><td><code>SemanticMethodNotAllowed</code></td><td><strong>405 Method Not Allowed</strong></td><td><code>MethodNotAllowedNotification</code> (path matches, HTTP method does not) emitted by <code>fwweb.ErrorHandler</code></td></tr>
         <tr><td><code>SemanticConflict</code></td><td>409 Conflict</td><td><code>EntityAlreadyAddedNotification</code> — the DUPLICATE flavor: "this already exists"</td></tr>
@@ -271,7 +271,7 @@
         the notification carry the status:
     </p>
 <pre><code>c.Set(fiber.HeaderRetryAfter, strconv.Itoa(secondsUntilReset))
-r.AddNotification("Requests", notifications.TooManyRequestsNotification{})</code></pre>
+r.AddNotificationNamed("Requests", notifications.TooManyRequestsNotification{})</code></pre>
     <p>
         The symmetry is worth naming: <code>Retry-After</code> is exactly what the framework's own
         <a href="#httpclient">httpclient</a> reads on the way back in
@@ -422,29 +422,29 @@ func (EmailAlreadyExistsNotification) Semantic() domain.NotificationSemantic {
 func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
         if u.Name == "" {
-            r.AddNotification("Name", domain.RequiredFieldNotification{})
+            r.AddNotification(&amp;u.Name, domain.RequiredFieldNotification{}, false)
         }
         if u.Email != "" &amp;&amp; !validEmail(u.Email) {
-            // optional value becomes FieldValue — echo of the rejected input in the response
-            r.AddNotification("Email", InvalidEmailNotification{}, u.Email)
+            // exposeValue=true echoes the FIELD's value as FieldValue in the response
+            r.AddNotification(&amp;u.Email, InvalidEmailNotification{}, true)
         }
-        // An OPTIONAL field is passed straight through: the pointer is
-        // dereferenced for you, and a nil one renders as "".
+        // An OPTIONAL field is referenced the same way (&amp;u.Age, never u.Age):
+        // the echo unwraps the pointer for you, and a nil one renders as "".
         if u.Age != nil &amp;&amp; *u.Age &gt; 150 {
-            r.AddNotification("Age", InvalidAgeNotification{}, u.Age)
+            r.AddNotification(&amp;u.Age, InvalidAgeNotification{}, true)
         }
     })
 }
 
-// Aggregate child — Address — identical signature
-func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+// Aggregate child — Address — identical signature, POINTER receiver
+func (a *Address) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
         if a.Street == "" {
-            r.AddNotification("Street", domain.RequiredFieldNotification{})
+            r.AddNotification(&amp;a.Street, domain.RequiredFieldNotification{}, false)
         }
         if actionName == "AdminCreate" &amp;&amp; a.ZipCode == "" {
             // Branching by action — works identically on root and AVO.
-            r.AddNotification("ZipCode", domain.RequiredFieldNotification{})
+            r.AddNotification(&amp;a.ZipCode, domain.RequiredFieldNotification{}, false)
         }
     })
 }</code></pre>
@@ -452,10 +452,12 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
     <p>The wire format composes the path automatically:</p>
     <table>
         <tbody><tr><th>Origin</th><th>Code</th><th><code>field</code> on the wire</th></tr>
-        <tr><td>Root entity</td><td><code>r.AddNotification("Name", n)</code></td><td><code>"name"</code></td></tr>
-        <tr><td>Root entity with input echo</td><td><code>r.AddNotification("Email", n, u.Email)</code></td><td><code>"email"</code> + populated <code>value</code></td></tr>
-        <tr><td>Aggregate child</td><td><code>r.AddNotification("ZipCode", n)</code></td><td><code>"addresses[0].zipCode"</code></td></tr>
-        <tr><td>Nested aggregate</td><td><code>r.AddNotification("Quantity", n)</code></td><td><code>"orders[0].lines[1].quantity"</code></td></tr>
+        <tr><td>Root entity</td><td><code>r.AddNotification(&amp;u.Name, n, false)</code></td><td><code>"name"</code></td></tr>
+        <tr><td>Root entity with input echo</td><td><code>r.AddNotification(&amp;u.Email, n, true)</code></td><td><code>"email"</code> + populated <code>value</code> (read from the field)</td></tr>
+        <tr><td>Field with a <code>notifyAs:"cep"</code> tag</td><td><code>r.AddNotification(&amp;a.ZipCode, n, false)</code></td><td><code>"cep"</code></td></tr>
+        <tr><td>Aggregate child</td><td><code>r.AddNotification(&amp;a.ZipCode, n, false)</code></td><td><code>"addresses[0].zipCode"</code></td></tr>
+        <tr><td>Nested aggregate</td><td><code>r.AddNotification(&amp;l.Quantity, n, false)</code></td><td><code>"orders[0].lines[1].quantity"</code></td></tr>
+        <tr><td>Cross-field / synthetic name</td><td><code>r.AddNotificationNamed("total", n)</code></td><td><code>"total"</code></td></tr>
         <tr><td>Message with Err/FuncName/Override</td><td><code>r.AddNotificationMessage(NotificationMessage{Path: []PathSegment{{Name:"Email"}}, Err: cause, Notification: InvalidEmailNotification{}})</code></td><td><code>"email"</code> + preserved <code>Err</code></td></tr>
     </tbody></table>
 
@@ -467,6 +469,27 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
         <li><strong>Wire layer</strong> (<code>web/from_notifications.go</code>, <code>application/notifications/convert.go</code>) reads <code>m.ResolveFieldName()</code> with precedence <strong>Override &gt; rendered Path &gt; FieldName</strong>.</li>
     </ol>
 
+    <h4>One casing for every framework-raised field</h4>
+    <p>
+        The rule above is not limited to the domain rule path: <strong>everywhere the FRAMEWORK names a
+        field in a notification, the wire <code>field</code> is the camelCase wire token</strong> — never a
+        Go identifier, never a physical column. Emitters that hold a dotted Go field path (the read side's
+        unresolved-path / invalid-filter-value 400s, the relational reader's unsupported-capability refusal,
+        <code>ReadCriteria.Restrict</code>'s 403) render it per segment through
+        <code>domain.WireFieldPath</code> (<code>"Addresses.ZipCode"</code> → <code>"addresses.zipCode"</code>).
+        Emitters that hold only a physical column (the not-found/concurrency probes, the shared-base
+        duplicate and natural-key-immutable guards) resolve it to the schema's Go name first via
+        <code>TableSchema.WireFieldOf</code> (<code>user_id</code> → <code>"id"</code>). Aggregate child
+        rejections (<code>EntityAlreadyAdded</code>/<code>EntityDoesNotExist</code>/<code>InvalidAggregateChild</code>)
+        name the child's declared <code>CollectionName</code> segment (<code>"addresses"</code>); the Go type
+        name appears only as the <code>value</code> echo on the invalid-child rejection. What the framework
+        does <em>not</em> touch: a <code>FieldName</code> the SERVICE supplies
+        (<code>SingleNotificationError</code>, <code>ConstraintBinding.Field</code>, a manual
+        <code>NotificationMessage</code>) travels verbatim — declare it in wire casing — and the deliberate
+        non-field entries (the router fallbacks' <code>"GET /path"</code>, the migration context) stay as
+        they are.
+    </p>
+
     <h4>Structure</h4>
     <pre><code>type Rules struct {
     mode       EntityMode
@@ -474,11 +497,17 @@ func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rul
     entityType reflect.Type          // owner type — drives labelKey:"..." tag resolution
 }
 
-// Common form — name + notification + optional value (becomes FieldValue).
-// value accepts string, nil, any POINTER (dereferenced; nil renders ""), or any
-// other type (via fmt.Sprint). A type whose pointer implements fmt.Stringer or
-// error keeps its own rendering instead of being unwrapped.
-func (r *Rules) AddNotification(name string, n Notification, value ...any)
+// Common form — FIELD REFERENCE + notification + mandatory expose flag. The
+// reference resolves by offset+type to the field it addresses; name, the
+// notifyAs:"..." wire override and the labelKey:"..." catalog key are read off
+// the StructField itself, and the echoed value (exposeValue=true) comes from
+// the reference (pointer fields unwrapped; nil renders ""; fmt.Stringer/error
+// keep their own rendering). Misuse panics immediately with the fix named.
+func (r *Rules) AddNotification(field any, n Notification, exposeValue bool)
+
+// String-named seat — the explicit exception for names that are not ONE
+// addressable field (cross-field rules, state rejections, synthetic tokens).
+func (r *Rules) AddNotificationNamed(name string, n Notification, value ...any)
 
 // Escape hatch — for messages that need Err, FuncName, Override, or multi-segment Path.
 func (r *Rules) AddNotificationMessage(msg NotificationMessage)
@@ -487,13 +516,13 @@ func (r *Rules) IfInsert / IfUpdate / IfDelete / IfArchive / IfUnarchive / IfIns
 
 type PathSegment struct {
     Name  string  // Go identifier (PascalCase) or already-lowercase verbatim
+    Wire  string  // declared wire token (notifyAs:"..." tag / alias) — used verbatim over the rendered Name
     Index *int    // nil except on collection-item segment
 }
 
 type NotificationMessage struct {
-    Path         []PathSegment     // canonical structure
-    Override     string            // set by ChangeFieldName (higher precedence)
-    FieldName    string            // legacy/literal — used when Path empty and Override empty
+    Path         []PathSegment     // canonical structure — rendered (lowerCamel per segment, honoring Wire)
+    Override     string            // LITERAL, top precedence — ChangeFieldName, verbatim helper names, non-field entries
     FieldValue   string
     FuncName     string
     Err          error
@@ -504,8 +533,10 @@ type NotificationMessage struct {
 
 func (m NotificationMessage) ResolveFieldName() string  // wire layer calls this
 
-// On the BaseEntity surface — declarative alias mechanism.
-func (b *BaseEntity) AddFieldNameAlias(orig, new string)
+// On the BaseEntity surface — declarative alias mechanism (keys on the GO
+// field name; rewrites the leaf segment's wire token, composing with scoped
+// prefixes and overriding the notifyAs tag for the instance).
+func (b *BaseEntity) AddFieldNameAlias(goFieldName, wireName string)
 
 // On the NotificationContext surface — imperative override.
 func (c *NotificationContext) ChangeFieldName(orig, new string)</code></pre>
@@ -519,13 +550,17 @@ func (c *NotificationContext) ChangeFieldName(orig, new string)</code></pre>
         <tbody><tr><th>Path</th><th>Where it lives</th><th>When to reach for it</th></tr>
         <tr>
             <td>Default emission</td>
-            <td><code>r.AddNotification(name, n)</code> inside <code>BuildRules</code></td>
+            <td><code>r.AddNotification(&amp;e.Field, n, expose)</code> inside <code>BuildRules</code></td>
             <td>The Go identifier already matches the wire name (after acronym-aware <code>toLowerCamel</code>). The most common case — no extra plumbing needed.</td>
         </tr>
         <tr>
-            <td><code>BaseEntity.AddFieldNameAlias(orig, new)</code></td>
-            <td>Domain method on the entity (e.g. inside a constructor or a method called before validation runs)</td>
-            <td>The renaming is a <strong>stable rule of the entity</strong> — every message about <code>orig</code>, regardless of which handler triggered it, should surface as <code>new</code> on the wire. Applied automatically inside <code>checkAllNotifications</code> via <code>applyFieldAliases</code> before contexts are collected, so consumers never call <code>ChangeFieldName</code> by hand for this case.</td>
+            <td>The <code>notifyAs:"..."</code> struct tag on the field</td>
+            <td>The wire name differs from the camelized Go name as a <strong>property of the field itself</strong> — declared once on the OWNING entity's field (an aggregate value object declares its own fields' tags; a raw or enum value object is generic and shared, so its name always comes from the field that holds it), and honored by EVERY seat that emits about the field: a field-reference rule, the automatic value-object pass, an enum membership refusal and a named emission all render the same token, composing with scoped prefixes (<code>"addresses[0].cep"</code>).</td>
+        </tr>
+        <tr>
+            <td><code>BaseEntity.AddFieldNameAlias(goFieldName, wireName)</code></td>
+            <td>Domain method on the entity (declare it in the constructor so every instance carries it)</td>
+            <td>The renaming is a <strong>stable rule of the instance</strong> — every message whose LEAF field is that GO name surfaces under <code>wireName</code>, overriding the <code>notifyAs</code> tag. Applied automatically inside <code>checkAllNotifications</code> via <code>applyFieldAliases</code> before contexts are collected.</td>
         </tr>
         <tr>
             <td><code>NotificationContext.ChangeFieldName(orig, new)</code></td>
@@ -535,13 +570,14 @@ func (c *NotificationContext) ChangeFieldName(orig, new string)</code></pre>
     </tbody></table>
 
     <p>
-        Internally both override paths populate the same slot — <code>NotificationMessage.Override</code> — which sits at the top of the <code>ResolveFieldName()</code> precedence. The choice between <code>AddFieldNameAlias</code> and <code>ChangeFieldName</code> is purely about <em>when</em> the decision is taken: at entity definition time (declarative) versus at request-handling time (imperative).
+        Precedence, highest first: <code>Override</code> (set by <code>ChangeFieldName</code>, matching the RESOLVED name) &gt; the leaf segment's wire token (instance alias &gt; <code>notifyAs</code> tag) &gt; the acronym-aware lowerCamel rendering of the Go name. The alias and the tag share the segment slot — declarative, per-field, prefix-composing; <code>Override</code> is the imperative, whole-string literal a handler reaches for per request.
     </p>
 
-<pre><code>// Declarative — every emission about "Email" on this entity surfaces as "primaryEmail":
+<pre><code>// Declarative — every emission about "Email" on this entity surfaces as "primaryEmail".
+// orig is the RESOLVED wire name (post-render, "email"), not the Go identifier:
 func NewUser(...) *User {
     u := &amp;User{...}
-    u.AddFieldNameAlias("Email", "primaryEmail")
+    u.AddFieldNameAlias("email", "primaryEmail")
     return u
 }
 

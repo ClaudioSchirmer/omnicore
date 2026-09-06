@@ -9,6 +9,49 @@
     <div class="release">
         <div class="release-head"><span class="release-tag">Unreleased</span><span class="release-date">on the next tag</span></div>
         <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the notification <code>field</code> is
+                wire-format camelCase everywhere the framework names it.</strong> Every framework-raised
+                notification now renders its wire <code>field</code> through the same acronym-aware
+                lower-camel renderer the domain rule path always used, ending the mix of vocabularies
+                individual emitters leaked: aggregate child rejections carry the child's declared
+                <code>CollectionName</code> segment cased for the wire (<code>"addresses"</code>, never the
+                Go type name — the type name stays in <code>value</code> on the invalid-child rejection);
+                read-side refusals that held a Go field path (the unresolved-path and invalid-filter-value
+                400s, the relational reader's unsupported-capability refusal, the composed view's sort
+                refusal, <code>ReadCriteria.Restrict</code>'s 403) render it lower-camel per segment
+                (<code>"Addresses.ZipCode"</code> → <code>"addresses.zipCode"</code>); and the
+                not-found/concurrency probes and duplicate/natural-key guards that named a physical column
+                now resolve it to the schema's Go name and render that (<code>user_id</code> →
+                <code>"id"</code>). Developer-supplied <code>FieldName</code> strings stay verbatim. Two
+                helpers back the rule: <code>domain.WireFieldPath(goPath)</code> and
+                <code>TableSchema.WireFieldOf(column)</code>. Consumers (and QA suites) matching the old
+                Go-cased or column-named tokens must update. See
+                <a href="#status-mapping">Status mapping</a>.</li>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>notifications are emitted by
+                FIELD REFERENCE; the string-named <code>AddNotification</code> is gone.</strong>
+                <code>Rules.AddNotification</code> (and <code>AddNotificationWithVars</code>) now take a
+                pointer to the entity's own field plus a mandatory expose flag —
+                <code>r.AddNotification(&amp;e.ZipCode, n, true)</code> — resolved deterministically
+                (offset + pointer type) to the field it addresses: the Go name (rendered lowerCamel), the
+                new <code>notifyAs:"..."</code> wire-name tag and the <code>labelKey:"..."</code> catalog key
+                are read off the <code>StructField</code> itself, and the echoed value comes from the
+                reference. Misuse panics immediately with the fix named — the silent wrong-field /
+                lost-label failure mode cannot occur. <code>BuildRules</code> is invoked on a POINTER
+                (aggregate value objects implement it on <code>*T</code>; the method left the
+                <code>AggregateValueObject</code> interface and the framework validates an addressable copy,
+                so children stay value-stored and validation cannot mutate them — a declared child type
+                without it panics with the contract when <code>AggregateChildren()</code> is first
+                consulted, aggregate construction rather than the first write).
+                <code>NotificationMessage.FieldName</code> is REMOVED — <code>Path</code> (rendered) and
+                <code>Override</code> (literal) are the only slots; <code>PathSegment</code> gained
+                <code>Wire</code>. <code>AddFieldNameAlias(goFieldName, wireName)</code> keys on the GO name
+                and composes with scoped prefixes, overriding the tag per instance. The surviving string
+                seats say so in their names: <code>AddNotificationNamed</code> (Rules / context /
+                BaseEntity), <code>domain.ValidateEnumNamed</code>; <code>ValidateEnum</code> itself is
+                field-ref (<code>&amp;e.Status, r</code> — resolved on every call, so a bad reference dies
+                at its first execution, valid value or not), and <code>domain.NewRulesFor</code> builds a
+                bound Rules for manual code and tests. See <a href="#rules-dsl">Rules DSL</a> and
+                <a href="#status-mapping">Status mapping</a>.</li>
         </ul>
     </div>
     <div class="release">

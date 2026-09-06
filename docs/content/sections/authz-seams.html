@@ -75,7 +75,7 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
     r.IfArchive(func() {
         if u.RequestingPrincipalEmail != "" &amp;&amp;
             u.Email != u.RequestingPrincipalEmail &amp;&amp; !u.RequestingPrincipalIsAdmin {
-            r.AddNotification("ID", domain.ArchiveNotAllowedNotification{})
+            r.AddNotificationNamed("ID", domain.ArchiveNotAllowedNotification{})
         }
     })
 }</code></pre>

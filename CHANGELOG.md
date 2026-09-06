@@ -11,6 +11,80 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Notification `field` is wire-format camelCase everywhere the FRAMEWORK
+  names it (breaking for consumers matching the old tokens).** Every
+  framework-raised notification now renders its wire `field` through the same
+  acronym-aware lower-camel renderer the domain rule path always used, ending
+  the mix of Go identifiers, Go dotted paths and physical column names that
+  leaked from individual emitters:
+  - Aggregate child rejections (`EntityAlreadyAdded`/`EntityDoesNotExist`/
+    `InvalidAggregateChild`) carry the child's DECLARED `CollectionName`
+    segment cased for the wire (`"addresses"`), never the Go type name; the
+    type name stays in `value` on the invalid-child rejection as the
+    diagnostic echo.
+  - Read-side refusals that held a Go field path — the unresolved-path and
+    invalid-filter-value 400s, the relational reader's
+    `UnsupportedCapabilityNotification`, the composed view's sort refusal,
+    and `ReadCriteria.Restrict`'s 403 — render it lower-camel per segment
+    (`"Addresses.ZipCode"` → `"addresses.zipCode"`).
+  - Not-found/concurrency probes and duplicate/natural-key guards that named
+    the physical id or natural-key COLUMN now resolve it to the schema's Go
+    name and render that (`user_id` → `"id"`), so a column name never
+    reaches the wire.
+  Developer-supplied `FieldName` strings (`SingleNotificationError`,
+  `ConstraintBinding.Field`, manual `NotificationMessage`) remain verbatim.
+  New helpers back the rule: `domain.WireFieldPath(goPath)` renders a dotted
+  Go field path to its wire token, and `core.TableSchema.WireFieldOf(column)`
+  resolves a physical column to that same wire token.
+
+- **Notifications are emitted by FIELD REFERENCE — the string-named
+  AddNotification is gone (breaking).** `Rules.AddNotification` (and
+  `AddNotificationWithVars`) now take a pointer to the entity's own field plus
+  a mandatory expose flag — `r.AddNotification(&e.ZipCode, n, true)` — and
+  resolve it deterministically (offset + pointer type) to the field it
+  addresses: the Go name (rendered lowerCamel), the new `notifyAs:"..."`
+  wire-name override tag and the `labelKey:"..."` catalog key are all read off
+  the `reflect.StructField` itself, and the echoed value comes from the
+  reference. Misuse (a non-pointer, a reference into a copy, a pointer field
+  passed without `&`) panics immediately with a pedagogic message — the silent
+  wrong-field/lost-label failure mode of the string API cannot occur.
+  - `BuildRules` is invoked on a POINTER: root entities already declare it so;
+    aggregate value objects now implement it on `*T` — `BuildRules` left the
+    `AggregateValueObject` interface (children stay VALUE-stored in the
+    tracker; the framework materializes an addressable copy per validation and
+    asserts the method on its pointer). A declared child type without it
+    panics with the contract spelled out as soon as the aggregate is touched —
+    the first primitive that consults `AggregateChildren()` — not at the first
+    write attempt. Validation still cannot mutate the tracked child.
+  - `NotificationMessage.FieldName` is REMOVED. Two slots remain: `Path`
+    (rendered — lowerCamel per segment, honoring each segment's `notifyAs` tag)
+    and `Override` (literal, top precedence). Every kernel emitter was
+    reclassified onto one of them; `PathSegment` gained `Wire`.
+  - `AddFieldNameAlias(goFieldName, wireName)` now keys on the GO field name
+    and rewrites the leaf segment's wire token (composing with scoped
+    prefixes: `"addresses[0].cep"`), overriding the `notifyAs` tag per instance;
+    `ChangeFieldName` keeps matching the RESOLVED name and stays top
+    precedence.
+  - The string seats that remain, renamed to say so: `Rules/NotificationContext/
+    BaseEntity.AddNotificationNamed` (cross-field rules, state rejections,
+    synthetic tokens) and `domain.ValidateEnumNamed` (an enum validated where
+    no bound Rules exists — a composite VO's interior part). `ValidateEnum`
+    itself is field-ref: `domain.ValidateEnum(&e.Status, r)` — the reference
+    is resolved on EVERY call, so a bad one (a copy, an unbound Rules) dies at
+    the first execution, valid value or not.
+  - `domain.NewRulesFor(mode, ctx, base)` constructs a bound Rules for manual
+    code and tests.
+  - **One vocabulary per field, every seat**: the `notifyAs`/`labelKey` tags
+    declared on the OWNING entity's field are honored identically by the
+    field-reference seat, the automatic value-object pass, enum membership
+    refusals, the named seats and the pre-init backfill — a raw/enum value
+    object is generic and shared, so its wire name and label always come from
+    the field that holds it; an aggregate value object declares its own
+    fields' tags; a composite names its parts (the one place a part can be
+    named).
+
 ## [0.72.1] - 2026-09-03
 
 ### Fixed

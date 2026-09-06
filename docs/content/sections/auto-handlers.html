@@ -425,7 +425,7 @@ func (u *User) BuildRules(actionName string, svc domain.Service, r *domain.Rules
                 excludeID = *id
             }
             if us, ok := svc.(UserService); ok &amp;&amp; us.EmailExists(u.Email, excludeID) {
-                r.AddNotification("Email", EmailAlreadyExistsNotification{}, u.Email)
+                r.AddNotification(&u.Email, EmailAlreadyExistsNotification{}, true)
             }
         }
     })
