@@ -442,7 +442,7 @@ func (r *Registry) checkPermission(ctx context.Context, permission string) *conn
 func (r *Registry) missingPermission(appCtx *configuration.AppContext, permission string) *connect.Error {
 	nctx := domain.NewNotificationContext("Authorization")
 	nctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "permission",
+		Override:     "permission",
 		FieldValue:   permission,
 		Notification: notifications.MissingPermissionNotification{},
 	})

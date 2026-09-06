@@ -26,7 +26,7 @@ import (
 func failureError() error {
 	nc := domain.NewNotificationContext("Test")
 	nc.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "field",
+		Override:     "field",
 		Notification: domain.RequiredFieldNotification{},
 	})
 	return domain.NewDomainError([]*domain.NotificationContext{nc})

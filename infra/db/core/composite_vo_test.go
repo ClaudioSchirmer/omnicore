@@ -43,7 +43,7 @@ type cvMoney struct {
 
 func (m cvMoney) IsValid(_ string, ctx *domain.NotificationContext) bool {
 	if m.Amount < 0 {
-		ctx.AddNotification("Amount", cvUnknownNote{})
+		ctx.AddNotificationNamed("Amount", cvUnknownNote{})
 		return false
 	}
 	return true
@@ -58,7 +58,7 @@ type cvPeriod struct {
 
 func (p cvPeriod) IsValid(_ string, ctx *domain.NotificationContext) bool {
 	if p.To != nil && p.To.Before(p.From) {
-		ctx.AddNotification("To", cvUnknownNote{})
+		ctx.AddNotificationNamed("To", cvUnknownNote{})
 		return false
 	}
 	return true

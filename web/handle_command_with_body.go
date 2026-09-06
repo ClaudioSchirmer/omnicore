@@ -238,7 +238,7 @@ func respondMissingFieldsAsSchema[TRes any](c fiber.Ctx, pipe *pipeline.Pipeline
 	schema := domain.SemanticSchema
 	for _, field := range missing {
 		ctx.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    field,
+			Override:     field,
 			Notification: domain.RequiredFieldNotification{}.WithSemantic(schema),
 		})
 	}

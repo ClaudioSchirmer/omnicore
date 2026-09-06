@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 type Notification interface {
@@ -40,9 +41,12 @@ type NotificationCarrier interface {
 // meaningful — never both at once. Index segments append "[N]" to the previous
 // Name segment when rendered. Name segments are rendered via lowerCamel
 // (PascalCase Go identifiers become camelCase JSON) when they start uppercase,
-// or used verbatim when already lowercase.
+// or used verbatim when already lowercase. Wire, when set, is the segment's
+// declared wire token (the `notifyAs:"..."` struct tag) and is used verbatim in
+// place of the rendered Name.
 type PathSegment struct {
 	Name  string
+	Wire  string
 	Index *int
 }
 
@@ -60,18 +64,16 @@ type NotificationMessage struct {
 	// "addresses[0].zipCode" automatically.
 	Path []PathSegment
 
-	// Override, when set, takes precedence over both Path and FieldName when
-	// resolving the wire field. ChangeFieldName populates this so manual
-	// handlers can rewrite a field's wire name without losing the structured
-	// Path or the original FieldName for diagnostics.
+	// Override, when set, is the LITERAL wire field — it takes precedence over
+	// Path and is never rendered. Three producers write it: ChangeFieldName /
+	// the instance alias (rewriting a field's wire name without losing the
+	// structured Path for diagnostics), the error helpers that carry a
+	// dev-supplied name verbatim (SingleNotificationError and family), and the
+	// deliberate non-field entries a renderer would mangle (the router
+	// fallbacks' "GET /path", the migration directory). There is no third
+	// slot: a message names its field through the rendered Path or through
+	// this literal — nothing else.
 	Override string
-
-	// FieldName is the legacy literal field name. When Path is empty and
-	// Override is empty, FieldName is used as-is (no case conversion).
-	// Framework internals (mode validators, validator.go, helpers) still set
-	// FieldName directly with already-lowercase names ("id", "name", "email")
-	// and that continues to work unchanged.
-	FieldName string
 
 	FieldValue   string
 	FuncName     string
@@ -97,17 +99,79 @@ type NotificationMessage struct {
 }
 
 // ResolveFieldName returns the effective wire-format field name following the
-// precedence Override > rendered Path > FieldName. Wire/DTO layers must call
-// this instead of reading m.FieldName directly so Path-based and overridden
-// messages render correctly.
+// precedence Override (literal) > rendered Path. Wire/DTO layers must call
+// this so overridden and Path-based messages render correctly.
 func (m NotificationMessage) ResolveFieldName() string {
 	if m.Override != "" {
 		return m.Override
 	}
-	if len(m.Path) > 0 {
-		return renderPath(m.Path)
+	return renderPath(m.Path)
+}
+
+// renderPath turns a structured PathSegment slice into the wire-format field
+// string. Name segments are rendered via lowerCamel (PascalCase → camelCase,
+// acronym-aware: "URL" → "url", "ZipCode" → "zipCode"); names that already
+// start with a lowercase character are passed through verbatim so legacy
+// already-lowercase identifiers ("id", "name") stay unchanged. Index segments
+// are appended in the form "[N]" with no preceding separator.
+//
+// Examples:
+//
+//	[{Name:"Name"}]                                       → "name"
+//	[{Name:"URL"}]                                        → "url"
+//	[{Name:"ZipCode"}]                                    → "zipCode"
+//	[{Name:"Addresses"}, {Index:0}, {Name:"ZipCode"}]     → "addresses[0].zipCode"
+//	[{Name:"id"}]                                         → "id"
+func renderPath(path []PathSegment) string {
+	if len(path) == 0 {
+		return ""
 	}
-	return m.FieldName
+	var b strings.Builder
+	wroteAny := false
+	for _, seg := range path {
+		if seg.Index != nil {
+			b.WriteByte('[')
+			b.WriteString(itoa(*seg.Index))
+			b.WriteByte(']')
+			wroteAny = true
+			continue
+		}
+		if seg.Name == "" && seg.Wire == "" {
+			continue
+		}
+		if wroteAny {
+			b.WriteByte('.')
+		}
+		if seg.Wire != "" {
+			b.WriteString(seg.Wire)
+		} else {
+			b.WriteString(toLowerCamel(seg.Name))
+		}
+		wroteAny = true
+	}
+	return b.String()
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for i > 0 {
+		pos--
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		buf[pos] = '-'
+	}
+	return string(buf[pos:])
 }
 
 type NotificationContext struct {
@@ -157,24 +221,16 @@ func (c *NotificationContext) Messages() []NotificationMessage {
 
 // AddNotificationMessage stores msg in the context. When the context is scoped,
 // the scope prefix is prepended to msg.Path and the message is forwarded to the
-// parent. If the caller passed only msg.FieldName (legacy form) on a scoped
-// context, FieldName is wrapped as a literal leaf so the prefix can still
-// compose correctly.
+// parent.
 func (c *NotificationContext) AddNotificationMessage(msg NotificationMessage) {
 	if c == nil {
 		return
 	}
-	if len(c.prefix) > 0 {
-		if len(msg.Path) == 0 && msg.FieldName != "" {
-			msg.Path = []PathSegment{{Name: msg.FieldName}}
-			msg.FieldName = ""
-		}
-		if len(msg.Path) > 0 {
-			combined := make([]PathSegment, 0, len(c.prefix)+len(msg.Path))
-			combined = append(combined, c.prefix...)
-			combined = append(combined, msg.Path...)
-			msg.Path = combined
-		}
+	if len(c.prefix) > 0 && len(msg.Path) > 0 {
+		combined := make([]PathSegment, 0, len(c.prefix)+len(msg.Path))
+		combined = append(combined, c.prefix...)
+		combined = append(combined, msg.Path...)
+		msg.Path = combined
 	}
 	if c.parent != nil {
 		c.parent.AddNotificationMessage(msg)
@@ -183,11 +239,17 @@ func (c *NotificationContext) AddNotificationMessage(msg NotificationMessage) {
 	c.messages = append(c.messages, msg)
 }
 
-// AddNotification is the common emit helper. It writes a single-segment Path
-// using the Go identifier name; an optional value variadic populates FieldValue
-// (use it to echo back the rejected input on Invalid* notifications). A pointer
-// of any type is dereferenced, so an optional field can be passed straight
-// through; nil renders as the empty string.
+// AddNotificationNamed is the string-named emit seat — for notifications that
+// are not about ONE addressable field (cross-field rules, state rejections) or
+// that name a synthetic token. It writes a single-segment Path using the given
+// name; the renderer converts a Go-cased name to camelCase and passes an
+// already-lowercase token through verbatim. An optional value variadic
+// populates FieldValue (echo the rejected input on Invalid* notifications). A
+// pointer of any type is dereferenced; nil renders as the empty string.
+//
+// Field-addressed emissions go through Rules.AddNotification with the field
+// reference (&e.Field) instead — this seat is the documented exception, not
+// the default.
 //
 // In an AggregateValueObject called via a scoped context, the framework's prefix
 // (collection name + index) composes with the supplied name to produce paths
@@ -195,13 +257,18 @@ func (c *NotificationContext) AddNotificationMessage(msg NotificationMessage) {
 // prefix is prepended and "Name" renders as "name".
 //
 // For messages that need Err, FuncName, or Override, use AddNotificationMessage.
-func (c *NotificationContext) AddNotification(name string, n Notification, value ...any) {
+func (c *NotificationContext) AddNotificationNamed(name string, n Notification, value ...any) {
 	msg := NotificationMessage{
 		Path:         []PathSegment{{Name: name}},
 		Notification: n,
 	}
 	if c != nil && c.entityType != nil {
+		// The name-keyed twin of the field-reference read: when the name is a
+		// field of the owning entity, its declared vocabulary applies here too
+		// — same labelKey, same notifyAs wire token — so a field renders
+		// IDENTICALLY whichever seat emitted about it.
 		msg.LabelKey = resolveLabelKey(c.entityType, name)
+		msg.Path[0].Wire = resolveNotifyAs(c.entityType, name)
 	}
 	if len(value) > 0 {
 		msg.FieldValue = formatFieldValue(value[0])
@@ -268,13 +335,39 @@ func (c *NotificationContext) Clear() {
 }
 
 // ChangeFieldName rewrites the wire-format field name for every message whose
-// resolved field matches oldName. It sets Override on the matching messages, so
-// the underlying Path/FieldName remain intact for diagnostics.
+// resolved field matches oldName — the imperative, per-request seat (a manual
+// handler reshaping one response). It sets Override on the matching messages,
+// so the underlying Path remains intact for diagnostics. oldName is the
+// RESOLVED wire name (post-render); the declarative entity-wide rename is
+// BaseEntity.AddFieldNameAlias, which keys on the GO field name instead.
 func (c *NotificationContext) ChangeFieldName(oldName, newName string) {
 	root := c.root()
 	for i := range root.messages {
 		if root.messages[i].ResolveFieldName() == oldName {
 			root.messages[i].Override = newName
+		}
+	}
+}
+
+// applyGoFieldAlias rewrites the LEAF segment's wire token of every message
+// whose leaf path segment carries the given Go field name — the mechanism
+// behind BaseEntity.AddFieldNameAlias. Writing the segment's Wire (the same
+// slot the `notifyAs` tag fills, and overriding it) keeps a scoped child's
+// prefix intact: aliasing "ZipCode" → "cep" renders "addresses[0].cep", not a
+// flattened literal. Messages without a Path (Override-literal emissions) are
+// untouched — those names were written deliberately.
+func (c *NotificationContext) applyGoFieldAlias(goName, wireName string) {
+	root := c.root()
+	for i := range root.messages {
+		segs := root.messages[i].Path
+		for j := len(segs) - 1; j >= 0; j-- {
+			if segs[j].Index != nil {
+				continue
+			}
+			if segs[j].Name == goName {
+				segs[j].Wire = wireName
+			}
+			break
 		}
 	}
 }
@@ -311,10 +404,15 @@ func (c *NotificationContext) resolvePendingLabels() {
 	root := c.root()
 	for i := range root.messages {
 		msg := &root.messages[i]
-		if msg.LabelKey != "" || len(msg.Path) != 1 || msg.Path[0].Name == "" {
+		if len(msg.Path) != 1 || msg.Path[0].Name == "" {
 			continue
 		}
-		msg.LabelKey = resolveLabelKey(c.entityType, msg.Path[0].Name)
+		if msg.LabelKey == "" {
+			msg.LabelKey = resolveLabelKey(c.entityType, msg.Path[0].Name)
+		}
+		if msg.Path[0].Wire == "" {
+			msg.Path[0].Wire = resolveNotifyAs(c.entityType, msg.Path[0].Name)
+		}
 	}
 }
 

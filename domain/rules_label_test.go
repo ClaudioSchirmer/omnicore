@@ -18,7 +18,7 @@ func TestRules_AddNotification_PopulatesLabelKeyFromEntityType(t *testing.T) {
 	ctx := NewNotificationContext("Test")
 	r := NewRules(ModeInsert, ctx, reflect.TypeOf(ruleFixture{}))
 
-	r.AddNotification("Name", RequiredFieldNotification{})
+	r.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	msgs := ctx.Messages()
 	if len(msgs) != 1 {
@@ -33,7 +33,7 @@ func TestRules_AddNotification_EmptyLabelKeyWhenFieldHasNoTag(t *testing.T) {
 	ctx := NewNotificationContext("Test")
 	r := NewRules(ModeInsert, ctx, reflect.TypeOf(ruleFixture{}))
 
-	r.AddNotification("Bare", RequiredFieldNotification{})
+	r.AddNotificationNamed("Bare", RequiredFieldNotification{})
 
 	msgs := ctx.Messages()
 	if msgs[0].LabelKey != "" {
@@ -45,7 +45,7 @@ func TestRules_AddNotification_EmptyLabelKeyWhenEntityTypeIsNil(t *testing.T) {
 	ctx := NewNotificationContext("Test")
 	r := NewRules(ModeInsert, ctx, nil) // legacy/test path: no entityType
 
-	r.AddNotification("Name", RequiredFieldNotification{})
+	r.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	msgs := ctx.Messages()
 	if msgs[0].LabelKey != "" {
@@ -60,7 +60,7 @@ func TestRules_AddNotification_PreservesFieldValue(t *testing.T) {
 	ctx := NewNotificationContext("Test")
 	r := NewRules(ModeInsert, ctx, reflect.TypeOf(ruleFixture{}))
 
-	r.AddNotification("Name", RequiredFieldNotification{}, "the-input")
+	r.AddNotificationNamed("Name", RequiredFieldNotification{}, "the-input")
 	if got := ctx.Messages()[0].FieldValue; got != "the-input" {
 		t.Errorf("FieldValue = %q, want the-input", got)
 	}
@@ -68,12 +68,14 @@ func TestRules_AddNotification_PreservesFieldValue(t *testing.T) {
 
 func TestRules_AddNotificationWithVars_AlsoPopulatesLabelKey(t *testing.T) {
 	ctx := NewNotificationContext("Test")
-	r := NewRules(ModeInsert, ctx, reflect.TypeOf(ruleFixture{}))
+	fx := &ruleFixture{}
+	r := NewRulesFor(ModeInsert, ctx, fx)
 
 	r.AddNotificationWithVars(
-		"Name",
+		&fx.Name,
 		singleTvarNotif{MaxLength: 100},
 		map[string]string{"override": "yes"},
+		false,
 	)
 
 	msgs := ctx.Messages()
@@ -95,7 +97,7 @@ func TestRules_AddNotification_PointerEntityType(t *testing.T) {
 	ctx := NewNotificationContext("Test")
 	r := NewRules(ModeInsert, ctx, reflect.TypeOf(&ruleFixture{}))
 
-	r.AddNotification("Name", RequiredFieldNotification{})
+	r.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	if got := ctx.Messages()[0].LabelKey; got != "RuleFixtureNameField" {
 		t.Errorf("pointer entityType LabelKey = %q, want RuleFixtureNameField", got)

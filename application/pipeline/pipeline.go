@@ -117,7 +117,7 @@ func requestTimedOut[T any](p *Pipeline, ctx *configuration.AppContext) Result[T
 	)
 	nctx := domain.NewNotificationContext("Request")
 	nctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "request",
+		Override:     "request",
 		Notification: notifications.RequestTimeoutNotification{},
 	})
 	dtos := notifications.ToContextDTOs(p.translator, ctx.Language(),
@@ -128,7 +128,7 @@ func requestTimedOut[T any](p *Pipeline, ctx *configuration.AppContext) Result[T
 func contextNotInitialized[T any](p *Pipeline) Result[T] {
 	ctx := domain.NewNotificationContext("Pipeline")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "context",
+		Override:     "context",
 		FuncName:     "Run",
 		Notification: notifications.ContextNotInitializedNotification{},
 	})

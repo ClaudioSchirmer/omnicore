@@ -42,8 +42,8 @@ func assertSchemaViolation400(t *testing.T, err error, wantPath string) {
 	if got := msg.Notification.Semantic(); got != domain.SemanticSchema {
 		t.Errorf("semantic = %v, want SemanticSchema (→400)", got)
 	}
-	if msg.FieldName != wantPath {
-		t.Errorf("field = %q, want the offending path %q", msg.FieldName, wantPath)
+	if msg.ResolveFieldName() != wantPath {
+		t.Errorf("field = %q, want the offending path %q", msg.ResolveFieldName(), wantPath)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestValidateProjection_UnknownRootPathIs400(t *testing.T) {
 	loader := &joinFieldLoader{ent: joinKitEntity()}
 	r := NewViewReader([]*query.RelationalViewDefinition{query.RelationalView("kits", loader)})
 	_, err := r.ReadPage(context.Background(), "kits", fieldsCriteria("Vendor"))
-	assertSchemaViolation400(t, err, "Vendor")
+	assertSchemaViolation400(t, err, "vendor")
 }
 
 // A path INTO a child segment that the child schema does not own is refused the
@@ -74,7 +74,7 @@ func TestValidateProjection_UnknownRootPathIs400(t *testing.T) {
 func TestValidateProjection_UnknownNestedPathIs400(t *testing.T) {
 	r := projectionReader(nil)
 	_, err := r.ReadPage(context.Background(), "kits", fieldsCriteria("Parts.Supplier"))
-	assertSchemaViolation400(t, err, "Parts.Supplier")
+	assertSchemaViolation400(t, err, "parts.supplier")
 }
 
 // What the view DOES carry passes: a root field, and a leaf inside the child
@@ -122,9 +122,9 @@ func TestValidateProjection_ChildJoinFieldIsSelectable(t *testing.T) {
 func TestValidateProjection_JoinFieldsAreNotReachableAtTheWrongLevel(t *testing.T) {
 	r := projectionReader(map[string][]string{"kits": {"CustomerName"}, "kit_parts": {"CityName"}})
 	_, err := r.ReadPage(context.Background(), "kits", fieldsCriteria("CityName"))
-	assertSchemaViolation400(t, err, "CityName")
+	assertSchemaViolation400(t, err, "cityName")
 	_, err = r.ReadPage(context.Background(), "kits", fieldsCriteria("Parts.CustomerName"))
-	assertSchemaViolation400(t, err, "Parts.CustomerName")
+	assertSchemaViolation400(t, err, "parts.customerName")
 }
 
 // An EXCLUSION naming a path this view has no concept of is as meaningless as an
@@ -134,7 +134,7 @@ func TestValidateProjection_ExclusionModeIsCheckedToo(t *testing.T) {
 	crit := queries.ReadCriteria{Limit: 10}
 	crit.Projection.Drop("Vendor")
 	_, err := r.ReadPage(context.Background(), "kits", crit)
-	assertSchemaViolation400(t, err, "Vendor")
+	assertSchemaViolation400(t, err, "vendor")
 }
 
 // Several unknown paths in one request always name the same first offender: the
@@ -143,7 +143,7 @@ func TestValidateProjection_NamesTheFirstOffenderDeterministically(t *testing.T)
 	r := projectionReader(nil)
 	for i := 0; i < 8; i++ {
 		_, err := r.ReadPage(context.Background(), "kits", fieldsCriteria("Zeta", "Alpha", "Mike"))
-		assertSchemaViolation400(t, err, "Alpha")
+		assertSchemaViolation400(t, err, "alpha")
 	}
 }
 
@@ -152,7 +152,7 @@ func TestValidateProjection_ReadByIDRefusesToo(t *testing.T) {
 	r := projectionReader(nil)
 	_, _, err := r.ReadByID(context.Background(), "kits",
 		"11111111-1111-1111-1111-111111111111", fieldsCriteria("Vendor"))
-	assertSchemaViolation400(t, err, "Vendor")
+	assertSchemaViolation400(t, err, "vendor")
 }
 
 // A read that names no fields is untouched: the whole document, no gate.

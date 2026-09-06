@@ -437,7 +437,7 @@ func (r *Registry) missingPermission(ctx *configuration.AppContext, permission s
 	res := pipeline.Run(r.pipe, ctx, func() (any, error) {
 		nc := domain.NewNotificationContext("Authorization")
 		nc.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    "permission",
+			Override:     "permission",
 			FieldValue:   permission,
 			Notification: notifications.MissingPermissionNotification{},
 		})

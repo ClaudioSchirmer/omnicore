@@ -68,20 +68,62 @@ func EnumDescriptionKey(v any) string {
 	return fmt.Sprintf("%s.%v", rv.Type().Name(), rv.Interface())
 }
 
-// ValidateEnum reports whether e is a declared member of its own Values() set.
-// If it is not — the zero/Unknown sentinel, or an out-of-range cast — it emits
-// the enum's UnknownNotification on ctx and returns false. This is the typed
-// entry used where the concrete enum type is known (an AVO's BuildRules); the
-// ValidateValueObject seam validates the same way by reflection where the type is
-// erased.
-func ValidateEnum[E enumSet[E]](e E, fieldName string, ctx *NotificationContext) bool {
+// ValidateEnum reports whether the referenced field's value is a declared
+// member of its own Values() set. If it is not — the zero/Unknown sentinel, or
+// an out-of-range cast — it emits the enum's UnknownNotification for that
+// field (resolved by reference, exactly like r.AddNotification) and returns
+// false. This is the typed entry used inside BuildRules where the concrete
+// enum type is known:
+//
+//	domain.ValidateEnum(&a.Status, r)
+//
+// The ValidateValueObject seam validates the same way by reflection where the
+// type is erased (a VO that is not an exported field).
+func ValidateEnum[E enumSet[E]](field *E, r *Rules) bool {
+	if field == nil {
+		panic("domain: ValidateEnum takes a reference to the entity's own enum field — " +
+			"domain.ValidateEnum(&e.Status, r); got a nil pointer")
+	}
+	// Resolve EAGERLY, not only when the value fails membership: a bad
+	// reference (a copy made by a helper, an unbound Rules) must die on the
+	// FIRST call, never lie dormant until the first invalid value arrives in
+	// production.
+	var node fieldNode
+	resolved := false
+	if r != nil && r.ctx != nil {
+		node, _ = r.resolveFieldRef(field)
+		resolved = true
+	}
+	e := *field
+	for _, member := range e.Values() {
+		if e == member {
+			return true
+		}
+	}
+	if resolved {
+		r.ctx.AddNotificationMessage(NotificationMessage{
+			Path:         clonePath(node.segs),
+			Notification: e.UnknownNotification(),
+			LabelKey:     labelKeyOf(node.leaf),
+		})
+	}
+	return false
+}
+
+// ValidateEnumNamed is the string-named twin of ValidateEnum — the C5-style
+// explicit exception for seats that hold no bound Rules: a composite value
+// object validating an interior enum part inside its own IsValid, or any
+// emission point that owns only a NotificationContext. The name travels as a
+// rendered Path segment (a Go-cased name renders lowerCamel), exactly like
+// AddNotificationNamed. Inside BuildRules, prefer ValidateEnum(&e.Field, r).
+func ValidateEnumNamed[E enumSet[E]](e E, name string, ctx *NotificationContext) bool {
 	for _, member := range e.Values() {
 		if e == member {
 			return true
 		}
 	}
 	if ctx != nil {
-		ctx.AddNotification(fieldName, e.UnknownNotification())
+		ctx.AddNotificationNamed(name, e.UnknownNotification())
 	}
 	return false
 }
@@ -180,7 +222,7 @@ func (v enumMembershipValidator) IsValid(fieldName string, ctx *NotificationCont
 		}
 	}
 	if ctx != nil {
-		ctx.AddNotification(fieldName, v.e.UnknownNotification())
+		ctx.AddNotificationNamed(fieldName, v.e.UnknownNotification())
 	}
 	return false
 }

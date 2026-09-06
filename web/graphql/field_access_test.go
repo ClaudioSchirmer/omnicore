@@ -74,8 +74,8 @@ func TestFieldAccess_ExplicitSelectionOfRestrictedFieldIsForbidden(t *testing.T)
 	if got := e.Extensions["notificationKey"]; got != "FieldAccessForbiddenNotification" {
 		t.Errorf("extensions.notificationKey = %v, want FieldAccessForbiddenNotification", got)
 	}
-	if got := e.Extensions["field"]; got != "Age" {
-		t.Errorf("extensions.field = %v, want Age", got)
+	if got := e.Extensions["field"]; got != "age" {
+		t.Errorf("extensions.field = %v, want age", got)
 	}
 }
 
@@ -178,8 +178,8 @@ func TestFieldAccess_ByIDExplicitSelectionOfRestrictedFieldIsForbidden(t *testin
 	if got := e.Extensions["notificationKey"]; got != "FieldAccessForbiddenNotification" {
 		t.Errorf("extensions.notificationKey = %v, want FieldAccessForbiddenNotification", got)
 	}
-	if got := e.Extensions["field"]; got != "Age" {
-		t.Errorf("extensions.field = %v, want Age", got)
+	if got := e.Extensions["field"]; got != "age" {
+		t.Errorf("extensions.field = %v, want age", got)
 	}
 }
 

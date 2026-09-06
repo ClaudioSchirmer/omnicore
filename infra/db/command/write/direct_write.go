@@ -703,7 +703,7 @@ func (w *DirectWriter) runExpectingOne(ctx context.Context, build func(Tx) (stri
 	outcome := func(n int64) error {
 		switch {
 		case n == 0:
-			return domain.NotFoundError(w.name, w.schema.IDColumn(), "")
+			return domain.NotFoundError(w.name, w.schema.WireFieldOf(w.schema.IDColumn()), "")
 		case n > 1:
 			return fmt.Errorf("db: %s on %q matched %d rows — the criteria is wider than one row; "+
 				"the write was abandoned", verb, w.schema.Table(), n)

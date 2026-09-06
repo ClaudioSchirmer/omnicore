@@ -221,7 +221,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 	}
 	if active {
 		// Already a (live) role for this identity — POST is a conflict.
-		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
+		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.WireFieldOf(schema.IDColumn()), domain.EntityAlreadyAddedNotification{})
 	}
 	// No ACTIVE role → insert. An ARCHIVED remnant is deliberately not looked
 	// for (DeletedAt is delete): if one exists, the schema's own constraints
@@ -347,7 +347,11 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
+	if err := execExpectingRow(ctx, tx, d, sql, args, expectedRow{
+		table: schema.Table(), contextName: entity.EntityName(),
+		pkCol: schema.IDColumn(), wireField: schema.WireFieldOf(schema.IDColumn()),
+		value: entity.ID().Value(), guardedRevision: rev,
+	}); err != nil {
 		return domain.WriteResult{}, err
 	}
 	// Aggregate role: role + shared-base children, persisted by OperationOf
@@ -418,10 +422,10 @@ func (b *BaseEngine) updateWithBase(ctx persistence.RequestContext, entity domai
 // captures the request itself as Old, so an Old-vs-request comparison would be
 // vacuous precisely in the case that needs guarding.
 func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema, base *TableSchema, entityName, id, fkCol, baseID string) error {
-	nkGo, _ := base.GoOf(base.NaturalIDColumn())
+	nkField := base.WireFieldOf(base.NaturalIDColumn())
 	if fkCol == schema.IDColumn() {
 		if id != baseID {
-			return SingleNotificationError(entityName, nkGo, domain.NaturalIDImmutableNotification{})
+			return SingleNotificationError(entityName, nkField, domain.NaturalIDImmutableNotification{})
 		}
 		return nil
 	}
@@ -441,7 +445,7 @@ func guardNaturalKeyImmutable(ctx context.Context, tx WriteTx, d Dialect, schema
 		return err
 	}
 	if matches != 1 {
-		return SingleNotificationError(entityName, nkGo, domain.NaturalIDImmutableNotification{})
+		return SingleNotificationError(entityName, nkField, domain.NaturalIDImmutableNotification{})
 	}
 	return rows.Err()
 }
@@ -703,7 +707,7 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	}
 	defer rows.Close()
 	if rows.Next() {
-		return SingleNotificationError(entityName, schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
+		return SingleNotificationError(entityName, schema.WireFieldOf(schema.IDColumn()), domain.EntityAlreadyAddedNotification{})
 	}
 	return rows.Err()
 }

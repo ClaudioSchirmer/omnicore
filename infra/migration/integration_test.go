@@ -447,7 +447,7 @@ func errMentions(err error, substr string) bool {
 				if msg.Err != nil && strings.Contains(msg.Err.Error(), substr) {
 					return true
 				}
-				if strings.Contains(msg.FieldName, substr) || strings.Contains(msg.FieldValue, substr) {
+				if strings.Contains(msg.ResolveFieldName(), substr) || strings.Contains(msg.FieldValue, substr) {
 					return true
 				}
 			}

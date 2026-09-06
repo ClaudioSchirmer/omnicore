@@ -169,7 +169,7 @@ func TestJoinField_ChildFieldIsNotFilterable(t *testing.T) {
 		Limit:  10,
 		Filter: map[string]any{"CityName": "porto"},
 	})
-	assertUnsupportedCapability400(t, err, "CityName")
+	assertUnsupportedCapability400(t, err, "cityName")
 }
 
 // Undeclared names still fail: a join widens the vocabulary by exactly what it
@@ -180,7 +180,7 @@ func TestJoinField_UndeclaredNameStillRefused(t *testing.T) {
 		Limit:  10,
 		Filter: map[string]any{"Fantasma": "x"},
 	})
-	assertUnsupportedCapability400(t, err, "Fantasma")
+	assertUnsupportedCapability400(t, err, "fantasma")
 }
 
 // The served join field is projectable like any other: ?fields= keeps it, and

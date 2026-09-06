@@ -169,13 +169,14 @@ func TestExtractVarsFromTags_CacheHitOnRepeatCall(t *testing.T) {
 
 func TestAddNotificationWithVars_PopulatesVarsAndFieldValue(t *testing.T) {
 	ctx := NewNotificationContext("Test")
-	r := NewRules(ModeInsert, ctx, nil)
+	fx := &struct{ Name string }{Name: "the-rejected-input"}
+	r := NewRulesFor(ModeInsert, ctx, fx)
 
 	r.AddNotificationWithVars(
-		"Name",
+		&fx.Name,
 		singleTvarNotif{MaxLength: 100},
 		map[string]string{"override": "yes"},
-		"the-rejected-input",
+		true,
 	)
 
 	msgs := ctx.Messages()

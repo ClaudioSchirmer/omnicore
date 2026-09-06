@@ -2,6 +2,7 @@ package domain
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -56,7 +57,7 @@ type testEmail string
 func (e testEmail) Value() string { return string(e) }
 func (e testEmail) IsValid(fieldName string, ctx *NotificationContext) bool {
 	if string(e) == "" {
-		ctx.AddNotification(fieldName, RequiredFieldNotification{})
+		ctx.AddNotificationNamed(fieldName, RequiredFieldNotification{})
 		return false
 	}
 	return true
@@ -65,27 +66,69 @@ func (e testEmail) IsValid(fieldName string, ctx *NotificationContext) bool {
 // --- ValidateEnum -----------------------------------------------------------
 
 func TestValidateEnum_Membership(t *testing.T) {
+	type fixture struct {
+		Color testColor
+		Size  testSize
+	}
+	fx := &fixture{Color: colorRed, Size: sizeSmall}
 	ctx := NewNotificationContext("X")
-	if !ValidateEnum(colorRed, "color", ctx) {
+	r := NewRulesFor(ModeInsert, ctx, fx)
+	if !ValidateEnum(&fx.Color, r) {
 		t.Error("colorRed is a member — should validate")
 	}
-	if ValidateEnum(colorUnknown, "color", ctx) {
+	fx.Color = colorUnknown
+	if ValidateEnum(&fx.Color, r) {
 		t.Error("colorUnknown (sentinel) should not validate")
 	}
-	if ValidateEnum(testColor(99), "color", ctx) {
+	fx.Color = testColor(99)
+	if ValidateEnum(&fx.Color, r) {
 		t.Error("out-of-range should not validate — membership is enforced")
 	}
+	// The emitted message names the FIELD, resolved from the reference.
+	if msgs := ctx.Messages(); len(msgs) == 0 || msgs[len(msgs)-1].ResolveFieldName() != "color" {
+		t.Errorf("expected field \"color\" on the emission, got %+v", msgs)
+	}
 	// String-backed enum validates the same way.
-	if !ValidateEnum(sizeSmall, "size", ctx) {
+	if !ValidateEnum(&fx.Size, r) {
 		t.Error("sizeSmall is a member — should validate")
 	}
-	if ValidateEnum(sizeUnknown, "size", ctx) {
+	fx.Size = sizeUnknown
+	if ValidateEnum(&fx.Size, r) {
 		t.Error("sizeUnknown (empty sentinel) should not validate")
 	}
-	// nil ctx must not panic on the failure path.
-	if ValidateEnum(colorUnknown, "color", nil) {
-		t.Error("colorUnknown should fail even with a nil ctx")
+	// nil Rules must not panic on the failure path.
+	fx.Color = colorUnknown
+	if ValidateEnum(&fx.Color, nil) {
+		t.Error("colorUnknown should fail even with a nil Rules")
 	}
+}
+
+// A bad reference must die on the FIRST call — even while the value is VALID.
+// Lazy resolution would let a copy-reference lie dormant until the first
+// invalid value arrived in production.
+func TestValidateEnum_BadReferencePanicsEvenOnValidValue(t *testing.T) {
+	type fixture struct{ Color testColor }
+	fx := &fixture{Color: colorRed}
+	ctx := NewNotificationContext("X")
+	r := NewRulesFor(ModeInsert, ctx, fx)
+	copyOf := *fx // valid member, but the reference points into a copy
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Fatal("a reference into a copy must panic on the first call, valid value or not")
+		}
+	}()
+	ValidateEnum(&copyOf.Color, r)
+}
+
+func TestValidateEnum_NilFieldPanicsPedagogically(t *testing.T) {
+	defer func() {
+		rec := recover()
+		msg, ok := rec.(string)
+		if !ok || !strings.Contains(msg, "ValidateEnum(&e.Status, r)") {
+			t.Fatalf("nil field must raise the pedagogic panic, got %v", rec)
+		}
+	}()
+	ValidateEnum[testColor](nil, nil)
 }
 
 // --- EnumByValue ------------------------------------------------------------

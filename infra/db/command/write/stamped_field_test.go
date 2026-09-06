@@ -632,8 +632,8 @@ func TestStampedChild_CounterIsSeparatedFromTheInstant(t *testing.T) {
 // clearedSchema declares one of each stamped kind, with the counter in its
 // NULLABLE form so both verbs reach both kinds.
 type clearedRow struct {
-	ID    domain.ID
-	Label string
+	ID     domain.ID
+	Label  string
 	PaidAt *time.Time
 	Count  *int64
 }
@@ -715,7 +715,7 @@ type clearedEntity struct {
 	PaidAt *time.Time
 }
 
-func (e *clearedEntity) Modes() []domain.EntityMode { return []domain.EntityMode{domain.ModeUpdate} }
+func (e *clearedEntity) Modes() []domain.EntityMode                       { return []domain.EntityMode{domain.ModeUpdate} }
 func (e *clearedEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // A plain int64 counter has no absence to write, and the refusal says which verb
@@ -931,7 +931,7 @@ type clearedLine struct {
 func (l clearedLine) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(l, other)
 }
-func (clearedLine) CollectionName() string                            { return "Lines" }
+func (clearedLine) CollectionName() string                           { return "Lines" }
 func (clearedLine) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func clearedLineSchema() *TableSchema {
@@ -1002,11 +1002,11 @@ func TestStampClearing_ChildWithNoFilledTimeStillWritesBack(t *testing.T) {
 // name meant for one is not a mistake to the other.
 type clearedMember struct {
 	domain.BaseEntity
-	Name      string
-	Document  string
-	MemberRef string
-	JoinedAt  *time.Time // the ROLE's stamped time
-	Visits    *int64     // the ROLE's stamped counter
+	Name       string
+	Document   string
+	MemberRef  string
+	JoinedAt   *time.Time // the ROLE's stamped time
+	Visits     *int64     // the ROLE's stamped counter
 	VerifiedAt *time.Time // the BASE's stamped time
 	Seen       *int64     // the BASE's stamped counter
 }
@@ -1040,10 +1040,10 @@ func TestStampClearing_SplitsAcrossRoleAndBase(t *testing.T) {
 		Name: "Ana", Document: "D1", MemberRef: "R1",
 		JoinedAt: &joined, Visits: &visits, VerifiedAt: &verified, Seen: &seen,
 	}
-	m.StampNull("JoinedAt")     // role, time
-	m.StampEmpty("Visits")      // role, counter
-	m.StampNull("VerifiedAt")   // base, time
-	m.StampEmpty("Seen")        // base, counter
+	m.StampNull("JoinedAt")   // role, time
+	m.StampEmpty("Visits")    // role, counter
+	m.StampNull("VerifiedAt") // base, time
+	m.StampEmpty("Seen")      // base, counter
 
 	// The ROLE claims its two and hands the base's back — unclaimed here is not a
 	// mistake, it is the other schema's business.
@@ -1140,7 +1140,7 @@ type plainCountLine struct {
 func (l plainCountLine) IsSameBusinessIdentity(other domain.AggregateValueObject) bool {
 	return domain.IsSameByBusinessFields(l, other)
 }
-func (plainCountLine) CollectionName() string                            { return "Plines" }
+func (plainCountLine) CollectionName() string                           { return "Plines" }
 func (plainCountLine) BuildRules(string, domain.Service, *domain.Rules) {}
 
 // A SHARED BASE's stamped column writes back onto the role's struct, with EVERY

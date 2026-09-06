@@ -60,7 +60,7 @@ func (ar *AggregateRoot) addAggregateItem(item AggregateValueObject) {
 		switch entry.currentStatus {
 		case StatusAdded, StatusConstructor:
 			ar.AddNotificationMessage(NotificationMessage{
-				FieldName:    key,
+				Path:         childFieldPath(item),
 				Notification: EntityAlreadyAddedNotification{},
 			})
 			return
@@ -136,14 +136,14 @@ func (ar *AggregateRoot) changeAggregateItem(original, replacement AggregateValu
 
 	if target < 0 {
 		ar.AddNotificationMessage(NotificationMessage{
-			FieldName:    key,
+			Path:         childFieldPath(original),
 			Notification: EntityDoesNotExistNotification{},
 		})
 		return
 	}
 	if collision >= 0 {
 		ar.AddNotificationMessage(NotificationMessage{
-			FieldName:    key,
+			Path:         childFieldPath(original),
 			Notification: EntityAlreadyAddedNotification{},
 		})
 		return
@@ -175,7 +175,7 @@ func (ar *AggregateRoot) removeAggregateItem(item AggregateValueObject) {
 	}
 
 	ar.AddNotificationMessage(NotificationMessage{
-		FieldName:    key,
+		Path:         childFieldPath(item),
 		Notification: EntityDoesNotExistNotification{},
 	})
 }
@@ -398,10 +398,31 @@ func allowedChildTypeNames(root AggregateRootProvider) map[string]struct{} {
 	}
 	set := map[string]struct{}{}
 	for _, sample := range root.AggregateChildren() {
+		assertDeclaredChildBuildsRules(sample)
 		set[classNameOf(sample)] = struct{}{}
 	}
 	allowedChildrenCache.Store(t, set)
 	return set
+}
+
+// assertDeclaredChildBuildsRules panics at DECLARATION time — the first
+// primitive that consults AggregateChildren() — when a declared child type
+// lacks the pointer-receiver BuildRules (not part of the interface; see
+// aggregate_vo.go). Without this seat the contract violation would surface
+// only at the first VALIDATION pass, i.e. the first write attempt; here it
+// explodes as soon as the aggregate is touched. buildAVORules keeps the same
+// check for children validated outside the declared set.
+func assertDeclaredChildBuildsRules(sample AggregateValueObject) {
+	if sample == nil {
+		return
+	}
+	t := reflect.TypeOf(sample)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if !reflect.PointerTo(t).Implements(avoRuleBuilderType) {
+		panic(missingAVOBuildRules(t))
+	}
 }
 
 func isAllowedChild(root AggregateRootProvider, item AggregateValueObject) bool {
@@ -425,22 +446,24 @@ func ensureRootInit(root AggregateRootProvider) {
 	}
 }
 
-// rejectChild emits InvalidAggregateChildNotification on the root's context
-// with the offending typeName echoed as FieldValue.
+// rejectChild emits InvalidAggregateChildNotification on the root's context.
+// The wire field is the item's DECLARED collection segment (cased by the Path
+// renderer, like every other child notification); the Go type name stays in
+// FieldValue as the diagnostic echo, since the rejection is about the TYPE not
+// being declared in AggregateChildren().
 func rejectChild(root AggregateRootProvider, item AggregateValueObject) {
 	ar := root.GetAggregateRoot()
 	if ar == nil {
 		return
 	}
-	typeName := ""
-	if item != nil {
-		typeName = classNameOf(item)
-	}
-	ar.AddNotificationMessage(NotificationMessage{
-		FieldName:    typeName,
-		FieldValue:   typeName,
+	msg := NotificationMessage{
 		Notification: InvalidAggregateChildNotification{},
-	})
+	}
+	if item != nil {
+		msg.Path = childFieldPath(item)
+		msg.FieldValue = classNameOf(item)
+	}
+	ar.AddNotificationMessage(msg)
 }
 
 // AddAggregateChild appends an item to the aggregate after checking it against
@@ -556,7 +579,7 @@ func ValidateAggregateChild(
 	scoped := rootCtx.scopedForType(reflect.TypeOf(item), NameSegment(collectionName), IndexSegment(idx))
 	before := len(scoped.Messages())
 	childRules := NewRules(mode, scoped, reflect.TypeOf(item))
-	buildRules(func() { item.BuildRules(actionName, svc, childRules) })
+	buildAVORules(item, actionName, svc, childRules)
 	validateValueObjectFields(item, scoped, childRules.ignoredValueObjects(), childRules.forcedValueObjects())
 	return len(scoped.Messages()) == before
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/ClaudioSchirmer/omnicore/application/exception"
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 )
 
 // OrderByField is one ordering term in a ReadCriteria.
@@ -86,7 +87,7 @@ func (c *ReadCriteria) Restrict(goFieldPath string) error {
 	active := c.referencesField(goFieldPath)
 	c.scrubField(goFieldPath)
 	if active {
-		return exception.SingleNotificationError("Query", goFieldPath, notifications.FieldAccessForbiddenNotification{})
+		return exception.SingleNotificationError("Query", domain.WireFieldPath(goFieldPath), notifications.FieldAccessForbiddenNotification{})
 	}
 	return nil
 }

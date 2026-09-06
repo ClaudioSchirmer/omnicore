@@ -24,8 +24,8 @@ func TestSingleNotificationError(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].FieldName != "email" {
-		t.Errorf("expected FieldName 'email', got %q", msgs[0].FieldName)
+	if msgs[0].ResolveFieldName() != "email" {
+		t.Errorf("expected FieldName 'email', got %q", msgs[0].ResolveFieldName())
 	}
 	if key := domain.NotificationKey(msgs[0].Notification); key != "RecordNotFoundNotification" {
 		t.Errorf("expected NotificationKey 'RecordNotFoundNotification', got %q", key)
@@ -77,24 +77,25 @@ func TestLimitExceededError_Shape(t *testing.T) {
 	m := e.Contexts[0].Messages()[0]
 	// FieldName names the directional control the consumer sent, so the 400
 	// points at the exact wire key: forward = "first", backward = "last".
-	if m.FieldName != "first" || m.FieldValue != "50" {
+	if m.ResolveFieldName() != "first" || m.FieldValue != "50" {
 		t.Errorf("forward rejection must name first + carry the ceiling, got %+v", m)
 	}
 	if _, ok := m.Notification.(domain.LimitExceededNotification); !ok {
 		t.Errorf("kernel notification drifted: %T", m.Notification)
 	}
-	if b := LimitExceededError(50, true).Contexts[0].Messages()[0]; b.FieldName != "last" {
+	if b := LimitExceededError(50, true).Contexts[0].Messages()[0]; b.ResolveFieldName() != "last" {
 		t.Errorf("backward rejection must name last, got %+v", b)
 	}
 }
 
-// UnresolvedFieldPathError names the offending Go path and carries the same
-// kernel notification the wire allowlist emits for an unknown field, so a path
-// the view cannot translate reads identically to a field the DTO never declared.
+// UnresolvedFieldPathError names the offending path in the wire casing
+// (Go segments rendered lower-camel) and carries the same kernel notification
+// the wire allowlist emits for an unknown field, so a path the view cannot
+// translate reads identically to a field the DTO never declared.
 func TestUnresolvedFieldPathError_Shape(t *testing.T) {
 	e := UnresolvedFieldPathError("Addresses.City")
 	m := e.Contexts[0].Messages()[0]
-	if e.Contexts[0].Context() != "Schema" || m.FieldName != "Addresses.City" {
+	if e.Contexts[0].Context() != "Schema" || m.ResolveFieldName() != "addresses.city" {
 		t.Fatalf("wrong envelope: ctx=%q msg=%+v", e.Contexts[0].Context(), m)
 	}
 	if _, ok := m.Notification.(domain.SchemaViolationNotification); !ok {
@@ -106,12 +107,25 @@ func TestInvalidCursorError_Shape(t *testing.T) {
 	cause := errors.New("bad tuple")
 	e := InvalidCursorError(cause)
 	m := e.Contexts[0].Messages()[0]
-	if e.Contexts[0].Context() != "Schema" || m.FieldName != "cursor" || m.Err != cause {
+	if e.Contexts[0].Context() != "Schema" || m.ResolveFieldName() != "cursor" || m.Err != cause {
 		t.Fatalf("wrong envelope: ctx=%q msg=%+v", e.Contexts[0].Context(), m)
 	}
 	// Same notificationKey as the REST wrapper's pre-dispatch rejection — both
 	// surfaces must report identically.
 	if _, ok := m.Notification.(domain.SchemaViolationNotification); !ok {
+		t.Errorf("kernel notification drifted: %T", m.Notification)
+	}
+}
+
+// InvalidFilterValueError renders the Go field in the wire casing — the token
+// the consumer's filter actually carried.
+func TestInvalidFilterValueError_Shape(t *testing.T) {
+	e := InvalidFilterValueError("OwnerID", "not-a-uuid")
+	m := e.Contexts[0].Messages()[0]
+	if e.Contexts[0].Context() != "Schema" || m.ResolveFieldName() != "ownerID" || m.FieldValue != "not-a-uuid" {
+		t.Fatalf("wrong envelope: ctx=%q msg=%+v", e.Contexts[0].Context(), m)
+	}
+	if _, ok := m.Notification.(domain.InvalidFilterValueNotification); !ok {
 		t.Errorf("kernel notification drifted: %T", m.Notification)
 	}
 }

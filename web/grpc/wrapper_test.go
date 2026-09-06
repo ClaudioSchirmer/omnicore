@@ -49,7 +49,7 @@ func (h *createGadgetHandler) Handle(ctx *configuration.AppContext, cmd *createG
 	if cmd.Name == "" {
 		nctx := domain.NewNotificationContext("Gadget")
 		nctx.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    "name",
+			Override:     "name",
 			Notification: domain.RequiredFieldNotification{},
 		})
 		return nil, domain.NewDomainError([]*domain.NotificationContext{nctx})

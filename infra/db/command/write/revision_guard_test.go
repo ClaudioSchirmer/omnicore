@@ -119,7 +119,7 @@ func TestExecExpectingRow_GuardedZeroRows_RowStillThere_IsConflict(t *testing.T)
 	}}
 
 	err := execExpectingRow(context.Background(), tx, testPGDialect{},
-		"UPDATE users …", nil, "users", "User", "id", "u1", 7)
+		"UPDATE users …", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "u1", guardedRevision: 7})
 
 	if keys := notificationKeys(t, err); !hasKey(keys, "ConcurrentModificationNotification") {
 		t.Errorf("a row that still exists after a guarded miss is a conflict, got %v", keys)
@@ -132,7 +132,7 @@ func TestExecExpectingRow_GuardedZeroRows_RowGone_IsNotFound(t *testing.T) {
 	}}
 
 	err := execExpectingRow(context.Background(), tx, testPGDialect{},
-		"UPDATE users …", nil, "users", "User", "id", "u1", 7)
+		"UPDATE users …", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "u1", guardedRevision: 7})
 
 	if keys := notificationKeys(t, err); !hasKey(keys, "RecordNotFoundNotification") {
 		t.Errorf("a vanished row is still a 404, not a conflict, got %v", keys)
@@ -148,7 +148,7 @@ func TestExecExpectingRow_UnguardedZeroRows_SkipsTheProbe(t *testing.T) {
 	}}
 
 	err := execExpectingRow(context.Background(), tx, testPGDialect{},
-		"UPDATE users …", nil, "users", "User", "id", "u1", 0)
+		"UPDATE users …", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "u1", guardedRevision: 0})
 
 	if probed {
 		t.Error("an unguarded statement must not pay the disambiguation probe")
@@ -163,7 +163,7 @@ func TestExecExpectingRow_ProbeErrorPropagates(t *testing.T) {
 	tx := &recTx{count: 0, queryFn: func(string, []any) (Rows, error) { return nil, boom }}
 
 	err := execExpectingRow(context.Background(), tx, testPGDialect{},
-		"UPDATE users …", nil, "users", "User", "id", "u1", 7)
+		"UPDATE users …", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "u1", guardedRevision: 7})
 
 	if !errors.Is(err, boom) {
 		t.Fatalf("a failing probe must surface, not be swallowed into a 404: %v", err)

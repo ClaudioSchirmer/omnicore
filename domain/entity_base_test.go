@@ -25,7 +25,7 @@ func (r Rec) BuildRules(_ string, _ Service, rules *Rules) {
 		*r.lastMode = rules.Mode()
 	}
 	if r.emit != "" {
-		rules.AddNotification(r.emit, RequiredFieldNotification{})
+		rules.AddNotificationNamed(r.emit, RequiredFieldNotification{})
 	}
 }
 

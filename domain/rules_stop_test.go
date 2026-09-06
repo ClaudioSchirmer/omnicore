@@ -36,7 +36,7 @@ func (e *guardEntity) AggregateChildren() []AggregateValueObject {
 func (e *guardEntity) BuildRules(_ string, _ Service, r *Rules) {
 	*e.trace = append(*e.trace, "guard")
 	if e.failGuard {
-		r.AddNotification("Guard", RequiredFieldNotification{})
+		r.AddNotificationNamed("Guard", RequiredFieldNotification{})
 	}
 	if e.barrier {
 		r.StopIfInvalid()
@@ -221,7 +221,7 @@ func (c guardChild) BuildRules(_ string, _ Service, r *Rules) {
 		*c.calls++
 	}
 	if c.barrier {
-		r.AddNotification("ChildGuard", RequiredFieldNotification{})
+		r.AddNotificationNamed("ChildGuard", RequiredFieldNotification{})
 		r.StopIfInvalid()
 	}
 }
@@ -287,7 +287,7 @@ type deferEntity struct {
 func (e *deferEntity) Modes() []EntityMode { return []EntityMode{ModeInsert} }
 func (e *deferEntity) BuildRules(_ string, _ Service, r *Rules) {
 	defer func() { *e.ran = true }()
-	r.AddNotification("Guard", RequiredFieldNotification{})
+	r.AddNotificationNamed("Guard", RequiredFieldNotification{})
 	r.StopIfInvalid()
 	t := 0
 	_ = t
@@ -334,7 +334,7 @@ func TestStopIfInvalid_NilContextIsInert(t *testing.T) {
 func TestStopIfInvalid_HandBuiltRulesUnwindWithoutPass(t *testing.T) {
 	ctx := NewNotificationContext("t")
 	r := NewRules(ModeInsert, ctx, nil)
-	r.AddNotification("Guard", RequiredFieldNotification{})
+	r.AddNotificationNamed("Guard", RequiredFieldNotification{})
 
 	reached := false
 	buildRules(func() {
@@ -390,7 +390,7 @@ func (e *flatGuard) BuildRules(_ string, _ Service, r *Rules) {
 		r.IgnoreValueObject("Email")
 	}
 	if e.emit {
-		r.AddNotification("Guard", RequiredFieldNotification{})
+		r.AddNotificationNamed("Guard", RequiredFieldNotification{})
 	}
 	switch e.place {
 	case "between":
@@ -497,7 +497,7 @@ func TestStopIfInvalid_IgnoreValueObjectBeforeBarrierIsHarmless(t *testing.T) {
 func TestStopIfInvalid_FiresOnAConstructionTimeNotification(t *testing.T) {
 	trace := []string{}
 	e := newFlatGuard("between", false, &trace)
-	e.NotificationContext().AddNotification("Constructed", RequiredFieldNotification{})
+	e.NotificationContext().AddNotificationNamed("Constructed", RequiredFieldNotification{})
 
 	_ = validateForInsert(e, "GetInsertable")
 
@@ -618,7 +618,7 @@ func (e *completionEntity2) Modes() []EntityMode {
 }
 func (e *completionEntity2) BuildRules(_ string, _ Service, r *Rules) {
 	if e.emit {
-		r.AddNotification("Guard", RequiredFieldNotification{})
+		r.AddNotificationNamed("Guard", RequiredFieldNotification{})
 	}
 	if e.barrier {
 		r.StopIfInvalid()
@@ -715,7 +715,7 @@ func (e *placedRoot) AggregateChildren() []AggregateValueObject {
 func (e *placedRoot) viaMethod(r *Rules) { r.StopIfInvalid() }
 
 func (e *placedRoot) BuildRules(_ string, _ Service, r *Rules) {
-	r.AddNotification("Guard", RequiredFieldNotification{})
+	r.AddNotificationNamed("Guard", RequiredFieldNotification{})
 	placeTheBarrier(e.place, r, e.viaMethod)
 	*e.after = true // must stay false in every placement
 	r.IfInsertOrUpdate(func() { *e.after = true })
@@ -839,7 +839,7 @@ func (c placedChild) BuildRules(_ string, _ Service, r *Rules) {
 	if c.place == "" {
 		return // the sibling: no barrier, it only records that it ran
 	}
-	r.AddNotification("KidGuard", RequiredFieldNotification{})
+	r.AddNotificationNamed("KidGuard", RequiredFieldNotification{})
 	placeTheBarrier(c.place, r, c.viaMethod)
 	*c.after = true // must stay false in every placement
 	r.IfInsertOrUpdate(func() { *c.after = true })

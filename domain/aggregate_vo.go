@@ -1,30 +1,35 @@
 package domain
 
+// An AggregateValueObject ALSO declares its validation rules through a
+// BuildRules method — implemented on the POINTER receiver, exactly like a root
+// entity's — but the method is deliberately NOT part of this interface: the
+// tracker stores children BY VALUE (change tracking, reactivation and
+// snapshots all copy), and a value cannot carry a pointer-receiver method in
+// its method set. The framework materializes an addressable copy per
+// validation pass, binds the child's *Rules to it, and asserts the method on
+// the copy's pointer — a child whose *T lacks BuildRules panics at its first
+// validation with the contract spelled out (see buildAVORules).
+//
+//	func (a *Address) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
+//	    r.IfInsertOrUpdate(func() {
+//	        if a.Street == "" {
+//	            r.AddNotification(&a.Street, domain.RequiredFieldNotification{}, false)
+//	        }
+//	    })
+//	}
+//
+// actionName is propagated from the same caller that drives the root's
+// BuildRules (typically "GetInsertable"/"GetUpdatable"/"GetDeletable", or a
+// service-provided custom action). AVOs can branch by actionName to model
+// distinct validation flavours that share the same EntityMode — e.g.
+// stricter rules under an "AdminCreate" insert than a regular one.
+//
+// The framework hands in a *Rules whose NotificationContext is already
+// scoped with the DECLARED collection name (CollectionName below, rendered
+// lower-camel for the wire) and the iteration index — so
+// r.AddNotification(&a.ZipCode, n, false) renders to the wire as
+// "addresses[0].zipCode" without the AVO knowing it is a child.
 type AggregateValueObject interface {
-	// BuildRules declares this child's validation rules. The signature is
-	// intentionally identical to Entity.BuildRules so root and aggregate
-	// children read the same way:
-	//
-	//	func (a Address) BuildRules(actionName string, svc domain.Service, r *domain.Rules) {
-	//	    r.IfInsertOrUpdate(func() {
-	//	        if a.Street == "" {
-	//	            r.AddNotification("Street", domain.RequiredFieldNotification{})
-	//	        }
-	//	    })
-	//	}
-	//
-	// actionName is propagated from the same caller that drives the root's
-	// BuildRules (typically "GetInsertable"/"GetUpdatable"/"GetDeletable", or a
-	// service-provided custom action). AVOs can branch by actionName to model
-	// distinct validation flavours that share the same EntityMode — e.g.
-	// stricter rules under an "AdminCreate" insert than a regular one.
-	//
-	// The framework hands in a *Rules whose NotificationContext is already
-	// scoped with the DECLARED collection name (CollectionName below, rendered
-	// lower-camel for the wire) and the iteration index — so
-	// r.AddNotification("ZipCode", n) renders to the wire as
-	// "addresses[0].zipCode" without the AVO knowing it is a child.
-	BuildRules(actionName string, service Service, r *Rules)
 
 	// CollectionName is the name of the collection this child occupies inside
 	// its owning aggregate — declared, never inferred. It is the ONE name for

@@ -99,7 +99,7 @@ func TestInfrastructureSingleNotificationError(t *testing.T) {
 		t.Fatalf("%+v", e)
 	}
 	msgs := e.Contexts[0].Messages()
-	if len(msgs) != 1 || msgs[0].FieldName != "f" {
+	if len(msgs) != 1 || msgs[0].ResolveFieldName() != "f" {
 		t.Errorf("msg = %+v", msgs)
 	}
 }

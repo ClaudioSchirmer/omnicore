@@ -113,7 +113,11 @@ func (b *BaseEngine) updateAggregate(ctx persistence.RequestContext, entity doma
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
+	if err := execExpectingRow(ctx, tx, d, sql, args, expectedRow{
+		table: schema.Table(), contextName: entity.EntityName(),
+		pkCol: schema.IDColumn(), wireField: schema.WireFieldOf(schema.IDColumn()),
+		value: entity.ID().Value(), guardedRevision: rev,
+	}); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := writeChildren(ctx, tx, d, root, schema, entity.ID().Value(), "", now); err != nil {
@@ -405,7 +409,11 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	if err != nil {
 		return err
 	}
-	if err := execExpectingRow(ctx, tx, d, sql, args, child.Table(), child.Table(), child.IDColumn(), id, 0); err != nil {
+	if err := execExpectingRow(ctx, tx, d, sql, args, expectedRow{
+		table: child.Table(), contextName: child.Table(),
+		pkCol: child.IDColumn(), wireField: child.WireFieldOf(child.IDColumn()),
+		value: id,
+	}); err != nil {
 		return err
 	}
 	// A Changed child carries its full new state → treat its siblings as a full

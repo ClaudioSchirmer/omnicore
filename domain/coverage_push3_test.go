@@ -90,9 +90,9 @@ func TestApplyFieldAliases_AppliesBeforeFrameworkEntry(t *testing.T) {
 	e := &aliasOnlyEntity{}
 	// Both the alias and the notification are declared before any framework
 	// call — the rename must still land.
-	e.AddFieldNameAlias("orig", "new")
+	e.AddFieldNameAlias("Orig", "new")
 	e.AddNotificationMessage(NotificationMessage{
-		FieldName:    "orig",
+		Path:         []PathSegment{{Name: "Orig"}},
 		Notification: RequiredFieldNotification{},
 	})
 

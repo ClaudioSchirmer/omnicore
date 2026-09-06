@@ -21,15 +21,15 @@ func TestRules_Mode_Context(t *testing.T) {
 
 func TestRules_AddNotification_NilCtxNoOp(t *testing.T) {
 	r := NewRules(ModeInsert, nil, nil)
-	r.AddNotification("x", RequiredFieldNotification{}) // must not panic
+	r.AddNotificationNamed("x", RequiredFieldNotification{}) // must not panic
 	r.AddNotificationMessage(NotificationMessage{Notification: RequiredFieldNotification{}})
 }
 
 func TestRules_AddNotification_Forwards(t *testing.T) {
 	ctx := NewNotificationContext("Root")
 	r := NewRules(ModeInsert, ctx, nil)
-	r.AddNotification("name", RequiredFieldNotification{})
-	r.AddNotification("email", RequiredFieldNotification{}, "x@y")
+	r.AddNotificationNamed("name", RequiredFieldNotification{})
+	r.AddNotificationNamed("email", RequiredFieldNotification{}, "x@y")
 
 	msgs := ctx.Messages()
 	if len(msgs) != 2 {
@@ -44,7 +44,7 @@ func TestRules_AddNotificationMessage_Forwards(t *testing.T) {
 	ctx := NewNotificationContext("Root")
 	r := NewRules(ModeInsert, ctx, nil)
 	r.AddNotificationMessage(NotificationMessage{
-		FieldName:    "service",
+		Override:     "service",
 		Err:          errors.New("boom"),
 		Notification: ServiceIsRequiredNotification{},
 	})
@@ -256,15 +256,16 @@ func TestBaseEntity_RegisterEvent(t *testing.T) {
 func TestBaseEntity_AddFieldNameAlias(t *testing.T) {
 	e := &plainEntity{}
 	ensureInit(e)
-	e.AddFieldNameAlias("street", "addressLine")
-	e.AddFieldNameAlias("zip", "postalCode")
+	e.AddFieldNameAlias("Street", "addressLine")
+	e.AddFieldNameAlias("Zip", "postalCode")
 
-	// Emit two notifications keyed on alias-source names, then run alias pass.
+	// Emit two notifications on the alias-source GO field names (the alias
+	// keys on the Go name and rewrites the leaf segment's wire token).
 	e.NotificationContext().AddNotificationMessage(NotificationMessage{
-		FieldName: "street", Notification: RequiredFieldNotification{},
+		Path: []PathSegment{{Name: "Street"}}, Notification: RequiredFieldNotification{},
 	})
 	e.NotificationContext().AddNotificationMessage(NotificationMessage{
-		FieldName: "zip", Notification: RequiredFieldNotification{},
+		Path: []PathSegment{{Name: "Zip"}}, Notification: RequiredFieldNotification{},
 	})
 
 	applyFieldAliases(e)
@@ -281,7 +282,7 @@ func TestBaseEntity_AddFieldNameAlias(t *testing.T) {
 func TestApplyFieldAliases_NoOpWithoutAliases(t *testing.T) {
 	e := &plainEntity{}
 	ensureInit(e)
-	e.NotificationContext().AddNotificationMessage(NotificationMessage{FieldName: "x", Notification: RequiredFieldNotification{}})
+	e.NotificationContext().AddNotificationMessage(NotificationMessage{Override: "x", Notification: RequiredFieldNotification{}})
 
 	// No aliases registered — should be a silent no-op.
 	applyFieldAliases(e)
@@ -338,7 +339,7 @@ func TestBaseEntity_NotificationContext_NeverNil(t *testing.T) {
 
 func TestBaseEntity_AddNotification_BeforeFrameworkEntry(t *testing.T) {
 	e := &plainEntity{}
-	e.AddNotification("Name", RequiredFieldNotification{})
+	e.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	if !e.NotificationContext().HasErrors() {
 		t.Fatal("a notification emitted before any framework call must be kept, not dropped")
@@ -357,7 +358,7 @@ func TestBaseEntity_AddNotification_BeforeFrameworkEntry(t *testing.T) {
 func TestBaseEntity_AddNotificationMessage_BeforeFrameworkEntry(t *testing.T) {
 	e := &plainEntity{}
 	e.AddNotificationMessage(NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: RequiredFieldNotification{},
 	})
 	if n := len(e.NotificationContext().Messages()); n != 1 {
@@ -370,7 +371,7 @@ func TestInitWithName_BackfillsPendingLabels(t *testing.T) {
 	// Emitted while the context is still anonymous: the label cannot be
 	// resolved yet, because *BaseEntity does not know it is inside a
 	// labeledEntity.
-	e.AddNotification("Name", RequiredFieldNotification{})
+	e.AddNotificationNamed("Name", RequiredFieldNotification{})
 	if got := e.NotificationContext().Messages()[0].LabelKey; got != "" {
 		t.Fatalf("LabelKey before naming = %q, want empty", got)
 	}
@@ -387,7 +388,7 @@ func TestInitWithName_BackfillLeavesResolvedLabelsAlone(t *testing.T) {
 	ensureInit(e)
 	// Emitted after naming: resolved at emit time, and a second stamping
 	// attempt must not disturb it.
-	e.AddNotification("Name", RequiredFieldNotification{})
+	e.AddNotificationNamed("Name", RequiredFieldNotification{})
 	ensureInit(e)
 	if got := e.NotificationContext().Messages()[0].LabelKey; got != "LateLabelNameField" {
 		t.Errorf("LabelKey = %q, want %q", got, "LateLabelNameField")
@@ -396,7 +397,7 @@ func TestInitWithName_BackfillLeavesResolvedLabelsAlone(t *testing.T) {
 
 func TestResolvePendingLabels_SkipsUnnamedType(t *testing.T) {
 	ctx := NewNotificationContext("")
-	ctx.AddNotification("Name", RequiredFieldNotification{})
+	ctx.AddNotificationNamed("Name", RequiredFieldNotification{})
 	ctx.resolvePendingLabels() // entityType is nil — nothing to resolve, no panic
 	if got := ctx.Messages()[0].LabelKey; got != "" {
 		t.Errorf("LabelKey = %q, want empty", got)
@@ -409,7 +410,7 @@ func TestResolvePendingLabels_SkipsScopedForwardedMessages(t *testing.T) {
 	// A child AVO's scoped view resolves its own label and forwards a
 	// multi-segment path; the root's backfill must not touch it.
 	scoped := e.NotificationContext().Scoped(NameSegment("Items"), IndexSegment(0))
-	scoped.AddNotification("Name", RequiredFieldNotification{})
+	scoped.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	e.NotificationContext().resolvePendingLabels()
 
@@ -492,7 +493,7 @@ func TestServiceBase_SatisfiesService(t *testing.T) {
 func TestBaseEntity_AddNotificationMessage_RoutesToCtx(t *testing.T) {
 	e := &plainEntity{}
 	ensureInit(e)
-	e.AddNotificationMessage(NotificationMessage{FieldName: "f", Notification: RequiredFieldNotification{}})
+	e.AddNotificationMessage(NotificationMessage{Override: "f", Notification: RequiredFieldNotification{}})
 	if !e.NotificationContext().HasErrors() {
 		t.Error("AddNotificationMessage should route to ctx")
 	}
@@ -506,7 +507,7 @@ func TestBaseEntity_AddNotificationMessage_NoCtxSilent(t *testing.T) {
 
 func TestBaseEntity_AddNotification_NoCtxSilent(t *testing.T) {
 	e := &plainEntity{}
-	e.AddNotification("f", RequiredFieldNotification{}) // notifCtx nil — silent
+	e.AddNotificationNamed("f", RequiredFieldNotification{}) // notifCtx nil — silent
 }
 
 // --- DomainNotificationBase overrides (kernel) ----------------------------

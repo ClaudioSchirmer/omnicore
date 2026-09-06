@@ -7,6 +7,7 @@ import (
 	"github.com/ClaudioSchirmer/omnicore/application/exception"
 	"github.com/ClaudioSchirmer/omnicore/application/notifications"
 	"github.com/ClaudioSchirmer/omnicore/application/queries"
+	"github.com/ClaudioSchirmer/omnicore/domain"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/core"
 	"github.com/ClaudioSchirmer/omnicore/infra/db/criteria"
 )
@@ -16,12 +17,13 @@ import (
 // UnsupportedCapabilityNotification on an *exception.ApplicationError — Semantic
 // SemanticSchema, so every web wrapper turns it into the same 400 whatever engine
 // raised it. `what` is the offending capability or Go field path, surfaced as the
-// notification's FieldName — never a column, never a store's own syntax.
+// notification's FieldName in the wire casing (domain.WireFieldPath) — never a
+// Go identifier, never a column, never a store's own syntax.
 //
 // It is called at the ENTRY POINT of a read, before any IO: the refusal costs no
 // connection and no partial work.
 func unsupported(what string) error {
-	return exception.SingleNotificationError("Query", what, notifications.UnsupportedCapabilityNotification{})
+	return exception.SingleNotificationError("Query", domain.WireFieldPath(what), notifications.UnsupportedCapabilityNotification{})
 }
 
 // toExpr translates the wire-neutral ReadCriteria.Filter (Go-field-keyed, the

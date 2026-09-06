@@ -355,7 +355,7 @@ func TestMongoViewReader_ReadPage_UnresolvableGoPathIsSchemaViolation(t *testing
 			coll := &fakeColl{count: 1, docs: []any{map[string]any{"_id": "u1", "name": "a", "mail": "a@x"}}}
 			r := viewReaderFixture(coll)
 			_, err := r.ReadPage(context.Background(), "builder_view", crit)
-			assertUnresolvedPath(t, err, "UnknownField")
+			assertUnresolvedPath(t, err, "unknownField")
 		})
 	}
 }
@@ -366,7 +366,7 @@ func TestMongoViewReader_ReadByID_UnresolvableGoPathIsSchemaViolation(t *testing
 	_, _, err := r.ReadByID(context.Background(), "builder_view", "u1", queries.ReadCriteria{
 		Filter: map[string]any{"UnknownField": "v"},
 	})
-	assertUnresolvedPath(t, err, "UnknownField")
+	assertUnresolvedPath(t, err, "unknownField")
 }
 
 // assertUnresolvedPath asserts err is the canonical Schema violation naming
@@ -386,8 +386,8 @@ func assertUnresolvedPath(t *testing.T, err error, goPath string) {
 		t.Fatalf("want exactly one notification, got %+v", ctxs)
 	}
 	msg := ctxs[0].Messages()[0]
-	if msg.FieldName != goPath {
-		t.Errorf("FieldName = %q, want the offending path %q", msg.FieldName, goPath)
+	if msg.ResolveFieldName() != goPath {
+		t.Errorf("FieldName = %q, want the offending path %q", msg.ResolveFieldName(), goPath)
 	}
 	if _, ok := msg.Notification.(domain.SchemaViolationNotification); !ok {
 		t.Errorf("Notification = %T, want domain.SchemaViolationNotification (SemanticSchema → 400)", msg.Notification)

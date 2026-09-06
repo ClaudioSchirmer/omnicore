@@ -148,7 +148,7 @@ func TestExtractVarsFromTags_TypedNilPointerReturnsNil(t *testing.T) {
 func TestAddNotificationWithVars_NilContextNoop(t *testing.T) {
 	r := NewRules(ModeInsert, nil, reflect.TypeOf(&plainEntity{}))
 	// ctx is nil → the method returns immediately without panicking.
-	r.AddNotificationWithVars("Name", RequiredFieldNotification{}, map[string]string{"k": "v"})
+	r.AddNotificationWithVars(nil, RequiredFieldNotification{}, map[string]string{"k": "v"}, false)
 }
 
 // --- entity_base mode + id rejection branches -------------------------------
