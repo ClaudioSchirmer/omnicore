@@ -124,6 +124,14 @@
     speaks Go names without any per-Response source-key override.
 </p>
 <p>
+    Notifications follow the same membranes: a framework emitter that holds only a physical column resolves it
+    to the wire-format field name through <code>TableSchema.WireFieldOf(column)</code> — the declared Go name
+    rendered by the same acronym-aware lower-camel renderer the notification wire paths use
+    (<code>user_id</code> → <code>"id"</code>, <code>zip</code> declared for <code>ZipCode</code> →
+    <code>"zipCode"</code>) — so a column name never reaches the wire (see
+    <a href="#status-mapping">Status mapping</a>).
+</p>
+<p>
     For a business <code>Field(goName, column)</code> you choose both the Go name and the column. <strong>For every
     managed slot the Go name is FIXED by the framework — only the column is yours:</strong>
 </p>

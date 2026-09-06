@@ -113,7 +113,7 @@ func assertUnsupportedCapability400(t *testing.T, err error, wantField string) {
 	if got := msg.Notification.Semantic(); got != domain.SemanticSchema {
 		t.Errorf("semantic = %v, want SemanticSchema (→400)", got)
 	}
-	if msg.ResolveFieldName() != wantField && msg.FieldName != wantField {
+	if msg.ResolveFieldName() != wantField && msg.ResolveFieldName() != wantField {
 		t.Errorf("field = %q, want the offending capability %q", msg.ResolveFieldName(), wantField)
 	}
 }
@@ -122,14 +122,14 @@ func assertUnsupportedCapability400(t *testing.T, err error, wantField string) {
 // field: a root SELECT cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildFilter_MapsTo400(t *testing.T) {
 	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"Addresses.ZipCode": "12345"})
-	assertUnsupportedCapability400(t, err, "Addresses.ZipCode")
+	assertUnsupportedCapability400(t, err, "addresses.zipCode")
 }
 
 // TestUnsupportedChildSort_MapsTo400 covers a sort on a child (dotted) field:
 // a root ORDER BY cannot express it, so the reader rejects it as a 400.
 func TestUnsupportedChildSort_MapsTo400(t *testing.T) {
 	err := applySort(guardSchema("gadgets"), nil, criteria.Where(nil), []queries.OrderByField{{Field: "Addresses.ZipCode"}})
-	assertUnsupportedCapability400(t, err, "Addresses.ZipCode")
+	assertUnsupportedCapability400(t, err, "addresses.zipCode")
 }
 
 // siblingSchema is guardSchema plus a 1:1 sibling (qa satellite) carrying
@@ -225,7 +225,7 @@ func TestServableManagedColumns_Passes(t *testing.T) {
 // unknown as any other.
 func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
 	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"CreatedAt": "x"})
-	assertUnsupportedCapability400(t, err, "CreatedAt")
+	assertUnsupportedCapability400(t, err, "createdAt")
 }
 
 // TestUnsupportedUnknownField_MapsTo400 keeps the negative control: a flat field
@@ -233,7 +233,7 @@ func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
 // 400 — the relaxation admits 1:1 satellites, not arbitrary names.
 func TestUnsupportedUnknownField_MapsTo400(t *testing.T) {
 	_, err := toExpr(siblingSchema("gadgets"), nil, map[string]any{"Nonexistent": "x"})
-	assertUnsupportedCapability400(t, err, "Nonexistent")
+	assertUnsupportedCapability400(t, err, "nonexistent")
 }
 
 // TestServableRootField_Passes is the positive control: a bona fide root column

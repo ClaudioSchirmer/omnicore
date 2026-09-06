@@ -70,7 +70,7 @@ func (id ID) IsUUID() bool {
 func (id ID) IsValid(fieldName string, ctx *NotificationContext) bool {
 	if _, err := uuid.Parse(id.value); err != nil {
 		ctx.AddNotificationMessage(NotificationMessage{
-			FieldName:    fieldName,
+			Path:         []PathSegment{{Name: fieldName}},
 			FieldValue:   id.value,
 			Err:          err,
 			Notification: InvalidIDUUIDNotification{},

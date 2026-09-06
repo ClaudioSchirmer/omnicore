@@ -21,8 +21,8 @@ func TestSingleNotificationError(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].FieldName != "email" {
-		t.Errorf("expected FieldName 'email', got %q", msgs[0].FieldName)
+	if msgs[0].ResolveFieldName() != "email" {
+		t.Errorf("expected FieldName 'email', got %q", msgs[0].ResolveFieldName())
 	}
 	if key := NotificationKey(msgs[0].Notification); key != "InvalidIDUUIDNotification" {
 		t.Errorf("expected NotificationKey 'InvalidIDUUIDNotification', got %q", key)
@@ -41,8 +41,8 @@ func TestNotFoundError(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].FieldName != "id" {
-		t.Errorf("expected FieldName 'id', got %q", msgs[0].FieldName)
+	if msgs[0].ResolveFieldName() != "id" {
+		t.Errorf("expected FieldName 'id', got %q", msgs[0].ResolveFieldName())
 	}
 	if msgs[0].FieldValue != "abc-123" {
 		t.Errorf("expected FieldValue 'abc-123', got %q", msgs[0].FieldValue)

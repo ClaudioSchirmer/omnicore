@@ -475,8 +475,8 @@ func TestLimitExceededError_CarriesSchemaContextAndFieldValue(t *testing.T) {
 		t.Fatalf("want LimitExceededNotification, got %T", msgs[0].Notification)
 	}
 	// FieldName is the directional control the consumer sent (forward here).
-	if msgs[0].FieldName != "first" {
-		t.Fatalf("FieldName: got %q, want %q", msgs[0].FieldName, "first")
+	if msgs[0].ResolveFieldName() != "first" {
+		t.Fatalf("Override: got %q, want %q", msgs[0].ResolveFieldName(), "first")
 	}
 	if msgs[0].FieldValue != "250" {
 		t.Fatalf("FieldValue: got %q, want %q", msgs[0].FieldValue, "250")

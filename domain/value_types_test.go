@@ -241,15 +241,19 @@ func TestEventType_UnknownNotification(t *testing.T) {
 
 func TestEventType_ValidateEnum(t *testing.T) {
 	ctx := NewNotificationContext("Event")
-	if !ValidateEnum(EventLog, "type", ctx) {
+	fx := &struct{ Type EventType }{Type: EventLog}
+	r := NewRulesFor(ModeInsert, ctx, fx)
+	if !ValidateEnum(&fx.Type, r) {
 		t.Error("EventLog should validate")
 	}
-	if ValidateEnum(EventUnknown, "type", ctx) {
+	fx.Type = EventUnknown
+	if ValidateEnum(&fx.Type, r) {
 		t.Error("EventUnknown (the sentinel) should not validate")
 	}
 	// Membership is enforced in the domain now: an out-of-range cast is not a
 	// declared member, so it fails too (no longer a mere zero-value guard).
-	if ValidateEnum(EventType(99), "type", ctx) {
+	fx.Type = EventType(99)
+	if ValidateEnum(&fx.Type, r) {
 		t.Error("EventType(99) is outside the declared set — should not validate")
 	}
 }
@@ -400,8 +404,8 @@ func TestNotificationContext_Clear(t *testing.T) {
 
 func TestNotificationContext_ChangeFieldName(t *testing.T) {
 	c := NewNotificationContext("A")
-	c.AddNotificationMessage(NotificationMessage{FieldName: "email", Notification: RequiredFieldNotification{}})
-	c.AddNotificationMessage(NotificationMessage{FieldName: "phone", Notification: RequiredFieldNotification{}})
+	c.AddNotificationMessage(NotificationMessage{Override: "email", Notification: RequiredFieldNotification{}})
+	c.AddNotificationMessage(NotificationMessage{Override: "phone", Notification: RequiredFieldNotification{}})
 	c.ChangeFieldName("email", "primaryEmail")
 
 	msgs := c.Messages()
@@ -424,7 +428,7 @@ func TestNotificationContext_Scoped_NoSegmentsReturnsSame(t *testing.T) {
 func TestNotificationContext_Scoped_AddsToRoot(t *testing.T) {
 	root := NewNotificationContext("A")
 	scoped := root.Scoped(NameSegment("items"), IndexSegment(0))
-	scoped.AddNotification("field", RequiredFieldNotification{})
+	scoped.AddNotificationNamed("field", RequiredFieldNotification{})
 
 	if !root.HasErrors() {
 		t.Error("messages should land in the root context")
@@ -438,7 +442,7 @@ func TestNotificationContext_Scoped_ChainedNesting(t *testing.T) {
 	root := NewNotificationContext("A")
 	level1 := root.Scoped(NameSegment("orders"), IndexSegment(2))
 	level2 := level1.Scoped(NameSegment("lines"), IndexSegment(5))
-	level2.AddNotification("quantity", RequiredFieldNotification{})
+	level2.AddNotificationNamed("quantity", RequiredFieldNotification{})
 
 	got := root.Messages()[0].ResolveFieldName()
 	if got != "orders[2].lines[5].quantity" {
@@ -448,7 +452,7 @@ func TestNotificationContext_Scoped_ChainedNesting(t *testing.T) {
 
 func TestNotificationContext_Copy_DefaultName(t *testing.T) {
 	c := NewNotificationContext("Original")
-	c.AddNotificationMessage(NotificationMessage{FieldName: "x", Notification: RequiredFieldNotification{}})
+	c.AddNotificationMessage(NotificationMessage{Override: "x", Notification: RequiredFieldNotification{}})
 	cp := c.Copy()
 	if cp.Context() != "Original" {
 		t.Errorf("Copy() default context = %q, want Original", cp.Context())
@@ -458,7 +462,7 @@ func TestNotificationContext_Copy_DefaultName(t *testing.T) {
 	}
 
 	// Mutating the copy must not affect the original.
-	cp.AddNotificationMessage(NotificationMessage{FieldName: "y", Notification: RequiredFieldNotification{}})
+	cp.AddNotificationMessage(NotificationMessage{Override: "y", Notification: RequiredFieldNotification{}})
 	if len(c.Messages()) != 1 {
 		t.Errorf("source mutated after copy modification: %d messages", len(c.Messages()))
 	}

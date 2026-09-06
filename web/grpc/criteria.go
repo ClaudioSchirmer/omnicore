@@ -531,8 +531,8 @@ func (b *CriteriaBuilder) Build() (queries.ReadCriteria, error) {
 // prefix would name nothing here. Same rule, this wire's spelling.
 func violationError(v *queryschema.Violation) error {
 	msg := v.Message()
-	if token, wrapped := queryschema.OrderByToken(msg.FieldName); wrapped {
-		msg.FieldName = token
+	if token, wrapped := queryschema.OrderByToken(msg.Override); wrapped {
+		msg.Override = token
 	}
 	nctx := domain.NewNotificationContext(v.ContextName())
 	nctx.AddNotificationMessage(msg)

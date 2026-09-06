@@ -544,10 +544,10 @@ func (n SensitiveLimitNotification) TranslationVars() map[string]string {
     <h4>Per-emit override — <code>Vars</code> on <code>NotificationMessage</code></h4>
     <p>When the same notification type ships with default vars from its tags but a specific call site needs to inject additional or overriding values, pass them via the per-emit <code>Vars</code> map. The Rules DSL exposes the helper:</p>
 <pre><code>r.AddNotificationWithVars(
-    "Name",
+    &amp;u.Name,
     NameMaxLengthExceededNotification{MaxLength: u.NameMaxLength},
     map[string]string{"context": "premium-plan"},
-    u.Name,                                  // optional value variadic — same as AddNotification
+    true,                                    // exposeValue — echo the field, same as AddNotification
 )</code></pre>
     <p>Resolution order at render time (per-emit wins on key collision): tag-derived vars (or <code>TranslationVars()</code> output) ← per-message <code>Vars</code>.</p>
 

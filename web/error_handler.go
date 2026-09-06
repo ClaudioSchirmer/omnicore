@@ -122,7 +122,7 @@ func respondCarrier(c fiber.Ctx, pipe *pipeline.Pipeline, carrier domain.Notific
 func respondRouteNotFound(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Route")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.RouteNotFoundNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -133,7 +133,7 @@ func respondRouteNotFound(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 func respondMethodNotAllowed(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Route")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.MethodNotAllowedNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -144,7 +144,7 @@ func respondMethodNotAllowed(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 func respondPayloadTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.PayloadTooLargeNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -158,7 +158,7 @@ func respondPayloadTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 func respondReadTimeout(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.ReadTimeoutNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -175,7 +175,7 @@ func respondReadTimeout(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 func respondTooManyRequests(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.TooManyRequestsNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -189,7 +189,7 @@ func respondTooManyRequests(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 func respondMalformedRequest(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.MalformedRequestNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -203,7 +203,7 @@ func respondMalformedRequest(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 func respondRequestHeaderFieldsTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.RequestHeaderFieldsTooLargeNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)
@@ -217,7 +217,7 @@ func respondRequestHeaderFieldsTooLarge(c fiber.Ctx, pipe *pipeline.Pipeline) er
 func respondNotImplemented(c fiber.Ctx, pipe *pipeline.Pipeline) error {
 	ctx := domain.NewNotificationContext("Request")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    c.Method() + " " + c.Path(),
+		Override:     c.Method() + " " + c.Path(),
 		Notification: notifications.NotImplementedNotification{},
 	})
 	return respondViaPipeline(c, pipe, ctx)

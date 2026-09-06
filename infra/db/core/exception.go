@@ -31,14 +31,14 @@ func (e *InfrastructureError) NotificationContexts() []*domain.NotificationConte
 // SingleNotificationError packages a single notification into *InfrastructureError.
 func SingleNotificationError(contextName, fieldName string, n domain.Notification) *InfrastructureError {
 	return NewInfrastructureErrorWith(contextName, domain.NotificationMessage{
-		FieldName: fieldName, Notification: n,
+		Override: fieldName, Notification: n,
 	})
 }
 
 // FieldErrorWithCause includes a raw error as cause (typical for constraint catch).
 func FieldErrorWithCause(contextName, fieldName string, cause error, n domain.Notification) *InfrastructureError {
 	return NewInfrastructureErrorWith(contextName, domain.NotificationMessage{
-		FieldName: fieldName, Err: cause, Notification: n,
+		Override: fieldName, Err: cause, Notification: n,
 	})
 }
 
@@ -55,7 +55,7 @@ func LimitExceededError(maxLimit int64, backward bool) *InfrastructureError {
 		field = "last"
 	}
 	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
-		FieldName:    field,
+		Override:     field,
 		FieldValue:   fmt.Sprintf("%d", maxLimit),
 		Notification: domain.LimitExceededNotification{},
 	})
@@ -72,7 +72,7 @@ func LimitExceededError(maxLimit int64, backward bool) *InfrastructureError {
 // plain error → 500/Internal instead of a legible Schema rejection.
 func InvalidCursorError(cause error) *InfrastructureError {
 	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
-		FieldName:    "cursor",
+		Override:     "cursor",
 		Err:          cause,
 		Notification: domain.SchemaViolationNotification{},
 	})
@@ -81,7 +81,9 @@ func InvalidCursorError(cause error) *InfrastructureError {
 // UnresolvedFieldPathError packages "this view cannot resolve that Go field
 // path" in the canonical Schema envelope — a filter, sort or projection path
 // that the view's TableSchema tree does not translate to a physical column.
-// FieldName is the offending dotted Go path.
+// FieldName is the offending path rendered in the wire casing
+// (domain.WireFieldPath), so the 400 names the token the consumer sent, not
+// the Go identifier this layer resolved it to.
 //
 // The alternative the reader used to take was to pass the path through to Mongo
 // verbatim, which silently matched nothing: a filter returned an empty page and
@@ -93,7 +95,7 @@ func InvalidCursorError(cause error) *InfrastructureError {
 // answer an unknown path identically.
 func UnresolvedFieldPathError(goPath string) *InfrastructureError {
 	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
-		FieldName:    goPath,
+		Override:     domain.WireFieldPath(goPath),
 		Notification: domain.SchemaViolationNotification{},
 	})
 }
@@ -103,14 +105,16 @@ func UnresolvedFieldPathError(goPath string) *InfrastructureError {
 // InvalidCursorError, and the reason a mistyped filter is a 400 rather than
 // the 500 a driver error becomes.
 //
-// FieldName is the GO field name: this layer knows the schema, not the wire
-// key the consumer typed. queryschema refuses first wherever it can (it knows
-// the wire key AND the declared kind), so this message is what reaches a
-// consumer only when the wire could not tell — an identity column behind a
-// string-typed filter leaf.
+// FieldName is the Go field name rendered in the wire casing
+// (domain.WireFieldPath): this layer knows the schema, not the wire key the
+// consumer typed, and the rendered Go name IS that key on every framework
+// surface. queryschema refuses first wherever it can (it knows the wire key
+// AND the declared kind), so this message is what reaches a consumer only when
+// the wire could not tell — an identity column behind a string-typed filter
+// leaf.
 func InvalidFilterValueError(goField, value string) *InfrastructureError {
 	return NewInfrastructureErrorWith("Schema", domain.NotificationMessage{
-		FieldName:    goField,
+		Override:     domain.WireFieldPath(goField),
 		FieldValue:   value,
 		Notification: domain.InvalidFilterValueNotification{},
 	})

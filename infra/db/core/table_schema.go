@@ -1272,6 +1272,21 @@ func (s *TableSchema) GoOf(column string) (string, bool) {
 	return f.goName, ok
 }
 
+// WireFieldOf resolves a physical column to the wire-format field name a
+// notification carries: the declared Go name rendered through the same
+// acronym-aware lower-camel renderer the notification wire paths use ("ID" →
+// "id", "ZipCode" → "zipCode"). Infra emitters that hold only a column — the
+// not-found/concurrency probes, the shared-base duplicate guard — name the
+// field through here so a physical column name never reaches the wire. A
+// column the schema does not declare renders as itself: the only truthful
+// name left.
+func (s *TableSchema) WireFieldOf(column string) string {
+	if g, ok := s.GoOf(column); ok && g != "" {
+		return domain.WireFieldPath(g)
+	}
+	return column
+}
+
 // goNameForRead returns the logical Go field name for a physical column on the
 // read path, including the managed columns under fixed logical names
 // (created_at → "CreatedAt", updated_at → "UpdatedAt", DeletedAt → "DeletedAt")

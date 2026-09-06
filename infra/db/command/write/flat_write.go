@@ -134,7 +134,11 @@ func (b *BaseEngine) Update(ctx persistence.RequestContext, entity domain.Updata
 	if err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), entity.EntityName(), schema.IDColumn(), entity.ID().Value(), rev); err != nil {
+	if err := execExpectingRow(ctx, tx, d, sql, args, expectedRow{
+		table: schema.Table(), contextName: entity.EntityName(),
+		pkCol: schema.IDColumn(), wireField: schema.WireFieldOf(schema.IDColumn()),
+		value: entity.ID().Value(), guardedRevision: rev,
+	}); err != nil {
 		return domain.WriteResult{}, err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, entity.ID().Value(), entity.IsPartial()); err != nil {
@@ -326,7 +330,11 @@ func (b *BaseEngine) softWrite(
 	if err != nil {
 		return err
 	}
-	if err := execExpectingRow(ctx, tx, d, sql, args, schema.Table(), hctx.EntityType, schema.IDColumn(), id, rev); err != nil {
+	if err := execExpectingRow(ctx, tx, d, sql, args, expectedRow{
+		table: schema.Table(), contextName: hctx.EntityType,
+		pkCol: schema.IDColumn(), wireField: schema.WireFieldOf(schema.IDColumn()),
+		value: id, guardedRevision: rev,
+	}); err != nil {
 		return err
 	}
 	if err := applySiblingUpdates(ctx, tx, d, schema, src, id, true); err != nil {
@@ -546,7 +554,8 @@ func loadedRevision(src domain.Entity) int64 {
 // apart, and it runs ONLY here on the failure path — the happy path pays
 // nothing, because the guard rides the UPDATE's own WHERE. An unguarded
 // statement skips the probe: zero rows can only mean the row is gone.
-func execExpectingRow(ctx context.Context, tx WriteTx, d Dialect, sql string, args []any, table, contextName, field, value string, guardedRevision int64) error {
+//
+func execExpectingRow(ctx context.Context, tx WriteTx, d Dialect, sql string, args []any, row expectedRow) error {
 	n, err := tx.ExecCount(ctx, sql, args...)
 	if err != nil {
 		return err
@@ -554,16 +563,31 @@ func execExpectingRow(ctx context.Context, tx WriteTx, d Dialect, sql string, ar
 	if n > 0 {
 		return nil
 	}
-	if guardedRevision > 0 {
-		exists, err := rowExists(ctx, tx, d, table, field, value)
+	if row.guardedRevision > 0 {
+		exists, err := rowExists(ctx, tx, d, row.table, row.pkCol, row.value)
 		if err != nil {
 			return err
 		}
 		if exists {
-			return SingleNotificationError(contextName, field, domain.ConcurrentModificationNotification{})
+			return SingleNotificationError(row.contextName, row.wireField, domain.ConcurrentModificationNotification{})
 		}
 	}
-	return domain.NotFoundError(contextName, field, value)
+	return domain.NotFoundError(row.contextName, row.wireField, row.value)
+}
+
+// expectedRow identifies the ONE row an execExpectingRow statement must match:
+// where it lives physically (table + pkCol drive the existence probe — pkCol
+// is the physical id column, never on the wire) and how a refusal names it
+// (contextName + wireField, the schema's wire-format field via
+// TableSchema.WireFieldOf at the call site, + the echoed value). A
+// guardedRevision > 0 arms the 404-vs-409 split.
+type expectedRow struct {
+	table           string
+	contextName     string
+	pkCol           string
+	wireField       string
+	value           string
+	guardedRevision int64
 }
 
 // rowExists probes whether the row still exists, to split a zero-row guarded

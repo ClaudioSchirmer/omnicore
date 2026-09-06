@@ -630,7 +630,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	}
 	if roleExists {
 		return fresh, false, core.SingleNotificationError(
-			l.contextName(), l.schema.IDColumn(), domain.EntityAlreadyAddedNotification{})
+			l.contextName(), l.schema.WireFieldOf(l.schema.IDColumn()), domain.EntityAlreadyAddedNotification{})
 	}
 	if err := l.loadBaseChildrenConstructor(ctx, newE, base, baseID); err != nil {
 		return fresh, false, err

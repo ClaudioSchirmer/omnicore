@@ -87,35 +87,33 @@ func TestRenderPath_NestedAggregates(t *testing.T) {
 func TestResolveFieldName_PrecedenceOverride(t *testing.T) {
 	zero := 0
 	msg := NotificationMessage{
-		Path:      []PathSegment{{Name: "addresses"}, {Index: &zero}, {Name: "ZipCode"}},
-		Override:  "_root",
-		FieldName: "raw",
+		Path:     []PathSegment{{Name: "addresses"}, {Index: &zero}, {Name: "ZipCode"}},
+		Override: "_root",
 	}
 	if got := msg.ResolveFieldName(); got != "_root" {
 		t.Errorf("override should win: got %q", got)
 	}
 }
 
-func TestResolveFieldName_PrecedencePath(t *testing.T) {
+func TestResolveFieldName_PathRendersWithoutOverride(t *testing.T) {
 	msg := NotificationMessage{
-		Path:      []PathSegment{{Name: "Name"}},
-		FieldName: "raw",
+		Path: []PathSegment{{Name: "Name"}},
 	}
 	if got := msg.ResolveFieldName(); got != "name" {
-		t.Errorf("path should win over FieldName: got %q", got)
+		t.Errorf("path should render lowerCamel: got %q", got)
 	}
 }
 
-func TestResolveFieldName_FallbackFieldName(t *testing.T) {
-	msg := NotificationMessage{FieldName: "id"}
+func TestResolveFieldName_OverrideLiteral(t *testing.T) {
+	msg := NotificationMessage{Override: "id"}
 	if got := msg.ResolveFieldName(); got != "id" {
-		t.Errorf("FieldName fallback: got %q", got)
+		t.Errorf("Override literal: got %q", got)
 	}
 }
 
 func TestNotificationContext_AddNotification_Root(t *testing.T) {
 	ctx := NewNotificationContext("User")
-	ctx.AddNotification("Name", RequiredFieldNotification{})
+	ctx.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	msgs := ctx.Messages()
 	if len(msgs) != 1 {
@@ -129,7 +127,7 @@ func TestNotificationContext_AddNotification_Root(t *testing.T) {
 func TestNotificationContext_Scoped_ComposesPrefix(t *testing.T) {
 	ctx := NewNotificationContext("User")
 	scoped := ctx.Scoped(NameSegment("addresses"), IndexSegment(0))
-	scoped.AddNotification("ZipCode", RequiredFieldNotification{})
+	scoped.AddNotificationNamed("ZipCode", RequiredFieldNotification{})
 
 	msgs := ctx.Messages()
 	if len(msgs) != 1 {
@@ -144,7 +142,7 @@ func TestNotificationContext_Scoped_NestedScopes(t *testing.T) {
 	ctx := NewNotificationContext("User")
 	outer := ctx.Scoped(NameSegment("orders"), IndexSegment(0))
 	inner := outer.Scoped(NameSegment("lines"), IndexSegment(1))
-	inner.AddNotification("Quantity", RequiredFieldNotification{})
+	inner.AddNotificationNamed("Quantity", RequiredFieldNotification{})
 
 	msgs := ctx.Messages()
 	if len(msgs) != 1 {
@@ -156,13 +154,13 @@ func TestNotificationContext_Scoped_NestedScopes(t *testing.T) {
 	}
 }
 
-func TestNotificationContext_Scoped_LegacyFieldNameWrapped(t *testing.T) {
+func TestNotificationContext_Scoped_OverrideStaysLiteral(t *testing.T) {
 	ctx := NewNotificationContext("User")
 	scoped := ctx.Scoped(NameSegment("addresses"), IndexSegment(0))
-	// Legacy: AVO that still passes FieldName (no Path) — context wraps it so
-	// the prefix can apply.
+	// An Override is a deliberate LITERAL — the scope prefix never composes
+	// with it (only Path-based messages compose).
 	scoped.AddNotificationMessage(NotificationMessage{
-		FieldName:    "street",
+		Override:     "street",
 		Notification: RequiredFieldNotification{},
 	})
 
@@ -170,16 +168,15 @@ func TestNotificationContext_Scoped_LegacyFieldNameWrapped(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	// "street" was lowercase already → renders as-is, prefix composes.
-	if got := msgs[0].ResolveFieldName(); got != "addresses[0].street" {
-		t.Errorf("expected %q, got %q", "addresses[0].street", got)
+	if got := msgs[0].ResolveFieldName(); got != "street" {
+		t.Errorf("expected the literal %q, got %q", "street", got)
 	}
 }
 
 func TestNotificationContext_ChangeFieldName_OverridesPath(t *testing.T) {
 	ctx := NewNotificationContext("User")
 	scoped := ctx.Scoped(NameSegment("addresses"), IndexSegment(0))
-	scoped.AddNotification("ZipCode", RequiredFieldNotification{})
+	scoped.AddNotificationNamed("ZipCode", RequiredFieldNotification{})
 
 	// Manual handler renames the wire field.
 	ctx.ChangeFieldName("addresses[0].zipCode", "_root")
@@ -200,7 +197,7 @@ func TestNotificationContext_Scoped_HasErrorsForwarded(t *testing.T) {
 	if ctx.HasErrors() || scoped.HasErrors() {
 		t.Fatal("expected no errors before AddNotification")
 	}
-	scoped.AddNotification("ZipCode", RequiredFieldNotification{})
+	scoped.AddNotificationNamed("ZipCode", RequiredFieldNotification{})
 	if !ctx.HasErrors() || !scoped.HasErrors() {
 		t.Fatal("expected HasErrors=true on both root and scoped after AddNotification")
 	}
@@ -209,7 +206,7 @@ func TestNotificationContext_Scoped_HasErrorsForwarded(t *testing.T) {
 func TestNotificationContext_Clear_FromScoped(t *testing.T) {
 	ctx := NewNotificationContext("User")
 	scoped := ctx.Scoped(NameSegment("addresses"), IndexSegment(0))
-	scoped.AddNotification("ZipCode", RequiredFieldNotification{})
+	scoped.AddNotificationNamed("ZipCode", RequiredFieldNotification{})
 	scoped.Clear()
 	if ctx.HasErrors() {
 		t.Fatal("expected Clear from scoped to clear root messages")
@@ -222,7 +219,7 @@ func TestNotificationContext_Clear_FromScoped(t *testing.T) {
 // itself — the emit sink absorbs a nil receiver. A panic here fails the test.
 func TestNotificationContext_NilReceiver_IsNoOp(t *testing.T) {
 	var c *NotificationContext
-	c.AddNotificationMessage(NotificationMessage{FieldName: "x", Notification: RequiredFieldNotification{}})
-	c.AddNotification("y", RequiredFieldNotification{})
-	c.AddNotification("z", InvalidIDUUIDNotification{}, "value")
+	c.AddNotificationMessage(NotificationMessage{Override: "x", Notification: RequiredFieldNotification{}})
+	c.AddNotificationNamed("y", RequiredFieldNotification{})
+	c.AddNotificationNamed("z", InvalidIDUUIDNotification{}, "value")
 }

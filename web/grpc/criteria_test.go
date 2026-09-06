@@ -68,7 +68,7 @@ func violationFields(t *testing.T, err error) []string {
 	var fields []string
 	for _, nctx := range carrier.NotificationContexts() {
 		for _, msg := range nctx.Messages() {
-			fields = append(fields, msg.FieldName)
+			fields = append(fields, msg.ResolveFieldName())
 		}
 	}
 	return fields

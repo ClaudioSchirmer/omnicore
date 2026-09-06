@@ -102,8 +102,8 @@ func TestRelationalWiring_TheEngineRefusalSurvivesTheSeam(t *testing.T) {
 	if got := msg.Notification.Semantic(); got != domain.SemanticSchema {
 		t.Errorf("semantic = %v, want SemanticSchema (400)", got)
 	}
-	if msg.FieldName != "search" {
-		t.Errorf("the refusal must name the capability, got %q", msg.FieldName)
+	if msg.ResolveFieldName() != "search" {
+		t.Errorf("the refusal must name the capability, got %q", msg.ResolveFieldName())
 	}
 }
 

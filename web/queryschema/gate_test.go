@@ -181,8 +181,8 @@ func TestControlViolation_Field(t *testing.T) {
 
 func TestControlViolation_Message(t *testing.T) {
 	m := ControlViolation{Kind: ViolationNotDeclared, Key: KeyOrderBy}.Message()
-	if m.FieldName != "orderBy" {
-		t.Fatalf("message field: got %q", m.FieldName)
+	if m.ResolveFieldName() != "orderBy" {
+		t.Fatalf("message field: got %q", m.ResolveFieldName())
 	}
 	if _, ok := m.Notification.(domain.SchemaViolationNotification); !ok {
 		t.Fatalf("message notification: got %T", m.Notification)

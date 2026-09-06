@@ -41,7 +41,7 @@ func TestToContextDTOs_RendersTagDerivedVarsOnMessage(t *testing.T) {
 
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: maxLengthNotif{MaxLength: 100},
 	})
 
@@ -60,7 +60,7 @@ func TestToContextDTOs_PerMessageVarsOverrideNotifVars(t *testing.T) {
 
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: maxLengthNotif{MaxLength: 100},
 		Vars:         map[string]string{"maxLength": "OVERRIDE"},
 	})
@@ -78,7 +78,7 @@ func TestToContextDTOs_RendersContextVarsOnLabel(t *testing.T) {
 	ctx := domain.NewNotificationContext("UserOf{tenantId}")
 	ctx.SetVars(map[string]string{"tenantId": "acme"})
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: plainNotif{},
 	})
 
@@ -96,7 +96,7 @@ func TestToContextDTOs_NoVarsNoPlaceholders_PreviousBehaviorPreserved(t *testing
 
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: plainNotif{},
 	})
 

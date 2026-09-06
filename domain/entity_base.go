@@ -120,15 +120,15 @@ func (b *BaseEntity) AddNotificationMessage(msg NotificationMessage) {
 	b.ensureContext().AddNotificationMessage(msg)
 }
 
-// AddNotification is the convenience emit helper shared with
-// NotificationContext.AddNotification and Rules.AddNotification — same form,
-// same semantics. Inside BuildRules, prefer r.AddNotification (the *Rules
-// already carries the right ctx and is identical between root and AVO).
-// Outside BuildRules (custom helpers, kernel notifications), use this when you
-// already hold the entity reference. The optional value variadic populates
+// AddNotificationNamed is the string-named convenience emit helper shared with
+// NotificationContext.AddNotificationNamed and Rules.AddNotificationNamed —
+// same form, same semantics. Inside BuildRules, prefer
+// r.AddNotification(&e.Field, …) — the field-reference seat; this seat serves
+// emissions outside BuildRules (custom helpers, kernel notifications) and
+// names that are not addressable fields. The optional value variadic populates
 // FieldValue (use to echo rejected input).
-func (b *BaseEntity) AddNotification(name string, n Notification, value ...any) {
-	b.ensureContext().AddNotification(name, n, value...)
+func (b *BaseEntity) AddNotificationNamed(name string, n Notification, value ...any) {
+	b.ensureContext().AddNotificationNamed(name, n, value...)
 }
 
 func (b *BaseEntity) AddNotificationContext(ctx *NotificationContext) {
@@ -155,11 +155,24 @@ func (b *BaseEntity) RegisterEvent(event DomainEvent) {
 // return value.
 func (b *BaseEntity) Old() Entity { return b.old }
 
-func (b *BaseEntity) AddFieldNameAlias(orig, new string) {
+// AddFieldNameAlias declares an entity-wide wire rename: every notification
+// whose leaf field is the given GO field name surfaces under wireName instead
+// of the default lowerCamel rendering (or the field's `notifyAs:"..."` tag,
+// which this overrides for the instance). Applied automatically at the end of
+// every validation pass; the declarative twin of the per-request
+// NotificationContext.ChangeFieldName. Call it in the entity's constructor so
+// every instance carries it:
+//
+//	func NewUser(...) *User {
+//	    u := &User{...}
+//	    u.AddFieldNameAlias("Email", "primaryEmail")
+//	    return u
+//	}
+func (b *BaseEntity) AddFieldNameAlias(goFieldName, wireName string) {
 	if b.aliases == nil {
 		b.aliases = map[string]string{}
 	}
-	b.aliases[orig] = new
+	b.aliases[goFieldName] = wireName
 }
 
 // initWithName stamps the identity the context could not know at birth: the
@@ -531,19 +544,20 @@ func validateForInsert(e Entity, actionName string) error {
 	}
 	pass := &rulesPass{}
 	rules := NewRules(ModeInsert, e.NotificationContext(), reflect.TypeOf(e))
+	rules.bindFieldBase(e)
 	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeInsert) {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "insertable",
+			Path:         []PathSegment{{Name: "insertable"}},
 			FuncName:     "Insert." + actionName + "()",
 			Notification: InsertNotAllowedNotification{},
 		})
 	}
 	if e.GetID() != nil {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
+			Path:         []PathSegment{{Name: "id"}},
 			FieldValue:   e.GetID().Value(),
 			FuncName:     "Insert." + actionName + "()",
 			Notification: UnableToInsertWithIDNotification{},
@@ -560,19 +574,20 @@ func validateForUpdate(e Entity, actionName string) error {
 	}
 	pass := &rulesPass{}
 	rules := NewRules(ModeUpdate, e.NotificationContext(), reflect.TypeOf(e))
+	rules.bindFieldBase(e)
 	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeUpdate) {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "updatable",
+			Path:         []PathSegment{{Name: "updatable"}},
 			FuncName:     "Update." + actionName + "()",
 			Notification: UpdateNotAllowedNotification{},
 		})
 	}
 	if e.GetID() == nil {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
+			Path:         []PathSegment{{Name: "id"}},
 			FuncName:     "Update." + actionName + "()",
 			Notification: UnableToUpdateWithoutIDNotification{},
 		})
@@ -590,19 +605,20 @@ func validateForDelete(e Entity, actionName string) error {
 	}
 	pass := &rulesPass{}
 	rules := NewRules(ModeDelete, e.NotificationContext(), reflect.TypeOf(e))
+	rules.bindFieldBase(e)
 	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeDelete) {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "deletable",
+			Path:         []PathSegment{{Name: "deletable"}},
 			FuncName:     "Delete." + actionName + "()",
 			Notification: DeleteNotAllowedNotification{},
 		})
 	}
 	if e.GetID() == nil {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
+			Path:         []PathSegment{{Name: "id"}},
 			FuncName:     "Delete." + actionName + "()",
 			Notification: UnableToDeleteWithoutIDNotification{},
 		})
@@ -620,19 +636,20 @@ func validateForArchive(e Entity, actionName string) error {
 	}
 	pass := &rulesPass{}
 	rules := NewRules(ModeArchive, e.NotificationContext(), reflect.TypeOf(e))
+	rules.bindFieldBase(e)
 	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeArchive) {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "archivable",
+			Path:         []PathSegment{{Name: "archivable"}},
 			FuncName:     "Archive." + actionName + "()",
 			Notification: ArchiveNotAllowedNotification{},
 		})
 	}
 	if e.GetID() == nil {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
+			Path:         []PathSegment{{Name: "id"}},
 			FuncName:     "Archive." + actionName + "()",
 			Notification: UnableToDeleteWithoutIDNotification{},
 		})
@@ -650,19 +667,20 @@ func validateForUnarchive(e Entity, actionName string) error {
 	}
 	pass := &rulesPass{}
 	rules := NewRules(ModeUnarchive, e.NotificationContext(), reflect.TypeOf(e))
+	rules.bindFieldBase(e)
 	rules.pass = pass
 	buildRulesInWindow(e, actionName, rules)
 
 	if !modeAllowed(e, ModeUnarchive) {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "unarchivable",
+			Path:         []PathSegment{{Name: "unarchivable"}},
 			FuncName:     "Unarchive." + actionName + "()",
 			Notification: UnarchiveNotAllowedNotification{},
 		})
 	}
 	if e.GetID() == nil {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "id",
+			Path:         []PathSegment{{Name: "id"}},
 			FuncName:     "Unarchive." + actionName + "()",
 			Notification: UnableToDeleteWithoutIDNotification{},
 		})
@@ -676,7 +694,7 @@ func validateForUnarchive(e Entity, actionName string) error {
 func checkService(e Entity, actionName string) error {
 	if e.getService() == nil && e.RequiresService() {
 		e.NotificationContext().AddNotificationMessage(NotificationMessage{
-			FieldName:    "service",
+			Path:         []PathSegment{{Name: "service"}},
 			FuncName:     actionName,
 			Notification: ServiceIsRequiredNotification{},
 		})
@@ -694,6 +712,50 @@ func buildRulesInWindow(e Entity, actionName string, rules *Rules) {
 	e.openRulesWindow()
 	defer e.closeRulesWindow()
 	buildRules(func() { e.BuildRules(actionName, e.getService(), rules) })
+}
+
+// avoRuleBuilder is the shape buildAVORules asserts on the materialized copy's
+// pointer — BuildRules is not on the AggregateValueObject interface itself
+// (see the interface comment in aggregate_vo.go for why).
+type avoRuleBuilder interface {
+	BuildRules(actionName string, service Service, r *Rules)
+}
+
+var avoRuleBuilderType = reflect.TypeOf((*avoRuleBuilder)(nil)).Elem()
+
+// missingAVOBuildRules spells the pointer-receiver BuildRules contract for the
+// two seats that enforce it: the declaration-time assertion
+// (allowedChildTypeNames) and the per-validation fallback (buildAVORules).
+func missingAVOBuildRules(t reflect.Type) string {
+	return fmt.Sprintf(
+		"domain: %s declares no BuildRules — an aggregate value object implements it on the POINTER receiver: "+
+			"func (a *%s) BuildRules(actionName string, svc domain.Service, r *domain.Rules)",
+		t, t.Name())
+}
+
+// buildAVORules validates ONE aggregate value object: it materializes an
+// addressable copy of the (value-stored) item, binds childRules to that copy —
+// which is what makes r.AddNotification(&a.Field, …) resolvable inside the
+// AVO's BuildRules — and invokes the pointer-receiver BuildRules on it. The
+// copy is discarded afterwards: validation reads, notifications land in the
+// scoped context (shared with the root), and any mutation an AVO makes to
+// itself never reaches the tracked value — the same guarantee the old
+// value-receiver contract gave.
+func buildAVORules(item AggregateValueObject, actionName string, svc Service, childRules *Rules) {
+	t := reflect.TypeOf(item)
+	rv := reflect.ValueOf(item)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+		rv = rv.Elem()
+	}
+	pv := reflect.New(t)
+	pv.Elem().Set(rv)
+	rb, ok := pv.Interface().(avoRuleBuilder)
+	if !ok {
+		panic(missingAVOBuildRules(t))
+	}
+	childRules.bindFieldBase(pv.Interface())
+	buildRules(func() { rb.BuildRules(actionName, svc, childRules) })
 }
 
 // buildRules invokes ONE BuildRules body and absorbs the signal r.StopIfInvalid
@@ -810,7 +872,7 @@ func validateValueObjectFields(value any, ctx *NotificationContext, ignored []st
 //
 //	[{Name: <collection>}, {Index: <i>}]
 //
-// AVO emits only the leaf field name (e.g. r.AddNotification("ZipCode", n))
+// AVO emits only the leaf field reference (e.g. r.AddNotification(&a.ZipCode, n, false))
 // and the wire format produces "addresses[0].zipCode" without the AVO knowing the hierarchy.
 func runAggregateValidations(e Entity, mode EntityMode, actionName string, pass *rulesPass) {
 	mappedTypeNames := map[string]struct{}{}
@@ -840,7 +902,7 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string, pass 
 					)
 					childRules := NewRules(mode, scoped, reflect.TypeOf(item.Item))
 					childRules.pass = pass
-					buildRules(func() { item.Item.BuildRules(actionName, e.getService(), childRules) })
+					buildAVORules(item.Item, actionName, e.getService(), childRules)
 					if pass != nil && pass.halted {
 						return
 					}
@@ -858,7 +920,7 @@ func runAggregateValidations(e Entity, mode EntityMode, actionName string, pass 
 		scoped := rootCtx.scopedForType(reflect.TypeOf(entry.avo), NameSegment(entry.name))
 		childRules := NewRules(mode, scoped, reflect.TypeOf(entry.avo))
 		childRules.pass = pass
-		buildRules(func() { entry.avo.BuildRules(actionName, e.getService(), childRules) })
+		buildAVORules(entry.avo, actionName, e.getService(), childRules)
 		if pass != nil && pass.halted {
 			return
 		}
@@ -894,8 +956,8 @@ func applyFieldAliases(e Entity) {
 		return
 	}
 	ctx := e.NotificationContext()
-	for orig, new := range aliases {
-		ctx.ChangeFieldName(orig, new)
+	for goName, wire := range aliases {
+		ctx.applyGoFieldAlias(goName, wire)
 	}
 }
 

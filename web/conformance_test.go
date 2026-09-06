@@ -310,7 +310,7 @@ func grpcRefusedField(t *testing.T, err error) string {
 	}
 	for _, nctx := range carrier.NotificationContexts() {
 		for _, msg := range nctx.Messages() {
-			return msg.FieldName
+			return msg.ResolveFieldName()
 		}
 	}
 	t.Fatalf("a gRPC refusal must name a field: %v", err)

@@ -13,7 +13,7 @@
     r.IfUpdate(func() {
         if old := domain.Old(u); old != nil {
             if old.Email != u.Email &amp;&amp; u.Activated {
-                r.AddNotification("Email", EmailLockedAfterActivationNotification{})
+                r.AddNotification(&u.Email, EmailLockedAfterActivationNotification{}, false)
             }
         }
     })

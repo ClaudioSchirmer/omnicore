@@ -214,7 +214,7 @@ func TestRespondFromError_CarrierEndToEnd(t *testing.T) {
 func TestResponseFromContexts_UsesNotificationKeyAsMessage(t *testing.T) {
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "id",
+		Override:     "id",
 		FieldValue:   "abc",
 		Notification: domain.RecordNotFoundNotification{},
 	})

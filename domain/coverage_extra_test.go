@@ -238,7 +238,7 @@ func TestAddNotification_EchoesOptionalFieldValue(t *testing.T) {
 	rating := 15
 	ctx := NewNotificationContext("Visit")
 	r := NewRules(ModeInsert, ctx, nil)
-	r.AddNotification("Rating", RequiredFieldNotification{}, &rating)
+	r.AddNotificationNamed("Rating", RequiredFieldNotification{}, &rating)
 
 	msgs := ctx.Messages()
 	if len(msgs) != 1 {
@@ -253,8 +253,8 @@ func TestAddNotification_EchoesOptionalFieldValue(t *testing.T) {
 // via the public AddNotification variadic path for each value flavour.
 func TestAddNotification_FormatsValueThroughFieldValue(t *testing.T) {
 	ctx := NewNotificationContext("User")
-	ctx.AddNotification("Age", RequiredFieldNotification{}, 30)
-	ctx.AddNotification("Name", RequiredFieldNotification{}, nil)
+	ctx.AddNotificationNamed("Age", RequiredFieldNotification{}, 30)
+	ctx.AddNotificationNamed("Name", RequiredFieldNotification{}, nil)
 
 	msgs := ctx.Messages()
 	if len(msgs) != 2 {
@@ -294,7 +294,7 @@ func TestServiceBase_IsServiceSeal(t *testing.T) {
 	var _ Service = ServiceBase{}
 }
 
-// ─── path_render.go: ToLowerCamel / toLowerRune ──────────────────────────────
+// ─── wire_names.go: ToLowerCamel / toLowerRune ──────────────────────────────
 
 func TestToLowerCamel_Exported(t *testing.T) {
 	cases := []struct {

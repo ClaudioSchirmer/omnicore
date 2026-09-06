@@ -132,7 +132,7 @@ func (r *ComposedViewReader) ReadPage(ctx context.Context, view string, c querie
 	// ordering term was refused instead of a bare "sort".
 	for _, sf := range c.OrderBy {
 		if _, _, ok := rt.segMatch(sf.Field); ok {
-			return queries.Page{}, core.SingleNotificationError("Schema", sf.Field, domain.SchemaViolationNotification{})
+			return queries.Page{}, core.SingleNotificationError("Schema", domain.WireFieldPath(sf.Field), domain.SchemaViolationNotification{})
 		}
 	}
 

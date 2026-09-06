@@ -141,8 +141,8 @@ func TestParseProjection_NestedComputedPushesSegmentSources(t *testing.T) {
 // contract every generic rejection relies on.
 func TestViolation_MessageDefaultsToSchemaViolation(t *testing.T) {
 	msg := SchemaViolation("fields[bogus]").Message()
-	if msg.FieldName != "fields[bogus]" {
-		t.Errorf("FieldName = %q", msg.FieldName)
+	if msg.ResolveFieldName() != "fields[bogus]" {
+		t.Errorf("FieldName = %q", msg.ResolveFieldName())
 	}
 	if _, isSchema := msg.Notification.(domain.SchemaViolationNotification); !isSchema {
 		t.Errorf("a nil Notification must default to SchemaViolationNotification, got %T", msg.Notification)

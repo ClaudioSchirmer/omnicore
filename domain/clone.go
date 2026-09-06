@@ -109,7 +109,7 @@ func copyAggregateMap(src map[string][]aggregateItemEntry) map[string][]aggregat
 //	r.IfUpdate(func() {
 //	    if old := domain.Old(u); old != nil {
 //	        if old.Email != u.Email && u.Activated {
-//	            r.AddNotification("Email", EmailLockedAfterActivationNotification{})
+//	            r.AddNotification(&u.Email, EmailLockedAfterActivationNotification{}, false)
 //	        }
 //	    }
 //	})

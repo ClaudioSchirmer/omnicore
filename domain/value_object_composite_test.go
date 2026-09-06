@@ -22,7 +22,7 @@ type cvoPeriod struct {
 // cannot express, and the reason composites exist.
 func (p cvoPeriod) IsValid(_ string, ctx *NotificationContext) bool {
 	if p.To != nil && p.To.Before(p.From) {
-		ctx.AddNotification("To", cvoEndsBeforeStartNote{})
+		ctx.AddNotificationNamed("To", cvoEndsBeforeStartNote{})
 		return false
 	}
 	return true

@@ -40,7 +40,7 @@ func TestCloneEntity_PreservesExportedFields(t *testing.T) {
 func TestCloneEntity_ClonedNotifCtxIsZero(t *testing.T) {
 	src := &simpleEntity{Name: "alice"}
 	ensureInit(src)
-	src.AddNotification("Name", RequiredFieldNotification{})
+	src.AddNotificationNamed("Name", RequiredFieldNotification{})
 
 	clone := cloneEntity(src).(*simpleEntity)
 

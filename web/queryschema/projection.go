@@ -337,7 +337,7 @@ func (v Violation) Message() domain.NotificationMessage {
 	if n == nil {
 		n = domain.SchemaViolationNotification{}
 	}
-	return domain.NotificationMessage{FieldName: v.Field, FieldValue: v.Value, Notification: n}
+	return domain.NotificationMessage{Override: v.Field, FieldValue: v.Value, Notification: n}
 }
 
 // SelectedComputedPaths returns the Go field paths of the COMPUTED fields the

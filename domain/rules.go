@@ -19,17 +19,19 @@ import (
 //
 //	r.IfInsertOrUpdate(func() {
 //	    if x.Field == "" {
-//	        r.AddNotification("Field", domain.RequiredFieldNotification{})
+//	        r.AddNotification(&x.Field, domain.RequiredFieldNotification{}, false)
 //	    } else if !valid(x.Field) {
-//	        r.AddNotification("Field", InvalidFieldNotification{}, x.Field)
+//	        r.AddNotification(&x.Field, InvalidFieldNotification{}, true)
 //	    }
 //	})
 //
-// The framework constructs Rules with the appropriate ctx + entityType: a
-// root entity gets its own NotificationContext and reflect.TypeOf(self); an
-// aggregate value object gets a scoped child context that auto-prefixes
-// collection name + index, and reflect.TypeOf(self) of the AVO so label tags
-// on AVO fields resolve against the AVO struct.
+// The framework constructs Rules with the appropriate ctx + entityType AND
+// binds it to the instance whose BuildRules it invokes (bindFieldBase), which
+// is what lets AddNotification resolve &x.Field back to the field it
+// addresses: a root entity gets its own NotificationContext and its own
+// pointer; an aggregate value object gets a scoped child context that
+// auto-prefixes collection name + index, and the addressable copy the
+// framework materialized for its pointer-receiver BuildRules.
 type Rules struct {
 	mode       EntityMode
 	ctx        *NotificationContext
@@ -37,6 +39,12 @@ type Rules struct {
 	ignoredVOs []string
 	forcedVOs  []voEntry
 	pass       *rulesPass
+
+	// Field-reference resolution state, set by bindFieldBase (field_ref.go):
+	// the bound instance, its address, and the per-type field atlas.
+	base    reflect.Value
+	basePtr uintptr
+	atlas   *fieldAtlas
 }
 
 // rulesPass is the halt state shared by every Rules built for ONE validation
@@ -64,6 +72,18 @@ type stopRulesSignal struct{}
 // and the wire elides the fieldLabel via omitempty.
 func NewRules(mode EntityMode, ctx *NotificationContext, entityType reflect.Type) *Rules {
 	return &Rules{mode: mode, ctx: ctx, entityType: entityType}
+}
+
+// NewRulesFor constructs a Rules BOUND to base — the form manual code and
+// tests use when they need field-reference emissions outside a BuildRules
+// invocation (inside one, the framework binds the receiver automatically).
+// base must be a non-nil pointer to the struct whose fields will be
+// referenced; entityType is derived from it, so labelKey/notifyAs tags resolve
+// against that struct.
+func NewRulesFor(mode EntityMode, ctx *NotificationContext, base any) *Rules {
+	r := NewRules(mode, ctx, reflect.TypeOf(base))
+	r.bindFieldBase(base)
+	return r
 }
 
 func (r *Rules) Mode() EntityMode {
@@ -101,27 +121,56 @@ func (r *Rules) ValidateValueObject(name string, vo any) {
 func (r *Rules) ignoredValueObjects() []string { return r.ignoredVOs }
 func (r *Rules) forcedValueObjects() []voEntry { return r.forcedVOs }
 
-// AddNotification is the common emit helper. It writes a single-segment Path
-// using the Go identifier name; the framework's renderer converts to camelCase
-// (acronym-aware) and, when r.ctx is scoped, prepends the collection + index
-// prefix. The optional value variadic populates FieldValue (echo the rejected
-// input on Invalid* notifications). A POINTER of any type is dereferenced, so
-// an optional field is passed straight through; a type that renders itself
-// (fmt.Stringer/error, time.Time among them) keeps its own rendering, and nil
-// renders as the empty string.
+// AddNotification is the common emit helper — addressed by FIELD REFERENCE,
+// never by string. Pass a pointer to the entity's own field:
 //
-// The emitted NotificationMessage carries LabelKey resolved from the field's
-// `labelKey:"..."` struct tag on r.entityType (or "" when no tag is declared, or
-// when r.entityType is nil). The translation layer (application/notifications/
-// convert.go::ToContextDTOs) renders the key into MessageDTO.FieldLabel at
-// the same call site that already renders Message — one round-trip per
-// emitted notification.
-func (r *Rules) AddNotification(name string, n Notification, value ...any) {
+//	r.AddNotification(&e.ZipCode, domain.InvalidFormatNotification{}, true)
+//
+// The reference is resolved deterministically (offset + type — field_ref.go)
+// to the field it addresses, and everything the message needs is read off that
+// field itself: the Go name (rendered lowerCamel for the wire, acronym-aware),
+// the `notifyAs:"..."` wire-name override, and the `labelKey:"..."` catalog key.
+// When r.ctx is scoped, the collection + index prefix is prepended.
+//
+// exposeValue says whether the field's CURRENT value is echoed in FieldValue —
+// the value is read from the reference, so there is nothing to pass. Pointer
+// fields (optional) are unwrapped; nil renders as the empty string; a type
+// that renders itself (fmt.Stringer/error, time.Time among them) keeps its own
+// rendering.
+//
+// Misuse — a non-pointer, a reference into a copy, a pointer field passed
+// without & — panics immediately with a message naming the fix. For
+// notifications that are not about one addressable field, use
+// AddNotificationNamed.
+func (r *Rules) AddNotification(field any, n Notification, exposeValue bool) {
+	if r.ctx == nil {
+		return
+	}
+	node, rv := r.resolveFieldRef(field)
+	msg := NotificationMessage{
+		Path:         clonePath(node.segs),
+		Notification: n,
+		LabelKey:     labelKeyOf(node.leaf),
+	}
+	if exposeValue {
+		msg.FieldValue = formatFieldValue(rv.Elem().Interface())
+	}
+	r.ctx.AddNotificationMessage(msg)
+}
+
+// AddNotificationNamed is the string-named seat — the documented exception for
+// notifications that are not about ONE addressable field (cross-field rules,
+// state rejections, synthetic tokens). It writes a single-segment Path with
+// the given name (a Go-cased name renders lowerCamel; an already-lowercase
+// token passes verbatim) and resolves the labelKey tag by that name on
+// r.entityType when one matches. The optional value variadic populates
+// FieldValue with the same semantics AddNotification's exposeValue provides.
+func (r *Rules) AddNotificationNamed(name string, n Notification, value ...any) {
 	if r.ctx == nil {
 		return
 	}
 	msg := NotificationMessage{
-		Path:         []PathSegment{{Name: name}},
+		Path:         []PathSegment{{Name: name, Wire: resolveNotifyAs(r.entityType, name)}},
 		Notification: n,
 		LabelKey:     resolveLabelKey(r.entityType, name),
 	}
@@ -147,23 +196,24 @@ func (r *Rules) AddNotificationMessage(msg NotificationMessage) {
 // Notification type already carries. Use this when the same notification type
 // ships with default vars from its struct tags but a specific call site needs
 // to inject additional or overriding values (per-emit vars win on key
-// collision). The optional value variadic populates FieldValue with the same
-// semantics as AddNotification.
+// collision). Field reference and exposeValue behave exactly as in
+// AddNotification.
 //
-// For full-control emits (Err, FuncName, multi-segment Path), use
-// AddNotificationMessage directly.
-func (r *Rules) AddNotificationWithVars(name string, n Notification, vars map[string]string, value ...any) {
+// For full-control emits (Err, FuncName, multi-segment Path, a named token
+// with vars), use AddNotificationMessage directly.
+func (r *Rules) AddNotificationWithVars(field any, n Notification, vars map[string]string, exposeValue bool) {
 	if r.ctx == nil {
 		return
 	}
+	node, rv := r.resolveFieldRef(field)
 	msg := NotificationMessage{
-		Path:         []PathSegment{{Name: name}},
+		Path:         clonePath(node.segs),
 		Notification: n,
 		Vars:         vars,
-		LabelKey:     resolveLabelKey(r.entityType, name),
+		LabelKey:     labelKeyOf(node.leaf),
 	}
-	if len(value) > 0 {
-		msg.FieldValue = formatFieldValue(value[0])
+	if exposeValue {
+		msg.FieldValue = formatFieldValue(rv.Elem().Interface())
 	}
 	r.ctx.AddNotificationMessage(msg)
 }
@@ -174,7 +224,7 @@ func (r *Rules) AddNotificationWithVars(name string, n Notification, vars map[st
 //
 //	r.IfInsertOrUpdate(func() {
 //	    if x.Owner == nil {
-//	        r.AddNotification("Owner", domain.RequiredFieldNotification{})
+//	        r.AddNotification(&x.Owner, domain.RequiredFieldNotification{}, false)
 //	    }
 //	})
 //	r.StopIfInvalid()

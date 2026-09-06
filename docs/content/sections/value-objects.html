@@ -33,11 +33,11 @@
 func (e Email) Value() string { return string(e) }
 func (e Email) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
     if e == "" {
-        ctx.AddNotification(fieldName, domain.RequiredFieldNotification{})
+        ctx.AddNotificationNamed(fieldName, domain.RequiredFieldNotification{})
         return false
     }
     if !emailRegex.MatchString(string(e)) {
-        ctx.AddNotification(fieldName, InvalidEmailNotification{}, string(e))
+        ctx.AddNotificationNamed(fieldName, InvalidEmailNotification{}, e) // the echo takes any value; a named type renders as its underlying
         return false
     }
     return true
@@ -122,7 +122,7 @@ d.Relationship.Value() // string → "spouse"</code></pre>
   <pre><code>translator.EnumDescription(appCtx.Language(), u.UserProfile) // "Administrator" / "Administrador" (or "UserProfile.1")</code></pre>
 
   <h4>Validate membership — <code>ValidateEnum</code></h4>
-  <p>Normally you never call this — membership validates automatically off the entity's fields. <code>domain.ValidateEnum(e, fieldName, ctx)</code> is the standalone entry for a value that is not a plain field: it returns whether <code>e</code> is a declared member and emits the <code>UnknownNotification</code> when it is not (the sentinel or an out-of-range value).</p>
+  <p>Normally you never call this — membership validates automatically off the entity's fields. <code>domain.ValidateEnum(&amp;e.Status, r)</code> is the typed entry inside <code>BuildRules</code>: it takes the FIELD REFERENCE (resolved exactly like <code>r.AddNotification</code>, on EVERY call — a bad reference dies at its first execution, valid value or not), returns whether the value is a declared member and emits the <code>UnknownNotification</code> for that field when it is not (the sentinel or an out-of-range value). Where no bound <code>Rules</code> exists — a composite value object validating an interior enum part inside its own <code>IsValid</code> — use the named twin <code>domain.ValidateEnumNamed(e, name, ctx)</code>.</p>
 
   <h4>Members, Unknown &amp; comparison</h4>
   <ul>
@@ -149,7 +149,7 @@ d.Relationship.Value() // string → "spouse"</code></pre>
 // The cross-field rule — the thing a single-scalar value object cannot express.
 func (p Period) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
     if p.To != nil &amp;&amp; p.To.Before(p.From) {
-        ctx.AddNotification("To", PeriodEndsBeforeStartNotification{})
+        ctx.AddNotificationNamed("To", PeriodEndsBeforeStartNotification{})
         return false
     }
     return true
@@ -161,7 +161,7 @@ type Contract struct {
     Trial  *vos.Period  // optional
 }</code></pre>
   <p>A composite <strong>must</strong> declare <code>IsValid</code> (a boot failure otherwise) and <strong>must not</strong> declare <code>Value()</code>. That single method is the discriminator the framework uses to tell the kinds apart, so it can correct you either way: declaring a composite with <code>Field(...)</code> tells you to decompose it, and decomposing a scalar or enum value object tells you to use <code>Field(...)</code>. Expose a canonical rendering under any other name (<code>String()</code>, <code>Format()</code>).</p>
-  <p>The parts of a composite are validated <strong>inside its own <code>IsValid</code></strong> — the entity's pass validates the composite, not its interior. A part that is itself a value object validates by calling it: <code>a.ZipCode.IsValid("ZipCode", ctx)</code>. Emitting on a part's name (<code>ctx.AddNotification("Street", …)</code>) resolves that part's <code>labelKey</code> from the tag inside the value object, so a part-level notification carries a label without the entity declaring anything.</p>
+  <p>The parts of a composite are validated <strong>inside its own <code>IsValid</code></strong> — the entity's pass validates the composite, not its interior. A part that is itself a value object validates by calling it: <code>a.ZipCode.IsValid("ZipCode", ctx)</code>. Emitting on a part's name (<code>ctx.AddNotificationNamed("Street", …)</code>) resolves that part's <code>labelKey</code> from the tag inside the value object, so a part-level notification carries a label without the entity declaring anything.</p>
 
   <h4>How it is stored — the schema decomposes it</h4>
   <p>The <code>TableSchema</code> is the only place that knows the value object occupies several columns. It resolves the entity field <strong>by type</strong>, and each part is a field ↔ column pair like any other:</p>

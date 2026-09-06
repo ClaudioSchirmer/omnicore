@@ -17,11 +17,11 @@ func (usernameDuplicateNotification) Semantic() domain.NotificationSemantic {
 func TestSemanticPropagatesToDTO(t *testing.T) {
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "username",
+		Override:     "username",
 		Notification: usernameDuplicateNotification{},
 	})
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: domain.RequiredFieldNotification{},
 	})
 
@@ -45,7 +45,7 @@ func TestSemanticPropagatesToDTO(t *testing.T) {
 func TestRecordNotFoundPropagatesSemantic(t *testing.T) {
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "id",
+		Override:     "id",
 		FieldValue:   "abc",
 		Notification: domain.RecordNotFoundNotification{},
 	})
@@ -61,7 +61,7 @@ func TestRecordNotFoundPropagatesSemantic(t *testing.T) {
 func TestToContextDTOs_SkipsNilContexts(t *testing.T) {
 	ctx := domain.NewNotificationContext("User")
 	ctx.AddNotificationMessage(domain.NotificationMessage{
-		FieldName:    "name",
+		Override:     "name",
 		Notification: domain.RequiredFieldNotification{},
 	})
 	// A nil entry interleaved with a real context must be skipped, not panic.

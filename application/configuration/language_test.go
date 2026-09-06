@@ -100,7 +100,9 @@ func TestLanguageUnknownNotification(t *testing.T) {
 func TestLanguageValidateEnum(t *testing.T) {
 	t.Run("a declared language passes", func(t *testing.T) {
 		ctx := domain.NewNotificationContext("Lang")
-		if !domain.ValidateEnum(LangPTBR, "Language", ctx) {
+		fx := &struct{ Language Language }{Language: LangPTBR}
+		r := domain.NewRulesFor(domain.ModeInsert, ctx, fx)
+		if !domain.ValidateEnum(&fx.Language, r) {
 			t.Error("expected LangPTBR to be valid")
 		}
 		if ctx.HasErrors() {
@@ -112,7 +114,9 @@ func TestLanguageValidateEnum(t *testing.T) {
 	// membership validation rejects it and emits the UnknownNotification.
 	t.Run("LangUnknown fails and records notification", func(t *testing.T) {
 		ctx := domain.NewNotificationContext("Lang")
-		if domain.ValidateEnum(LangUnknown, "Language", ctx) {
+		fx := &struct{ Language Language }{Language: LangUnknown}
+		r := domain.NewRulesFor(domain.ModeInsert, ctx, fx)
+		if domain.ValidateEnum(&fx.Language, r) {
 			t.Error("expected LangUnknown to be invalid")
 		}
 		if !ctx.HasErrors() {
@@ -130,7 +134,9 @@ func TestLanguageValidateEnum(t *testing.T) {
 	// contract; the design mirrors the ddd-kernel EnumValueObject.)
 	t.Run("out-of-range value fails — membership is enforced", func(t *testing.T) {
 		ctx := domain.NewNotificationContext("Lang")
-		if domain.ValidateEnum(Language(99), "Language", ctx) {
+		fx := &struct{ Language Language }{Language: Language(99)}
+		r := domain.NewRulesFor(domain.ModeInsert, ctx, fx)
+		if domain.ValidateEnum(&fx.Language, r) {
 			t.Error("expected Language(99) to be invalid (outside the declared set)")
 		}
 	})

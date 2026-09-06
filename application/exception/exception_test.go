@@ -23,8 +23,8 @@ func TestSingleNotificationError(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].FieldName != "email" {
-		t.Errorf("expected FieldName 'email', got %q", msgs[0].FieldName)
+	if msgs[0].ResolveFieldName() != "email" {
+		t.Errorf("expected FieldName 'email', got %q", msgs[0].ResolveFieldName())
 	}
 	if key := domain.NotificationKey(msgs[0].Notification); key != "RecordNotFoundNotification" {
 		t.Errorf("expected NotificationKey 'RecordNotFoundNotification', got %q", key)
@@ -77,7 +77,7 @@ func TestNewApplicationErrorWithNilSlice(t *testing.T) {
 
 func TestNewApplicationErrorWith(t *testing.T) {
 	msg := domain.NotificationMessage{
-		FieldName:    "email",
+		Override:     "email",
 		Notification: domain.RecordNotFoundNotification{},
 	}
 	err := NewApplicationErrorWith("User", msg)
@@ -94,8 +94,8 @@ func TestNewApplicationErrorWith(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].FieldName != "email" {
-		t.Errorf("expected FieldName 'email', got %q", msgs[0].FieldName)
+	if msgs[0].ResolveFieldName() != "email" {
+		t.Errorf("expected FieldName 'email', got %q", msgs[0].ResolveFieldName())
 	}
 	if key := domain.NotificationKey(msgs[0].Notification); key != "RecordNotFoundNotification" {
 		t.Errorf("expected NotificationKey 'RecordNotFoundNotification', got %q", key)
@@ -153,7 +153,7 @@ func TestApplicationErrorNotificationContexts(t *testing.T) {
 
 func TestApplicationErrorErrorsAsViaCarrier(t *testing.T) {
 	src := NewApplicationErrorWith("User", domain.NotificationMessage{
-		FieldName:    "email",
+		Override:     "email",
 		Notification: domain.RecordNotFoundNotification{},
 	})
 

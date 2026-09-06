@@ -37,17 +37,18 @@ func NewDomainErrorWith(contextName string, msg NotificationMessage) *DomainErro
 	return &DomainError{Contexts: []*NotificationContext{ctx}}
 }
 
-// SingleNotificationError wraps a single notification in *DomainError.
+// SingleNotificationError wraps a single notification in *DomainError. The
+// fieldName travels VERBATIM (Override) — declare it in wire casing.
 func SingleNotificationError(contextName, fieldName string, n Notification) *DomainError {
 	return NewDomainErrorWith(contextName, NotificationMessage{
-		FieldName: fieldName, Notification: n,
+		Override: fieldName, Notification: n,
 	})
 }
 
 // NotFoundError is the canonical helper for record not found, using RecordNotFoundNotification.
 func NotFoundError(contextName, fieldName, fieldValue string) *DomainError {
 	return NewDomainErrorWith(contextName, NotificationMessage{
-		FieldName: fieldName, FieldValue: fieldValue,
+		Override: fieldName, FieldValue: fieldValue,
 		Notification: RecordNotFoundNotification{},
 	})
 }
@@ -55,6 +56,6 @@ func NotFoundError(contextName, fieldName, fieldValue string) *DomainError {
 // FieldErrorWithCause includes a raw error as the cause.
 func FieldErrorWithCause(contextName, fieldName string, cause error, n Notification) *DomainError {
 	return NewDomainErrorWith(contextName, NotificationMessage{
-		FieldName: fieldName, Err: cause, Notification: n,
+		Override: fieldName, Err: cause, Notification: n,
 	})
 }

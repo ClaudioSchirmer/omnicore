@@ -102,8 +102,8 @@ func TestHandle_FirstAboveCeilingIsRefusedNotClamped(t *testing.T) {
 	if _, ok := msg.Notification.(domain.LimitExceededNotification); !ok {
 		t.Errorf("notification = %T, want LimitExceededNotification", msg.Notification)
 	}
-	if msg.FieldName != "first" {
-		t.Errorf("FieldName = %q, want the wire control %q", msg.FieldName, "first")
+	if msg.ResolveFieldName() != "first" {
+		t.Errorf("FieldName = %q, want the wire control %q", msg.ResolveFieldName(), "first")
 	}
 	// The effective ceiling rides the envelope so a consumer renders "max is N"
 	// without parsing a translated message — the shape the view-side rejection

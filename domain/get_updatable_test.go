@@ -22,7 +22,7 @@ func (t *transitionEntity) BuildRules(_ string, _ Service, r *Rules) {
 	r.IfUpdate(func() {
 		if old := Old(t); old != nil {
 			if old.Email != t.Email && t.Activated {
-				r.AddNotification("Email", RequiredFieldNotification{})
+				r.AddNotificationNamed("Email", RequiredFieldNotification{})
 			}
 		}
 	})

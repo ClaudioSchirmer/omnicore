@@ -235,7 +235,7 @@ func TestReadByID_RefusesAnUnservableOverlay(t *testing.T) {
 	l := &byIDLoader{table: "gadgets"}
 	_, _, err := byIDReader(t, l).ReadByID(context.Background(), "v", "some-id",
 		queries.ReadCriteria{Filter: map[string]any{"Parts.Label": "bolt"}})
-	assertUnsupportedCapability400(t, err, "Parts.Label")
+	assertUnsupportedCapability400(t, err, "parts.label")
 }
 
 func TestReadByID_UnregisteredViewIsAnError(t *testing.T) {

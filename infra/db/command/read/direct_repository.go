@@ -141,7 +141,7 @@ func (r *DirectRepository[T]) FindOne(ctx context.Context, q *criteria.Query) (T
 	}
 	switch len(rows) {
 	case 0:
-		return zero, domain.NotFoundError(r.name, r.schema.IDColumn(), "")
+		return zero, domain.NotFoundError(r.name, r.schema.WireFieldOf(r.schema.IDColumn()), "")
 	case 1:
 		return rows[0], nil
 	default:

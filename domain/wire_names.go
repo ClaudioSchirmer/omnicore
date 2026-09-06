@@ -5,68 +5,6 @@ import (
 	"strings"
 )
 
-// renderPath turns a structured PathSegment slice into the wire-format field
-// string. Name segments are rendered via lowerCamel (PascalCase → camelCase,
-// acronym-aware: "URL" → "url", "ZipCode" → "zipCode"); names that already
-// start with a lowercase character are passed through verbatim so legacy
-// already-lowercase identifiers ("id", "name") stay unchanged. Index segments
-// are appended in the form "[N]" with no preceding separator.
-//
-// Examples:
-//
-//	[{Name:"Name"}]                                       → "name"
-//	[{Name:"URL"}]                                        → "url"
-//	[{Name:"ZipCode"}]                                    → "zipCode"
-//	[{Name:"Addresses"}, {Index:0}, {Name:"ZipCode"}]     → "addresses[0].zipCode"
-//	[{Name:"id"}]                                         → "id"
-func renderPath(path []PathSegment) string {
-	if len(path) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	wroteAny := false
-	for _, seg := range path {
-		if seg.Index != nil {
-			b.WriteByte('[')
-			b.WriteString(itoa(*seg.Index))
-			b.WriteByte(']')
-			wroteAny = true
-			continue
-		}
-		if seg.Name == "" {
-			continue
-		}
-		if wroteAny {
-			b.WriteByte('.')
-		}
-		b.WriteString(toLowerCamel(seg.Name))
-		wroteAny = true
-	}
-	return b.String()
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var buf [20]byte
-	pos := len(buf)
-	for i > 0 {
-		pos--
-		buf[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
-}
-
 // childCollectionSegment renders an aggregate child's collection segment for
 // the notification wire path: the DECLARED collection name (CollectionSegmentOf)
 // in camelCase. JSON-facing — the wire path is camelCase everywhere, so this is
@@ -75,6 +13,15 @@ func itoa(i int) string {
 // domain declares the segment, this only cases it for the wire.
 func childCollectionSegment(t reflect.Type) string {
 	return toLowerCamel(CollectionSegmentOf(t))
+}
+
+// childFieldPath is the wire field for a notification that points at an
+// aggregate child collection as a whole (add/change/remove rejections): the
+// DECLARED collection segment, emitted as a Path segment so renderPath cases
+// it exactly like the scoped-context prefix and the read side do ("Addresses"
+// → "addresses"). The Go type name never reaches the wire.
+func childFieldPath(item AggregateValueObject) []PathSegment {
+	return []PathSegment{{Name: CollectionSegmentOf(reflect.TypeOf(item))}}
 }
 
 // toLowerCamel converts a Go identifier to a JSON-friendly camelCase string.
@@ -120,6 +67,26 @@ func toLowerCamel(s string) string {
 // CSV/Excel `?fields=` token matches the wire name the rest of the framework
 // produces ("ZipCode" → "zipCode", "URLPath" → "urlPath").
 func ToLowerCamel(s string) string { return toLowerCamel(s) }
+
+// WireFieldPath renders a dotted Go field path into the wire-format field
+// token notifications carry: each "."-separated segment goes through the same
+// acronym-aware lower-camel rendering the notification wire paths use
+// ("Address.ZipCode" → "address.zipCode", "URLPath" → "urlPath"). A segment
+// that already starts lowercase passes through verbatim, so wire-format input
+// is idempotent ("cursor" → "cursor"). Emitters that hold a field name in Go
+// casing — infra refusals, schema mismatches, read-side restrictions — resolve
+// through here so every surface reports the vocabulary the consumer sent,
+// never the Go identifier.
+func WireFieldPath(goPath string) string {
+	if !strings.Contains(goPath, ".") {
+		return toLowerCamel(goPath)
+	}
+	segs := strings.Split(goPath, ".")
+	for i, s := range segs {
+		segs[i] = toLowerCamel(s)
+	}
+	return strings.Join(segs, ".")
+}
 
 func isUpperRune(r rune) bool { return r >= 'A' && r <= 'Z' }
 

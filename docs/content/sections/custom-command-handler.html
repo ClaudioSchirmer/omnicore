@@ -56,13 +56,13 @@ func (c *Customer) Modes() []domain.EntityMode {
 func (c *Customer) BuildRules(actionName string, service domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
         if c.Name == "" {
-            r.AddNotification("Name", domain.RequiredFieldNotification{})
+            r.AddNotification(&c.Name, domain.RequiredFieldNotification{}, false)
         }
         if c.Email == "" {
-            r.AddNotification("Email", domain.RequiredFieldNotification{})
+            r.AddNotification(&c.Email, domain.RequiredFieldNotification{}, false)
         } else if !validEmail(c.Email) {
             // optional value becomes FieldValue — echo of rejected input in the response
-            r.AddNotification("Email", InvalidEmailNotification{}, c.Email)
+            r.AddNotification(&c.Email, InvalidEmailNotification{}, true)
         }
     })
 }</code></pre>

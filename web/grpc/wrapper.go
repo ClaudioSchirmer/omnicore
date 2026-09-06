@@ -155,7 +155,7 @@ func missingFieldsError[T any](pipe *pipeline.Pipeline, appCtx *configuration.Ap
 	schema := domain.SemanticSchema
 	for _, field := range missing {
 		nctx.AddNotificationMessage(domain.NotificationMessage{
-			FieldName:    field,
+			Override:     field,
 			Notification: domain.RequiredFieldNotification{}.WithSemantic(schema),
 		})
 	}

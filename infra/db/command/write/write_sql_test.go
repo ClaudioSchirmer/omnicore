@@ -243,12 +243,12 @@ func TestExecExpectingRow_Mapping(t *testing.T) {
 	ctx := context.Background()
 
 	// Matched row → nil.
-	if err := execExpectingRow(ctx, &fakeWriteTx{n: 1}, testPGDialect{}, "UPDATE x", nil, "users", "User", "id", "v", 0); err != nil {
+	if err := execExpectingRow(ctx, &fakeWriteTx{n: 1}, testPGDialect{}, "UPDATE x", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "v"}); err != nil {
 		t.Fatalf("matched row should be nil, got %v", err)
 	}
 
 	// Zero rows → RecordNotFoundNotification (a NotificationCarrier, 404).
-	err := execExpectingRow(ctx, &fakeWriteTx{n: 0}, testPGDialect{}, "UPDATE x", nil, "users", "User", "id", "v", 0)
+	err := execExpectingRow(ctx, &fakeWriteTx{n: 0}, testPGDialect{}, "UPDATE x", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "v"})
 	var carrier domain.NotificationCarrier
 	if !errors.As(err, &carrier) {
 		t.Fatalf("zero rows should map to a NotificationCarrier, got %T (%v)", err, err)
@@ -256,7 +256,7 @@ func TestExecExpectingRow_Mapping(t *testing.T) {
 
 	// Driver error passes through unchanged.
 	boom := errors.New("conn reset")
-	if err := execExpectingRow(ctx, &fakeWriteTx{execErr: boom}, testPGDialect{}, "UPDATE x", nil, "users", "User", "id", "v", 0); !errors.Is(err, boom) {
+	if err := execExpectingRow(ctx, &fakeWriteTx{execErr: boom}, testPGDialect{}, "UPDATE x", nil, expectedRow{table: "users", contextName: "User", pkCol: "id", wireField: "id", value: "v"}); !errors.Is(err, boom) {
 		t.Fatalf("driver error should pass through, got %v", err)
 	}
 }

@@ -110,12 +110,12 @@ func (q *FindByAggregateQuery) resolveLimit() (int, error) {
 	switch {
 	case q.First < 0:
 		return 0, domain.NewDomainErrorWith("Schema", domain.NotificationMessage{
-			FieldName:    auditFirstControl,
+			Override:     auditFirstControl,
 			Notification: domain.SchemaViolationNotification{},
 		})
 	case q.First > max:
 		return 0, domain.NewDomainErrorWith("Schema", domain.NotificationMessage{
-			FieldName:    auditFirstControl,
+			Override:     auditFirstControl,
 			FieldValue:   strconv.Itoa(max),
 			Notification: domain.LimitExceededNotification{},
 		})

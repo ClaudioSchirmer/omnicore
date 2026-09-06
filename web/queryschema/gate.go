@@ -139,7 +139,7 @@ func (v ControlViolation) Field() string {
 // canonical and drift-free.
 func (v ControlViolation) Message() domain.NotificationMessage {
 	return domain.NotificationMessage{
-		FieldName:    v.Field(),
+		Override:     v.Field(),
 		Notification: domain.SchemaViolationNotification{},
 	}
 }

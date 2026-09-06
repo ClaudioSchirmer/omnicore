@@ -181,7 +181,7 @@ type emittingAVO struct {
 
 func (e emittingAVO) BuildRules(_ string, _ Service, r *Rules) {
 	if e.emit != "" {
-		r.AddNotification(e.emit, RequiredFieldNotification{})
+		r.AddNotificationNamed(e.emit, RequiredFieldNotification{})
 	}
 }
 

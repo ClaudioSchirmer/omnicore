@@ -79,8 +79,8 @@ func TestMapErr_UniqueViolationMapped(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
-	if msgs[0].FieldName != "email" {
-		t.Errorf("expected FieldName 'email', got %q", msgs[0].FieldName)
+	if msgs[0].ResolveFieldName() != "email" {
+		t.Errorf("expected FieldName 'email', got %q", msgs[0].ResolveFieldName())
 	}
 	if msgs[0].Err != cause {
 		t.Errorf("expected message.Err to equal cause pgErr, got %v", msgs[0].Err)
@@ -194,7 +194,7 @@ func TestTranslateUniqueViolation_BoundConstraintBecomesTheDeclaredNotification(
 		t.Fatalf("the context must carry the caller's name, got %+v", ctxs)
 	}
 	msgs := ctxs[0].Messages()
-	if len(msgs) != 1 || msgs[0].FieldName != "email" {
+	if len(msgs) != 1 || msgs[0].ResolveFieldName() != "email" {
 		t.Fatalf("the binding's field must be reported, got %+v", msgs)
 	}
 	if _, typed := msgs[0].Notification.(seatTakenNotification); !typed {
