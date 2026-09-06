@@ -37,7 +37,7 @@ func (e Email) IsValid(fieldName string, ctx *domain.NotificationContext) bool {
         return false
     }
     if !emailRegex.MatchString(string(e)) {
-        ctx.AddNotificationNamed(fieldName, InvalidEmailNotification{}, string(e))
+        ctx.AddNotificationNamed(fieldName, InvalidEmailNotification{}, e) // the echo takes any value; a named type renders as its underlying
         return false
     }
     return true
