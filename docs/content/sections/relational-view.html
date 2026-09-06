@@ -171,8 +171,10 @@ func (f *GadgetFeature) RelationalViews() []*query.RelationalViewDefinition {
     child path, or a child-level sibling like <code>parts.tag</code>), or an unknown field — are rejected with a typed
     <code>UnsupportedCapabilityNotification</code>. It carries
     <a href="#status-mapping"><code>SemanticSchema</code></a>, so the web wrappers turn it into a
-    <strong>400 Bad Request</strong> (never a generic 500) on every surface, with the offending capability or Go field
-    path named.
+    <strong>400 Bad Request</strong> (never a generic 500) on every surface, with the offending capability or field
+    path named <strong>in the wire casing</strong> — the reader holds a Go path and renders it through
+    <code>domain.WireFieldPath</code> (<code>"Addresses.ZipCode"</code> → <code>"addresses.zipCode"</code>), so the
+    refusal names the token the consumer sent, never the Go identifier this layer resolved it to.
 </p>
 <p>
     The notification names <strong>no backing</strong> on purpose: every read engine raises this same one, so the four

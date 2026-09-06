@@ -463,10 +463,10 @@ func (a *Address) BuildRules(actionName string, svc domain.Service, r *domain.Ru
 
     <h4>How it works — no new interface per entity</h4>
     <ol>
-        <li><strong><code>Rules</code> carries the ctx + entityType.</strong> <code>NewRules(mode, ctx, entityType)</code> packages the <code>EntityMode</code> + <code>NotificationContext</code> + the Go <code>reflect.Type</code> of the entity/VO that owns the Rules (the <code>entityType</code> lets <code>AddNotification</code> read the field's <code>labelKey:"..."</code> tag at emit). <code>r.AddNotification</code>/<code>r.AddNotificationMessage</code> delegate to the internal ctx. For root, the ctx is the entity's own <code>e.NotificationContext()</code>. For AVO, the ctx is a <code>Scoped(NameSegment(collection), IndexSegment(i))</code> view of the root's ctx.</li>
+        <li><strong><code>Rules</code> carries the ctx + the bound entity.</strong> Inside <code>BuildRules</code> the framework builds it for you, bound to the receiver — which is what lets a field reference resolve. <code>domain.NewRulesFor(mode, ctx, base)</code> is the constructor manual code and tests use to obtain the same thing outside a <code>BuildRules</code> invocation: <code>base</code> is a non-nil POINTER to the struct whose fields will be referenced, and <code>entityType</code> is derived from it, so the <code>labelKey:"..."</code> / <code>notifyAs:"..."</code> tags resolve against that struct. (<code>NewRules(mode, ctx, entityType)</code> remains for the seats that emit by NAME only — it binds no base, so a field reference through it panics.) <code>r.AddNotification</code>/<code>r.AddNotificationMessage</code> delegate to the internal ctx. For root, the ctx is the entity's own <code>e.NotificationContext()</code>. For AVO, the ctx is a <code>Scoped(NameSegment(collection), IndexSegment(i))</code> view of the root's ctx.</li>
         <li><strong>Collection segment name is the JSON wire name.</strong> <code>runAggregateValidations</code> iterates <code>root.AllAggregateItems()</code> and renders the name the child declares in <code>CollectionName()</code> through <code>toLowerCamel</code> (<code>"Addresses"</code> → <code>"addresses"</code>, <code>"OrderLines"</code> → <code>"orderLines"</code>) — it is JSON wire output, so the convention is camelCase, not snake_case. The name itself is declared by the domain, never derived from the type.</li>
-        <li><strong>Acronym-aware <code>toLowerCamel</code> render:</strong> <code>Name</code>→<code>name</code>, <code>URL</code>→<code>url</code>, <code>ZipCode</code>→<code>zipCode</code>, <code>URLPath</code>→<code>urlPath</code>. Strings already in lowercase pass through (<code>"id"</code>→<code>"id"</code>) — the legacy <code>FieldName: "id"</code> in mode validators remains intact.</li>
-        <li><strong>Wire layer</strong> (<code>web/from_notifications.go</code>, <code>application/notifications/convert.go</code>) reads <code>m.ResolveFieldName()</code> with precedence <strong>Override &gt; rendered Path &gt; FieldName</strong>.</li>
+        <li><strong>Acronym-aware <code>toLowerCamel</code> render:</strong> <code>Name</code>→<code>name</code>, <code>URL</code>→<code>url</code>, <code>ZipCode</code>→<code>zipCode</code>, <code>URLPath</code>→<code>urlPath</code>. Strings already in lowercase pass through (<code>"id"</code>→<code>"id"</code>), so an already-wire-cased name a named seat passes (<code>AddNotificationNamed("id", …)</code>) survives the render untouched.</li>
+        <li><strong>Wire layer</strong> (<code>web/from_notifications.go</code>, <code>application/notifications/convert.go</code>) reads <code>m.ResolveFieldName()</code> with precedence <strong>Override &gt; rendered Path</strong> — the only two slots there are.</li>
     </ol>
 
     <h4>One casing for every framework-raised field</h4>
@@ -483,9 +483,10 @@ func (a *Address) BuildRules(actionName string, svc domain.Service, r *domain.Ru
         rejections (<code>EntityAlreadyAdded</code>/<code>EntityDoesNotExist</code>/<code>InvalidAggregateChild</code>)
         name the child's declared <code>CollectionName</code> segment (<code>"addresses"</code>); the Go type
         name appears only as the <code>value</code> echo on the invalid-child rejection. What the framework
-        does <em>not</em> touch: a <code>FieldName</code> the SERVICE supplies
+        does <em>not</em> touch: a field name the SERVICE supplies
         (<code>SingleNotificationError</code>, <code>ConstraintBinding.Field</code>, a manual
-        <code>NotificationMessage</code>) travels verbatim — declare it in wire casing — and the deliberate
+        <code>NotificationMessage</code>) lands in <code>Override</code> and travels verbatim — declare it in
+        wire casing — and the deliberate
         non-field entries (the router fallbacks' <code>"GET /path"</code>, the migration context) stay as
         they are.
     </p>
@@ -565,7 +566,7 @@ func (c *NotificationContext) ChangeFieldName(orig, new string)</code></pre>
         <tr>
             <td><code>NotificationContext.ChangeFieldName(orig, new)</code></td>
             <td>Imperative call in a manual handler (or anywhere the consumer holds the <code>*NotificationContext</code>)</td>
-            <td>The renaming is <strong>conditional / per-endpoint</strong> — only this specific flow renames the field. Compares each message via <code>ResolveFieldName()</code> and sets <code>Override = new</code> on the ones that match. Path/FieldName originals stay preserved for diagnosis; only the wire changes.</td>
+            <td>The renaming is <strong>conditional / per-endpoint</strong> — only this specific flow renames the field. Compares each message via <code>ResolveFieldName()</code> and sets <code>Override = new</code> on the ones that match. The structured <code>Path</code> stays preserved for diagnosis; only the wire changes.</td>
         </tr>
     </tbody></table>
 
@@ -574,10 +575,11 @@ func (c *NotificationContext) ChangeFieldName(orig, new string)</code></pre>
     </p>
 
 <pre><code>// Declarative — every emission about "Email" on this entity surfaces as "primaryEmail".
-// orig is the RESOLVED wire name (post-render, "email"), not the Go identifier:
+// goFieldName is the GO identifier ("Email"), matched against the leaf Path
+// segment before it is rendered — not the post-render wire name:
 func NewUser(...) *User {
     u := &amp;User{...}
-    u.AddFieldNameAlias("email", "primaryEmail")
+    u.AddFieldNameAlias("Email", "primaryEmail")
     return u
 }
 
@@ -658,7 +660,7 @@ type Address struct {
   }]
 }</code></pre>
     <p>
-        The same request under <code>Accept-Language: en-US</code> emits <code>"fieldLabel": "ZIP Code"</code>. Fields without a <code>label</code> tag emit <strong>no</strong> <code>fieldLabel</code> at all — the <code>omitempty</code> elides the slot, so services without label declarations see byte-identical envelopes to the pre-feature behavior.
+        The same request under <code>Accept-Language: en-US</code> emits <code>"fieldLabel": "ZIP Code"</code>. Fields without a <code>labelKey</code> tag emit <strong>no</strong> <code>fieldLabel</code> at all — the <code>omitempty</code> elides the slot, so services without label declarations see byte-identical envelopes to the pre-feature behavior.
     </p>
 
     <h4>Audit row (update, root delta)</h4>
@@ -761,7 +763,7 @@ audit.RenderLabelsInJSON(doc, deps.Translator, configuration.LangPTBR)
 
     <h4>Interaction with <code>AddFieldNameAlias</code> / <code>ChangeFieldName</code></h4>
     <p>
-        Label resolution operates on the <strong>Go field name</strong> the rule passed: <code>r.AddNotification("Email", n)</code> reads the <code>label</code> tag on the <code>Email</code> struct field. Wire renames affect only <code>FieldName</code> rendering — <code>AddFieldNameAlias("Email", "primaryEmail")</code> makes the wire say <code>"field": "primaryEmail"</code> while <code>"fieldLabel"</code> stays the translation of the tag on <code>Email</code>. The two surfaces are independent on purpose: alias renames the technical identifier; label translates the human identifier. Both reach the wire together but resolve through different paths.
+        Label resolution operates on the <strong>Go field the reference addresses</strong>: <code>r.AddNotification(&amp;u.Email, n, false)</code> reads the <code>labelKey:"..."</code> tag off that field's <code>reflect.StructField</code>, the same read that gives the emission its wire name. Wire renames affect only the <code>field</code> slot — <code>AddFieldNameAlias("Email", "primaryEmail")</code> (and a <code>notifyAs:"primaryEmail"</code> tag) makes the wire say <code>"field": "primaryEmail"</code> while <code>"fieldLabel"</code> stays the translation of the <code>labelKey</code> declared on <code>Email</code>. The two surfaces are independent on purpose: the wire token renames the technical identifier; the label translates the human identifier. Both reach the wire together but resolve through different tags.
     </p>
 
     <h4>Manual emission via <code>AddNotificationMessage</code></h4>

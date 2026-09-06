@@ -17,7 +17,7 @@ type MessageDTO struct {
 	// FieldLabel is the translated human-readable name of the source field,
 	// rendered in the actor's locale from the `labelKey:"<catalogKey>"` struct tag
 	// declared on the entity / value-object field that triggered the
-	// notification. Empty when the source field carries no `label` tag — the
+	// notification. Empty when the source field carries no `labelKey` tag — the
 	// omitempty elides it from the wire entirely in that case, so existing
 	// services see byte-identical envelopes. Channels without a frontend
 	// (e-mail, SMS, push) consume this field directly so the recipient reads
