@@ -426,7 +426,9 @@ func (TenantMismatchNotification) Semantic() domain.NotificationSemantic {
 // ?orderBy=, a filter key, or explicit ?fields= on a field the Query restricted in
 // ToCriteria. The field is removed from the read either way; the 403 marks the
 // active attempt (a passively-omitted field gets no notification, just absence).
-// The restricted Go field path is carried as the notification's FieldName.
+// The restricted field path is carried as the notification's wire field,
+// rendered per segment through domain.WireFieldPath ("Addresses.ZipCode" →
+// "addresses.zipCode") — never the Go identifier the Query declared it under.
 type FieldAccessForbiddenNotification struct {
 	domain.ApplicationNotificationBase
 }

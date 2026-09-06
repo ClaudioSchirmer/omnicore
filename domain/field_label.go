@@ -78,10 +78,12 @@ func resolveNotifyAs(t reflect.Type, fieldName string) string {
 	return loadLabelPlan(t)[fieldName].wire
 }
 
-// loadLabelPlan returns the cached or freshly-built (fieldName → labelKey) map
-// for t. The plan is keyed by Go field name (PascalCase identifier) and stores
-// only fields whose `label` tag survives the resolveLabelKey rules; fields
-// without a label tag are absent from the map (lookup returns "" naturally).
+// loadLabelPlan returns the cached or freshly-built (fieldName → fieldMeta) map
+// for t. The plan is keyed by Go field name (PascalCase identifier) and holds
+// the field's declared vocabulary: the `labelKey:"..."` catalog key and the
+// `notifyAs:"..."` wire token, each recorded only when it survives the cleanTag
+// rules; a half nobody declared is absent from the map (lookup returns ""
+// naturally).
 func loadLabelPlan(t reflect.Type) map[string]fieldMeta {
 	if cached, ok := labelPlanCache.Load(t); ok {
 		return cached.(map[string]fieldMeta)
@@ -91,17 +93,6 @@ func loadLabelPlan(t reflect.Type) map[string]fieldMeta {
 	return plan
 }
 
-// buildLabelPlan walks t's exported fields once, recording each field whose
-// `label` tag is present, non-empty, and non-"-". Anonymous embedded structs flatten into the same plan so
-// promoted-field lookups (e.g. via BaseEntity embed) reach their label tag
-// through the same Go identifier the caller used on the outer type.
-//
-// A COMPOSITE value object field flattens the same way, by its PARTS' names: a
-// composite carries several fields, its IsValid emits notifications on them
-// (ctx.AddNotificationNamed("Street", …)), and the label of a part is declared on the
-// value object's own field — the value object owns its vocabulary for every
-// entity that uses it. Without this hop a part-level notification would ship
-// with no label at all, since "Street" is not a field of the entity.
 // cleanTag reads a tag honoring the shared skip rules: "" and "-" are both
 // "no declaration".
 func cleanTag(f reflect.StructField, key string) string {
@@ -112,6 +103,19 @@ func cleanTag(f reflect.StructField, key string) string {
 	return tag
 }
 
+// buildLabelPlan walks t's exported fields once, recording each field's
+// declared vocabulary — the `labelKey:"..."` catalog key and the
+// `notifyAs:"..."` wire token, each kept only when cleanTag admits it.
+// Anonymous embedded structs flatten into the same plan so promoted-field
+// lookups (e.g. via BaseEntity embed) reach their tags through the same Go
+// identifier the caller used on the outer type.
+//
+// A COMPOSITE value object field flattens the same way, by its PARTS' names: a
+// composite carries several fields, its IsValid emits notifications on them
+// (ctx.AddNotificationNamed("Street", …)), and a part's vocabulary is declared on
+// the value object's own field — the value object owns it for every entity that
+// uses it. Without this hop a part-level notification would ship with no label
+// at all, since "Street" is not a field of the entity.
 func buildLabelPlan(t reflect.Type) map[string]fieldMeta {
 	out := map[string]fieldMeta{}
 	// merge lets a DIRECT field shadow what an anonymous embed already put

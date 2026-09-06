@@ -77,7 +77,8 @@ type EntityIsNotActiveNotification struct{ DomainNotificationBase }
 // SharedBase subsystem (identity upsert, refcount, lifecycle convergence, CDC
 // fan-out, payload FKs) depends on it never changing after insert. Default
 // Semantic (Validation → 422): the request is asking for something the model
-// forbids. FieldName carries the natural key's Go field name.
+// forbids. The wire field carries the natural key's column resolved to the
+// schema's Go name and rendered lower-camel (TableSchema.WireFieldOf).
 type NaturalIDImmutableNotification struct{ DomainNotificationBase }
 
 // InvalidAggregateChildNotification is emitted by AddAggregateChild,
@@ -125,8 +126,9 @@ type UnknownIDAddressNotification struct{ DomainNotificationBase }
 // Mongo-backed view of the same view answered 200 with an empty page — the
 // same request, two contracts.
 //
-// FieldName carries the wire key when the wire caught it and the Go field name
-// when the reader did; FieldValue echoes the rejected value.
+// The wire field carries the wire key when the wire caught it, and the Go field
+// path rendered in the wire casing (domain.WireFieldPath) when the reader did —
+// the same token either way; FieldValue echoes the rejected value.
 type InvalidFilterValueNotification struct{ DomainNotificationBase }
 
 type InvalidEventTypeNotification struct{ DomainNotificationBase }
@@ -141,8 +143,10 @@ type RecordNotFoundNotification struct{ DomainNotificationBase }
 // revert the columns the concurrent writer changed, and would put a value on
 // the outbox payload that the row never held.
 //
-// The caller's recovery is to reload and reapply. FieldName carries the id
-// column, FieldValue the id. SemanticStateConflict → 409 on HTTP and
+// The caller's recovery is to reload and reapply. The wire field carries the id
+// column resolved to the schema's Go name and rendered lower-camel
+// (TableSchema.WireFieldOf — "user_id" → "id"), FieldValue the id.
+// SemanticStateConflict → 409 on HTTP and
 // FailedPrecondition on gRPC: this is a precondition failure, not a duplicate.
 type ConcurrentModificationNotification struct{ DomainNotificationBase }
 

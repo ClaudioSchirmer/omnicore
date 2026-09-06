@@ -345,7 +345,9 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
         the <em>DTO</em>; the reader then resolves each Go field path against the <em>view's</em> <code>TableSchema</code>
         tree. A path the view cannot resolve — a DTO field that does not match any column or segment the view projects,
         typically a collection field spelled differently from the child's <code>CollectionName()</code> — is rejected
-        with the same canonical 400 <code>SchemaViolationNotification</code>, naming the offending dotted Go path. This
+        with the same canonical 400 <code>SchemaViolationNotification</code>, naming the offending dotted path rendered
+        in the wire casing (<code>domain.WireFieldPath</code>: <code>"Addresses.ZipCode"</code> →
+        <code>"addresses.zipCode"</code>) — the token the consumer sent, not the Go identifier. This
         covers <code>?filter</code>, <code>?orderBy=</code> and <code>?fields=</code> alike, on the Mongo and relational
         backings equally. It is deliberately not a silent fallback: passing an unresolvable path through to the store
         would answer 200 with an empty page for a mistyped filter, and 200 unsorted for a mistyped sort. (An

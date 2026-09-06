@@ -468,7 +468,7 @@ func oldFieldsOf(schema *TableSchema, e domain.Entity) map[string]any {
 //
 // labelsByField carries the Go-field-name → catalog key map produced by
 // labelKeysByGoField(reflect.TypeOf(entity)). Pass nil when the caller does
-// not have a type in hand or when no `label` tags are declared on the
+// not have a type in hand or when no `labelKey` tags are declared on the
 // source struct — every emitted FieldChange then carries FieldLabelKey=""
 // and the omitempty elides it from the wire.
 //

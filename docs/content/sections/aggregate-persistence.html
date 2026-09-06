@@ -490,7 +490,10 @@ func (u *User) AggregateChildren() []domain.AggregateValueObject {
 func (u *User) AddAddress(addr Address, svc domain.Service) {
     for _, existing := range domain.GetCurrentItemsOf[Address](&amp;u.AggregateRoot) {
         if existing.sameBusinessIdentity(addr) {
-            u.AddNotification("Address", DuplicateAddressNotification{})
+            // Named seat: the collection is not ONE addressable field of User.
+            // "Addresses" renders "addresses" — the same token the framework's
+            // own child rejections carry.
+            u.AddNotificationNamed("Addresses", DuplicateAddressNotification{})
             return
         }
     }

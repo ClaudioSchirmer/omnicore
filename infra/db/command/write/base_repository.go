@@ -13,8 +13,8 @@ import (
 // is violated. The engine's Dialect classifies the backend-specific error
 // uniformly (PG SQLSTATE 23505 / MySQL errno 1062) — see IsUniqueViolation.
 //
-// Field is the domain field name (e.g. "email") — passed to
-// NotificationMessage.FieldName.
+// Field is developer-supplied and travels VERBATIM: it is passed to
+// NotificationMessage.Override, so declare it in wire casing (e.g. "email").
 type ConstraintBinding struct {
 	Notification domain.Notification
 	Field        string

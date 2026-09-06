@@ -91,7 +91,7 @@ type NotificationMessage struct {
 	// MessageDTO.FieldLabel wire field. Populated by Rules.AddNotification at
 	// emit time (resolved via the `labelKey:"..."` struct tag on the field that
 	// triggered the notification — see domain/field_label.go::resolveLabelKey).
-	// Empty when the source field has no `label` tag; the wire elides the
+	// Empty when the source field has no `labelKey` tag; the wire elides the
 	// fieldLabel via json:"fieldLabel,omitempty" in that case. Consumers that
 	// build NotificationMessage directly via AddNotificationMessage may set
 	// LabelKey themselves to surface a label on a manual emission.
