@@ -147,9 +147,9 @@
 <p>
     The base is attached through <code>.Schema(base)</code> — exactly like a regular view attaches its root schema — and it
     must come before the first <code>.Role(...)</code> (each role is validated against the base). <code>_id</code> is the
-    base's deterministic ID; the document's DeletedAt gate is the base's (the identity hides only when its last active
+    base's deterministic ID; the document's ArchivedAt gate is the base's (the identity hides only when its last active
     role archives). An absent role is an explicit <code>null</code> segment; an archived role stores its
-    <code>deleted_at</code> and is stripped on default reads unless <code>?includeArchived</code>. Everything a regular view
+    <code>archived_at</code> and is stripped on default reads unless <code>?includeArchived</code>. Everything a regular view
     declares applies unchanged (Version participates in the rebuild hash — the role set included — indexes/validators,
     <code>MaxLimit</code>, <code>DeleteOnArchive</code>, embeds).
 </p>
@@ -217,23 +217,23 @@
     state</strong>:
 </p>
 <ol>
-    <li>the ACTIVE row (<code>fk = baseID AND deleted_at IS NULL</code>) — the one-active-role
+    <li>the ACTIVE row (<code>fk = baseID AND archived_at IS NULL</code>) — the one-active-role
         invariant caps it at one;</li>
-    <li>otherwise the most recently archived remnant (<code>ORDER BY deleted_at DESC</code>), stored
-        WITH its DeletedAt timestamp — hidden on default reads, surfaced by
+    <li>otherwise the most recently archived remnant (<code>ORDER BY archived_at DESC</code>), stored
+        WITH its ArchivedAt timestamp — hidden on default reads, surfaced by
         <code>?includeArchived=true</code>;</li>
     <li>otherwise the explicit <code>null</code> segment.</li>
 </ol>
 <p>
     Remnant HISTORY is deliberately not enumerated in the person document — the role views with
-    <code>?includeArchived</code> cover it. A role without <code>DeletedAt</code> has no archived
+    <code>?includeArchived</code> cover it. A role without <code>ArchivedAt</code> has no archived
     state; a single ParentID fetch decides its segment.
 </p>
 
 <h4>Lifecycle &amp; sync</h4>
 <ul>
-    <li><strong>Document gate = the base's DeletedAt.</strong> The base archives only when its last
-        active role archives (write-side convergence), so the root <code>deleted_at</code> gate hides
+    <li><strong>Document gate = the base's ArchivedAt.</strong> The base archives only when its last
+        active role archives (write-side convergence), so the root <code>archived_at</code> gate hides
         the person exactly when every specialization is archived. <code>DeleteOnArchive()</code> means
         "drop the document when the BASE archives" — and archived role rows stop composing at all.</li>
     <li><strong>Role events recompose the person document.</strong> The SyncEngine subscribes to every
@@ -259,7 +259,7 @@
     segment: <code>?user.userName=ana</code>, <code>?employee.dependents.relationship=daughter</code>,
     sort and projection likewise. On a default read an ARCHIVED role's whole segment is hidden (the
     single-map counterpart of the archived-entry strip on child collections);
-    <code>?includeArchived=true</code> surfaces it with its <code>deletedAt</code>. Declare each role as
+    <code>?includeArchived=true</code> surfaces it with its <code>archivedAt</code>. Declare each role as
     a nested struct on the Response DTO and the exports render it as a nested branch (role fields +
     siblings, then its child collections), never repeating the base columns.
 </p>
@@ -322,7 +322,7 @@ query.JoinUpstream(
 // … then on the verb:  Embed(buyer).On("buyer_id")   // parent ParentID → source ID (1:1)</code></pre>
 <div class="box">
     <strong>Declaring a column is a TRANSLATION, not a projection — the schema removes nothing.</strong>
-    An external schema is the Go ↔ column name map and the semantic declaration (ID, DeletedAt) of a collection
+    An external schema is the Go ↔ column name map and the semantic declaration (ID, ArchivedAt) of a collection
     someone else materializes; it never shapes what is STORED. The mirror keeps whatever the subscription's
     <code>filter:</code> let through, and a materialized embed segment copies that mirror document whole —
     including columns this schema never declares. Undeclared columns are simply invisible to the read side
@@ -473,7 +473,7 @@ func SaleView() *query.ViewDefinition {
     <code>EmbedInChild</code> enrichment and a <code>ComposedView</code> leg all behave the same way.
     <br><br>
     <strong>The one condition is the SOURCE SCHEMA.</strong> A segment is filtered if — and only if — the schema behind
-    it declares <code>DeletedAt(column)</code>. That declaration is what tells the framework the source HAS an archived
+    it declares <code>ArchivedAt(column)</code>. That declaration is what tells the framework the source HAS an archived
     state and which column carries it; without it there is nothing to filter on and the segment is never touched. So the
     behavior is not a property of the verb you used, of the leg kind, or of whether the data is materialized: it is a
     property of the declaration.
@@ -482,12 +482,12 @@ func SaleView() *query.ViewDefinition {
 core.NewExternalSchema("upstream_products").
     ID("id").
     Field("Name", "name").
-    DeletedAt("deleted_at")     // ← the declaration that switches the rule on
+    ArchivedAt("archived_at")     // ← the declaration that switches the rule on
 
 // This one does not → its segment is always returned as stored.
 core.NewExternalSchema("upstream_regions").
     ID("id").
-    Field("Name", "name")        // no DeletedAt: no archived concept, no filtering</code></pre>
+    Field("Name", "name")        // no ArchivedAt: no archived concept, no filtering</code></pre>
 <div class="note">
     <strong>For an upstream mirror, declaring it is only half the job.</strong> The column must also survive the
     subscription's <code>fields:</code> allowlist — otherwise the archive marker never reaches the mirror and there is
@@ -504,11 +504,11 @@ core.NewExternalSchema("upstream_regions").
         the explicit <code>null</code> — the same value it carries when the reference is unresolved;</li>
     <li>a <strong>1:N</strong> segment drops the archived elements and keeps the rest, in the declared
         <a href="#views~views-embed-order">order</a>;</li>
-    <li>the <strong>root document's own</strong> <code>deleted_at</code> is different in kind: that gate runs inside the
+    <li>the <strong>root document's own</strong> <code>archived_at</code> is different in kind: that gate runs inside the
         Mongo query, so an archived document does not appear at all (it also governs counts and pagination).</li>
 </ul>
 <table>
-    <tbody><tr><th>What is archived</th><th>Source declares <code>DeletedAt</code>?</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
+    <tbody><tr><th>What is archived</th><th>Source declares <code>ArchivedAt</code>?</th><th>Default read</th><th>With <code>?includeArchived=true</code></th></tr>
     <tr>
         <td>The EMBEDDING document itself</td>
         <td>its own root schema</td>
@@ -546,7 +546,7 @@ core.NewExternalSchema("upstream_regions").
         <td>Returned.</td>
     </tr>
     <tr>
-        <td>Anything whose source declares <strong>no</strong> <code>DeletedAt</code></td>
+        <td>Anything whose source declares <strong>no</strong> <code>ArchivedAt</code></td>
         <td>—</td>
         <td colspan="2"><strong>Returned as stored, always.</strong> No declaration, no archived concept, no filtering —
             the flag is a silent no-op there, never an error.</td>
@@ -580,7 +580,7 @@ func SaleView() *query.ViewDefinition {
 <p>
     Entries are <strong>Go names</strong> — the leg sits above the infra membrane, so it speaks what criteria and DTOs
     speak: business fields by their declared Go name (<code>"UserName"</code>), managed slots by their FIXED names
-    (<code>"DeletedAt"</code>, <code>"CreatedAt"</code>, <code>"ParentID"</code> — see
+    (<code>"ArchivedAt"</code>, <code>"CreatedAt"</code>, <code>"ParentID"</code> — see
     <a href="#table-schema~three-name-model">the three-name model</a>), and a top-level segment of the source document
     (a child collection, an embed, a role) by its Go segment name — which admits or cuts that segment
     <strong>whole</strong> (a kept segment arrives with its own rules intact, recursively). The identity and the
@@ -589,16 +589,16 @@ func SaleView() *query.ViewDefinition {
     too. Every writer of the segment applies the same cut — first compose, batch rebuild, the surgical ripple and the
     1:1 repair — so a trimmed segment is byte-identical whichever writer produced it. On the read side the cut is a
     contract, not an accident: the segment's translator knows only the allowlist (no archived gate when
-    <code>"DeletedAt"</code> is capped, no strip path, no translation for a capped leaf). On the wire, declare the
+    <code>"ArchivedAt"</code> is capped, no strip path, no translation for a capped leaf). On the wire, declare the
     Request/Response DTOs to MIRROR the cut —
-    the DTO is the read-side allowlist, so a token it does not declare (<code>?brand.deletedAt</code> on a capped
+    the DTO is the read-side allowlist, so a token it does not declare (<code>?brand.archivedAt</code> on a capped
     segment) is <code>400 SchemaViolationNotification</code> at the membrane; a DTO that over-declares a capped field
     gets the LEFT answer (the field never materializes, so a filter on it matches nothing, and its
     JSON key and its CSV/XLSX column render empty — the Response DTO is what both surfaces advertise).
 </p>
 <div class="box">
     <strong>THE ARCHIVE SWITCH — one entry in or out of <code>Fields</code> decides whether the segment follows the
-    source's archive.</strong> The archived-entry strip is governed by the source's <code>DeletedAt</code>
+    source's archive.</strong> The archived-entry strip is governed by the source's <code>ArchivedAt</code>
     declaration; <code>Fields</code> puts that lever in the CONSUMER's hand, per view:
     <br><br>
     <code>Fields("Name")</code> — <strong>the customer's name lives in the sale FOREVER.</strong> The segment never
@@ -606,10 +606,10 @@ func SaleView() *query.ViewDefinition {
     the sale's segment, renames keep flowing in through the ripple, and <code>?includeArchived</code> is irrelevant
     there (nothing was hidden).
     <br><br>
-    <code>Fields("Name", "DeletedAt")</code> — <strong>the segment follows the source's archive.</strong> The archived
+    <code>Fields("Name", "ArchivedAt")</code> — <strong>the segment follows the source's archive.</strong> The archived
     customer is hidden on a default read (1:1 → <code>null</code>, a 1:N element leaves the array) and
     <code>?includeArchived=true</code> brings it back — the same rule every uncut segment applies (a whole-document
-    segment always carries the source's DeletedAt column), here chosen explicitly.
+    segment always carries the source's ArchivedAt column), here chosen explicitly.
     <br><br>
     The same source view can be embedded BOTH ways by different views — each declaration picks its regime. Fields
     governs SHAPE, never EXISTENCE: a hard DELETE of the source (or <code>DeleteOnArchive()</code> on it) still nulls
@@ -620,7 +620,7 @@ func SaleView() *query.ViewDefinition {
     is the WRITE side's — fixed, not narrowable — so the leg needs its own narrowing device. A
     <code>JoinUpstream</code> leg already has both levers under other names: the subscription
     <a href="#yaml-reference"><code>fields:</code></a> cuts what enters the MIRROR, and the consumer's own
-    <code>NewExternalSchema</code> declares what it reads (declaring — or omitting — <code>DeletedAt(col)</code> there
+    <code>NewExternalSchema</code> declares what it reads (declaring — or omitting — <code>ArchivedAt(col)</code> there
     is the same archive switch). And a <a href="#views~views-composed">ComposedView</a> needs neither: it stores
     nothing and already narrows by the leg's schema at read time — a <code>Fields</code>-bearing leg on a
     <code>Link*</code> is a fatal boot. The two cuts, side by side:
@@ -641,13 +641,13 @@ func SaleView() *query.ViewDefinition {
     </tr>
     <tr>
         <td>The archive switch</td>
-        <td>Declare <code>DeletedAt(col)</code> on the external schema AND keep the column in <code>fields:</code>
+        <td>Declare <code>ArchivedAt(col)</code> on the external schema AND keep the column in <code>fields:</code>
             (boot-guarded coherence) ⇒ the segment follows the archive; omit both ⇒ it never does.</td>
-        <td><code>"DeletedAt"</code> in / out of <code>Fields()</code>.</td>
+        <td><code>"ArchivedAt"</code> in / out of <code>Fields()</code>.</td>
     </tr>
     <tr>
         <td>Per-view regime over ONE source</td>
-        <td>Via the SCHEMA each view declares (with / without <code>DeletedAt</code>) — the storage stays shared.</td>
+        <td>Via the SCHEMA each view declares (with / without <code>ArchivedAt</code>) — the storage stays shared.</td>
         <td>Via each leg's <code>Fields()</code> — storage per leg.</td>
     </tr>
     <tr>
@@ -754,8 +754,8 @@ func SaleView() *query.ViewDefinition {
     </tr>
     <tr>
         <td>Whether a segment HAS an archived state</td><td>Developer of the CONSUMING view / leg</td>
-        <td><code>"DeletedAt"</code> in/out of a <code>JoinView</code> leg's <code>Fields</code>; the
-            <code>DeletedAt(column)</code> declaration on a mirror's external schema</td>
+        <td><code>"ArchivedAt"</code> in/out of a <code>JoinView</code> leg's <code>Fields</code>; the
+            <code>ArchivedAt(column)</code> declaration on a mirror's external schema</td>
         <td>The declaration is the switch: materialized ⇒ archived content is hidden on a default read and revealed by
             <code>?includeArchived=true</code>; not materialized ⇒ the segment is never filtered — the
             <a href="#views~views-embed-fields">archive switch</a>, per consumer.</td>
@@ -1137,7 +1137,7 @@ same envelope, same projector, same pagination block as any view read</div>
             <a href="#views~views-composed-vs">Two ways to compose</a>.</li>
         <li><strong>One knob, every leg (R8):</strong> <code>?includeArchived=true</code> lifts the
             primary's gate AND each leg's own gate. A schema is not required to declare
-            <code>DeletedAt</code> — a leg without one has no archived concept; the knob is a silent
+            <code>ArchivedAt</code> — a leg without one has no archived concept; the knob is a silent
             no-op there, never an error.</li>
         <li><strong>No cross-leg snapshot:</strong> each view keeps its own CDC latency; a composed read
             inherits each leg's freshness individually and adds no cross-view guarantee. It is the same
@@ -1187,10 +1187,10 @@ same envelope, same projector, same pagination block as any view read</div>
         <tr><td>Per-parent ceiling on a 1:N segment</td><td><strong>None</strong> — a materialized array cannot forget what it truncated (nothing could promote the cut elements back)</td><td><code>MaxLinkManyLimit</code> — the array is rebuilt per request, so a cap is honest</td></tr>
         <tr>
             <td>An ARCHIVED source inside a segment</td>
-            <td><strong>Hidden on a default read</strong> when the source schema declares <code>DeletedAt</code> — the
+            <td><strong>Hidden on a default read</strong> when the source schema declares <code>ArchivedAt</code> — the
                 1:1 segment becomes <code>null</code>, a 1:N element leaves the array. Applied to the fetched document,
                 so the row itself always survives.</td>
-            <td><strong>Hidden on a default read</strong> when the leg schema declares <code>DeletedAt</code> — the gate
+            <td><strong>Hidden on a default read</strong> when the leg schema declares <code>ArchivedAt</code> — the gate
                 is added to the leg's own query, so the archived document is never fetched.</td>
         </tr>
         <tr>
@@ -1200,7 +1200,7 @@ same envelope, same projector, same pagination block as any view read</div>
                 mode of the whole read.</td>
         </tr>
         <tr>
-            <td>A source declaring NO <code>DeletedAt</code></td>
+            <td>A source declaring NO <code>ArchivedAt</code></td>
             <td colspan="2"><strong>Never filtered, in either family.</strong> The declaration is what defines an
                 archived state; without it the flag is a silent no-op on that segment.</td>
         </tr>
@@ -1211,7 +1211,7 @@ same envelope, same projector, same pagination block as any view read</div>
             <td colspan="2"><strong>Both families hide archived content by default and reveal it with the same flag; the
                 only thing that varies is WHERE the gate runs — inside the leg's query (link) or on the fetched document
                 (embed). What decides IF it runs is neither family nor verb: it is whether the source schema declares
-                <code>DeletedAt</code>.</strong></td>
+                <code>ArchivedAt</code>.</strong></td>
         </tr>
         <tr><td>Choose it when…</td><td>The composition is hot, filtered across sources, or read far more than sources change</td><td>The link is arbitrary/occasional, freshness beats latency, the 1:N segment needs a declared order/cap, or you refuse another synced collection</td></tr>
     </tbody></table>
@@ -1377,7 +1377,7 @@ same envelope, same projector, same pagination block as any view read</div>
 </p>
 <p>
     <strong>Archive by default.</strong> Mongo mirrors the relational backend: an <code>ARCHIVED</code> event keeps the
-    document (with <code>deleted_at</code> populated, hidden on default reads, surfaced by <code>?includeArchived</code>)
+    document (with <code>archived_at</code> populated, hidden on default reads, surfaced by <code>?includeArchived</code>)
     unless the view opts into <code>.DeleteOnArchive()</code> — the hot-tier choice that drops archived rows from that
     collection. A hard <code>DELETED</code> always removes the document. The concrete lifecycle, the composer, the
     watermark guards and the tombstone handshake are detailed in <a href="#read-lifecycle-map">the read lifecycle map</a>.

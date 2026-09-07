@@ -21,7 +21,7 @@ func TestComposer_ComposeRoot(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE c_widgets (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		label TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -48,7 +48,7 @@ func TestComposer_Compose_AbsentRowReturnsNil(t *testing.T) {
 	defer cleanup()
 	createTable(t, pg, `CREATE TABLE c_empty (
 		id UUID PRIMARY KEY,
-		deleted_at TIMESTAMP
+		archived_at TIMESTAMP
 	)`)
 	view := query.View("c_empty").Schema(rootSchema("c_empty")).Version(1)
 	c := query.NewComposer(pg)
@@ -75,7 +75,7 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE oc_orders (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		ref TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -83,7 +83,7 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		order_id UUID NOT NULL REFERENCES oc_orders(id) ON DELETE CASCADE,
 		qty INT NOT NULL,
-		deleted_at TIMESTAMP
+		archived_at TIMESTAMP
 	)`)
 
 	var orderID string
@@ -93,9 +93,9 @@ func TestComposer_ComposeWithOwnChild(t *testing.T) {
 		`INSERT INTO oc_lines (order_id, qty) VALUES ($1, 3), ($1, 5)`, orderID)
 
 	// Child declared on the ROOT schema — NO EmbedMany. It must auto-project.
-	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").ID("id").DeletedAt("deleted_at").
+	rootWithChild := core.NewTableSchema[embedFixture]("oc_orders").ID("id").ArchivedAt("archived_at").
 		Child(core.NewTableSchema[ocLineRow]("oc_lines").ID("id").ParentID("order_id").
-			Field("Qty", "qty").DeletedAt("deleted_at"))
+			Field("Qty", "qty").ArchivedAt("archived_at"))
 	view := query.View("oc_orders").Schema(rootWithChild).Version(1)
 
 	doc, err := query.NewComposer(pg).Compose(context.Background(), view, orderID)
@@ -123,7 +123,7 @@ func TestComposer_ComposeAll(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE c_items (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -141,13 +141,13 @@ func TestComposer_ComposeAll(t *testing.T) {
 	}
 }
 
-func TestComposer_DeleteOnArchive_FiltersDeletedAtFromRoot(t *testing.T) {
+func TestComposer_DeleteOnArchive_FiltersArchivedAtFromRoot(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createTable(t, pg, `CREATE TABLE c_keep (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -157,7 +157,7 @@ func TestComposer_DeleteOnArchive_FiltersDeletedAtFromRoot(t *testing.T) {
 	pg.Pool().QueryRow(context.Background(),
 		`INSERT INTO c_keep (name) VALUES ('active') RETURNING id`).Scan(&activeID)
 	pg.Pool().QueryRow(context.Background(),
-		`INSERT INTO c_keep (name, deleted_at) VALUES ('archived', NOW()) RETURNING id`).Scan(&archivedID)
+		`INSERT INTO c_keep (name, archived_at) VALUES ('archived', NOW()) RETURNING id`).Scan(&archivedID)
 
 	// Default view (keep-archived) — should see both.
 	defaultView := query.View("c_keep").Schema(rootSchema("c_keep")).Version(1)
@@ -227,20 +227,20 @@ func TestMongoViewReader_ReadByID_HitMissAndArchivedFilter(t *testing.T) {
 	col := m.Collection("users")
 	ctx := context.Background()
 	_, err := col.InsertMany(ctx, []any{
-		bson.M{"_id": "u1", "email": "alice@x", "deleted_at": nil},
-		bson.M{"_id": "u2", "email": "bob@x", "deleted_at": "2026-01-01"}, // archived
+		bson.M{"_id": "u1", "email": "alice@x", "archived_at": nil},
+		bson.M{"_id": "u2", "email": "bob@x", "archived_at": "2026-01-01"}, // archived
 	})
 	if err != nil {
 		t.Fatalf("InsertMany: %v", err)
 	}
 
-	// The reader needs the view schema to know deleted_at is the DeletedAt
+	// The reader needs the view schema to know archived_at is the ArchivedAt
 	// marker (and to translate columns to Go field names on read); production
 	// always registers it via SetViews. Without it the by-id archived filter
 	// cannot engage.
 	reader := NewMongoViewReader(m, testResolver).SetViews([]*query.ViewDefinition{
 		query.View("users").
-			Schema(core.NewExternalSchema("users").ID("id").Field("Email", "email").DeletedAt("deleted_at")).
+			Schema(core.NewExternalSchema("users").ID("id").Field("Email", "email").ArchivedAt("archived_at")).
 			Version(1),
 	})
 
@@ -276,7 +276,7 @@ func TestMongoViewReader_ReadPage_HappyPath(t *testing.T) {
 	col := m.Collection("users")
 	ctx := context.Background()
 	for _, e := range []string{"a", "b", "c", "d", "e"} {
-		_, err := col.InsertOne(ctx, bson.M{"_id": e, "email": e + "@x", "deleted_at": nil})
+		_, err := col.InsertOne(ctx, bson.M{"_id": e, "email": e + "@x", "archived_at": nil})
 		if err != nil {
 			t.Fatalf("insert %s: %v", e, err)
 		}
@@ -320,10 +320,10 @@ func TestMongoViewReader_ReadPage_FilterWithMultiClause(t *testing.T) {
 	col := m.Collection("users")
 	ctx := context.Background()
 	col.InsertMany(ctx, []any{
-		bson.M{"_id": "1", "age": 10, "deleted_at": nil},
-		bson.M{"_id": "2", "age": 25, "deleted_at": nil},
-		bson.M{"_id": "3", "age": 40, "deleted_at": nil},
-		bson.M{"_id": "4", "age": 80, "deleted_at": nil},
+		bson.M{"_id": "1", "age": 10, "archived_at": nil},
+		bson.M{"_id": "2", "age": 25, "archived_at": nil},
+		bson.M{"_id": "3", "age": 40, "archived_at": nil},
+		bson.M{"_id": "4", "age": 80, "archived_at": nil},
 	})
 
 	reader := NewMongoViewReader(m, testResolver)
@@ -350,9 +350,9 @@ func TestMongoViewReader_ReadPage_Sort(t *testing.T) {
 	col := m.Collection("users")
 	ctx := context.Background()
 	col.InsertMany(ctx, []any{
-		bson.M{"_id": "1", "score": 30, "deleted_at": nil},
-		bson.M{"_id": "2", "score": 10, "deleted_at": nil},
-		bson.M{"_id": "3", "score": 20, "deleted_at": nil},
+		bson.M{"_id": "1", "score": 30, "archived_at": nil},
+		bson.M{"_id": "2", "score": 10, "archived_at": nil},
+		bson.M{"_id": "3", "score": 20, "archived_at": nil},
 	})
 
 	reader := NewMongoViewReader(m, testResolver)
@@ -376,7 +376,7 @@ func TestMongoViewReader_ReadPage_Projection(t *testing.T) {
 
 	col := m.Collection("users")
 	ctx := context.Background()
-	col.InsertOne(ctx, bson.M{"_id": "1", "email": "a@x", "name": "alice", "deleted_at": nil})
+	col.InsertOne(ctx, bson.M{"_id": "1", "email": "a@x", "name": "alice", "archived_at": nil})
 
 	reader := NewMongoViewReader(m, testResolver)
 	page, err := reader.ReadPage(ctx, "users", queries.ReadCriteria{
@@ -404,9 +404,9 @@ func TestMongoViewReader_ReadPage_TextMatchSentinel(t *testing.T) {
 	col := m.Collection("users")
 	ctx := context.Background()
 	col.InsertMany(ctx, []any{
-		bson.M{"_id": "1", "name": "Bob Diego", "deleted_at": nil},
-		bson.M{"_id": "2", "name": "Carol", "deleted_at": nil},
-		bson.M{"_id": "3", "name": "bobby", "deleted_at": nil},
+		bson.M{"_id": "1", "name": "Bob Diego", "archived_at": nil},
+		bson.M{"_id": "2", "name": "Carol", "archived_at": nil},
+		bson.M{"_id": "3", "name": "bobby", "archived_at": nil},
 	})
 
 	reader := NewMongoViewReader(m, testResolver)
@@ -430,9 +430,9 @@ func TestMongoViewReader_ReadPage_TextMatchListSentinel(t *testing.T) {
 	col := m.Collection("users")
 	ctx := context.Background()
 	col.InsertMany(ctx, []any{
-		bson.M{"_id": "1", "name": "Bob", "deleted_at": nil},
-		bson.M{"_id": "2", "name": "alice", "deleted_at": nil},
-		bson.M{"_id": "3", "name": "carlos", "deleted_at": nil},
+		bson.M{"_id": "1", "name": "Bob", "archived_at": nil},
+		bson.M{"_id": "2", "name": "alice", "archived_at": nil},
+		bson.M{"_id": "3", "name": "carlos", "archived_at": nil},
 	})
 
 	reader := NewMongoViewReader(m, testResolver)
@@ -461,7 +461,7 @@ func TestMongoViewReader_DefaultLimitWhenZero(t *testing.T) {
 	// Insert more than the framework default ceiling (100) so the "no ?first="
 	// default cap is observable.
 	for i := 0; i < 105; i++ {
-		col.InsertOne(ctx, bson.M{"_id": i, "deleted_at": nil})
+		col.InsertOne(ctx, bson.M{"_id": i, "archived_at": nil})
 	}
 
 	reader := NewMongoViewReader(m, testResolver)
@@ -485,7 +485,7 @@ func TestMongoViewReader_BadCursorRejected(t *testing.T) {
 
 	col := m.Collection("users")
 	ctx := context.Background()
-	col.InsertOne(ctx, bson.M{"_id": "1", "deleted_at": nil})
+	col.InsertOne(ctx, bson.M{"_id": "1", "archived_at": nil})
 
 	reader := NewMongoViewReader(m, testResolver)
 	// A malformed cursor is strictly rejected (keyset contract: an invalid
@@ -510,7 +510,7 @@ func TestComposer_NormalizeUUID_TurnedIntoString(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE c_uuid (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		other UUID,
-		deleted_at TIMESTAMP
+		archived_at TIMESTAMP
 	)`)
 	var id string
 	pg.Pool().QueryRow(context.Background(),

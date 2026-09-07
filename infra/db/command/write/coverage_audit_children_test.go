@@ -39,12 +39,12 @@ func (c covChild) BuildRules(string, domain.Service, *domain.Rules) {}
 var covAggSchema = NewTableSchema[*covAgg]("cov_aggs").
 	ID("id").
 	Field("Name", "name").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	Child(NewTableSchema[covChild]("cov_children").
 		ID("id").
 		ParentID("cov_agg_id").
 		Field("Label", "label").
-		DeletedAt("deleted_at"))
+		ArchivedAt("archived_at"))
 
 func TestChildEventOf_InsertSnapshotsChildren(t *testing.T) {
 	root := &covAgg{Name: "a"}
@@ -102,11 +102,11 @@ func TestChildEventOf_UpdateRemovedChild(t *testing.T) {
 var archiveTestStamp = time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 
 // archivedCovChild builds a child as the LOADER would hand it over: identified,
-// and carrying the DeletedAt its row holds (domain.SetManagedColumns is the
+// and carrying the ArchivedAt its row holds (domain.SetManagedColumns is the
 // framework's populate seam).
-func archivedCovChild(id string, deletedAt time.Time) domain.AggregateValueObject {
+func archivedCovChild(id string, archivedAt time.Time) domain.AggregateValueObject {
 	child := domain.WithID(covChild{Label: "x"}, domain.NewID(id))
-	domain.SetManagedColumns(&child, 1, nil, nil, &deletedAt)
+	domain.SetManagedColumns(&child, 1, nil, nil, &archivedAt)
 	return child
 }
 
@@ -126,7 +126,7 @@ func TestChildEventOf_ArchiveChildren(t *testing.T) {
 }
 
 // An already-archived child is NOT part of the archive cascade: the statement is
-// gated on `deleted_at IS NULL`, so its row keeps the older stamp it carries and
+// gated on `archived_at IS NULL`, so its row keeps the older stamp it carries and
 // the trail must not claim this archive touched it.
 func TestChildEventOf_ArchiveSkipsAlreadyArchivedChild(t *testing.T) {
 	root := &covAgg{Name: "a"}

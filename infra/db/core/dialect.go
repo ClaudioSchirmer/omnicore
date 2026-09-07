@@ -93,7 +93,7 @@ type Dialect interface {
 	LikeClause(col, placeholder string) string
 	// NowExpr renders the engine's SQL expression for the current timestamp —
 	// the single source of the "now" literal in every generated statement (the
-	// managed created_at/updated_at stamps, the DeletedAt archive stamp, the
+	// managed created_at/updated_at stamps, the ArchivedAt archive stamp, the
 	// outbox created_at, the failure registries' attempt/resolved timestamps).
 	// "NOW()" on both Postgres and MySQL; each engine supplies its native form,
 	// so shared code never bakes in a dialect-specific function name.

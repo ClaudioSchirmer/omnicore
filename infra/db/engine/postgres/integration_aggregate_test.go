@@ -48,7 +48,7 @@ func createAggregateTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
 		email TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -56,7 +56,7 @@ func createAggregateTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		agg_customer_id UUID NOT NULL REFERENCES agg_customers (id) ON DELETE CASCADE,
 		label TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -68,14 +68,14 @@ func aggCustomerSchema() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(core.NewTableSchema[aggChannel]("agg_channels").
 			ID("id").
 			ParentID("agg_customer_id").
 			Field("Label", "label").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -360,7 +360,7 @@ func aggChannelIDByLabel(t *testing.T, engine *Postgres, label string) string {
 func activeChannelLabel(t *testing.T, engine *Postgres) string {
 	t.Helper()
 	var label string
-	q := `SELECT label FROM agg_channels WHERE deleted_at IS NULL`
+	q := `SELECT label FROM agg_channels WHERE archived_at IS NULL`
 	if err := engine.Pool().QueryRow(context.Background(), q).Scan(&label); err != nil {
 		t.Fatalf("activeChannelLabel: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	createTable(t, pg, `CREATE TABLE agg_invoices (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		reference TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -461,7 +461,7 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		invoice_id UUID NOT NULL REFERENCES agg_invoices(id) ON DELETE CASCADE,
 		amount INT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -473,14 +473,14 @@ func TestPostgres_InsertAggregate_RespectsChildTableAndFKOverride(t *testing.T) 
 	schema := core.NewTableSchema[*aggInvoice]("agg_invoices").
 		ID("id").
 		Field("Reference", "reference").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(core.NewTableSchema[lineItem]("tb_lines").
 			ID("id").
 			ParentID("invoice_id").
 			Field("Amount", "amount").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 	if _, err := pg.Insert(testCtx(), ins, schema, noHook); err != nil {
@@ -530,7 +530,7 @@ func TestBaseRepository_InsertUpdateArchiveUnarchiveDelete(t *testing.T) {
 		t.Fatalf("repo Archive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 0 {
-		t.Error("Archive did not flip deleted_at via repo")
+		t.Error("Archive did not flip archived_at via repo")
 	}
 
 	u := &flatPerson{Name: "R2", Email: "r@x"}
@@ -559,7 +559,7 @@ func TestBaseRepository_ConstraintBindingMapsTo23505Notification(t *testing.T) {
 
 	// Add a named unique constraint that we'll bind.
 	if _, err := pg.Pool().Exec(context.Background(),
-		`CREATE UNIQUE INDEX persons_email_uq ON flat_persons (email) WHERE deleted_at IS NULL`); err != nil {
+		`CREATE UNIQUE INDEX persons_email_uq ON flat_persons (email) WHERE archived_at IS NULL`); err != nil {
 		t.Fatalf("create unique index: %v", err)
 	}
 
@@ -620,7 +620,7 @@ func TestBaseRepository_ConstraintCodeOtherThan23505ReturnsRaw(t *testing.T) {
 		phone TEXT,
 		mandatory TEXT NOT NULL,
 		revision BIGINT NOT NULL DEFAULT 0,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)

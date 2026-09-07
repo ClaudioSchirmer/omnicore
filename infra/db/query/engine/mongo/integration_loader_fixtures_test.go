@@ -49,7 +49,7 @@ func createLoaderTables(t *testing.T, p *postgres.Postgres) {
 		revision BIGINT NOT NULL DEFAULT 0,
 		name TEXT NOT NULL,
 		email TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -57,7 +57,7 @@ func createLoaderTables(t *testing.T, p *postgres.Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		loader_root_id UUID NOT NULL REFERENCES loader_roots(id) ON DELETE CASCADE,
 		label TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -65,7 +65,7 @@ func createLoaderTables(t *testing.T, p *postgres.Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		loader_root_id UUID NOT NULL REFERENCES loader_roots(id) ON DELETE CASCADE,
 		body TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -76,7 +76,7 @@ func loaderTagSchema() *core.TableSchema {
 		ID("id").
 		ParentID("loader_root_id").
 		Field("Label", "label").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -88,7 +88,7 @@ func loaderRootSchema() *core.TableSchema {
 		Revision("revision").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
@@ -96,7 +96,7 @@ func loaderRootSchema() *core.TableSchema {
 			ID("id").
 			ParentID("loader_root_id").
 			Field("Body", "body").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }

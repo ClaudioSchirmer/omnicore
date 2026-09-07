@@ -40,7 +40,7 @@ func TestAffinityRoundTrip(t *testing.T) {
 	d := eng.Dialect()
 
 	if err := core.Exec(q, ctx, `CREATE TABLE t (
-		id TEXT PRIMARY KEY, flag INTEGER, created_at TEXT, deleted_at TEXT,
+		id TEXT PRIMARY KEY, flag INTEGER, created_at TEXT, archived_at TEXT,
 		amount TEXT, n INTEGER, f REAL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -49,14 +49,14 @@ func TestAffinityRoundTrip(t *testing.T) {
 	when := time.Date(2026, 7, 31, 21, 10, 0, 123000000, time.UTC)
 	// Bind through EncodeArg exactly as the write path does.
 	err := core.Exec(q, ctx,
-		`INSERT INTO t (id, flag, created_at, deleted_at, amount, n, f) VALUES (?,?,?,?,?,?,?)`,
+		`INSERT INTO t (id, flag, created_at, archived_at, amount, n, f) VALUES (?,?,?,?,?,?,?)`,
 		d.EncodeArg(id), d.EncodeArg(true), d.EncodeArg(when), d.EncodeArg((*time.Time)(nil)),
 		d.EncodeArg("10.10"), d.EncodeArg(42), d.EncodeArg(3.14))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	rows, err := q.Query(ctx, `SELECT id, flag, created_at, deleted_at, amount, n, f FROM t`)
+	rows, err := q.Query(ctx, `SELECT id, flag, created_at, archived_at, amount, n, f FROM t`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestAffinityRoundTrip(t *testing.T) {
 		t.Errorf("created_at = %v, want %v", created, when)
 	}
 	if deleted.Valid {
-		t.Error("deleted_at NULL should scan into an invalid sql.NullTime")
+		t.Error("archived_at NULL should scan into an invalid sql.NullTime")
 	}
 	if amount != "10.10" {
 		t.Errorf("amount = %q, want exact 10.10 (no float coercion)", amount)

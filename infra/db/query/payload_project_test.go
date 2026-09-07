@@ -68,18 +68,18 @@ func TestChildArrayExpr_DeleteAndArchive(t *testing.T) {
 // The root's archive/unarchive cascades onto every child row, and the payload
 // now reports that cascade per item instead of listing them as noop. Unarchive
 // is the same surgical edit as archive with the opposite value: stamp the
-// element's DeletedAt with what the cascade wrote — an explicit null — leaving
+// element's ArchivedAt with what the cascade wrote — an explicit null — leaving
 // every other field alone.
 func TestChildArrayExpr_UnarchiveRestoresTheElement(t *testing.T) {
 	child := core.NewTableSchema[*pdChild]("pd_children").ID("id").ParentID("root_id").
-		Field("Label", "label").DeletedAt("deleted_at")
-	sd, ok := child.DeletedAtColumn()
+		Field("Label", "label").ArchivedAt("archived_at")
+	archivedCol, ok := child.ArchivedAtColumn()
 	if !ok {
-		t.Fatal("fixture child must declare DeletedAt")
+		t.Fatal("fixture child must declare ArchivedAt")
 	}
 
 	una := childArrayExpr("kids", "id", "c1",
-		childOp{Op: "unarchive", Fields: Document{"id": "c1", sd: nil}}, 5, false, child)
+		childOp{Op: "unarchive", Fields: Document{"id": "c1", archivedCol: nil}}, 5, false, child)
 
 	m, ok := una["$map"].(Document)
 	if !ok {
@@ -88,15 +88,15 @@ func TestChildArrayExpr_UnarchiveRestoresTheElement(t *testing.T) {
 	cond, _ := m["in"].(Document)["$cond"].([]any)
 	merge, _ := cond[1].(Document)["$mergeObjects"].([]any)
 	mutate, _ := merge[1].(Document)
-	if v, present := mutate[sd]; !present {
-		t.Errorf("the element's DeletedAt must be stamped, got %v", mutate)
+	if v, present := mutate[archivedCol]; !present {
+		t.Errorf("the element's ArchivedAt must be stamped, got %v", mutate)
 	} else if lv, isLit := v.(Document); isLit {
 		if lv["$literal"] != nil {
 			t.Errorf("unarchive must write an explicit null, got %v", lv)
 		}
 	}
 	if len(mutate) != 1 {
-		t.Errorf("unarchive must touch only DeletedAt, got %v", mutate)
+		t.Errorf("unarchive must touch only ArchivedAt, got %v", mutate)
 	}
 }
 

@@ -13,14 +13,14 @@ import (
 //
 // buildFetchSQL now names the read columns explicitly (never SELECT *); these
 // tests pass a fixed two-column read list ["id", "name"] and assert the exact
-// SELECT shape. The cascade tests below pass ["id"] (no DeletedAt column) so a
-// "deleted_at" substring can only come from the WHERE filter, never the column
+// SELECT shape. The cascade tests below pass ["id"] (no ArchivedAt column) so a
+// "archived_at" substring can only come from the WHERE filter, never the column
 // list — keeping the filter-presence assertions precise.
 
 // TestBuildFetchSQL_IncludeArchivedOmitsFilter locks the SQL shape used by
 // the canonical default (keep-archived): Compose passes includeArchived=true
 // down to every fetch (root + cascading through embeds), and the WHERE
-// deleted_at IS NULL clause is omitted. Archived rows reach the Mongo
+// archived_at IS NULL clause is omitted. Archived rows reach the Mongo
 // projection symmetrically with PostgreSQL; consumers that pass
 // IncludeArchived=true on the reader path (e.g. ?includeArchived=true) can see them.
 func TestBuildFetchSQL_IncludeArchivedOmitsFilter(t *testing.T) {
@@ -33,13 +33,13 @@ func TestBuildFetchSQL_IncludeArchivedOmitsFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := hydrate.BuildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", true)
+			got := hydrate.BuildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "archived_at", true)
 			if got != c.want {
 				t.Fatalf("hydrate.BuildFetchSQL(fakeDialect{},%q, %q, %q, true) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
 			}
-			if strings.Contains(got, "deleted_at") {
-				t.Errorf("includeArchived=true must not emit deleted_at: %q", got)
+			if strings.Contains(got, "archived_at") {
+				t.Errorf("includeArchived=true must not emit archived_at: %q", got)
 			}
 		})
 	}
@@ -48,20 +48,20 @@ func TestBuildFetchSQL_IncludeArchivedOmitsFilter(t *testing.T) {
 // TestBuildFetchSQL_DeleteOnArchiveAppliesFilter locks the SQL shape used by
 // the opt-in (hot-tier) view: when DeleteOnArchive is set, Compose passes
 // includeArchived=false down to every fetch (row, where, all) and the WHERE
-// deleted_at IS NULL clause is appended (or used as the bare WHERE for
+// archived_at IS NULL clause is appended (or used as the bare WHERE for
 // fetchAll). The Mongo projection mirrors only active data — the explicit
 // consumer choice when the view opts in.
 func TestBuildFetchSQL_DeleteOnArchiveAppliesFilter(t *testing.T) {
 	cases := []struct {
 		name, verb, table, keyCol, want string
 	}{
-		{"row", "row", "users", "id", "SELECT id, name FROM users WHERE id = $1 AND deleted_at IS NULL LIMIT 1"},
-		{"where", "where", "addresses", "user_id", "SELECT id, name FROM addresses WHERE user_id = $1 AND deleted_at IS NULL"},
-		{"all", "all", "users", "", "SELECT id, name FROM users WHERE deleted_at IS NULL"},
+		{"row", "row", "users", "id", "SELECT id, name FROM users WHERE id = $1 AND archived_at IS NULL LIMIT 1"},
+		{"where", "where", "addresses", "user_id", "SELECT id, name FROM addresses WHERE user_id = $1 AND archived_at IS NULL"},
+		{"all", "all", "users", "", "SELECT id, name FROM users WHERE archived_at IS NULL"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := hydrate.BuildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", false)
+			got := hydrate.BuildFetchSQL(fakeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "archived_at", false)
 			if got != c.want {
 				t.Fatalf("hydrate.BuildFetchSQL(fakeDialect{},%q, %q, %q, false) = %q, want %q",
 					c.verb, c.table, c.keyCol, got, c.want)
@@ -74,7 +74,7 @@ func TestBuildFetchSQL_DeleteOnArchiveAppliesFilter(t *testing.T) {
 // cascade of the default (keep) policy on a root-only view: ViewDefinition
 // reports DeletesOnArchive()=false → Compose computes
 // includeArchived=!false=true → buildFetchSQL on the root SELECT omits the
-// deleted_at filter. The relationship between the public flag and the SQL
+// archived_at filter. The relationship between the public flag and the SQL
 // form is the contract this test protects against silent inversion.
 func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 	v := View("things").Schema(rootSchema("things"))
@@ -82,9 +82,9 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Root(t *testing.T) {
 		t.Fatal("default view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	sql := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
-	if strings.Contains(sql, "deleted_at") {
-		t.Fatalf("default view must omit deleted_at filter on root SELECT, got %q", sql)
+	sql := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "archived_at", include)
+	if strings.Contains(sql, "archived_at") {
+		t.Fatalf("default view must omit archived_at filter on root SELECT, got %q", sql)
 	}
 }
 
@@ -101,14 +101,14 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 		t.Fatal("default aggregate view must report DeletesOnArchive()=false")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
-	if strings.Contains(rootSQL, "deleted_at") {
-		t.Fatalf("default aggregate view must omit deleted_at on root, got %q", rootSQL)
+	rootSQL := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "archived_at", include)
+	if strings.Contains(rootSQL, "archived_at") {
+		t.Fatalf("default aggregate view must omit archived_at on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := hydrate.BuildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
-		if strings.Contains(childSQL, "deleted_at") {
-			t.Fatalf("default aggregate view must omit deleted_at on embed %q, got %q",
+		childSQL := hydrate.BuildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "archived_at", include)
+		if strings.Contains(childSQL, "archived_at") {
+			t.Fatalf("default aggregate view must omit archived_at on embed %q, got %q",
 				e.Field(), childSQL)
 		}
 	}
@@ -118,7 +118,7 @@ func TestCompose_CascadeFromViewFlag_DefaultKeep_Aggregate(t *testing.T) {
 // structural cascade of the opt-in (hot-tier) policy on a root-only view:
 // View("x").DeleteOnArchive() reports DeletesOnArchive()=true → Compose
 // computes includeArchived=!true=false → buildFetchSQL on the root SELECT
-// appends `AND deleted_at IS NULL`. Combined with the default test above,
+// appends `AND archived_at IS NULL`. Combined with the default test above,
 // this fixes the direction of the inversion explicitly.
 func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 	v := View("things").DeleteOnArchive().Schema(rootSchema("things"))
@@ -126,15 +126,15 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Root(t *testing.T) {
 		t.Fatal("DeleteOnArchive() view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	sql := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
-	if !strings.Contains(sql, "AND deleted_at IS NULL") {
-		t.Fatalf("DeleteOnArchive view must apply deleted_at filter on root, got %q", sql)
+	sql := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "archived_at", include)
+	if !strings.Contains(sql, "AND archived_at IS NULL") {
+		t.Fatalf("DeleteOnArchive view must apply archived_at filter on root, got %q", sql)
 	}
 }
 
 // TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate verifies the
 // hot-tier cascade reaches every embed on an aggregate view: root + each
-// child fetch applies the deleted_at filter (there is no per-embed override
+// child fetch applies the archived_at filter (there is no per-embed override
 // — the flag governs the whole projection symmetrically).
 func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 	v := View("users").DeleteOnArchive().Schema(rootSchema("users")).
@@ -143,13 +143,13 @@ func TestCompose_CascadeFromViewFlag_DeleteOnArchive_Aggregate(t *testing.T) {
 		t.Fatal("DeleteOnArchive() aggregate view must report DeletesOnArchive()=true")
 	}
 	include := !v.DeletesOnArchive()
-	rootSQL := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "deleted_at", include)
-	if !strings.Contains(rootSQL, "AND deleted_at IS NULL") {
+	rootSQL := hydrate.BuildFetchSQL(fakeDialect{}, "row", v.RootTable(), []string{"id"}, "id", "archived_at", include)
+	if !strings.Contains(rootSQL, "AND archived_at IS NULL") {
 		t.Fatalf("DeleteOnArchive aggregate must apply filter on root, got %q", rootSQL)
 	}
 	for _, e := range v.Embeds() {
-		childSQL := hydrate.BuildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "deleted_at", include)
-		if !strings.Contains(childSQL, "AND deleted_at IS NULL") {
+		childSQL := hydrate.BuildFetchSQL(fakeDialect{}, "where", e.leg.Collection(), []string{"id"}, e.JoinColumn(), "archived_at", include)
+		if !strings.Contains(childSQL, "AND archived_at IS NULL") {
 			t.Fatalf("DeleteOnArchive aggregate must apply filter on embed %q, got %q",
 				e.Field(), childSQL)
 		}

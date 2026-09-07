@@ -24,7 +24,7 @@ import (
 // ─── Child mutation guards ───────────────────────────────────────────────────
 
 // A Removed child must carry an id, whichever way it is removed; and a Removed
-// child whose schema declares no DeletedAt is hard-deleted rather than archived,
+// child whose schema declares no ArchivedAt is hard-deleted rather than archived,
 // wherever it lives — a role's own child included.
 func TestRemovedChild_Guards(t *testing.T) {
 	t.Run("missingID", func(t *testing.T) {
@@ -41,12 +41,12 @@ func TestRemovedChild_Guards(t *testing.T) {
 			t.Fatalf("expected the missing-id guard, got %v", err)
 		}
 	})
-	t.Run("roleChildWithoutDeletedAt", func(t *testing.T) {
+	t.Run("roleChildWithoutArchivedAt", func(t *testing.T) {
 		id := uuid.NewString()
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			ID("id").Field("Name", "name").DeletedAt("deleted_at").
+			ID("id").Field("Name", "name").ArchivedAt("archived_at").
 			Child(NewTableSchema[aggWriteChild]("agg_w_children").
-				ID("id").ParentID("agg_w_id").Field("Label", "label")) // no DeletedAt
+				ID("id").ParentID("agg_w_id").Field("Label", "label")) // no ArchivedAt
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "x"}, domain.NewID(id))})
@@ -60,18 +60,18 @@ func TestRemovedChild_Guards(t *testing.T) {
 			t.Fatalf("Update: %v", err)
 		}
 		if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "DELETE FROM agg_w_children") }) {
-			t.Errorf("a role child WITHOUT DeletedAt must hard-delete (DELETE FROM agg_w_children), got %v", tx.execs)
+			t.Errorf("a role child WITHOUT ArchivedAt must hard-delete (DELETE FROM agg_w_children), got %v", tx.execs)
 		}
 		if hasStmt(tx.execs, func(s string) bool {
-			return strings.HasPrefix(s, "UPDATE agg_w_children") && strings.Contains(s, "deleted_at")
+			return strings.HasPrefix(s, "UPDATE agg_w_children") && strings.Contains(s, "archived_at")
 		}) {
-			t.Errorf("a child with no DeletedAt column has nothing to stamp, got %v", tx.execs)
+			t.Errorf("a child with no ArchivedAt column has nothing to stamp, got %v", tx.execs)
 		}
 	})
 }
 
 // baseChildRole is an aggregate role whose child belongs to the SHARED BASE —
-// a Removed base-child without DeletedAt hard-deletes (its lifecycle follows
+// a Removed base-child without ArchivedAt hard-deletes (its lifecycle follows
 // the base), instead of erroring like a role child would.
 type baseChildRole struct {
 	domain.AggregateRoot
@@ -96,15 +96,15 @@ func baseChildRoleSchema() *TableSchema {
 		Field("Document", "document").
 		NaturalID("document").
 		Child(NewTableSchema[cascadeBaseChild]("pessoa_filhos").
-			ID("id").ParentID("pessoa_id").Field("Note", "note")) // no DeletedAt → hard-delete on remove
+			ID("id").ParentID("pessoa_id").Field("Note", "note")) // no ArchivedAt → hard-delete on remove
 	return NewTableSchema[*baseChildRole]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 }
 
-func TestRemovedBaseChild_WithoutDeletedAt(t *testing.T) {
+func TestRemovedBaseChild_WithoutArchivedAt(t *testing.T) {
 	newUpd := func(t *testing.T, childID string) domain.Updatable {
 		t.Helper()
 		root := &baseChildRole{Name: "Ana", Document: "D1", Matricula: "M1"}
@@ -174,16 +174,16 @@ func TestWriteAuditRow_GateBranches(t *testing.T) {
 
 // ─── Batch member dispatch edges ─────────────────────────────────────────────
 
-// The flat Unarchive on a schema without DeletedAt errors before any statement.
-func TestFlatUnarchive_MissingDeletedAtIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
+// The flat Unarchive on a schema without ArchivedAt errors before any statement.
+func TestFlatUnarchive_MissingArchivedAtIsError(t *testing.T) {
+	noArchived := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	e := &builderTestEntity{Name: "a", Email: "a@x"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	u, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
-	if err := be.Unarchive(newBuilderCtx(), u, noSD, WriteHook{}); err == nil {
-		t.Fatal("expected the missing-DeletedAt guard")
+	if err := be.Unarchive(newBuilderCtx(), u, noArchived, WriteHook{}); err == nil {
+		t.Fatal("expected the missing-ArchivedAt guard")
 	}
 	if len(tx.execs) != 0 {
 		t.Errorf("no statement may run, got %v", tx.execs)
@@ -258,7 +258,7 @@ func TestUnarchive_StampReadErrorAborts(t *testing.T) {
 	e.SetID(domain.NewID(uuid.NewString()))
 	un, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 
-	tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"SELECT deleted_at FROM aluno"}, nil)}
+	tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"SELECT archived_at FROM aluno"}, nil)}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); !errors.Is(err, errBoom) {
 		t.Fatalf("expected the stamp read error, got %v", err)
@@ -277,9 +277,9 @@ func TestUnarchive_BaseChildrenCascadeErrorAborts(t *testing.T) {
 	un, _ := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 
 	archived := rowsArchivedAt(time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC))
-	tx := &recTx{count: 1, execErrSub: "UPDATE endereco SET deleted_at = NULL",
+	tx := &recTx{count: 1, execErrSub: "UPDATE endereco SET archived_at = NULL",
 		queryFn: func(sql string, args []any) (Rows, error) {
-			if strings.HasPrefix(sql, "SELECT deleted_at FROM") {
+			if strings.HasPrefix(sql, "SELECT archived_at FROM") {
 				return archived(sql, args)
 			}
 			return &fakeRows{remaining: 0}, nil
@@ -298,7 +298,7 @@ func TestUnarchive_BaseChildrenCascadeErrorAborts(t *testing.T) {
 func TestSharedBaseReactivationProbeError(t *testing.T) {
 	t.Run("insert", func(t *testing.T) {
 		ins, _ := domain.GetInsertable(&roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}, nil, "GetUpsertable")
-		tx := &recTx{queryFn: scriptedQuery([]string{"SELECT deleted_at FROM pessoa"}, nil)}
+		tx := &recTx{queryFn: scriptedQuery([]string{"SELECT archived_at FROM pessoa"}, nil)}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Insert(newBuilderCtx(), ins, cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the reactivation probe error, got %v", err)
@@ -311,7 +311,7 @@ func TestSharedBaseReactivationProbeError(t *testing.T) {
 		e := &roleTestEntity{Name: "Ana", Document: "D1", Matricula: "M1"}
 		e.SetID(domain.NewID(uuid.NewString()))
 		upd, _ := domain.GetUpdatable(e, func(*roleTestEntity) error { return nil }, nil, "GetUpdatable")
-		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"SELECT deleted_at FROM pessoa"}, []string{"FROM aluno"})}
+		tx := &recTx{count: 1, queryFn: scriptedQuery([]string{"SELECT archived_at FROM pessoa"}, []string{"FROM aluno"})}
 		be := newFlatBE(&recBeginner{tx: tx})
 		if _, err := be.Update(newBuilderCtx(), upd, cascadeRoleSchema(), firingHook); !errors.Is(err, errBoom) {
 			t.Fatalf("expected the reactivation probe error, got %v", err)

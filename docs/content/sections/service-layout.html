@@ -82,7 +82,7 @@
 
     <h3>HTTP surface conventions</h3>
     <ul>
-        <li><strong>The verb tells the truth.</strong> <code>DELETE</code> is exclusively a hard purge. A soft removal is <code>PATCH …/archive</code>, with its <code>…/unarchive</code> inverse. This applies to the root and to per-child operations alike.</li>
+        <li><strong>The verb tells the truth.</strong> <code>DELETE</code> is exclusively a hard purge. Archiving is <code>PATCH …/archive</code>, with its <code>…/unarchive</code> inverse. This applies to the root and to per-child operations alike.</li>
         <li><strong>Per-child editing is the add / update / archive trio</strong> — <code>POST …/:id/&lt;children&gt;</code>, <code>PUT …/:id/&lt;children&gt;/:childId</code> (404 when the child is not current), <code>PATCH …/:id/&lt;children&gt;/:childId/archive</code> — chosen per child over a destructive whole-collection replace.</li>
         <li><strong>A sibling facet never gets its own endpoint</strong> — it is part of the root's contract, written through the root's verbs; clearing it rides the root's PUT (<a href="#table-schema">Sibling tables</a>).</li>
         <li>Strict-vs-lenient body handling is decided per operation by its fields — a body with any optional field takes the lenient handler on <em>add and update alike</em> (<a href="#auto-handlers">Auto handlers</a>).</li>

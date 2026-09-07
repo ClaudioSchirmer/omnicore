@@ -122,11 +122,11 @@ func TestBuildUpdate_SQLServer(t *testing.T) {
 // expression (CURRENT_TIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
-	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "archived_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
 	if err != nil {
 		t.Fatalf("archiveSQL: %v", err)
 	}
-	if got != "UPDATE [users] SET [deleted_at] = @p1 WHERE [id] = @p2" {
+	if got != "UPDATE [users] SET [archived_at] = @p1 WHERE [id] = @p2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
 	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
@@ -146,12 +146,12 @@ func TestArchiveUnarchiveDelete_SQLServer(t *testing.T) {
 // restore.
 func TestChildCascadeSQL_SQLServer(t *testing.T) {
 	d := testSQLServerDialect{}
-	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
-	if archive != "UPDATE [addresses] SET [deleted_at] = @p1 WHERE [user_id] = @p2 AND [deleted_at] IS NULL" {
+	archive := archiveCascadeSQL(d, "addresses", "archived_at", "user_id")
+	if archive != "UPDATE [addresses] SET [archived_at] = @p1 WHERE [user_id] = @p2 AND [archived_at] IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
-	if unarchive != "UPDATE [addresses] SET [deleted_at] = NULL WHERE [user_id] = @p1 AND [deleted_at] = (SELECT [deleted_at] FROM [users] WHERE [id] = @p2)" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "archived_at", "user_id", "users", "archived_at", "id")
+	if unarchive != "UPDATE [addresses] SET [archived_at] = NULL WHERE [user_id] = @p1 AND [archived_at] = (SELECT [archived_at] FROM [users] WHERE [id] = @p2)" {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

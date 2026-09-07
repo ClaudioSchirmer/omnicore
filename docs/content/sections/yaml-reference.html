@@ -133,7 +133,7 @@ relational:                              # the relational backend — system of 
   clock: db                              # MANDATORY — db | app. NO default, like dialect and dsn: which clock a service's
                                          # history is written against is an operator's declaration, and an absent value
                                          # aborts boot. It governs the instant stamped on the managed timestamp columns —
-                                         # createdAt, updatedAt and the archive/unarchive deletedAt stamp.
+                                         # createdAt, updatedAt and the archive/unarchive archivedAt stamp.
                                          #   db  — read from the relational backend, ONE reading per write transaction.
                                          #         Every replica then shares one clock: the app clock is a per-POD clock,
                                          #         and two replicas drifting apart stamp rows out of order with nothing in
@@ -424,8 +424,8 @@ shutdown:
     collection: users                    # MANDATORY — local Mongo collection (no collision with views/other subs; claimed by the DB-per-service guard like a view's)
     consumerGroup: ""                    # default "&lt;service&gt;-upstream-&lt;topic&gt;"
     workers: 2                            # default 1 (aggregate-id hashed → ordered per aggregate)
-    fields: [id, name, email]            # allowlist of surviving payload fields (RAW physical names — no class exists at ingestion); nil/empty → full payload kept (KEEP the DeletedAt column if the mirror reflects archives — see note)
-    deleteOnArchive: false               # default false (ARCHIVED keeps doc with deleted_at); true → remove doc
+    fields: [id, name, email]            # allowlist of surviving payload fields (RAW physical names — no class exists at ingestion); nil/empty → full payload kept (KEEP the ArchivedAt column if the mirror reflects archives — see note)
+    deleteOnArchive: false               # default false (ARCHIVED keeps doc with archived_at); true → remove doc
     startFrom: latest                    # latest (default) | earliest | offset:&lt;N&gt;
     onUpstreamDelete: cascade            # cascade (default) | anonymize | keep — GDPR propagation on DELETED
     anonymizeFields: [name, email]       # REQUIRED when onUpstreamDelete=anonymize; ignored otherwise
@@ -438,11 +438,11 @@ shutdown:
         <code>EmbedInChild</code> enrichment and a <code>ComposedView</code>'s external legs: a column declared on a
         consumer's <code>NewExternalSchema</code> that a non-empty <code>fields:</code> omits is a <strong>fatal
         boot</strong> naming both sides (the mirror could never carry it — a dead declaration). The highest-stakes
-        instance is the DeletedAt column: an <code>ARCHIVED</code> upstream event carries it populated, and dropping it
+        instance is the ArchivedAt column: an <code>ARCHIVED</code> upstream event carries it populated, and dropping it
         would leave archived rows looking active forever — dropping it TOGETHER with the schema declaration is,
         conversely, the supported way to make the mirror ignore the upstream's archive (see
         <a href="#views~views-embed-fields">the two cuts, side by side</a>). When no consuming schema declares a
-        DeletedAt column at all, the boot logs an <em>advisory</em> (the consumer often cannot know whether the
+        ArchivedAt column at all, the boot logs an <em>advisory</em> (the consumer often cannot know whether the
         upstream archives). An empty <code>fields:</code> mirrors the full payload, so every column survives.
     </p>
     <p class="note">

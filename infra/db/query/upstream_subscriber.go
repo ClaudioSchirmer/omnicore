@@ -547,8 +547,8 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 		if s.cfg.DeleteOnArchive {
 			s.deleteAndRipple(ctx, event.AggregateID)
 		} else {
-			// Mirror the doc-survives-with-deleted_at semantic: an ARCHIVED
-			// outbox row carries the full field payload with the DeletedAt
+			// Mirror the doc-survives-with-archived_at semantic: an ARCHIVED
+			// outbox row carries the full field payload with the ArchivedAt
 			// column populated (the write side's ARCHIVED payload), so the upsert
 			// lands the archived state on the local document.
 			s.upsertAndRipple(ctx, event.AggregateID, payload)
@@ -565,8 +565,8 @@ func (s *UpstreamSubscriber) processMessage(ctx context.Context, msg transport.M
 
 // upsertAndRipple writes the filtered payload to the local Mongo
 // collection keyed by aggregate_id, then triggers recompose-ripple on
-// every dependent view. Used by INSERTED / UPDATED / UNARCHIVED / soft
-// ARCHIVED.
+// every dependent view. Used by INSERTED / UPDATED / UNARCHIVED / ARCHIVED
+// without DeleteOnArchive (the doc is kept, not removed).
 func (s *UpstreamSubscriber) upsertAndRipple(ctx context.Context, id string, payload bson.M) {
 	// Read the pre-change doc first: a 1:N EmbedMany needs the OLD parent id (the
 	// child's prior ParentID value) to recompose a parent the child just moved away

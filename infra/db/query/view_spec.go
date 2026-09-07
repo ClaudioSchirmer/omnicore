@@ -147,7 +147,7 @@ func (s *IndexSpec) Hashed() *IndexSpec {
 
 // Partial declares a partialFilterExpression. Pair with the Exists helper
 // to scope an index to a subset of documents (canonical example:
-// Index("deleted_at").Partial(Exists("deleted_at", false)) to thin the
+// Index("archived_at").Partial(Exists("archived_at", false)) to thin the
 // index of archived rows).
 func (s *IndexSpec) Partial(filter bson.M) *IndexSpec {
 	s.partialFilter = filter
@@ -296,7 +296,7 @@ func encodeOrder(o IndexKeyOrder) any {
 // Pair with IndexSpec.Partial to declare partial indexes that only cover
 // documents where the named field is present (or absent).
 //
-//	Index("deleted_at").Partial(Exists("deleted_at", false))
+//	Index("archived_at").Partial(Exists("archived_at", false))
 func Exists(field string, exists bool) bson.M {
 	return bson.M{field: bson.M{"$exists": exists}}
 }
@@ -622,7 +622,7 @@ func (v *ViewDefinition) composedColumnSet() map[string]struct{} {
 // derived segment (mergeSharedBaseChildren), PLUS external embeds. The embed's
 // whole subtree is addressable at its doc field (e.g. "addresses"), and each
 // nested column is prefixed by it (e.g. "addresses.zip_code"). ParentID + the three
-// managed columns are included so a legitimately-indexed DeletedAt / ParentID
+// managed columns are included so a legitimately-indexed ArchivedAt / ParentID
 // column is not flagged.
 func collectComposedColumns(schema *core.TableSchema, embeds []embedDef, prefix string, set map[string]struct{}) {
 	if schema != nil {
@@ -703,8 +703,8 @@ func addComposedColumn(set map[string]struct{}, prefix, col string) {
 func addSchemaFlatColumns(set map[string]struct{}, prefix string, s *core.TableSchema) {
 	addComposedColumn(set, prefix, s.IDColumn())
 	addComposedColumn(set, prefix, s.ParentIDColumn())
-	sd, _ := s.DeletedAtColumn()
-	addComposedColumn(set, prefix, sd)
+	archivedCol, _ := s.ArchivedAtColumn()
+	addComposedColumn(set, prefix, archivedCol)
 	addComposedColumn(set, prefix, s.CreatedAtColumn())
 	addComposedColumn(set, prefix, s.UpdatedAtColumn())
 	for _, col := range s.MappedColumns() {

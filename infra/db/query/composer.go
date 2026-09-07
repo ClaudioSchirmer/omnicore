@@ -14,8 +14,8 @@ import (
 //
 // Per-source physical names come from each source's core.TableSchema (root via
 // View.Schema, embeds via Source.Schema): the root key + each embed's key are
-// the source's ID column, and the DeletedAt filter uses the source's
-// DeletedAt column. A schema-less source falls back to id / deleted_at.
+// the source's ID column, and the ArchivedAt filter uses the source's
+// ArchivedAt column. A schema-less source falls back to id / archived_at.
 //
 // The root document and the aggregate's internal closure (siblings, SharedBase,
 // own + base children) compose RELATIONALLY — hydrate.Hydrator.FetchRow /
@@ -52,15 +52,15 @@ func NewComposerWithMongo(eng core.RelationalEngine, mongo ReadModelStore, resol
 
 // Compose builds the composed document for ONE root: the root row, the
 // aggregate's internal closure merged in, then each declared embed layered on
-// top. The physical ID + DeletedAt column of every source come from its own
-// core.TableSchema (hydrate.SchemaPK / hydrate.SchemaDeletedAt) — the schema is
+// top. The physical ID + ArchivedAt column of every source come from its own
+// core.TableSchema (hydrate.SchemaPK / hydrate.SchemaArchivedAt) — the schema is
 // mandatory on every view (root and embed), so there is no convention fallback:
 // a view declared without a schema is rejected at boot, never silently mapped to
-// "id" / "deleted_at".
+// "id" / "archived_at".
 func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID string) (Document, error) {
 	includeArchived := !view.deleteOnArchive
-	sd, _ := hydrate.SchemaDeletedAt(view.schema)
-	row, err := c.h.FetchRow(ctx, view.schema, view.RootTable(), hydrate.SchemaPK(view.schema), rootID, sd, includeArchived)
+	archivedCol, _ := hydrate.SchemaArchivedAt(view.schema)
+	row, err := c.h.FetchRow(ctx, view.schema, view.RootTable(), hydrate.SchemaPK(view.schema), rootID, archivedCol, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -97,8 +97,8 @@ func (c *Composer) Compose(ctx context.Context, view *ViewDefinition, rootID str
 
 func (c *Composer) ComposeAll(ctx context.Context, view *ViewDefinition) ([]Document, error) {
 	includeArchived := !view.deleteOnArchive
-	sd, _ := hydrate.SchemaDeletedAt(view.schema)
-	rows, err := c.h.FetchAll(ctx, view.schema, view.RootTable(), sd, includeArchived)
+	archivedCol, _ := hydrate.SchemaArchivedAt(view.schema)
+	rows, err := c.h.FetchAll(ctx, view.schema, view.RootTable(), archivedCol, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +124,8 @@ func (c *Composer) ComposeBatch(ctx context.Context, view *ViewDefinition, ids [
 		return nil, nil
 	}
 	includeArchived := !view.deleteOnArchive
-	sd, _ := hydrate.SchemaDeletedAt(view.schema)
-	rows, err := c.h.FetchByIDs(ctx, view.schema, view.RootTable(), hydrate.SchemaPK(view.schema), ids, sd, includeArchived)
+	archivedCol, _ := hydrate.SchemaArchivedAt(view.schema)
+	rows, err := c.h.FetchByIDs(ctx, view.schema, view.RootTable(), hydrate.SchemaPK(view.schema), ids, archivedCol, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -232,30 +232,30 @@ func (c *Composer) composeBaseRootedRow(ctx context.Context, view *ViewDefinitio
 // identity — deterministic under the separate-ParentID multiplicity the write side
 // admits (archived remnants NEXT TO at most one active row):
 //
-//  1. the ACTIVE row (fk = baseID AND deleted_at IS NULL) when one exists —
+//  1. the ACTIVE row (fk = baseID AND archived_at IS NULL) when one exists —
 //     the write-side one-active-role invariant caps it at one;
 //  2. otherwise, when archived rows compose at all (keep mode), the MOST
-//     RECENTLY archived remnant (ORDER BY deleted_at DESC) — the document
+//     RECENTLY archived remnant (ORDER BY archived_at DESC) — the document
 //     represents the CURRENT state of each specialization; remnant history is
 //     not enumerated here (the role views with ?includeArchived cover it);
 //  3. otherwise nil (the caller writes the explicit null segment).
 //
-// A role without DeletedAt has no archived state (hard delete is delete), so
+// A role without ArchivedAt has no archived state (hard delete is delete), so
 // a single fetch by ParentID decides it.
 func (c *Composer) fetchRoleRow(ctx context.Context, r roleDef, baseID string, includeArchived bool) (Document, error) {
 	_, fkCol, _ := r.schema.SharedBaseRef()
-	sd, hasSD := hydrate.SchemaDeletedAt(r.schema)
-	if !hasSD {
+	archivedCol, hasArchived := hydrate.SchemaArchivedAt(r.schema)
+	if !hasArchived {
 		return c.h.FetchRow(ctx, r.schema, r.schema.Table(), fkCol, baseID, "", true)
 	}
-	active, err := c.h.FetchRow(ctx, r.schema, r.schema.Table(), fkCol, baseID, sd, false)
+	active, err := c.h.FetchRow(ctx, r.schema, r.schema.Table(), fkCol, baseID, archivedCol, false)
 	if err != nil || active != nil {
 		return active, err
 	}
 	if !includeArchived {
 		return nil, nil
 	}
-	return c.h.FetchLatestArchived(ctx, r.schema, fkCol, baseID, sd)
+	return c.h.FetchLatestArchived(ctx, r.schema, fkCol, baseID, archivedCol)
 }
 
 // applyEmbeds resolves each embed of the parent doc. parentPK is the parent
@@ -365,8 +365,8 @@ func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbe
 				return err
 			}
 			allow := childEmbedTrimSet(ce)
-			for _, sd := range srcDocs {
-				byID[fmt.Sprintf("%v", sd["_id"])] = trimToFields(sd, allow)
+			for _, archivedCol := range srcDocs {
+				byID[fmt.Sprintf("%v", archivedCol["_id"])] = trimToFields(archivedCol, allow)
 			}
 		}
 		for _, el := range arr {
@@ -375,8 +375,8 @@ func (c *Composer) applyChildEmbeds(ctx context.Context, doc Document, childEmbe
 				el[field] = nil
 				continue
 			}
-			if sd, ok := byID[fmt.Sprintf("%v", v)]; ok {
-				el[field] = sd
+			if archivedCol, ok := byID[fmt.Sprintf("%v", v)]; ok {
+				el[field] = archivedCol
 			} else {
 				el[field] = nil
 			}

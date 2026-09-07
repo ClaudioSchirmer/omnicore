@@ -48,11 +48,11 @@ func (e *sbAuditRole) AggregateChildren() []domain.AggregateValueObject {
 func sbAuditSchema() *TableSchema {
 	base := NewSharedBaseSchema("persons").Revision("revision").ID("id").
 		Field("Name", "name").Field("Email", "email").Field("Document", "document").
-		NaturalID("document").DeletedAt("deleted_at")
+		NaturalID("document").ArchivedAt("archived_at")
 	addr := NewTableSchema[sbAuditAddr]("addresses").ID("id").ParentID("person_id").
-		Field("Street", "street").Field("City", "city").DeletedAt("deleted_at")
+		Field("Street", "street").Field("City", "city").ArchivedAt("archived_at")
 	base = base.Child(addr)
-	role := NewTableSchema[*sbAuditRole]("users").ID("id").Revision("revision").Field("UserName", "user_name").DeletedAt("deleted_at")
+	role := NewTableSchema[*sbAuditRole]("users").ID("id").Revision("revision").Field("UserName", "user_name").ArchivedAt("archived_at")
 	sib := NewSiblingSchema[*sbAuditRole]("user_configurations").Field("SmsOptIn", "sms_notification")
 	return role.SharedBase(base, "person_id").Sibling(sib)
 }

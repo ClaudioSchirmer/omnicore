@@ -76,7 +76,7 @@ r.IfDisplay(func() { ... })         // see "key facts" below — inert today</co
 }</code></pre>
     <p>
         Past that point it IS the archive verb, carrying the update's field changes along: the row takes the
-        entity's full field set plus the DeletedAt stamp, the child cascade runs, the shared identity converges,
+        entity's full field set plus the ArchivedAt stamp, the child cascade runs, the shared identity converges,
         the outbox event is <code>ARCHIVED</code> (so <code>DeleteOnArchive</code> views, upstream mirrors and the
         base-revision repair all route correctly), and the audit entry is an <code>archive</code> — with
         <code>actionName</code> still naming the door it came through.

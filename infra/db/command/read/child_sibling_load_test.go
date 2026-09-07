@@ -21,7 +21,7 @@ func (c csLoadChild) BuildRules(string, domain.Service, *domain.Rules) {}
 
 func TestChildScanSQL_WithSibling(t *testing.T) {
 	child := NewTableSchema[csLoadChild]("cs_child").ID("id").ParentID("root_id").Field("Label", "label").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Sibling(NewSiblingSchema[csLoadChild]("cs_child_ext").Field("Note", "note"))
 	cols, byCol := child.ScanPlan()
 	ms := newChildManagedScan(child)
@@ -30,9 +30,9 @@ func TestChildScanSQL_WithSibling(t *testing.T) {
 	if !strings.Contains(sql, "LEFT JOIN") || !strings.Contains(sql, "cs_child_ext") {
 		t.Errorf("a child with a sibling must LEFT JOIN it: %q", sql)
 	}
-	// The soft-delete gate is qualified the moment anything else is in the FROM —
-	// a bare deleted_at is ambiguous against any joined table that has one.
-	if !strings.Contains(sql, "cs_child.deleted_at IS NULL") {
+	// The archive gate is qualified the moment anything else is in the FROM —
+	// a bare archived_at is ambiguous against any joined table that has one.
+	if !strings.Contains(sql, "cs_child.archived_at IS NULL") {
 		t.Errorf("the scope gate must be qualified under a join: %q", sql)
 	}
 	// The child's own id rides as a trailing column, qualified to the child table.

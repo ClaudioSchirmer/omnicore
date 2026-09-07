@@ -271,9 +271,9 @@ LEFT JOIN (vendors j_vendor_id
     <tbody><tr><th>On the target</th><th>Nameable in <code>.Field(..., column)</code></th><th>The field that receives it</th></tr>
     <tr><td>a declared column</td><td>yes</td><td>the scalar it is stored as; a pointer where the target declares it nullable</td></tr>
     <tr><td>the id column, or any identity column</td><td>yes</td><td><code>string</code>, or <code>*string</code> — see above</td></tr>
-    <tr><td><code>created_at</code>, <code>updated_at</code>, <code>deleted_at</code></td>
+    <tr><td><code>created_at</code>, <code>updated_at</code>, <code>archived_at</code></td>
         <td>yes, where the target's schema declares that slot (<code>.CreatedAt(...)</code>, <code>.UpdatedAt(...)</code>,
-            <code>.DeletedAt(...)</code>)</td>
+            <code>.ArchivedAt(...)</code>)</td>
         <td><code>*time.Time</code>, <strong>always</strong> — see the warning below</td></tr>
     <tr><td><code>revision</code></td>
         <td><strong>no</strong> — the read side does not resolve it, so the declaration is refused at construction as a
@@ -282,7 +282,7 @@ LEFT JOIN (vendors j_vendor_id
 </tbody></table>
 <pre><code>read.LeftJoin(schemas.CustomerSchema().AsDirectSchema()).On("customer_id").
     Field("CustomerName",       "name").
-    Field("CustomerArchivedAt", "deleted_at").   // a managed slot of the TARGET
+    Field("CustomerArchivedAt", "archived_at").   // a managed slot of the TARGET
     Field("CustomerCreatedAt",  "created_at")
 
 // on the entity:
@@ -291,7 +291,7 @@ CustomerArchivedAt *time.Time
 CustomerCreatedAt  *time.Time</code></pre>
 <p class="note">
     <strong>Never under the carrier's own spelling.</strong> A join field called <code>CreatedAt</code>,
-    <code>UpdatedAt</code> or <code>DeletedAt</code> is refused — by the shadow rule where your own schema declares that
+    <code>UpdatedAt</code> or <code>ArchivedAt</code> is refused — by the shadow rule where your own schema declares that
     slot, and for want of a field to write to where it does not: your managed slots live unexported inside
     <code>domain.Managed</code> and are read through <code>GetCreatedAt()</code> and its siblings, never as struct
     fields. Name the traversal's copy after what it is — <code>CustomerArchivedAt</code> — which is also the rule the
@@ -301,12 +301,12 @@ CustomerCreatedAt  *time.Time</code></pre>
 <div class="box warn">
     <strong>A managed slot is nullable and the framework cannot see that — declare the pointer yourself.</strong>
     The nullability check reads the <em>target's own Go declaration</em>, and a managed slot is not a struct field
-    there: <code>domain.Managed</code> keeps <code>createdAt</code>, <code>updatedAt</code> and <code>deletedAt</code>
+    there: <code>domain.Managed</code> keeps <code>createdAt</code>, <code>updatedAt</code> and <code>archivedAt</code>
     unexported. So the check finds nothing to read a pointer off and stays silent rather than guessing from the
     column's meaning — the same restraint it shows a type-less external schema. A <code>LeftJoin</code> still stops
     you, because a left-join field must be nullable whatever it maps; an <code>InnerJoin</code> does not.
     <code>CustomerArchivedAt time.Time</code> under an <code>InnerJoin</code> therefore compiles, boots, and fails on
-    the first row whose counterpart is <em>not</em> archived — <code>deleted_at</code> is <code>NULL</code> on every
+    the first row whose counterpart is <em>not</em> archived — <code>archived_at</code> is <code>NULL</code> on every
     live row, which is precisely the row you meant to read. Declare <code>*time.Time</code> and the case does not
     arise.
 </div>
@@ -385,7 +385,7 @@ criteria.NotNull("CustomerArchivedAt")   // archived ones only</code></pre>
     The <strong>anchor side is qualified too</strong>, and for the same reason read backwards. A sibling and a shared
     base share the entity's own namespace, where column names are unique by construction, so they need no prefix on
     their own; a joined aggregate is a <em>foreign</em> namespace, free to carry a <code>name</code>, a
-    <code>code</code>, or the framework's own <code>deleted_at</code>. So the moment a declared join is in the
+    <code>code</code>, or the framework's own <code>archived_at</code>. So the moment a declared join is in the
     <code>FROM</code>, every column the statement emits on the anchor side — the <code>SELECT</code> list, the
     predicate, the ordering, the aggregate expressions and grouping keys, and the archive gate on the root
     <em>and</em> on each child — carries the table it physically lives on. Without a declared join nothing changes:
@@ -405,7 +405,7 @@ criteria.NotNull("CustomerArchivedAt")   // archived ones only</code></pre>
 </p>
 <p>
     A join is <strong>not gated on the archived state of the target</strong>. It answers "what is on the other side of
-    this foreign key", and a soft-deleted counterpart is still what the key points at: an archived
+    this foreign key", and an archived counterpart is still what the key points at: an archived
     <code>Customer</code> keeps supplying <code>CustomerName</code>, and an <code>InnerJoin</code> keeps matching it.
     The read scope (<code>?includeArchived</code>, the criteria's <code>Scope</code>) governs which <em>roots</em> a
     read returns; it never governs the rows a declared traversal reaches across into. Where an archived counterpart

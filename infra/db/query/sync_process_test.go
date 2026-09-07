@@ -71,7 +71,7 @@ func TestProcess_ArchivedDefault_KeepsDocViaUpsert(t *testing.T) {
 	coll := &fakeColl{}
 	s := NewSyncEngine(processEngineWithRow(), newFakeMongo(coll), identityResolver, nil, "", []*ViewDefinition{processView("t", false)}, 1)
 	if err := s.process(context.Background(), kafkaEvent{AggregateType: "t", EventType: "ARCHIVED", AggregateID: "r1",
-		Payload: []byte(`{"name":"Ana","deleted_at":"2026-07-20T12:00:00Z","_ids":{"id":"r1"}}`)}); err != nil {
+		Payload: []byte(`{"name":"Ana","archived_at":"2026-07-20T12:00:00Z","_ids":{"id":"r1"}}`)}); err != nil {
 		t.Fatalf("process ARCHIVED: %v", err)
 	}
 	if len(coll.updates) != 1 || len(coll.deletes) != 0 {

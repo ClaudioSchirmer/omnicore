@@ -191,8 +191,8 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if err != nil {
 		return nil, nil, err
 	}
-	// When the criteria pulled in a sibling/base LEFT JOIN, the root's DeletedAt
-	// column must be table-qualified (the base carries its own deleted_at) — the
+	// When the criteria pulled in a sibling/base LEFT JOIN, the root's ArchivedAt
+	// column must be table-qualified (the base carries its own archived_at) — the
 	// same disambiguation the leading ID gets below.
 	rootQualifier := ""
 	if joins.any() {
@@ -243,7 +243,7 @@ func (l *AggregateLoader[T]) findRoots(ctx context.Context, q *criteria.Query, l
 	if joinSQL != "" {
 		leadingPK = dialect.QuoteIdent(table) + "." + dialect.QuoteIdent(l.schema.IDColumn())
 	}
-	// Trailing framework-managed columns (created_at/updated_at/deleted_at/
+	// Trailing framework-managed columns (created_at/updated_at/archived_at/
 	// revision) go into the carrier via ms.apply, not into struct fields.
 	ms := newManagedScan(l.schema)
 	// Under ANY join the anchor's own columns are qualified — a joined aggregate
@@ -363,7 +363,7 @@ func applyWindow(d Dialect, sql string, limit, offset int64, orderSQL string) (s
 // hydrateChildren loads + attaches children for the given roots: one batched
 // SELECT per child type (WHERE fk IN (...)), grouped by ParentID in memory.
 // Child rows honor the scope the same way
-// the root gate does — see core.ChildScopeFilter (active → deleted_at IS NULL; any
+// the root gate does — see core.ChildScopeFilter (active → archived_at IS NULL; any
 // archived scope → unfiltered, so the unarchive cascade sees every child via
 // AllAggregateItems()).
 func (l *AggregateLoader[T]) hydrateChildren(ctx context.Context, entities []T, ids []string, scope criteria.Scope) error {
@@ -528,7 +528,7 @@ func (l *AggregateLoader[T]) hydrateBaseChildren(ctx context.Context, entities [
 		}
 		sql := "SELECT " + sel + " FROM " + bcTbl +
 			" JOIN " + roleTbl + " ON " + bcTbl + "." + d.QuoteIdent(bc.ParentIDColumn()) + " = " + roleTbl + "." + roleFK +
-			// bcTbl-qualified: the JOIN to the role table brings a second deleted_at
+			// bcTbl-qualified: the JOIN to the role table brings a second archived_at
 			// into scope, so the base-child's active gate must name its own table.
 			" WHERE " + roleTbl + "." + rolePK + " IN (" + strings.Join(placeholders, ", ") + ") " + core.ChildScopeFilter(scope, bc, d, bcTbl)
 		rows, err := l.rows().Query(ctx, sql, qargs...)
@@ -620,7 +620,7 @@ func (l *AggregateLoader[T]) LoadSharedBaseIdentity(ctx context.Context, fresh T
 	// role already references this identity, a POST is a conflict — surface the
 	// canonical 409 here, before the handler re-applies the request, so it is not
 	// masked by a child-level validation (e.g. a re-sent address). An archived role
-	// is excluded — DeletedAt is delete, so the insert falls through and the
+	// is excluded — an archived row reads as absent, so the insert falls through and the
 	// schema's constraints arbitrate the collision with the remnant (there is no
 	// revival on POST; /unarchive is the explicit path back). The persister's
 	// active-role probe + UNIQUE(fk) remain the in-TX race backstop.
@@ -649,8 +649,8 @@ func (l *AggregateLoader[T]) activeRoleExists(ctx context.Context, fkCol, baseID
 	// single home of the SELECT 1 … LIMIT 1 execution.
 	d := l.eng.Dialect()
 	where := " WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
-	if sd, ok := l.schema.DeletedAtColumn(); ok {
-		where += " AND " + d.QuoteIdent(sd) + " IS NULL"
+	if archivedCol, ok := l.schema.ArchivedAtColumn(); ok {
+		where += " AND " + d.QuoteIdent(archivedCol) + " IS NULL"
 	}
 	return l.probeExists(ctx, d.QuoteIdent(l.schema.Table())+where, d.EncodeArg(domain.NewID(baseID)))
 }
@@ -934,7 +934,7 @@ func (l *AggregateLoader[T]) hydrateSharedBase(ctx context.Context, entities []T
 // trailing scan targets expect. They are read into external destinations, not
 // struct fields, so they never enter scanCols/scanByCol.
 //
-// The soft-delete gate is rendered HERE, from the scope, rather than handed in
+// The archive gate is rendered HERE, from the scope, rather than handed in
 // ready-made: the branch that decides whether anything else is in the FROM is
 // the only one that can decide whether the gate's column needs qualifying, and
 // a caller that guessed would guess wrong the day a join was declared.
@@ -951,8 +951,8 @@ func childScanSQL(child *TableSchema, fkCol string, childCols []string, childByC
 			" FROM " + ct + " WHERE " + dialect.QuoteIdent(fkCol) + " IN (" + strings.Join(placeholders, ", ") + ") " + childFilter
 		return sql, childCols, childByCol
 	}
-	// Something else IS in the FROM: the child's own deleted_at is ambiguous the
-	// moment a join target carries one too (deleted_at/created_at/updated_at are
+	// Something else IS in the FROM: the child's own archived_at is ambiguous the
+	// moment a join target carries one too (archived_at/created_at/updated_at are
 	// the framework's OWN columns — every archivable entity has them).
 	childFilter := core.ChildScopeFilter(scope, child, dialect, ct)
 	pk := dialect.QuoteIdent(child.IDColumn())

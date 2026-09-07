@@ -44,14 +44,14 @@ func aggWriteSchema() *TableSchema {
 	return NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
 			ID("id").
 			ParentID("agg_w_id").
 			Field("Label", "label").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -170,7 +170,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 		if !tx.committed {
 			t.Errorf("%s: expected commit", verb)
 		}
-		// root soft-write + child cascade + outbox + audit = 4.
+		// root archive-write + child cascade + outbox + audit = 4.
 		if len(tx.execs) != 4 {
 			t.Errorf("%s: expected 4 statements, got %d: %v", verb, len(tx.execs), tx.execs)
 		}
@@ -178,7 +178,7 @@ func TestBaseEngine_ArchiveUnarchiveAggregate_Cascade(t *testing.T) {
 }
 
 // ONE writeNow() per operation, and it is the SAME value on every row the archive
-// touches — the root's own DeletedAt and the stamp its child cascade binds. That
+// touches — the root's own ArchivedAt and the stamp its child cascade binds. That
 // equality is the whole basis of the restore direction (unarchiveCascadeSQL
 // matches on it), so it is asserted, not assumed.
 func TestBaseEngine_ArchiveAggregate_RootAndChildrenShareOneInstant(t *testing.T) {
@@ -195,9 +195,9 @@ func TestBaseEngine_ArchiveAggregate_RootAndChildrenShareOneInstant(t *testing.T
 	var rootStamp, childStamp time.Time
 	for i, sql := range tx.execs {
 		switch {
-		case strings.HasPrefix(sql, "UPDATE agg_w SET deleted_at = $1"):
+		case strings.HasPrefix(sql, "UPDATE agg_w SET archived_at = $1"):
 			rootStamp, _ = tx.execArgs[i][0].(time.Time)
-		case strings.HasPrefix(sql, "UPDATE agg_w_children SET deleted_at = $1"):
+		case strings.HasPrefix(sql, "UPDATE agg_w_children SET archived_at = $1"):
 			childStamp, _ = tx.execArgs[i][0].(time.Time)
 		}
 	}
@@ -231,15 +231,15 @@ func TestBaseEngine_UnarchiveAggregate_CascadeReadsTheRootsOwnStamp(t *testing.T
 	cascadeAt, rootAt := -1, -1
 	for i, sql := range tx.execs {
 		switch {
-		case strings.HasPrefix(sql, "UPDATE agg_w_children SET deleted_at = NULL"):
+		case strings.HasPrefix(sql, "UPDATE agg_w_children SET archived_at = NULL"):
 			cascadeAt = i
-			if !strings.Contains(sql, "AND deleted_at = (SELECT deleted_at FROM agg_w WHERE id = $2)") {
+			if !strings.Contains(sql, "AND archived_at = (SELECT archived_at FROM agg_w WHERE id = $2)") {
 				t.Errorf("the restore must read the root's own stamp in the statement, got %q", sql)
 			}
 			if args := tx.execArgs[i]; len(args) != 2 {
 				t.Errorf("cascade args = %v, want [parentID rootID]", args)
 			}
-		case strings.HasPrefix(sql, "UPDATE agg_w SET deleted_at"):
+		case strings.HasPrefix(sql, "UPDATE agg_w SET archived_at"):
 			rootAt = i
 		}
 	}
@@ -247,7 +247,7 @@ func TestBaseEngine_UnarchiveAggregate_CascadeReadsTheRootsOwnStamp(t *testing.T
 		t.Fatalf("expected both the child cascade and the root UPDATE: %v", tx.execs)
 	}
 	if cascadeAt > rootAt {
-		t.Errorf("the cascade reads the root's DeletedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
+		t.Errorf("the cascade reads the root's ArchivedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
 	}
 	_ = stamp
 }
@@ -345,7 +345,7 @@ func TestBaseEngine_InsertAggregate_UndeclaredChildSchemaIsError(t *testing.T) {
 	// Schema WITHOUT the child declaration → childSchemaOrErr must fail loudly.
 	schemaNoChild := NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").Field("Name", "name").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at")
 
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})

@@ -104,20 +104,20 @@ func TestBaseChildren_ValidateSharedBaseChildren(t *testing.T) {
 			SharedBase(base, "pessoa_id")
 		role.ValidateSharedBaseChildren()
 	})
-	// A base-child with DeletedAt but a base without DeletedAt is rejected.
-	assertPanics(t, "base child DeletedAt without base DeletedAt", func() {
+	// A base-child with ArchivedAt but a base without ArchivedAt is rejected.
+	assertPanics(t, "base child ArchivedAt without base ArchivedAt", func() {
 		base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 			Child(NewTableSchema[addrFixture]("endereco").ID("id").ParentID("pessoa_id").
-				Field("Street", "street").DeletedAt("deleted_at"))
+				Field("Street", "street").ArchivedAt("archived_at"))
 		role := NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 			SharedBase(base, "pessoa_id")
 		role.ValidateSharedBaseChildren()
 	})
-	// A base + base-child that BOTH declare DeletedAt validate cleanly: the base can drive
+	// A base + base-child that BOTH declare ArchivedAt validate cleanly: the base can drive
 	// the column it declares.
-	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").DeletedAt("deleted_at").
+	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").ArchivedAt("archived_at").
 		Child(NewTableSchema[addrFixture]("endereco").ID("id").ParentID("pessoa_id").
-			Field("Street", "street").DeletedAt("deleted_at"))
+			Field("Street", "street").ArchivedAt("archived_at"))
 	role := NewTableSchema[schemaSample]("aluno").ID("id").Field("Removed", "matricula").
 		SharedBase(base, "pessoa_id")
 	role.ValidateSharedBaseChildren() // must not panic

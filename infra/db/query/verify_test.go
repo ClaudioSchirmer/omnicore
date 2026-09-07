@@ -10,7 +10,7 @@ import (
 // shapedDoc returns a shadow document with the aliveRoot field shape plus _id,
 // so the value-sample pass matches a fresh compose.
 func shapedDoc(id string) map[string]any {
-	return map[string]any{"_id": id, "id": id, "name": "n-" + id, "deleted_at": nil}
+	return map[string]any{"_id": id, "id": id, "name": "n-" + id, "archived_at": nil}
 }
 
 func TestVerifyShadow_ReverseDeletesResurrectedOrphan(t *testing.T) {

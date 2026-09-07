@@ -41,7 +41,7 @@ func TestManaged_SetManagedColumnsAndGetters(t *testing.T) {
 	if c.GetCreatedAt() != &now || c.GetUpdatedAt() != &now {
 		t.Error("created/updated must be the populated instants")
 	}
-	if c.GetDeletedAt() != nil {
+	if c.GetArchivedAt() != nil {
 		t.Error("deleted must stay nil on a live row")
 	}
 	if SetManagedColumns(&struct{}{}, 1, nil, nil, nil) {

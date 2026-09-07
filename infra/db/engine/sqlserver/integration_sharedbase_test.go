@@ -14,7 +14,7 @@ import (
 
 // SharedBase separate-ParentID integration against a REAL SQL Server: the
 // active-only uniqueness modeling — archived role remnants NEXT TO one active
-// row — via a native FILTERED UNIQUE INDEX (`WHERE deleted_at IS NULL`), the
+// row — via a native FILTERED UNIQUE INDEX (`WHERE archived_at IS NULL`), the
 // clean form MySQL has to emulate with a generated column. Covers the
 // POST-over-remnant admit, the /unarchive active-sibling veto (409), and the
 // natural-key immutability guard (422) with the real dialect SQL and the
@@ -41,11 +41,11 @@ func sbMsSchema() *core.TableSchema {
 		Field("Document", "document").
 		Field("Name", "name").
 		NaturalID("document").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return core.NewTableSchema[*sbMsStudent]("sb_students").
 		ID("id").
 		Field("Enrollment", "enrollment").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "person_id")
@@ -61,7 +61,7 @@ func sbMsSetup(t *testing.T) (*Engine, *sql.DB) {
 			document VARCHAR(64) NOT NULL UNIQUE,
 			name NVARCHAR(255) NOT NULL,
 			revision BIGINT NOT NULL DEFAULT 0,
-			deleted_at DATETIME2(6) NULL,
+			archived_at DATETIME2(6) NULL,
 			created_at DATETIME2(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME2(6) NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -69,7 +69,7 @@ func sbMsSetup(t *testing.T) (*Engine, *sql.DB) {
 			id BINARY(16) NOT NULL PRIMARY KEY,
 			person_id BINARY(16) NOT NULL,
 			enrollment VARCHAR(64) NOT NULL,
-			deleted_at DATETIME2(6) NULL,
+			archived_at DATETIME2(6) NULL,
 			created_at DATETIME2(6) NOT NULL,
 			updated_at DATETIME2(6) NOT NULL,
 			CONSTRAINT fk_sb_student_person FOREIGN KEY (person_id) REFERENCES sb_persons (id)
@@ -77,7 +77,7 @@ func sbMsSetup(t *testing.T) (*Engine, *sql.DB) {
 		// Active-only uniqueness, natively: one ACTIVE row per identity, any
 		// number of archived remnants (a filtered unique index — the shape PG
 		// writes as a partial index and MySQL emulates with a generated column).
-		`CREATE UNIQUE INDEX sb_students_one_active ON sb_students (person_id) WHERE deleted_at IS NULL`,
+		`CREATE UNIQUE INDEX sb_students_one_active ON sb_students (person_id) WHERE archived_at IS NULL`,
 	} {
 		if _, err := raw.ExecContext(ctx, stmt); err != nil {
 			t.Fatalf("ddl: %v\n%s", err, stmt)
@@ -137,7 +137,7 @@ func TestSQLServer_SharedBaseSeparateFK_ArchivedRemnantAdmitsNewActive(t *testin
 
 	s1 := sbMsInsert(t, eng, "D1", "M1", "GetInsertable")
 	sbMsArchive(t, eng, s1, "D1")
-	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons WHERE deleted_at IS NULL`); got != 0 {
+	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons WHERE archived_at IS NULL`); got != 0 {
 		t.Fatalf("archiving the only role must archive the base, active persons = %d", got)
 	}
 
@@ -148,13 +148,13 @@ func TestSQLServer_SharedBaseSeparateFK_ArchivedRemnantAdmitsNewActive(t *testin
 	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students`); got != 2 {
 		t.Errorf("expected 2 role rows (remnant + active), got %d", got)
 	}
-	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students WHERE deleted_at IS NULL`); got != 1 {
+	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students WHERE archived_at IS NULL`); got != 1 {
 		t.Errorf("expected exactly 1 ACTIVE role row, got %d", got)
 	}
 	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons`); got != 1 {
 		t.Errorf("expected ONE shared identity, got %d", got)
 	}
-	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons WHERE deleted_at IS NULL`); got != 1 {
+	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons WHERE archived_at IS NULL`); got != 1 {
 		t.Errorf("the new active role must revive the base, active persons = %d", got)
 	}
 }
@@ -171,7 +171,7 @@ func TestSQLServer_SharedBaseSeparateFK_UnarchiveNextToActiveIs409(t *testing.T)
 	if !errors.As(err, &carrier) {
 		t.Fatalf("unarchiving next to an active sibling must be a conflict NotificationCarrier, got %T (%v)", err, err)
 	}
-	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students WHERE deleted_at IS NULL`); got != 1 {
+	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students WHERE archived_at IS NULL`); got != 1 {
 		t.Errorf("the vetoed unarchive must leave exactly 1 active role, got %d", got)
 	}
 }
@@ -185,10 +185,10 @@ func TestSQLServer_SharedBaseSeparateFK_UnarchiveWithoutSiblingRevives(t *testin
 	if err := sbMsUnarchive(t, eng, s1, "D1"); err != nil {
 		t.Fatalf("Unarchive without sibling: %v", err)
 	}
-	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students WHERE deleted_at IS NULL`); got != 1 {
+	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_students WHERE archived_at IS NULL`); got != 1 {
 		t.Errorf("expected the remnant revived, active roles = %d", got)
 	}
-	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons WHERE deleted_at IS NULL`); got != 1 {
+	if got := sbMsCount(t, raw, `SELECT COUNT(*) FROM sb_persons WHERE archived_at IS NULL`); got != 1 {
 		t.Errorf("the revived role must revive the base, active persons = %d", got)
 	}
 }
@@ -230,7 +230,7 @@ func TestSQLServer_SharedBaseSeparateFK_NaturalKeyGuard(t *testing.T) {
 		t.Fatalf("a same-key update must pass the guard, got %v", err)
 	}
 	var enr string
-	if err := raw.QueryRowContext(context.Background(), `SELECT enrollment FROM sb_students WHERE deleted_at IS NULL`).Scan(&enr); err != nil {
+	if err := raw.QueryRowContext(context.Background(), `SELECT enrollment FROM sb_students WHERE archived_at IS NULL`).Scan(&enr); err != nil {
 		t.Fatalf("read enrollment: %v", err)
 	}
 	if enr != "M1-NEW" {

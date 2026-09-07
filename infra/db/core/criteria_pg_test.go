@@ -157,31 +157,31 @@ func TestPgVisitor_PlaceholderNumberingMonotonic(t *testing.T) {
 }
 
 func TestScopeGate(t *testing.T) {
-	std := NewExternalSchema("t").DeletedAt("deleted_at")
-	if ScopeGate(criteria.ScopeActive, std, testPGDialect{}, "") != "deleted_at IS NULL" {
+	std := NewExternalSchema("t").ArchivedAt("archived_at")
+	if ScopeGate(criteria.ScopeActive, std, testPGDialect{}, "") != "archived_at IS NULL" {
 		t.Error("active")
 	}
 	if ScopeGate(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
 		t.Error("include")
 	}
-	if ScopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "deleted_at IS NOT NULL" {
+	if ScopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "") != "archived_at IS NOT NULL" {
 		t.Error("only")
 	}
-	// Renamed DeletedAt column flows through the gate.
-	renamed := NewExternalSchema("t").DeletedAt("removed_at")
+	// Renamed ArchivedAt column flows through the gate.
+	renamed := NewExternalSchema("t").ArchivedAt("removed_at")
 	if ScopeGate(criteria.ScopeActive, renamed, testPGDialect{}, "") != "removed_at IS NULL" {
-		t.Error("renamed DeletedAt column")
+		t.Error("renamed ArchivedAt column")
 	}
-	// No DeletedAt declared → no gate under any scope.
+	// No ArchivedAt declared → no gate under any scope.
 	off := NewExternalSchema("t")
 	if ScopeGate(criteria.ScopeActive, off, testPGDialect{}, "") != "" || ScopeGate(criteria.ScopeOnlyArchived, off, testPGDialect{}, "") != "" {
-		t.Error("disabled DeletedAt must yield no gate")
+		t.Error("disabled ArchivedAt must yield no gate")
 	}
 }
 
 func TestChildScopeFilter(t *testing.T) {
-	std := NewExternalSchema("t").DeletedAt("deleted_at")
-	if ChildScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "") != "AND deleted_at IS NULL" {
+	std := NewExternalSchema("t").ArchivedAt("archived_at")
+	if ChildScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "") != "AND archived_at IS NULL" {
 		t.Error("active children gated")
 	}
 	if ChildScopeFilter(criteria.ScopeIncludeArchived, std, testPGDialect{}, "") != "" {
@@ -194,19 +194,19 @@ func TestChildScopeFilter(t *testing.T) {
 
 // Under a JOIN that brings a second archivable table into scope (a role's
 // SharedBase in ScopeGate, or the role in the base-child loader), the
-// DeletedAt column must be table-qualified so the bare reference is not
+// ArchivedAt column must be table-qualified so the bare reference is not
 // ambiguous (SQLSTATE 42702) — the same disambiguation the leading ID already
 // gets. With an empty qualifier the output stays bare (single-table path).
 func TestScopeGate_QualifiedUnderJoin(t *testing.T) {
-	std := NewExternalSchema("t").DeletedAt("deleted_at")
-	if got := ScopeGate(criteria.ScopeActive, std, testPGDialect{}, "users"); got != "users.deleted_at IS NULL" {
-		t.Errorf("qualified active gate = %q, want users.deleted_at IS NULL", got)
+	std := NewExternalSchema("t").ArchivedAt("archived_at")
+	if got := ScopeGate(criteria.ScopeActive, std, testPGDialect{}, "users"); got != "users.archived_at IS NULL" {
+		t.Errorf("qualified active gate = %q, want users.archived_at IS NULL", got)
 	}
-	if got := ScopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "users"); got != "users.deleted_at IS NOT NULL" {
+	if got := ScopeGate(criteria.ScopeOnlyArchived, std, testPGDialect{}, "users"); got != "users.archived_at IS NOT NULL" {
 		t.Errorf("qualified archived gate = %q", got)
 	}
-	if got := ChildScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "addresses"); got != "AND addresses.deleted_at IS NULL" {
-		t.Errorf("qualified base-child filter = %q, want AND addresses.deleted_at IS NULL", got)
+	if got := ChildScopeFilter(criteria.ScopeActive, std, testPGDialect{}, "addresses"); got != "AND addresses.archived_at IS NULL" {
+		t.Errorf("qualified base-child filter = %q, want AND addresses.archived_at IS NULL", got)
 	}
 }
 
@@ -228,10 +228,10 @@ func TestCompileOrder(t *testing.T) {
 }
 
 func TestBuildWhereClause(t *testing.T) {
-	if got := BuildWhereClause("a = $1", "deleted_at IS NULL"); got != "WHERE a = $1 AND deleted_at IS NULL" {
+	if got := BuildWhereClause("a = $1", "archived_at IS NULL"); got != "WHERE a = $1 AND archived_at IS NULL" {
 		t.Errorf("both = %q", got)
 	}
-	if got := BuildWhereClause("", "deleted_at IS NULL"); got != "WHERE deleted_at IS NULL" {
+	if got := BuildWhereClause("", "archived_at IS NULL"); got != "WHERE archived_at IS NULL" {
 		t.Errorf("gate only = %q", got)
 	}
 	if got := BuildWhereClause("a = $1", ""); got != "WHERE a = $1" {

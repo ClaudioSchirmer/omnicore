@@ -71,12 +71,12 @@ func NewBaseAggregateRepository[T domain.Entity](eng RelationalEngine, newEntity
 // WithSchema declares the mandatory TableSchema once and threads it into BOTH
 // the write binding (via BaseRepository.WithSchema) and the read loader
 // (Loader.WithSchema) — one declaration feeds write, criteria and scan. The
-// Modes() ⟺ DeletedAt and the aggregate-depth (no grandchildren) boot checks
+// Modes() ⟺ ArchivedAt and the aggregate-depth (no grandchildren) boot checks
 // run here; the field-existence + bijection checks already ran while the
 // TableSchema was built. A violation panics at construction, not on the first
 // request.
 func (r *BaseAggregateRepository[T]) WithSchema(schema *TableSchema) *BaseAggregateRepository[T] {
-	// ID-declared + aggregate-depth + Modes() ⟺ DeletedAt run in the shared
+	// ID-declared + aggregate-depth + Modes() ⟺ ArchivedAt run in the shared
 	// BaseRepository.WithSchema (which also sets r.Schema). The aggregate path
 	// adds the boundary cross-check below + threads the schema into the loader.
 	r.BaseRepository.WithSchema(schema)
@@ -158,7 +158,7 @@ func (r *BaseAggregateRepository[T]) FindByID(id domain.ID) (T, error) {
 	return r.Loader.FindOne(context.Background(), criteria.ByID(id))
 }
 
-// FindArchivedByID loads the archived aggregate (deleted_at IS NOT NULL) via the
+// FindArchivedByID loads the archived aggregate (archived_at IS NOT NULL) via the
 // same engine with the OnlyArchived scope. Satisfies domain.ArchivedFinder[T],
 // which UnarchiveCommandHandler consumes to hydrate the archived aggregate
 // (children loaded unfiltered under the archived scope) before cascading

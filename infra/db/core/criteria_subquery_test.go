@@ -47,7 +47,7 @@ func subUserSchema() *TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // phoneSchema is the MANY side of a 1:N relation — the shape Exists exists for.
@@ -56,10 +56,10 @@ func subPhoneSchema() *TableSchema {
 		ID("id").
 		Field("UserID", "user_id").
 		Field("Number", "number").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
-// rolePermSchema declares NO archive marker, which is how the "no DeletedAt, no
+// rolePermSchema declares NO archive marker, which is how the "no ArchivedAt, no
 // gate" half of the rule is observable.
 func subRolePermSchema() *TableSchema {
 	return NewTableSchema[subRolePerm]("role_permissions").
@@ -109,7 +109,7 @@ func TestSubquery_Forms(t *testing.T) {
 			"InSub",
 			criteria.InSub("ID", criteria.Sub(phones).Select("UserID")),
 			`id IN (SELECT phones_sq1.user_id FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.archived_at IS NULL)`,
 			0,
 		},
 		{
@@ -117,39 +117,39 @@ func TestSubquery_Forms(t *testing.T) {
 			criteria.InSub("ID", criteria.Sub(phones).Select("UserID").
 				Where(criteria.Eq("Number", "555"))),
 			`id IN (SELECT phones_sq1.user_id FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.number = $1 AND phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.number = $1 AND phones_sq1.archived_at IS NULL)`,
 			1,
 		},
 		{
 			"EqSub over an aggregate",
 			criteria.EqSub("Name", criteria.Sub(phones).SelectMax("Number")),
 			`name = (SELECT MAX(phones_sq1.number) FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.archived_at IS NULL)`,
 			0,
 		},
 		{
 			"GtSub with COUNT(*)",
 			criteria.GtSub("Name", criteria.Sub(phones).SelectCount()),
 			`name > (SELECT COUNT(*) FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.archived_at IS NULL)`,
 			0,
 		},
 		{
 			"Exists projects nothing",
 			criteria.Exists(criteria.Sub(phones).Where(criteria.Eq("Number", "555"))),
 			`EXISTS (SELECT 1 FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.number = $1 AND phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.number = $1 AND phones_sq1.archived_at IS NULL)`,
 			1,
 		},
 		{
 			"NotExists",
 			criteria.NotExists(criteria.Sub(phones)),
 			`NOT EXISTS (SELECT 1 FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.archived_at IS NULL)`,
 			0,
 		},
 		{
-			"a source with no DeletedAt gets no gate",
+			"a source with no ArchivedAt gets no gate",
 			criteria.InSub("ID", criteria.Sub(rp).Select("RoleID")),
 			`id IN (SELECT role_permissions_sq1.role_id FROM role_permissions role_permissions_sq1)`,
 			0,
@@ -193,14 +193,14 @@ func TestSubquery_ScopeOptOuts(t *testing.T) {
 
 	t.Run("IncludeArchived drops the gate", func(t *testing.T) {
 		sql, _ := compilePG(t, criteria.Exists(criteria.Sub(phones).IncludeArchived()), users)
-		if strings.Contains(sql, "deleted_at") {
+		if strings.Contains(sql, "archived_at") {
 			t.Errorf("IncludeArchived still gated: %s", sql)
 		}
 	})
 
 	t.Run("OnlyArchived inverts it", func(t *testing.T) {
 		sql, _ := compilePG(t, criteria.Exists(criteria.Sub(phones).OnlyArchived()), users)
-		if !strings.Contains(sql, `phones_sq1.deleted_at IS NOT NULL`) {
+		if !strings.Contains(sql, `phones_sq1.archived_at IS NOT NULL`) {
 			t.Errorf("OnlyArchived gate missing: %s", sql)
 		}
 	})
@@ -217,7 +217,7 @@ func TestSubquery_OuterReference(t *testing.T) {
 
 	sql, args := compilePG(t, e, users)
 	want := `EXISTS (SELECT 1 FROM phones phones_sq1 ` +
-		`WHERE phones_sq1.user_id = users.id AND phones_sq1.deleted_at IS NULL)`
+		`WHERE phones_sq1.user_id = users.id AND phones_sq1.archived_at IS NULL)`
 	if sql != want {
 		t.Errorf("sql =\n  %s\nwant\n  %s", sql, want)
 	}
@@ -414,7 +414,7 @@ func TestSubquery_SourceMustBeDirect(t *testing.T) {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Sibling(NewSiblingSchema[subUser]("user_extras").Field("Tag", "tag"))
 
 	err := compileErrPG(t, criteria.InSub("ID", criteria.Sub(owner).Select("ID")), owner)
@@ -455,7 +455,7 @@ func TestSubquery_SelfCorrelationIsUnambiguous(t *testing.T) {
 
 	want := `EXISTS (SELECT 1 FROM users users_sq1 ` +
 		`WHERE (users_sq1.email = users.email AND users_sq1.id <> users.id) ` +
-		`AND users_sq1.deleted_at IS NULL)`
+		`AND users_sq1.archived_at IS NULL)`
 	if sql != want {
 		t.Errorf("sql =\n  %s\nwant\n  %s", sql, want)
 	}
@@ -549,17 +549,17 @@ func TestSubquery_PerDialectRendering(t *testing.T) {
 		{
 			"postgres", testPGDialect{},
 			`id IN (SELECT phones_sq1.user_id FROM phones phones_sq1 ` +
-				`WHERE phones_sq1.number = $1 AND phones_sq1.deleted_at IS NULL)`,
+				`WHERE phones_sq1.number = $1 AND phones_sq1.archived_at IS NULL)`,
 		},
 		{
 			"mysql", testMySQLDialect{},
 			"`id` IN (SELECT `phones_sq1`.`user_id` FROM `phones` `phones_sq1` " +
-				"WHERE `phones_sq1`.`number` = ? AND `phones_sq1`.`deleted_at` IS NULL)",
+				"WHERE `phones_sq1`.`number` = ? AND `phones_sq1`.`archived_at` IS NULL)",
 		},
 		{
 			"sqlserver", testSQLServerDialect{},
 			`[id] IN (SELECT [phones_sq1].[user_id] FROM [phones] [phones_sq1] ` +
-				`WHERE [phones_sq1].[number] = @p1 AND [phones_sq1].[deleted_at] IS NULL)`,
+				`WHERE [phones_sq1].[number] = @p1 AND [phones_sq1].[archived_at] IS NULL)`,
 		},
 		{
 			// Oracle folds identifiers to upper case — the derived alias goes
@@ -567,7 +567,7 @@ func TestSubquery_PerDialectRendering(t *testing.T) {
 			// with them instead of standing out as the one lower-case name.
 			"oracle", testOracleDialect{},
 			`"ID" IN (SELECT "PHONES_SQ1"."USER_ID" FROM "PHONES" "PHONES_SQ1" ` +
-				`WHERE "PHONES_SQ1"."NUMBER" = :1 AND "PHONES_SQ1"."DELETED_AT" IS NULL)`,
+				`WHERE "PHONES_SQ1"."NUMBER" = :1 AND "PHONES_SQ1"."ARCHIVED_AT" IS NULL)`,
 		},
 	}
 

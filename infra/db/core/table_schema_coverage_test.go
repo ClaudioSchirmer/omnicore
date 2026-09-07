@@ -18,7 +18,7 @@ func covFullSchema() *TableSchema {
 		Field("Name", "name").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func TestTableSchema_PKAndManagedColumns(t *testing.T) {
@@ -99,7 +99,7 @@ func TestTableSchema_GoNameForRead(t *testing.T) {
 		{"id", "ID", true},
 		{"created_at", "CreatedAt", true},
 		{"updated_at", "UpdatedAt", true},
-		{"deleted_at", "DeletedAt", true},
+		{"archived_at", "ArchivedAt", true},
 		{"unknown_col", "", false},
 	}
 	for _, c := range cases {
@@ -121,7 +121,7 @@ func TestTableSchema_Resolve(t *testing.T) {
 		{"ID", "id", true},
 		{"CreatedAt", "created_at", true},
 		{"UpdatedAt", "updated_at", true},
-		{"DeletedAt", "deleted_at", true},
+		{"ArchivedAt", "archived_at", true},
 		{"Unknown", "", false},
 	}
 	for _, c := range cases {
@@ -135,12 +135,12 @@ func TestTableSchema_Resolve(t *testing.T) {
 func TestTableSchema_ReadHelpers_ManagedAbsentMissing(t *testing.T) {
 	// Without managed columns, the fixed logical names resolve to ok=false.
 	s := NewTableSchema[schemaSample]("t").ID("id").Field("Name", "name")
-	for _, col := range []string{"created_at", "updated_at", "deleted_at"} {
+	for _, col := range []string{"created_at", "updated_at", "archived_at"} {
 		if _, ok := s.goNameForRead(col); ok {
 			t.Errorf("goNameForRead(%q) should be false when managed columns are absent", col)
 		}
 	}
-	for _, name := range []string{"CreatedAt", "UpdatedAt", "DeletedAt"} {
+	for _, name := range []string{"CreatedAt", "UpdatedAt", "ArchivedAt"} {
 		if _, ok := resolvedColumn(s, name); ok {
 			t.Errorf("Resolve(%q) should be false when managed columns are absent", name)
 		}

@@ -252,8 +252,8 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
     <p class="note">
         <strong>Managed slots have FIXED Go names — whatever the physical column.</strong> The document key is
         the field's Go name, and for <code>ID</code>, <code>ParentID</code>, <code>CreatedAt</code>, <code>UpdatedAt</code>
-        and <code>DeletedAt</code> that name is locked by the framework: a Result field named after the column
-        (<code>ArchivedOn</code> for <code>DeletedAt("archived_on")</code>) reads nothing and stays silently null.
+        and <code>ArchivedAt</code> that name is locked by the framework: a Result field named after the column
+        (<code>ArchivedOn</code> for <code>ArchivedAt("archived_on")</code>) reads nothing and stays silently null.
         The full naming contract lives in <a href="#table-schema~three-name-model">The three-name model</a>.
     </p>
     <p>
@@ -288,7 +288,7 @@ func (FindUsersByParamsResponse) FromResult(r appqueries.FindUsersResult) FindUs
         <tr><td>Validate the query string in a manual handler</td><td><span class="tag auto">automatic</span></td><td><code>fwweb.NewQueryParser[Req, Resp]()</code> at Mount — runs the canonical boot scan (sparse-render guard + sort opt-in <code>slog.Warn</code> + projection schema). Per request: <code>parser.Parse(c)</code>; pair with <code>fwweb.RespondSchemaViolation</code>. It is the single manual parsing seat.</td></tr>
         <tr><td>Filter operators (<code>.gte/.lte/.gt/.lt/.ne/.in/.nin</code>)</td><td><span class="tag auto">automatic</span></td><td><code>queryschema.ApplyFilterValues</code></td></tr>
         <tr><td>Type coercion (int/float/bool/string)</td><td><span class="tag auto">automatic</span></td><td><code>coerceValue</code></td></tr>
-        <tr><td>DeletedAt filter (<code>deleted_at = null</code>)</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader</code> applies when <code>!IncludeArchived</code></td></tr>
+        <tr><td>ArchivedAt filter (<code>archived_at = null</code>)</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader</code> applies when <code>!IncludeArchived</code></td></tr>
         <tr><td>Cursor pagination (encode/decode base64)</td><td><span class="tag auto">automatic</span></td><td><code>application/queries/cursor.go</code></td></tr>
         <tr><td>Detect <code>hasNextPage</code> via page-size+1</td><td><span class="tag auto">automatic</span></td><td><code>MongoViewReader.ReadPage</code></td></tr>
         <tr><td>Total count</td><td><span class="tag auto">automatic</span></td><td><code>CountDocuments</code></td></tr>
@@ -888,7 +888,7 @@ query:
         <tr><td><code>?onlyTotal=true</code></td><td>200 — envelope <code>{success, status, description, pagination: {totalCount: N}}</code> (no <code>data</code>, no <code>hasNextPage</code>/<code>hasPreviousPage</code>/cursors)</td></tr>
         <tr><td><code>?onlyTotal=true&amp;name.startswith=Bo</code></td><td>200 — counts only docs whose <code>name</code> starts with "Bo"</td></tr>
         <tr><td><code>?onlyTotal=true&amp;search=foo</code></td><td>200 — text-index count of "foo" matches</td></tr>
-        <tr><td><code>?onlyTotal=true&amp;includeArchived=true</code></td><td>200 — counts archived rows too (skips the DeletedAt gate)</td></tr>
+        <tr><td><code>?onlyTotal=true&amp;includeArchived=true</code></td><td>200 — counts archived rows too (skips the ArchivedAt gate)</td></tr>
         <tr><td><code>?onlyTotal=true&amp;fields=name</code></td><td>400 — <code>onlyTotal[fields]</code></td></tr>
         <tr><td><code>?onlyTotal=true&amp;orderBy=-name</code></td><td>400 — <code>onlyTotal[orderBy]</code></td></tr>
         <tr><td><code>?onlyTotal=true&amp;first=10</code></td><td>400 — <code>onlyTotal[first]</code></td></tr>
@@ -1152,11 +1152,11 @@ var SaleView = query.View("sales_view").
 
 // Drop archived rows from the projection — opt in via .DeleteOnArchive().
 // Default behavior (flag absent): ARCHIVED outbox events compose+upsert the
-// document (survives with deleted_at populated, mirroring the relational
-// backend symmetrically) and the composer omits the WHERE deleted_at IS NULL filter
+// document (survives with archived_at populated, mirroring the relational
+// backend symmetrically) and the composer omits the WHERE archived_at IS NULL filter
 // on every fetch of the aggregate's own closure. With .DeleteOnArchive():
 // ARCHIVED removes the document from Mongo and the composer applies the
-// deleted_at filter across that closure (root, child collections, the role
+// archived_at filter across that closure (root, child collections, the role
 // pick) — no per-child override. An embed segment is untouched by the flag:
 // it mirrors its SOURCE's own archive state (see Views, the archived rule).
 // The hot-tier choice for services that don't need archived data on the
@@ -1404,13 +1404,13 @@ return bootstrap.Wiring{
     <p><strong>What each upstream event does to the local collection.</strong> The subscriber dispatches on the
         outbox <code>event_type</code>: <code>INSERTED</code>/<code>UPDATED</code>/<code>UNARCHIVED</code> upsert the
         (filtered) payload into the collection and ripple recompose; <code>ARCHIVED</code> with
-        <code>deleteOnArchive: false</code> (the default) upserts too — the upstream payload carries the DeletedAt
-        column populated, so the local document survives with <code>deleted_at</code> set, symmetric with the
+        <code>deleteOnArchive: false</code> (the default) upserts too — the upstream payload carries the ArchivedAt
+        column populated, so the local document survives with <code>archived_at</code> set, symmetric with the
         producer's own read side — while <code>deleteOnArchive: true</code> removes the document;
         <code>DELETED</code> is dispatched on the aggregate id alone, before any payload decode (its keys-only
         payload — ID + shared-base ParentID — is available to bespoke consumers, but the framework's cascade / anonymize /
         keep handling needs only the id, which also keeps replays of historical <code>NULL</code>-payload rows
-        working). When declaring a <code>filter</code> allowlist, include the DeletedAt column if the collection
+        working). When declaring a <code>filter</code> allowlist, include the ArchivedAt column if the collection
         keeps archived documents — a filter that drops it would strip the archive marker from the
         <code>ARCHIVED</code> upsert.</p>
 
@@ -1446,7 +1446,7 @@ ORDER BY pending DESC;</code></pre>
 
 GET /users/&lt;id&gt;?includeArchived=true
 
-→ returns even if archived (deleted_at IS NOT NULL)
+→ returns even if archived (archived_at IS NOT NULL)
 
 GET /users?role=admin
 
@@ -1480,7 +1480,7 @@ GET /users?role=admin
             (<code>?fields=code,notes.text</code>): an inclusion projection that names no path of a
             given segment omits that segment entirely from the wire shape.</li>
         <li><strong><code>?includeArchived=true</code> propagates to every leg</strong> — one send, one
-            meaning; a leg whose schema has no DeletedAt simply has no gate.</li>
+            meaning; a leg whose schema has no ArchivedAt simply has no gate.</li>
         <li><strong>Cursors bind to the composed listing context</strong> — segment filters included:
             changing <code>?notes.text=</code> mid-navigation invalidates the cursor (400) exactly like
             changing a row filter does; request page 1 of the new context.</li>

@@ -49,7 +49,7 @@ func createLoaderTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
 		email TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -57,7 +57,7 @@ func createLoaderTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		loader_root_id UUID NOT NULL REFERENCES loader_roots(id) ON DELETE CASCADE,
 		label TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -65,7 +65,7 @@ func createLoaderTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		loader_root_id UUID NOT NULL REFERENCES loader_roots(id) ON DELETE CASCADE,
 		body TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -78,7 +78,7 @@ func loaderRootSchema() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema()).
@@ -86,7 +86,7 @@ func loaderRootSchema() *core.TableSchema {
 			ID("id").
 			ParentID("loader_root_id").
 			Field("Body", "body").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -98,7 +98,7 @@ func loaderRootSchemaTagsOnly() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(loaderTagSchema())
@@ -111,7 +111,7 @@ func loaderRootSchemaFlat() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -121,7 +121,7 @@ func loaderTagSchema() *core.TableSchema {
 		ID("id").
 		ParentID("loader_root_id").
 		Field("Label", "label").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -129,9 +129,9 @@ func loaderTagSchema() *core.TableSchema {
 // --- Managed carrier surfacing (T2: domain.Managed) ----------------------
 
 // The loader surfaces the framework-managed carrier columns — the id AND
-// created_at/updated_at/deleted_at — onto the ROOT and every CHILD, not just the
+// created_at/updated_at/archived_at — onto the ROOT and every CHILD, not just the
 // id. Proven end to end against a real backend: an active aggregate exposes
-// non-nil created/updated and a nil deleted at both levels; an archived root
+// non-nil created/updated and a nil archived at both levels; an archived root
 // exposes a non-nil deleted.
 func TestAggregateLoader_SurfacesManagedColumns(t *testing.T) {
 	pg, cleanup := newTestPG(t)
@@ -155,8 +155,8 @@ func TestAggregateLoader_SurfacesManagedColumns(t *testing.T) {
 	if root.GetCreatedAt() == nil || root.GetUpdatedAt() == nil {
 		t.Errorf("root created/updated must surface, got created=%v updated=%v", root.GetCreatedAt(), root.GetUpdatedAt())
 	}
-	if root.GetDeletedAt() != nil {
-		t.Errorf("an active root must surface a nil deleted_at, got %v", root.GetDeletedAt())
+	if root.GetArchivedAt() != nil {
+		t.Errorf("an active root must surface a nil archived_at, got %v", root.GetArchivedAt())
 	}
 	// Child carrier columns + id surface.
 	tags := domain.GetCurrentItemsOf[loaderTagVO](&root.AggregateRoot)
@@ -169,20 +169,20 @@ func TestAggregateLoader_SurfacesManagedColumns(t *testing.T) {
 	if tags[0].GetCreatedAt() == nil || tags[0].GetUpdatedAt() == nil {
 		t.Errorf("child created/updated must surface, got created=%v updated=%v", tags[0].GetCreatedAt(), tags[0].GetUpdatedAt())
 	}
-	if tags[0].GetDeletedAt() != nil {
-		t.Errorf("an active child must surface a nil deleted_at, got %v", tags[0].GetDeletedAt())
+	if tags[0].GetArchivedAt() != nil {
+		t.Errorf("an active child must surface a nil archived_at, got %v", tags[0].GetArchivedAt())
 	}
 
-	// An archived root surfaces a non-nil deleted_at.
+	// An archived root surfaces a non-nil archived_at.
 	var archID string
 	pg.Pool().QueryRow(context.Background(),
-		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&archID)
+		`INSERT INTO loader_roots (name, email, archived_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&archID)
 	arch, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID(archID)).OnlyArchived())
 	if err != nil {
 		t.Fatalf("FindOne archived: %v", err)
 	}
-	if arch.GetDeletedAt() == nil {
-		t.Error("an archived root must surface a non-nil deleted_at")
+	if arch.GetArchivedAt() == nil {
+		t.Error("an archived root must surface a non-nil archived_at")
 	}
 }
 
@@ -249,7 +249,7 @@ func TestAggregateLoader_LoadIncludingArchived(t *testing.T) {
 
 	var id string
 	pg.Pool().QueryRow(context.Background(),
-		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
+		`INSERT INTO loader_roots (name, email, archived_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
 	pg.Pool().Exec(context.Background(),
 		`INSERT INTO loader_tag_vos (loader_root_id, label) VALUES ($1, 't')`, id)
 
@@ -300,7 +300,7 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
 		email TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -308,7 +308,7 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		owner_id UUID NOT NULL REFERENCES tb_loader_legacy(id) ON DELETE CASCADE,
 		label TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -325,14 +325,14 @@ func TestAggregateLoader_Schema_TableAndFKOverride(t *testing.T) {
 			ID("id").
 			Field("Name", "name").
 			Field("Email", "email").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at").
 			Child(core.NewTableSchema[loaderTagVO]("tb_tags").
 				ID("id").
 				ParentID("owner_id").
 				Field("Label", "label").
-				DeletedAt("deleted_at").
+				ArchivedAt("archived_at").
 				CreatedAt("created_at").
 				UpdatedAt("updated_at")))
 
@@ -388,11 +388,11 @@ func TestAggregateLoader_Load_AutoScanWithNoFieldsErrors(t *testing.T) {
 	defer cleanup()
 	createTable(t, pg, `CREATE TABLE empty_entities (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	loader := read.NewAggregateLoader[*emptyEntity](pg, func() *emptyEntity { return &emptyEntity{} }).
-		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").ID("id").DeletedAt("deleted_at").CreatedAt("created_at"))
+		WithSchema(core.NewTableSchema[*emptyEntity]("empty_entities").ID("id").ArchivedAt("archived_at").CreatedAt("created_at"))
 	_, err := loader.FindOne(context.Background(), criteria.ByID(domain.NewID("00000000-0000-0000-0000-000000000000")))
 	if err == nil {
 		t.Fatal("expected error from auto-scan with zero columns")

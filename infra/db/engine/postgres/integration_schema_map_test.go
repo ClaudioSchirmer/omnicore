@@ -13,11 +13,11 @@ import (
 )
 
 // schemaPerson exercises the core.TableSchema end-to-end: a renamed ID
-// (person_pk), renamed domain columns (full_name, mail), a renamed DeletedAt
+// (person_pk), renamed domain columns (full_name, mail), a renamed ArchivedAt
 // column (removed_at), and managed created_at/updated_at columns the framework
 // must stamp (the table declares them NOT NULL with NO default, so a missing
 // stamp would fail the INSERT). The aggregate child diverges on its own ID,
-// ParentID, column, and DeletedAt name.
+// ParentID, column, and ArchivedAt name.
 type schemaPerson struct {
 	domain.AggregateRoot
 	FullName string
@@ -46,7 +46,7 @@ func schemaPersonSchema() *core.TableSchema {
 		Revision("revision").
 		Field("FullName", "full_name").
 		Field("Email", "mail").
-		DeletedAt("removed_at").
+		ArchivedAt("removed_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Child(
@@ -54,7 +54,7 @@ func schemaPersonSchema() *core.TableSchema {
 				ID("tag_pk").
 				ParentID("person_ref").
 				Field("Label", "caption").
-				DeletedAt("removed_at").
+				ArchivedAt("removed_at").
 				CreatedAt("created_at").
 				UpdatedAt("updated_at"),
 		)
@@ -136,10 +136,10 @@ func TestSchemaMap_WriteCriteriaReadRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSchemaMap_ArchiveUsesRenamedDeletedAtColumn proves the DeletedAt
+// TestSchemaMap_ArchiveUsesRenamedArchivedAtColumn proves the ArchivedAt
 // membrane: archive sets removed_at (root + child cascade), the active scope
 // hides the row, and the archived scope recovers it.
-func TestSchemaMap_ArchiveUsesRenamedDeletedAtColumn(t *testing.T) {
+func TestSchemaMap_ArchiveUsesRenamedArchivedAtColumn(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createSchemaMapTables(t, pg)

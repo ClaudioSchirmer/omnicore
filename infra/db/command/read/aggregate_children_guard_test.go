@@ -33,14 +33,14 @@ func guardChildSchema() *TableSchema {
 
 func TestAggregateChildrenGuard_Match_OK(t *testing.T) {
 	bar := NewBaseAggregateRepository[*guardAggRoot](nil, func() *guardAggRoot { return &guardAggRoot{} })
-	schema := NewTableSchema[*guardAggRoot]("guards").ID("id").Revision("revision").DeletedAt("deleted_at").
+	schema := NewTableSchema[*guardAggRoot]("guards").ID("id").Revision("revision").ArchivedAt("archived_at").
 		Child(guardChildSchema())
 	bar.WithSchema(schema) // boundaries agree — must not panic
 }
 
 func TestAggregateChildrenGuard_DeclaredButNoChildSchema_Panics(t *testing.T) {
 	bar := NewBaseAggregateRepository[*guardAggRoot](nil, func() *guardAggRoot { return &guardAggRoot{} })
-	schema := NewTableSchema[*guardAggRoot]("guards").ID("id").Revision("revision").DeletedAt("deleted_at") // no Child
+	schema := NewTableSchema[*guardAggRoot]("guards").ID("id").Revision("revision").ArchivedAt("archived_at") // no Child
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -59,7 +59,7 @@ func TestAggregateChildrenGuard_ChildSchemaButNotDeclared_Panics(t *testing.T) {
 	// AggregateRootProvider, so its declared boundary is empty — a schema with
 	// a Child(...) must be flagged.
 	bar := NewBaseAggregateRepository[*barTestEntity](nil, newBARTestEntity)
-	schema := NewTableSchema[*barTestEntity]("bars").ID("id").Revision("revision").DeletedAt("deleted_at").
+	schema := NewTableSchema[*barTestEntity]("bars").ID("id").Revision("revision").ArchivedAt("archived_at").
 		Child(guardChildSchema())
 	defer func() {
 		r := recover()

@@ -327,7 +327,7 @@ func (l ComposedLink) ResolveMaxLinkManyLimit(yamlDefault int64) int64 {
 }
 
 // Node returns the leg's translator tree (Go field paths ↔ physical columns,
-// DeletedAt gate, archived-children strip) — the leg view's full ViewNode
+// ArchivedAt gate, archived-children strip) — the leg view's full ViewNode
 // for an internal leg, a flat schema node for an external one.
 func (l ComposedLink) Node() *ViewNode { return l.node }
 

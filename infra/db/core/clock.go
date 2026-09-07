@@ -8,7 +8,7 @@ import (
 
 // ClockMode selects WHERE the authoritative instant of a write operation comes
 // from — the single stamp every managed timestamp column of that operation
-// binds (created_at, updated_at, and the archive/unarchive deleted_at stamp).
+// binds (created_at, updated_at, and the archive/unarchive archived_at stamp).
 //
 // It exists because the app clock is a per-POD clock. Several replicas of one
 // service each carry their own drift, so two rows written seconds apart can be

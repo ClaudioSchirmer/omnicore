@@ -169,8 +169,8 @@ func TestArtifactHash_IndexNameOverride(t *testing.T) {
 }
 
 func TestArtifactHash_PartialFilterChange(t *testing.T) {
-	a := View("u").Indexes(Index("deleted_at").Partial(Exists("deleted_at", false)))
-	b := View("u").Indexes(Index("deleted_at").Partial(Exists("deleted_at", true)))
+	a := View("u").Indexes(Index("archived_at").Partial(Exists("archived_at", false)))
+	b := View("u").Indexes(Index("archived_at").Partial(Exists("archived_at", true)))
 	if a.ArtifactHash() == b.ArtifactHash() {
 		t.Error("ArtifactHash same despite different partialFilter")
 	}

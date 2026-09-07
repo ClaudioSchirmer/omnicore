@@ -58,21 +58,21 @@ func TestField_TooManyLabelKeysPanics(t *testing.T) {
 }
 
 func TestEnsureColumnFree_EmptyColumnIsNoop(t *testing.T) {
-	// DeletedAt("") drives ensureColumnFree's empty-column early return without
+	// ArchivedAt("") drives ensureColumnFree's empty-column early return without
 	// claiming any column.
 	s := NewTableSchema[*builderTestEntity]("t").ID("id").Field("Name", "name")
-	s.ensureColumnFree("", "DeletedAt") // must not panic
-	if _, ok := s.deletedAtColumn(); ok {
-		t.Error("no DeletedAt should be set")
+	s.ensureColumnFree("", "ArchivedAt") // must not panic
+	if _, ok := s.archivedAtColumn(); ok {
+		t.Error("no ArchivedAt should be set")
 	}
 }
 
 func TestEnsureColumnFree_UpdatedAtCollisionPanics(t *testing.T) {
 	mustPanic(t, "updated_at collision", func() {
-		// UpdatedAt claims "ts"; declaring DeletedAt on the same column must
+		// UpdatedAt claims "ts"; declaring ArchivedAt on the same column must
 		// trip the UpdatedAt collision arm of ensureColumnFree.
 		NewTableSchema[*builderTestEntity]("t").ID("id").
-			UpdatedAt("ts").DeletedAt("ts")
+			UpdatedAt("ts").ArchivedAt("ts")
 	})
 }
 
@@ -103,9 +103,9 @@ func TestExternalSchema_ScanPlanSkipsUnindexed(t *testing.T) {
 	}
 }
 
-func TestValidateModes_ArchiveWithoutDeletedAtPanics(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("t").ID("id").Field("Name", "name")
+func TestValidateModes_ArchiveWithoutArchivedAtPanics(t *testing.T) {
+	noArchived := NewTableSchema[*builderTestEntity]("t").ID("id").Field("Name", "name")
 	mustPanic(t, "ValidateModes", func() {
-		noSD.ValidateModes([]domain.EntityMode{domain.ModeArchive})
+		noArchived.ValidateModes([]domain.EntityMode{domain.ModeArchive})
 	})
 }

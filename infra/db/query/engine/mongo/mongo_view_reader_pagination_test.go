@@ -287,36 +287,36 @@ func TestBuildProjection_ExclusionProjectionStaysSingleMode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// childDeletedAtAutoIncludes — a STRICT-SUBFIELD child projection re-includes
-// the child DeletedAt column so the archived strip can see it; a WHOLE-field
+// childArchivedAtAutoIncludes — a STRICT-SUBFIELD child projection re-includes
+// the child ArchivedAt column so the archived strip can see it; a WHOLE-field
 // child projection must NOT (the object already carries the column, and adding
 // its subpath collides at Mongo, Location31249). Regression guard for the
 // ?fields=<whole child segment> 500.
 // ---------------------------------------------------------------------------
 
-func TestChildDeletedAtAutoIncludes_StrictSubfield_ReIncludesColumn(t *testing.T) {
+func TestChildArchivedAtAutoIncludes_StrictSubfield_ReIncludesColumn(t *testing.T) {
 	colProj := map[string]int{"Addresses.city": 1, "_id": 0}
-	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, true)
-	if !reflect.DeepEqual(auto, []string{"Addresses.deleted_at"}) {
-		t.Fatalf("want [Addresses.deleted_at], got %#v", auto)
+	archivedPaths := map[string]string{"Addresses": "archived_at"}
+	auto, cleanup := childArchivedAtAutoIncludes(colProj, archivedPaths, true)
+	if !reflect.DeepEqual(auto, []string{"Addresses.archived_at"}) {
+		t.Fatalf("want [Addresses.archived_at], got %#v", auto)
 	}
-	if cleanup["Addresses"] != "deleted_at" {
-		t.Fatalf("want cleanup Addresses->deleted_at, got %#v", cleanup)
+	if cleanup["Addresses"] != "archived_at" {
+		t.Fatalf("want cleanup Addresses->archived_at, got %#v", cleanup)
 	}
-	if colProj["Addresses.deleted_at"] != 1 {
+	if colProj["Addresses.archived_at"] != 1 {
 		t.Fatalf("the column must be folded into the projection: %#v", colProj)
 	}
 }
 
 // EXCLUSION mode: narrowing into a segment by DROPPING one of its subfields
-// still serves the segment's DeletedAt column, so the strip can already see it
-// and nothing is auto-included — `{addresses.ssn: 0, addresses.deleted_at: 1}`
+// still serves the segment's ArchivedAt column, so the strip can already see it
+// and nothing is auto-included — `{addresses.ssn: 0, addresses.archived_at: 1}`
 // would be the mixed projection Mongo refuses.
-func TestChildDeletedAtAutoIncludes_ExclusionMode_ColumnAlreadyServed(t *testing.T) {
+func TestChildArchivedAtAutoIncludes_ExclusionMode_ColumnAlreadyServed(t *testing.T) {
 	colProj := map[string]int{"Addresses.ssn": 0}
-	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, false)
+	archivedPaths := map[string]string{"Addresses": "archived_at"}
+	auto, cleanup := childArchivedAtAutoIncludes(colProj, archivedPaths, false)
 	if len(auto) != 0 || len(cleanup) != 0 {
 		t.Fatalf("exclusion mode must add nothing, got auto=%#v cleanup=%#v", auto, cleanup)
 	}
@@ -325,32 +325,32 @@ func TestChildDeletedAtAutoIncludes_ExclusionMode_ColumnAlreadyServed(t *testing
 	}
 }
 
-// EXCLUSION mode, the other half: an exclusion that names the DeletedAt column
+// EXCLUSION mode, the other half: an exclusion that names the ArchivedAt column
 // itself would blind the strip, so the exclusion is lifted and the column is
 // scheduled for removal from the served entries.
-func TestChildDeletedAtAutoIncludes_ExclusionMode_ExcludedColumnIsUnExcluded(t *testing.T) {
-	colProj := map[string]int{"Addresses.deleted_at": 0}
-	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, false)
-	if !reflect.DeepEqual(auto, []string{"Addresses.deleted_at"}) {
-		t.Fatalf("want [Addresses.deleted_at], got %#v", auto)
+func TestChildArchivedAtAutoIncludes_ExclusionMode_ExcludedColumnIsUnExcluded(t *testing.T) {
+	colProj := map[string]int{"Addresses.archived_at": 0}
+	archivedPaths := map[string]string{"Addresses": "archived_at"}
+	auto, cleanup := childArchivedAtAutoIncludes(colProj, archivedPaths, false)
+	if !reflect.DeepEqual(auto, []string{"Addresses.archived_at"}) {
+		t.Fatalf("want [Addresses.archived_at], got %#v", auto)
 	}
-	if cleanup["Addresses"] != "deleted_at" {
-		t.Fatalf("want cleanup Addresses->deleted_at, got %#v", cleanup)
+	if cleanup["Addresses"] != "archived_at" {
+		t.Fatalf("want cleanup Addresses->archived_at, got %#v", cleanup)
 	}
-	if _, still := colProj["Addresses.deleted_at"]; still {
+	if _, still := colProj["Addresses.archived_at"]; still {
 		t.Fatalf("the exclusion must be lifted so the strip can see the column: %#v", colProj)
 	}
 }
 
-func TestChildDeletedAtAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.T) {
+func TestChildArchivedAtAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.T) {
 	// ?fields=addresses → the whole "Addresses" segment. The stored object
-	// already carries deleted_at; re-including "Addresses.deleted_at" would make
+	// already carries archived_at; re-including "Addresses.archived_at" would make
 	// Mongo reject the projection (Location31249 "Path collision"). Nothing is
 	// added, nothing is scheduled for cleanup.
 	colProj := map[string]int{"Addresses": 1, "_id": 0}
-	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, true)
+	archivedPaths := map[string]string{"Addresses": "archived_at"}
+	auto, cleanup := childArchivedAtAutoIncludes(colProj, archivedPaths, true)
 	if len(auto) != 0 {
 		t.Fatalf("whole-field projection must add nothing, got %#v", auto)
 	}
@@ -359,10 +359,10 @@ func TestChildDeletedAtAutoIncludes_WholeField_SkipsToAvoidCollision(t *testing.
 	}
 }
 
-func TestChildDeletedAtAutoIncludes_UntouchedChild_Ignored(t *testing.T) {
+func TestChildArchivedAtAutoIncludes_UntouchedChild_Ignored(t *testing.T) {
 	colProj := map[string]int{"name": 1, "_id": 0}
-	sdPaths := map[string]string{"Addresses": "deleted_at"}
-	auto, cleanup := childDeletedAtAutoIncludes(colProj, sdPaths, true)
+	archivedPaths := map[string]string{"Addresses": "archived_at"}
+	auto, cleanup := childArchivedAtAutoIncludes(colProj, archivedPaths, true)
 	if len(auto) != 0 || len(cleanup) != 0 {
 		t.Fatalf("a child the projection does not touch must be ignored, got auto=%#v cleanup=%#v", auto, cleanup)
 	}

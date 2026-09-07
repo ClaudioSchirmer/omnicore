@@ -82,7 +82,7 @@ func applyChildJoinFields(goDoc map[string]any, e domain.Entity, schema *core.Ta
 //
 // A nil pointer field lands as a plain nil, never as a typed nil inside the any.
 // That is the document's own convention — every other NULL in it (an absent
-// composite part, a live row's deleted_at) is present-with-nil, the shape a
+// composite part, a live row's archived_at) is present-with-nil, the shape a
 // fetched NULL takes on the projection side — and a left join with no
 // counterpart is a NULL like any other. Leaking the typed nil instead would make
 // "there is no counterpart" indistinguishable from the zero value one layer up.

@@ -45,7 +45,7 @@ func TestBaseAggregateRepository_FindArchivedByID(t *testing.T) {
 
 	var id string
 	pg.Pool().QueryRow(context.Background(),
-		`INSERT INTO loader_roots (name, email, deleted_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
+		`INSERT INTO loader_roots (name, email, archived_at) VALUES ('A', 'a@x', NOW()) RETURNING id`).Scan(&id)
 
 	bar := read.NewBaseAggregateRepository[*loaderRoot](pg, func() *loaderRoot { return &loaderRoot{} })
 	bar.WithSchema(loaderRootSchema())

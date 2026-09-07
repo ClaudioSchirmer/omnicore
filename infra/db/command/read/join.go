@@ -89,7 +89,7 @@ type JoinField struct {
 // A CHILD join rides the child's own batched SELECT, on the same terms.
 //
 // Neither is gated on the archived state of the TARGET. A join answers "what is
-// on the other side of this foreign key", and a soft-deleted counterpart is
+// on the other side of this foreign key", and an archived counterpart is
 // still what the key points at — the read scope governs the roots this loader
 // returns, never the rows it reaches across into.
 type Join struct {

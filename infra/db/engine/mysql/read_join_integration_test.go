@@ -26,7 +26,7 @@ import (
 //
 // The fixture is adversarial on purpose. rj_customers and rj_carriers share a
 // column name with EACH OTHER (credito), and all three targets share one with
-// the ANCHOR (code) while carrying the framework's own deleted_at — so any
+// the ANCHOR (code) while carrying the framework's own archived_at — so any
 // reference the loader emits unqualified, on either side of the join, is
 // rejected by the server rather than merely lucky.
 
@@ -94,7 +94,7 @@ func rjLineSchema() *core.TableSchema {
 		ID("id").ParentID("rj_order_id").
 		Field("Label", "label").
 		Field("CityID", "city_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func rjOrderSchema() *core.TableSchema {
@@ -103,13 +103,13 @@ func rjOrderSchema() *core.TableSchema {
 		Field("Code", "code").
 		Field("CustomerID", "customer_id").
 		Field("CarrierID", "carrier_id").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Child(rjLineSchema())
 }
 
 // The join targets are shaped like REAL entities on purpose: each carries a
 // "code" — the very column name the anchor has — and the framework's own
-// deleted_at. A target that shares neither is the degenerate case, and a suite
+// archived_at. A target that shares neither is the degenerate case, and a suite
 // built only on it lets an unqualified anchor reference pass unnoticed until a
 // service declares a join to an ordinary entity: every read then dies on an
 // ambiguous column, the plain listing included.
@@ -117,19 +117,19 @@ func rjCustomerSchema() *core.TableSchema {
 	return core.NewTableSchema[*rjTarget]("rj_customers").ID("id").
 		Field("Nome", "nome").Field("Credito", "credito").
 		Field("OwnerID", "owner_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func rjCarrierSchema() *core.TableSchema {
 	return core.NewTableSchema[*rjTarget]("rj_carriers").ID("id").
 		Field("Nome", "codigo").Field("Credito", "credito").
 		Field("OwnerID", "owner_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func rjCitySchema() *core.TableSchema {
 	return core.NewTableSchema[*rjTarget]("rj_cities").ID("id").Field("Nome", "nome").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // rjSetup creates the fixture tables, seeds two orders — one WITH a carrier, one
@@ -151,7 +151,7 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 			code VARCHAR(64) NULL,
 			credito BIGINT NOT NULL DEFAULT 0,
 			owner_id BINARY(16) NOT NULL,
-			deleted_at DATETIME NULL
+			archived_at DATETIME NULL
 		)`,
 		`CREATE TABLE rj_carriers (
 			id BINARY(16) PRIMARY KEY,
@@ -159,13 +159,13 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 			code VARCHAR(64) NULL,
 			credito BIGINT NOT NULL DEFAULT 0,
 			owner_id BINARY(16) NOT NULL,
-			deleted_at DATETIME NULL
+			archived_at DATETIME NULL
 		)`,
 		`CREATE TABLE rj_cities (
 			id BINARY(16) PRIMARY KEY,
 			nome VARCHAR(255) NOT NULL,
 			code VARCHAR(64) NULL,
-			deleted_at DATETIME NULL
+			archived_at DATETIME NULL
 		)`,
 		`CREATE TABLE rj_orders (
 			id BINARY(16) PRIMARY KEY,
@@ -173,14 +173,14 @@ func rjSetup(t *testing.T) *read.AggregateLoader[*rjOrder] {
 			code VARCHAR(64) NOT NULL,
 			customer_id BINARY(16) NOT NULL,
 			carrier_id BINARY(16) NULL,
-			deleted_at DATETIME NULL
+			archived_at DATETIME NULL
 		)`,
 		`CREATE TABLE rj_order_lines (
 			id BINARY(16) PRIMARY KEY,
 			rj_order_id BINARY(16) NOT NULL,
 			label VARCHAR(64) NOT NULL,
 			city_id BINARY(16) NOT NULL,
-			deleted_at DATETIME NULL
+			archived_at DATETIME NULL
 		)`,
 	} {
 		if _, err := raw.ExecContext(ctx, stmt); err != nil {

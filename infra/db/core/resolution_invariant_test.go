@@ -82,7 +82,7 @@ func TestInvariant_TheReadPathResolvesThroughResolve(t *testing.T) {
 		t.Fatalf(
 			"the read path is resolving a field name through ColumnOf:\n  %s\n\n"+
 				"Use TableSchema.Resolve. ColumnOf sees only a schema's own mapped fields, so a\n"+
-				"managed slot (CreatedAt/UpdatedAt/DeletedAt), the ParentID projection, a sibling\n"+
+				"managed slot (CreatedAt/UpdatedAt/ArchivedAt), the ParentID projection, a sibling\n"+
 				"or a shared-base field resolves on one backing and is refused on the other — from\n"+
 				"the same Request DTO. Resolve also reports WHOSE row the column is on, which is\n"+
 				"what a backing that has to JOIN needs.",

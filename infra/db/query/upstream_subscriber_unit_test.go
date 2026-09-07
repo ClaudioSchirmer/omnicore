@@ -172,13 +172,13 @@ func TestProcessMessage_Archived_SoftKeep(t *testing.T) {
 	colls := happyColls()
 	s := newTestUpstream(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), ordersRootEngine())
 
-	s.processMessage(context.Background(), upstreamMsg("u1", "ARCHIVED", `{"deleted_at":"now"}`), 0)
+	s.processMessage(context.Background(), upstreamMsg("u1", "ARCHIVED", `{"archived_at":"now"}`), 0)
 
 	if len(colls["users"].updates) == 0 {
-		t.Error("ARCHIVED without DeleteOnArchive must upsert (soft) the upstream doc")
+		t.Error("ARCHIVED without DeleteOnArchive must upsert the upstream doc, not remove it")
 	}
 	if len(colls["users"].deletes) != 0 {
-		t.Error("soft archive must not delete")
+		t.Error("archive must not delete")
 	}
 }
 

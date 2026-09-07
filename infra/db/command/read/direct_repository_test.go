@@ -36,7 +36,7 @@ func directJobTable() *TableSchema {
 		ID("id").
 		Field("Status", "status").
 		Field("OwnerID", "owner_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func directOwnerTable() *TableSchema {
@@ -117,7 +117,7 @@ func TestDirectRepository_FindAllStatement(t *testing.T) {
 		Where(criteria.Eq("Status", "pending")).OrderBy("Status").Limit(10)); err != nil {
 		t.Fatalf("FindAll: %v", err)
 	}
-	want := "SELECT id, status, owner_id FROM job_queue WHERE status = $1 AND deleted_at IS NULL ORDER BY status ASC LIMIT 10"
+	want := "SELECT id, status, owner_id FROM job_queue WHERE status = $1 AND archived_at IS NULL ORDER BY status ASC LIMIT 10"
 	if got != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", got, want)
 	}
@@ -187,7 +187,7 @@ func TestDirectRepository_AggregateDSLIsTheSharedOne(t *testing.T) {
 	if err := repo.Aggregate(context.Background(), criteria.Where(criteria.Eq("Status", "x")), total); err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
-	if want := "SELECT COUNT(*) FROM job_queue WHERE status = $1 AND deleted_at IS NULL"; got != want {
+	if want := "SELECT COUNT(*) FROM job_queue WHERE status = $1 AND archived_at IS NULL"; got != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", got, want)
 	}
 	ok, err := repo.Exists(context.Background(), criteria.Where(criteria.Eq("Status", "x")))

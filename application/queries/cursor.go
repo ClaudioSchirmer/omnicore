@@ -112,7 +112,7 @@ func DecodeCursor(s string) (Cursor, error) {
 //   - filter: the Filter map (deterministic key sort at every depth)
 //   - orderBy: declaration order + field + Desc flag per entry
 //   - search: the raw `?search=` value (text-index query)
-//   - includeArchived: the DeletedAt gate flag
+//   - includeArchived: the ArchivedAt gate flag
 //
 // The empty / default context — no filter, no sort, no search, archived
 // excluded — hashes to "" so cursors issued from the canonical first page

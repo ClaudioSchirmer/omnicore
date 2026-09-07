@@ -23,7 +23,7 @@ func TestUnarchiveCommandHandler_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	// Unarchive deliberately does NOT call FindByID (archived rows are filtered
-	// by Repository.FindByID's WHERE deleted_at IS NULL convention).
+	// by Repository.FindByID's WHERE archived_at IS NULL convention).
 	if repo.findByIDCalled != 0 {
 		t.Errorf("expected FindByID NOT called, got %d", repo.findByIDCalled)
 	}

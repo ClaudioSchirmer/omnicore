@@ -14,9 +14,17 @@ import (
 
 // Digests captured from the framework BEFORE the leg_view tag existed — the
 // byte-identity anchors of TestRebuildHash_ExternalLegStreamUnchanged.
+//
+// They were re-pinned ONCE, when these fixtures renamed their physical archive
+// column. The hash
+// writes the archive COLUMN (writeSchemaShape), so the fixture's own spelling
+// moved the digest while the framework's canonical stream stayed byte-identical
+// — verified by re-running this test with the fixtures' old column and getting
+// the previous digests back. Consumers keeping their column name see NO drift
+// from the rename; only a consumer who also renames the column rebuilds.
 const (
-	externalRootEmbedRebuildHash  = "f3c854c2e3269e1bdedaea507823bddd820c9f9e08dfa7d0a0e580525eabf52b"
-	externalChildEmbedRebuildHash = "75c232ae830f9b17159d7c4c590fe3e7fe963a8e7dd7492300f17664c68c770f"
+	externalRootEmbedRebuildHash  = "a11fc905886bddb3a7cb1b972780a25d999650e8def2997eff3f66008bbfae19"
+	externalChildEmbedRebuildHash = "de6d3cfed1821991dbf7b3c94b6481aea59a21b26a46e3ea9173d4ece7ca2f8f"
 )
 
 // viewLegSource is a minimal registered source view for the leg tests. fkCol

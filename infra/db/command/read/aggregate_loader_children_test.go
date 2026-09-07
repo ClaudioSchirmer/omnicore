@@ -38,9 +38,9 @@ func newCovAggLoader(eng RelationalEngine, schema *TableSchema) *AggregateLoader
 // when the schema declares children.
 func TestHydrateChildren_FlatEntityReturnsNil(t *testing.T) {
 	schema := NewTableSchema[*aggLoaderTestEntity]("agg_loader").
-		ID("id").DeletedAt("deleted_at").
+		ID("id").ArchivedAt("archived_at").
 		Child(NewTableSchema[covChild]("cov_children").
-			ID("id").ParentID("agg_loader_id").Field("Label", "label").DeletedAt("deleted_at"))
+			ID("id").ParentID("agg_loader_id").Field("Label", "label").ArchivedAt("archived_at"))
 	l := NewAggregateLoader[*aggLoaderTestEntity](fakeEngine(nil), newAggLoaderTestEntity).
 		WithSchema(schema)
 

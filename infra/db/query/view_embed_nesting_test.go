@@ -31,12 +31,12 @@ type nestSale struct {
 type nestCustomer struct{ ID string }
 
 // productWithLines is the SOURCE view's schema: a root with one native child
-// collection that carries its own DeletedAt lifecycle.
+// collection that carries its own ArchivedAt lifecycle.
 func productWithLines() *core.TableSchema {
-	return core.NewTableSchema[nestProduct]("products").ID("id").DeletedAt("deleted_at").
+	return core.NewTableSchema[nestProduct]("products").ID("id").ArchivedAt("archived_at").
 		Field("Name", "name").
 		Child(core.NewTableSchema[nestLine]("product_lines").ID("id").ParentID("products_id").
-			DeletedAt("deleted_at").Field("Label", "label"))
+			ArchivedAt("archived_at").Field("Label", "label"))
 }
 
 // lineSeg is the derived doc segment of the source view's child collection —
@@ -50,7 +50,7 @@ func productsWithLinesView() *ViewDefinition {
 // salesEmbeddingProducts materializes that source 1:1 inside "sales".
 func salesEmbeddingProducts() *ViewDefinition {
 	return View("sales").Version(1).
-		Schema(core.NewTableSchema[nestSale]("sales").ID("id").DeletedAt("deleted_at").
+		Schema(core.NewTableSchema[nestSale]("sales").ID("id").ArchivedAt("archived_at").
 			Field("ProductID", "product_id")).
 		Embed(JoinView(productsWithLinesView(), "Product", "product")).On("product_id").
 		Indexes(Index("product_id"))
@@ -137,8 +137,8 @@ func TestNestedViewLeg_StripsArchivedChildrenInsideSegment(t *testing.T) {
 		"product": map[string]any{
 			"_id": "p1",
 			lineSeg: []any{
-				map[string]any{"_id": "l1", "label": "live", "deleted_at": nil},
-				map[string]any{"_id": "l2", "label": "gone", "deleted_at": "2026-01-01T00:00:00Z"},
+				map[string]any{"_id": "l1", "label": "live", "archived_at": nil},
+				map[string]any{"_id": "l2", "label": "gone", "archived_at": "2026-01-01T00:00:00Z"},
 			},
 		},
 	}
@@ -153,7 +153,7 @@ func TestNestedViewLeg_StripsArchivedChildrenInsideSegment(t *testing.T) {
 // children — the array-in-array shape. Every element's child collection strips.
 func TestNestedViewLeg_StripsInsideEmbedManyElements(t *testing.T) {
 	dashboard := View("dashboard").Version(1).
-		Schema(core.NewTableSchema[nestCustomer]("customers").ID("id").DeletedAt("deleted_at")).
+		Schema(core.NewTableSchema[nestCustomer]("customers").ID("id").ArchivedAt("archived_at")).
 		EmbedMany(JoinView(productsWithLinesView(), "Products", "products")).On("owner_id")
 	doc := map[string]any{
 		"_id": "c1",
@@ -161,8 +161,8 @@ func TestNestedViewLeg_StripsInsideEmbedManyElements(t *testing.T) {
 			map[string]any{
 				"_id": "p1",
 				lineSeg: []any{
-					map[string]any{"_id": "l1", "deleted_at": nil},
-					map[string]any{"_id": "l2", "deleted_at": "2026-01-01T00:00:00Z"},
+					map[string]any{"_id": "l1", "archived_at": nil},
+					map[string]any{"_id": "l2", "archived_at": "2026-01-01T00:00:00Z"},
 				},
 			},
 		},
@@ -176,12 +176,12 @@ func TestNestedViewLeg_StripsInsideEmbedManyElements(t *testing.T) {
 }
 
 // A narrowed projection (?fields=) can only strip what the projected entries
-// still carry, so the reader auto-includes each lifecycle segment's DeletedAt
+// still carry, so the reader auto-includes each lifecycle segment's ArchivedAt
 // column — including the ones nested inside a materialized view segment.
-func TestNestedViewLeg_ChildDeletedAtPathsReachIntoSegment(t *testing.T) {
-	paths := salesEmbeddingProducts().BuildViewNode().ChildDeletedAtPaths()
-	if got, ok := paths["product."+lineSeg]; !ok || got != "deleted_at" {
-		t.Fatalf("the nested child's DeletedAt path must be auto-included, got %v", paths)
+func TestNestedViewLeg_ChildArchivedAtPathsReachIntoSegment(t *testing.T) {
+	paths := salesEmbeddingProducts().BuildViewNode().ChildArchivedAtPaths()
+	if got, ok := paths["product."+lineSeg]; !ok || got != "archived_at" {
+		t.Fatalf("the nested child's ArchivedAt path must be auto-included, got %v", paths)
 	}
 }
 
@@ -191,10 +191,10 @@ func TestExternalLeg_SegmentContentsStayUntouched(t *testing.T) {
 	v := View("orders").Version(1).Schema(composerRootSchema()).
 		Embed(extLeg("upstream_users", "Buyer", "buyer")).On("buyer_id")
 	node := v.BuildViewNode()
-	if len(node.ChildDeletedAtPaths()) != 0 {
-		t.Fatalf("an external mirror segment must contribute no strip paths, got %v", node.ChildDeletedAtPaths())
+	if len(node.ChildArchivedAtPaths()) != 0 {
+		t.Fatalf("an external mirror segment must contribute no strip paths, got %v", node.ChildArchivedAtPaths())
 	}
-	doc := map[string]any{"_id": "o1", "buyer": map[string]any{"_id": "u1", "deleted_at": "2026-01-01T00:00:00Z"}}
+	doc := map[string]any{"_id": "o1", "buyer": map[string]any{"_id": "u1", "archived_at": "2026-01-01T00:00:00Z"}}
 	node.StripArchivedChildren(doc)
 	if doc["buyer"] == nil {
 		t.Fatal("an archived mirror document must stay embedded — its lifecycle is the upstream's")

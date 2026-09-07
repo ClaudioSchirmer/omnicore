@@ -515,7 +515,7 @@ func computeChanges(prev, cur map[string]any, labelsByField map[string]string) [
 // the Go type name of the AggregateValueObject (e.g. "Address"); iteration
 // order over typeNames is sorted so the audit line is deterministic.
 //
-// stamps carries the soft verbs' cascade instants — what the archive wrote, what
+// stamps carries the archive verbs' cascade instants — what the archive wrote, what
 // the unarchive undoes, one for the root's own children and one for a shared
 // base's native ones (see CascadeStamps) — and it is what makes the trail
 // describe the rows that actually moved. Zero (and ignored) on every other verb.
@@ -615,7 +615,7 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 // optional prior index. The second return is false when the item is not
 // observable for the given verb (e.g. Removed-status items on an Archive
 // cascade — those are already gone, the cascade doesn't apply to them; or, on
-// the soft verbs, a row the cascade's own predicate did not reach — cascade is
+// the archive verbs, a row the cascade's own predicate did not reach — cascade is
 // the instant that predicate turns on, see cascadeTouches).
 //
 // SQL-grounded vocabulary: every child op echoes the SQL fingerprint of the
@@ -626,15 +626,15 @@ func oldChildrenIndex(schema *TableSchema, src domain.Entity) map[string]map[str
 //	-----------+-----------------------------------------------------------
 //	inserted   | INSERT INTO addresses (...)
 //	updated    | UPDATE addresses SET col=val, updated_at=$now WHERE id=$1
-//	archived   | UPDATE addresses SET deleted_at=$now WHERE id=$1
-//	unarchived | UPDATE addresses SET deleted_at=NULL WHERE id=$1
+//	archived   | UPDATE addresses SET archived_at=$now WHERE id=$1
+//	unarchived | UPDATE addresses SET archived_at=NULL WHERE id=$1
 //	deleted    | DELETE FROM addresses (via ParentID ON DELETE CASCADE on root delete)
 //
 // Per-verb dispatch:
 //
 //	insert     : every item → inserted + snapshot (Constructor/Added both)
 //	update     : Added → inserted+snapshot; Changed → updated+changes;
-//	             Removed → archived+snapshot (SQL is UPDATE deleted_at=NOW;
+//	             Removed → archived+snapshot (SQL is UPDATE archived_at=NOW;
 //	             the row stays in the DB, recoverable via unarchive);
 //	             Constructor → skipped (untouched item, no SQL)
 //	archive    : items the cascade stamped (non-Removed, still active) →
@@ -678,10 +678,10 @@ func childEventOf(
 			return audit.ChildEvent{ID: id, Op: "updated", Changes: computeChanges(prevFields(), currentFields(), childLabelKeys(child))}, true
 		case domain.OpDelete:
 			// The child's schema decided the effect (removeChild): a child that
-			// declares DeletedAt was archived, one that declares none had its row
+			// declares ArchivedAt was archived, one that declares none had its row
 			// deleted. The snapshot of the previous state is the same either way —
 			// it is what keeps the history of a physically removed row.
-			if _, ok := child.DeletedAtColumn(); ok {
+			if _, ok := child.ArchivedAtColumn(); ok {
 				return audit.ChildEvent{ID: id, Op: "archived", Snapshot: prevFields()}, true
 			}
 			return audit.ChildEvent{ID: id, Op: "deleted", Snapshot: prevFields()}, true
@@ -689,12 +689,12 @@ func childEventOf(
 			return audit.ChildEvent{}, false
 		}
 	case "archive":
-		if it.CurrentStatus == domain.StatusRemoved || !cascadeTouches(true, loadedDeletedAt(it.Item), cascade) {
+		if it.CurrentStatus == domain.StatusRemoved || !cascadeTouches(true, loadedArchivedAt(it.Item), cascade) {
 			return audit.ChildEvent{}, false
 		}
 		return audit.ChildEvent{ID: id, Op: "archived", Snapshot: currentFields()}, true
 	case "unarchive":
-		if it.CurrentStatus == domain.StatusRemoved || !cascadeTouches(false, loadedDeletedAt(it.Item), cascade) {
+		if it.CurrentStatus == domain.StatusRemoved || !cascadeTouches(false, loadedArchivedAt(it.Item), cascade) {
 			return audit.ChildEvent{}, false
 		}
 		return audit.ChildEvent{ID: id, Op: "unarchived", Snapshot: currentFields()}, true

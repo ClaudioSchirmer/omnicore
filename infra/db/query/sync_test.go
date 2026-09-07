@@ -232,7 +232,7 @@ func TestEnsureTopics_TransportErrorPropagates(t *testing.T) {
 // that did NOT opt in to DeleteOnArchive: DELETED removes the document (hard
 // delete is unconditional), every other event type — including ARCHIVED —
 // hits the upsert path so the Mongo projection mirrors PostgreSQL
-// symmetrically (archived rows survive with deleted_at populated; consumers
+// symmetrically (archived rows survive with archived_at populated; consumers
 // read them via IncludeArchived=true, e.g. ?archived=true). UNARCHIVED and
 // INSERTED/UPDATED stay on the upsert branch as before.
 func TestShouldDeleteFromView_DefaultKeep(t *testing.T) {

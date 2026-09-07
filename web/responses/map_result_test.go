@@ -207,7 +207,7 @@ func TestMap_ResultFieldsAbsentFromResponse_Dropped(t *testing.T) {
 	// does not declare never reaches the wire.
 	type Result struct {
 		ID        string
-		DeletedAt *string
+		ArchivedAt *string
 		Internal  string
 	}
 	type R struct {

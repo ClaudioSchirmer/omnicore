@@ -73,8 +73,8 @@ func TestApplyWindow_OffsetRequiresOrder(t *testing.T) {
 }
 
 func TestQuoteIdentifiers(t *testing.T) {
-	got := quoteIdentifiers([]string{"id", "name", "deleted_at"}, testPGDialect{})
-	want := []string{"id", "name", "deleted_at"}
+	got := quoteIdentifiers([]string{"id", "name", "archived_at"}, testPGDialect{})
+	want := []string{"id", "name", "archived_at"}
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d", len(got), len(want))
 	}

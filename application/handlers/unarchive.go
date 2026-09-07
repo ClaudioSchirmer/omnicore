@@ -11,7 +11,7 @@ import (
 
 // UnarchiveCommandHandler is asymmetric to the other Auto handlers in the
 // load path (not in the wire-up): instead of calling FindByID (which filters
-// WHERE deleted_at IS NULL), it hydrates the archived aggregate via
+// WHERE archived_at IS NULL), it hydrates the archived aggregate via
 // persistence.LoadArchivedForWrite — the request-ctx-bound ScopedArchivedReader
 // when the repo provides it (so the load honors http.requestTimeoutSeconds),
 // else the ctx-less domain.ArchivedFinder. The archived hydration is needed so
@@ -19,7 +19,7 @@ import (
 //
 // A Repository providing NEITHER capability is a wiring error and fails loudly.
 // The handler used to fall back to an empty Repo.New() + SetID sample, which
-// works only while the verb touches nothing but deleted_at: that sample carries
+// works only while the verb touches nothing but archived_at: that sample carries
 // the entity's ZERO value in every business field and no revision, so it can
 // neither be written back nor guarded. infra.BaseAggregateRepository implements
 // both capabilities — a hand-rolled repository must implement one.

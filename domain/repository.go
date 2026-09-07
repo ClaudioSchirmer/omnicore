@@ -43,7 +43,7 @@ type Repository[TEntity any] interface {
 }
 
 // ArchivedFinder is an optional capability: Repositories that can load
-// an aggregate INCLUDING archived rows (deleted_at IS NOT NULL) implement it.
+// an aggregate INCLUDING archived rows (archived_at IS NOT NULL) implement it.
 //
 // Used by UnarchiveCommandHandler to hydrate the archived aggregate before
 // dispatch — this ensures the cascade SQL in aggregate_persister sees

@@ -117,7 +117,7 @@ func flatSchema() *core.TableSchema {
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Phone", "phone").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -238,7 +238,7 @@ func setup(t *testing.T) (*Engine, *sql.DB) {
 			email VARCHAR(255) NOT NULL,
 			phone VARCHAR(32) NULL,
 			revision BIGINT NOT NULL DEFAULT 0,
-			deleted_at DATETIME NULL,
+			archived_at DATETIME NULL,
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL,
 			UNIQUE KEY uniq_email (email)
@@ -347,12 +347,12 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err := eng.Archive(ctx, arch, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	var deletedAt sql.NullTime
-	if err := raw.QueryRow(`SELECT deleted_at FROM flat_persons`).Scan(&deletedAt); err != nil {
+	var archivedAt sql.NullTime
+	if err := raw.QueryRow(`SELECT archived_at FROM flat_persons`).Scan(&archivedAt); err != nil {
 		t.Fatalf("select after archive: %v", err)
 	}
-	if !deletedAt.Valid {
-		t.Fatal("archive did not set deleted_at")
+	if !archivedAt.Valid {
+		t.Fatal("archive did not set archived_at")
 	}
 	if c := outboxCount(t, raw, "ARCHIVED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 ARCHIVED outbox row, got %d", c)
@@ -368,11 +368,11 @@ func TestMySQLEngine_WritePath(t *testing.T) {
 	if err := eng.Unarchive(ctx, un, flatSchema(), core.WriteHook{}); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	if err := raw.QueryRow(`SELECT deleted_at FROM flat_persons`).Scan(&deletedAt); err != nil {
+	if err := raw.QueryRow(`SELECT archived_at FROM flat_persons`).Scan(&archivedAt); err != nil {
 		t.Fatalf("select after unarchive: %v", err)
 	}
-	if deletedAt.Valid {
-		t.Fatal("unarchive did not clear deleted_at")
+	if archivedAt.Valid {
+		t.Fatal("unarchive did not clear archived_at")
 	}
 	if c := outboxCount(t, raw, "UNARCHIVED", id.Value()); c != 1 {
 		t.Fatalf("expected 1 UNARCHIVED outbox row, got %d", c)
@@ -578,10 +578,10 @@ func (tag) BuildRules(string, domain.Service, *domain.Rules) {}
 func acctSchema() *core.TableSchema {
 	return core.NewTableSchema[*acct]("accts").
 		ID("id").Field("Name", "name").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(core.NewTableSchema[tag]("acct_tags").
 			ID("id").ParentID("acct_id").Field("Label", "label").
-			DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at"))
+			ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at"))
 }
 
 func setupAgg(t *testing.T) (*Engine, *sql.DB) {
@@ -596,12 +596,12 @@ func setupAgg(t *testing.T) (*Engine, *sql.DB) {
 	for _, stmt := range []string{
 		`CREATE TABLE accts (
 			id BINARY(16) PRIMARY KEY, name VARCHAR(255) NOT NULL,
-			deleted_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL )`,
+			archived_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL )`,
 		`CREATE TABLE acct_tags (
 			id BINARY(16) PRIMARY KEY,
 			acct_id BINARY(16) NOT NULL,
 			label VARCHAR(255) NOT NULL,
-			deleted_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
+			archived_at DATETIME NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
 			CONSTRAINT fk_acct FOREIGN KEY (acct_id) REFERENCES accts(id) ON DELETE CASCADE )`,
 		`CREATE TABLE outbox (
 			id BINARY(16) PRIMARY KEY, aggregate_type VARCHAR(100) NOT NULL,
@@ -665,7 +665,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 		t.Fatalf("expected 2 loaded children, got %d", len(kids))
 	}
 
-	// Archive cascades to the children (deleted_at set on every active child).
+	// Archive cascades to the children (archived_at set on every active child).
 	arch, err := domain.GetArchivable(got, nil, "GetArchivable")
 	if err != nil {
 		t.Fatalf("GetArchivable: %v", err)
@@ -674,7 +674,7 @@ func TestMySQLEngine_AggregateRoundTrip(t *testing.T) {
 		t.Fatalf("Archive aggregate: %v", err)
 	}
 	var activeChildren int
-	if err := raw.QueryRow(`SELECT COUNT(*) FROM acct_tags WHERE deleted_at IS NULL`).Scan(&activeChildren); err != nil {
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM acct_tags WHERE archived_at IS NULL`).Scan(&activeChildren); err != nil {
 		t.Fatalf("count active children: %v", err)
 	}
 	if activeChildren != 0 {

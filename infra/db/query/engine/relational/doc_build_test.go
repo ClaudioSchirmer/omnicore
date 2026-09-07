@@ -47,14 +47,14 @@ func partSchema() *core.TableSchema {
 		ID("id").
 		ParentID("kit_id").
 		Field("Label", "label").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func kitSchema() *core.TableSchema {
 	return core.NewTableSchema[*kitEnt]("kits").
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Revision("revision").
@@ -118,11 +118,11 @@ func TestBuildDocument_ManagedColumnsAndTheRevisionWatermark(t *testing.T) {
 	if _, physical := doc["revision"]; physical {
 		t.Error("the root revision must NOT also sit under its physical column")
 	}
-	// A live row's DeletedAt is a PRESENT nil — the shape a fetched NULL has, so
+	// A live row's ArchivedAt is a PRESENT nil — the shape a fetched NULL has, so
 	// the archived gate reads the two paths identically.
-	v, present := doc["deleted_at"]
+	v, present := doc["archived_at"]
 	if !present || v != nil {
-		t.Errorf("a live row's deleted_at must be present and nil, got (%#v, %v)", v, present)
+		t.Errorf("a live row's archived_at must be present and nil, got (%#v, %v)", v, present)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestBuildDocument_UndeclaredManagedColumnsAreAbsent(t *testing.T) {
 	e.SetID(domain.NewID("77777777-7777-7777-7777-777777777777"))
 
 	doc := BuildDocument(guardSchema("gadgets"), e)
-	for _, col := range []string{"created_at", "updated_at", "deleted_at", query.DocRevisionField} {
+	for _, col := range []string{"created_at", "updated_at", "archived_at", query.DocRevisionField} {
 		if _, has := doc[col]; has {
 			t.Errorf("%q must be absent when the schema declares none", col)
 		}

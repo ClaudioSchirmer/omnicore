@@ -163,20 +163,20 @@ func TestSoftWriteAggregate_StepFailures(t *testing.T) {
 	})
 }
 
-// An aggregate root schema without DeletedAt cannot archive — the guard fires
+// An aggregate root schema without ArchivedAt cannot archive — the guard fires
 // before the TX opens.
-func TestSoftWriteAggregate_MissingDeletedAtIsError(t *testing.T) {
+func TestSoftWriteAggregate_MissingArchivedAtIsError(t *testing.T) {
 	schema := NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").Field("Name", "name").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			ID("id").ParentID("agg_w_id").Field("Label", "label").DeletedAt("deleted_at"))
+			ID("id").ParentID("agg_w_id").Field("Label", "label").ArchivedAt("archived_at"))
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	a, _ := domain.GetArchivable(root, nil, "GetArchivable")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Archive(newBuilderCtx(), a, schema, WriteHook{}); err == nil {
-		t.Fatal("expected the missing-DeletedAt guard to error")
+		t.Fatal("expected the missing-ArchivedAt guard to error")
 	}
 	if len(tx.execs) != 0 {
 		t.Errorf("no statement may run, got %v", tx.execs)
@@ -184,11 +184,11 @@ func TestSoftWriteAggregate_MissingDeletedAtIsError(t *testing.T) {
 }
 
 // The cascade skips (a) loaded item types with no declared child schema and
-// (b) declared children without a DeletedAt column — root-only soft write.
+// (b) declared children without an ArchivedAt column — root-only archive write.
 func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 	t.Run("undeclaredChildType", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			ID("id").Field("Name", "name").DeletedAt("deleted_at")
+			ID("id").Field("Name", "name").ArchivedAt("archived_at")
 		root := &aggWriteRoot{Name: "r"}
 		root.SetID(domain.NewID(uuid.NewString()))
 		root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
@@ -198,14 +198,14 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 		if err := be.Archive(newBuilderCtx(), a, schema, firingHook); err != nil {
 			t.Fatalf("Archive: %v", err)
 		}
-		// root soft-write + outbox + audit only — the undeclared child type is skipped.
+		// root archive-write + outbox + audit only — the undeclared child type is skipped.
 		if len(tx.execs) != 3 {
 			t.Errorf("expected 3 statements, got %d: %v", len(tx.execs), tx.execs)
 		}
 	})
-	t.Run("childWithoutDeletedAt", func(t *testing.T) {
+	t.Run("childWithoutArchivedAt", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
-			ID("id").Field("Name", "name").DeletedAt("deleted_at").
+			ID("id").Field("Name", "name").ArchivedAt("archived_at").
 			Child(NewTableSchema[aggWriteChild]("agg_w_children").
 				ID("id").ParentID("agg_w_id").Field("Label", "label"))
 		root := &aggWriteRoot{Name: "r"}
@@ -227,10 +227,10 @@ func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
 // the child's own sibling — hard delete must clear all four tables in order.
 func aggDeleteSchema() *TableSchema {
 	return NewTableSchema[*aggWriteRoot]("agg_w").
-		ID("id").Field("Name", "name").DeletedAt("deleted_at").
+		ID("id").Field("Name", "name").ArchivedAt("archived_at").
 		Sibling(NewSiblingSchema[*aggWriteRoot]("agg_w_sib").Field("Name", "name")).
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
-			ID("id").ParentID("agg_w_id").Field("Label", "label").DeletedAt("deleted_at").
+			ID("id").ParentID("agg_w_id").Field("Label", "label").ArchivedAt("archived_at").
 			Sibling(NewSiblingSchema[aggWriteChild]("agg_w_child_sib").Field("Label", "label")))
 }
 
@@ -742,7 +742,7 @@ func TestUpdateWithBase_StepFailures(t *testing.T) {
 
 // ─── SharedBase lifecycle cascade (archivable base with native child) ───
 
-// cascadeRoleSchema: a role over a base that HAS DeletedAt and one native
+// cascadeRoleSchema: a role over a base that HAS ArchivedAt and one native
 // child — the shape whose lifecycle converges on archive/unarchive.
 type cascadeBaseChild struct {
 	domain.Managed
@@ -757,13 +757,13 @@ func cascadeRoleSchema() *TableSchema {
 		Field("Name", "name").
 		Field("Document", "document").
 		NaturalID("document").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Child(NewTableSchema[cascadeBaseChild]("pessoa_filhos").
-			ID("id").ParentID("pessoa_id").Field("Note", "note").DeletedAt("deleted_at"))
+			ID("id").ParentID("pessoa_id").Field("Note", "note").ArchivedAt("archived_at"))
 	return NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 }
 

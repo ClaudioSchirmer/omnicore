@@ -49,7 +49,7 @@ func (e *eventEmittingEntity) BuildRules(_ string, _ domain.Service, _ *domain.R
 var eventEmittingSchema = core.NewTableSchema[*eventEmittingEntity]("event_entities").
 	ID("id").
 	Field("Name", "name").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 

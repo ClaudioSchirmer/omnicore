@@ -42,11 +42,11 @@ func sbEmailSchema() *core.TableSchema {
 		Field("Name", "name").
 		Field("Email", "email").
 		NaturalID("document").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return core.NewTableSchema[*sbEmailStudent]("sb2_students").
 		ID("id").
 		Field("Enroll", "enrollment").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "id") // shared-ID: sb2_students.id == sb2_persons.id
@@ -63,7 +63,7 @@ func sbEmailSetup(t *testing.T) (*Engine, *sql.DB) {
 			name VARCHAR(255) NOT NULL,
 			email VARCHAR(255) NOT NULL,
 			revision BIGINT NOT NULL DEFAULT 0,
-			deleted_at DATETIME NULL,
+			archived_at DATETIME NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			CONSTRAINT sb2_persons_document_key UNIQUE (document),
@@ -72,7 +72,7 @@ func sbEmailSetup(t *testing.T) (*Engine, *sql.DB) {
 		`CREATE TABLE sb2_students (
 			id BINARY(16) PRIMARY KEY,
 			enrollment VARCHAR(64) NOT NULL,
-			deleted_at DATETIME NULL,
+			archived_at DATETIME NULL,
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL,
 			CONSTRAINT fk_sb2_student_person FOREIGN KEY (id) REFERENCES sb2_persons (id)

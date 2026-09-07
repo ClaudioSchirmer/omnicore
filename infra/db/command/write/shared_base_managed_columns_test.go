@@ -26,7 +26,7 @@ func roleTestSchemaManagedBase() *TableSchema {
 	return NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "id")
 }
 

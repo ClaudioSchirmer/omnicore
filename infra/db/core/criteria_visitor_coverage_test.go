@@ -50,10 +50,10 @@ func TestPgVisitor_NotNullWithValuesErrors(t *testing.T) {
 	}
 }
 
-func TestChildScopeFilter_NoDeletedAt(t *testing.T) {
-	off := NewExternalSchema("t") // no DeletedAt
+func TestChildScopeFilter_NoArchivedAt(t *testing.T) {
+	off := NewExternalSchema("t") // no ArchivedAt
 	if got := ChildScopeFilter(criteria.ScopeActive, off, testPGDialect{}, ""); got != "" {
-		t.Errorf("no-DeletedAt child must yield no filter, got %q", got)
+		t.Errorf("no-ArchivedAt child must yield no filter, got %q", got)
 	}
 }
 

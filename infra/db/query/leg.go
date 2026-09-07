@@ -38,7 +38,7 @@ type Leg struct {
 // Fields declares the materialization allowlist of a JoinView leg: only the
 // listed source fields enter the embedded segment. Entries are GO NAMES — the
 // vocabulary every layer above infra speaks: business fields by their declared
-// Go name ("UserName"), managed slots by their FIXED Go names ("DeletedAt",
+// Go name ("UserName"), managed slots by their FIXED Go names ("ArchivedAt",
 // "CreatedAt", "ParentID"), and a top-level segment of the source document (a
 // child collection, an embed, a role) by its Go segment name, which admits or
 // cuts that segment WHOLE. The framework always materializes the identity and
@@ -46,15 +46,15 @@ type Leg struct {
 // leg-side join column and a declared OrderBy column — none of them is ever
 // declared here.
 //
-// THE ARCHIVE SWITCH. Including or omitting "DeletedAt" is the per-consumer
+// THE ARCHIVE SWITCH. Including or omitting "ArchivedAt" is the per-consumer
 // archive-behavior switch of the segment:
 //
-//   - "DeletedAt" listed → the segment follows the source's archive: hidden on
+//   - "ArchivedAt" listed → the segment follows the source's archive: hidden on
 //     default reads (1:1 → null, 1:N → the element leaves the array), revealed
 //     by ?includeArchived=true — the same rule every uncut segment applies (a
-//     whole-document segment always carries the source's DeletedAt column),
+//     whole-document segment always carries the source's ArchivedAt column),
 //     here chosen explicitly;
-//   - "DeletedAt" omitted → the segment has NO archived rule, by declaration:
+//   - "ArchivedAt" omitted → the segment has NO archived rule, by declaration:
 //     the archived source keeps its data in the embedding document forever and
 //     keeps receiving updates through the ripple.
 //

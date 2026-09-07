@@ -66,7 +66,7 @@ func TestArchiveRole_NoBaseTransition_StillBumpsBaseRevision(t *testing.T) {
 		t.Errorf("a role archive must advance the base revision even without a base transition, got %v", tx.execs)
 	}
 	for _, s := range tx.execs {
-		if strings.HasPrefix(s, "UPDATE pessoa SET deleted_at") {
+		if strings.HasPrefix(s, "UPDATE pessoa SET archived_at") {
 			t.Errorf("an active sibling must keep the base un-archived, got %q", s)
 		}
 	}
@@ -83,7 +83,7 @@ func TestUnarchiveRole_BaseAlreadyActive_StillBumpsBaseRevision(t *testing.T) {
 	be := newFlatBE(&recBeginner{tx: tx})
 	// The sibling veto reads rows too — remaining:1 would veto. Script per-SQL:
 	tx.queryFn = func(sql string, _ []any) (Rows, error) {
-		if strings.Contains(sql, "deleted_at IS NULL") && strings.Contains(sql, "FROM aluno") {
+		if strings.Contains(sql, "archived_at IS NULL") && strings.Contains(sql, "FROM aluno") {
 			return &fakeRows{remaining: 0}, nil // no active sibling → no veto
 		}
 		return &fakeRows{remaining: 1, scan: func([]any) error { return nil }}, nil

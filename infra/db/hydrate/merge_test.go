@@ -109,12 +109,12 @@ func TestMergeSharedBase_RoleManagedColumnsWin(t *testing.T) {
 	h := New(newScripted(map[string][]map[string]any{
 		"persons": {{
 			"id": "p1", "name": "ana", "revision": int64(3),
-			"deleted_at": nil, "created_at": "BASE-TIME",
+			"archived_at": nil, "created_at": "BASE-TIME",
 		}},
 	}))
 	doc := Document{
 		"id": "s1", "person_id": "p1", "grade": "A",
-		"deleted_at": "ROLE-ARCHIVED", "created_at": "ROLE-TIME",
+		"archived_at": "ROLE-ARCHIVED", "created_at": "ROLE-TIME",
 	}
 	if err := h.MergeSharedBase(context.Background(), doc, roleSchema(), true); err != nil {
 		t.Fatalf("MergeSharedBase: %v", err)
@@ -122,8 +122,8 @@ func TestMergeSharedBase_RoleManagedColumnsWin(t *testing.T) {
 	if doc["name"] != "ana" {
 		t.Errorf("the base's business field must land flat, got %#v", doc["name"])
 	}
-	if doc["deleted_at"] != "ROLE-ARCHIVED" {
-		t.Errorf("the base's NULL deleted_at must NOT hide the role's archival, got %#v", doc["deleted_at"])
+	if doc["archived_at"] != "ROLE-ARCHIVED" {
+		t.Errorf("the base's NULL archived_at must NOT hide the role's archival, got %#v", doc["archived_at"])
 	}
 	if doc["created_at"] != "ROLE-TIME" {
 		t.Errorf("the role's own timestamps must win, got %#v", doc["created_at"])

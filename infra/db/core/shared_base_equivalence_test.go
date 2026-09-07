@@ -18,8 +18,8 @@ func equivBase() *TableSchema {
 		Field("Name", "name").
 		Field("Document", "document").
 		NaturalID("document").
-		DeletedAt("deleted_at").
-		Child(NewTableSchema[equivAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street").DeletedAt("deleted_at"))
+		ArchivedAt("archived_at").
+		Child(NewTableSchema[equivAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street").ArchivedAt("archived_at"))
 }
 
 type equivAddr struct {
@@ -67,8 +67,8 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 	})
 	t.Run("archive", func(t *testing.T) {
 		b := equivBase()
-		b.deletedAt = "removed_at"
-		mustPanicWith(t, "DeletedAt", func() { AssertSharedBaseEquivalent(equivBase(), b) })
+		b.archivedAt = "removed_at"
+		mustPanicWith(t, "ArchivedAt", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 	t.Run("field count", func(t *testing.T) {
 		b := equivBase().Field("Extra", "extra")
@@ -91,8 +91,8 @@ func TestAssertSharedBaseEquivalent_DivergenceAxes(t *testing.T) {
 			Field("Name", "name").
 			Field("Document", "document").
 			NaturalID("document").
-			DeletedAt("deleted_at").
-			Child(NewTableSchema[equivAddr]("enderecos").ID("id").ParentID("pessoa_id").Field("Street", "street").DeletedAt("deleted_at"))
+			ArchivedAt("archived_at").
+			Child(NewTableSchema[equivAddr]("enderecos").ID("id").ParentID("pessoa_id").Field("Street", "street").ArchivedAt("archived_at"))
 		mustPanicWith(t, "native child equivAddr", func() { AssertSharedBaseEquivalent(equivBase(), b) })
 	})
 }

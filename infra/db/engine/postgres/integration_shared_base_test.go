@@ -39,11 +39,11 @@ func sbStudentSchema() *core.TableSchema {
 		Field("Document", "document").
 		Field("Name", "name").
 		NaturalID("document").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return core.NewTableSchema[*sbStudent]("sb_students").
 		ID("id").
 		Field("Enrollment", "enrollment").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "person_id")
@@ -56,7 +56,7 @@ func createSharedBaseTables(t *testing.T, pg *Postgres) {
 		document TEXT NOT NULL UNIQUE,
 		name TEXT NOT NULL,
 		revision BIGINT NOT NULL DEFAULT 0,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -64,14 +64,14 @@ func createSharedBaseTables(t *testing.T, pg *Postgres) {
 		id UUID PRIMARY KEY,
 		person_id UUID NOT NULL REFERENCES sb_persons (id),
 		enrollment TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	// The documented active-only uniqueness contract: archived remnants may
 	// accumulate, but at most one ACTIVE row per identity.
 	createTable(t, pg, `CREATE UNIQUE INDEX sb_students_one_active
-		ON sb_students (person_id) WHERE deleted_at IS NULL`)
+		ON sb_students (person_id) WHERE archived_at IS NULL`)
 }
 
 func sbInsert(t *testing.T, pg *Postgres, doc, enrollment, actionName string) string {
@@ -231,7 +231,7 @@ func TestPostgres_SharedBaseSeparateFK_NaturalKeyGuard(t *testing.T) {
 	if _, err := pg.Update(testCtx(), upd2, sbStudentSchema(), noHook); err != nil {
 		t.Fatalf("a same-key update must pass the guard, got %v", err)
 	}
-	if enr := sbScalarString(t, pg, `SELECT enrollment FROM sb_students WHERE deleted_at IS NULL`); enr != "M1-NEW" {
+	if enr := sbScalarString(t, pg, `SELECT enrollment FROM sb_students WHERE archived_at IS NULL`); enr != "M1-NEW" {
 		t.Errorf("the legit update must persist, enrollment = %q", enr)
 	}
 }

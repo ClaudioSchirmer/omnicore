@@ -60,7 +60,7 @@ var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_en
 	ID("id").
 	Field("Name", "name").
 	Field("Email", "email").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 

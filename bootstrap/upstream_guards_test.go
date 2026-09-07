@@ -271,35 +271,35 @@ func TestValidateUpstreamSubscriptions_AccumulatesAllViolations(t *testing.T) {
 	}
 }
 
-// extEmbedSD is extEmbed with a DeletedAt column declared on the external
-// schema — the §8.5 guard reads it via Source().SchemaDef().DeletedAtColumn().
-func extEmbedSD(collection, deletedAt, as string) *query.Leg {
+// extEmbedArchived is extEmbed with an ArchivedAt column declared on the external
+// schema — the §8.5 guard reads it via Source().SchemaDef().ArchivedAtColumn().
+func extEmbedArchived(collection, archivedAt, as string) *query.Leg {
 	return query.JoinUpstream(
-		core.NewExternalSchema(collection).ID("id").DeletedAt(deletedAt), as, collection)
+		core.NewExternalSchema(collection).ID("id").ArchivedAt(archivedAt), as, collection)
 }
 
-func TestGuardDeletedAtFilter_AbortsWhenFilterDropsDeletedAt(t *testing.T) {
+func TestGuardArchivedAtFilter_AbortsWhenFilterDropsArchivedAt(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Fields: []string{"id", "name"}},
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
+			Embed(extEmbedArchived("users", "archived_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	violations, warnings := guardSchemaFieldsSurvival(subs, views, nil)
-	if len(violations) != 1 || !strings.Contains(violations[0], "OMITS the DeletedAt") ||
-		!strings.Contains(violations[0], "deleted_at") {
-		t.Errorf("expected one §8.5 abort naming deleted_at, got %v", violations)
+	if len(violations) != 1 || !strings.Contains(violations[0], "OMITS the ArchivedAt") ||
+		!strings.Contains(violations[0], "archived_at") {
+		t.Errorf("expected one §8.5 abort naming archived_at, got %v", violations)
 	}
 	if len(warnings) != 0 {
-		t.Errorf("expected no warnings when the DeletedAt column is declared, got %v", warnings)
+		t.Errorf("expected no warnings when the ArchivedAt column is declared, got %v", warnings)
 	}
 }
 
 // The generalized branch of §8.5: EVERY declared external-schema column must
 // survive the subscription's `fields:` allowlist — a business column the
-// allowlist drops is a dead declaration (fatal), not only the DeletedAt case.
+// allowlist drops is a dead declaration (fatal), not only the ArchivedAt case.
 func TestGuardSchemaFieldsSurvival_AbortsOnDeadBusinessColumn(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Fields: []string{"id", "name"}},
@@ -323,28 +323,28 @@ func TestGuardSchemaFieldsSurvival_AbortsOnDeadBusinessColumn(t *testing.T) {
 	}
 }
 
-func TestGuardDeletedAtFilter_OKWhenFilterKeepsDeletedAt(t *testing.T) {
+func TestGuardArchivedAtFilter_OKWhenFilterKeepsArchivedAt(t *testing.T) {
 	subs := []UpstreamSubscription{
-		{Topic: "users.events", Collection: "users", Fields: []string{"id", "name", "deleted_at"}},
+		{Topic: "users.events", Collection: "users", Fields: []string{"id", "name", "archived_at"}},
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
+			Embed(extEmbedArchived("users", "archived_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	violations, warnings := guardSchemaFieldsSurvival(subs, views, nil)
 	if len(violations) != 0 || len(warnings) != 0 {
-		t.Errorf("a filter keeping the DeletedAt column must be clean, got violations=%v warnings=%v", violations, warnings)
+		t.Errorf("a filter keeping the ArchivedAt column must be clean, got violations=%v warnings=%v", violations, warnings)
 	}
 }
 
-func TestGuardDeletedAtFilter_OKWhenFilterEmpty(t *testing.T) {
+func TestGuardArchivedAtFilter_OKWhenFilterEmpty(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users"}, // nil filter mirrors the full payload
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
+			Embed(extEmbedArchived("users", "archived_at", "Buyer")).On("buyer_id").
 			Version(1),
 	}
 	violations, warnings := guardSchemaFieldsSurvival(subs, views, nil)
@@ -353,18 +353,18 @@ func TestGuardDeletedAtFilter_OKWhenFilterEmpty(t *testing.T) {
 	}
 }
 
-func TestGuardDeletedAtFilter_WarnsWhenNoDeletedAtDeclared(t *testing.T) {
+func TestGuardArchivedAtFilter_WarnsWhenNoArchivedAtDeclared(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Fields: []string{"id", "name"}},
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no DeletedAt declared
+			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no ArchivedAt declared
 			Version(1),
 	}
 	violations, warnings := guardSchemaFieldsSurvival(subs, views, nil)
 	if len(violations) != 0 {
-		t.Errorf("a missing DeletedAt declaration must not abort the boot, got %v", violations)
+		t.Errorf("a missing ArchivedAt declaration must not abort the boot, got %v", violations)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "no view embedding") ||
 		!strings.Contains(warnings[0], "Advisory") {
@@ -372,7 +372,7 @@ func TestGuardDeletedAtFilter_WarnsWhenNoDeletedAtDeclared(t *testing.T) {
 	}
 }
 
-func TestGuardDeletedAtFilter_SkipsCollectionEmbeddedByNoView(t *testing.T) {
+func TestGuardArchivedAtFilter_SkipsCollectionEmbeddedByNoView(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users", Fields: []string{"id"}},
 	}
@@ -383,28 +383,28 @@ func TestGuardDeletedAtFilter_SkipsCollectionEmbeddedByNoView(t *testing.T) {
 	}
 }
 
-func TestValidateUpstreamSubscriptions_SurfacesDeletedAtAbort(t *testing.T) {
+func TestValidateUpstreamSubscriptions_SurfacesArchivedAtAbort(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users",
 			OnUpstreamDelete: UpstreamDeleteCascade,
 			StartFrom:        StartFromLatest,
-			Fields:           []string{"id", "name"}}, // drops deleted_at → §8.5 abort
+			Fields:           []string{"id", "name"}}, // drops archived_at → §8.5 abort
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbedSD("users", "deleted_at", "Buyer")).On("buyer_id").
+			Embed(extEmbedArchived("users", "archived_at", "Buyer")).On("buyer_id").
 			Indexes(query.Index("buyer_id")). // satisfy §8.1 so only §8.5 fires
 			Version(1),
 	}
 	// nil logger must be safe on the warn path.
 	err := validateUpstreamSubscriptions(subs, views, nil, profileDev, nil)
-	if err == nil || !strings.Contains(err.Error(), "OMITS the DeletedAt") ||
-		!strings.Contains(err.Error(), "deleted_at") {
-		t.Errorf("expected §8.5 abort naming deleted_at through the aggregator, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "OMITS the ArchivedAt") ||
+		!strings.Contains(err.Error(), "archived_at") {
+		t.Errorf("expected §8.5 abort naming archived_at through the aggregator, got %v", err)
 	}
 }
 
-func TestValidateUpstreamSubscriptions_LogsDeletedAtAdvisory(t *testing.T) {
+func TestValidateUpstreamSubscriptions_LogsArchivedAtAdvisory(t *testing.T) {
 	subs := []UpstreamSubscription{
 		{Topic: "users.events", Collection: "users",
 			OnUpstreamDelete: UpstreamDeleteCascade,
@@ -413,7 +413,7 @@ func TestValidateUpstreamSubscriptions_LogsDeletedAtAdvisory(t *testing.T) {
 	}
 	views := []*query.ViewDefinition{
 		query.View("orders").
-			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no DeletedAt → advisory only
+			Embed(extEmbed("users", "Buyer")).On("buyer_id"). // no ArchivedAt → advisory only
 			Indexes(query.Index("buyer_id")).
 			Version(1),
 	}
@@ -448,44 +448,44 @@ func TestBlockedEmbedSource(t *testing.T) {
 }
 
 // §8.5 through the LINK family. A mirror has two kinds of consumer and both
-// apply its DeletedAt column: a view that EMBEDS it (materialized gate) and a
+// apply its ArchivedAt column: a view that EMBEDS it (materialized gate) and a
 // ComposedView that LINKS it (per-request gate, applied by the composed reader
 // on the leg's own schema). A filter that drops the column breaks them
 // identically — archived upstream rows look active forever — so the guard must
 // see both. It used to walk embeds only, which let the same silent-archive
 // misconfiguration in through the composed door.
-func TestGuardDeletedAtFilter_CoversComposedLegs(t *testing.T) {
+func TestGuardArchivedAtFilter_CoversComposedLegs(t *testing.T) {
 	legSchema := core.NewExternalSchema("upstream_products").ID("id").
-		Field("Name", "name").DeletedAt("deleted_at")
+		Field("Name", "name").ArchivedAt("archived_at")
 	primary := query.View("orders").Version(1).Schema(core.NewExternalSchema("orders").ID("id"))
 	composed := query.ComposedView("orders_full").
 		Primary(primary).
 		Link(query.JoinUpstream(legSchema, "Product", "product")).On("product_id")
 	subs := []UpstreamSubscription{{
 		Topic: "products.events", Collection: "upstream_products",
-		Fields: []string{"id", "name"}, // deleted_at dropped — the silent-archive bug
+		Fields: []string{"id", "name"}, // archived_at dropped — the silent-archive bug
 	}}
 
 	// No view embeds it: before the fix this returned nothing at all.
 	violations, _ := guardSchemaFieldsSurvival(subs, nil, []*query.ComposedViewDefinition{composed})
-	if len(violations) != 1 || !strings.Contains(violations[0], "deleted_at") {
-		t.Fatalf("a composed leg whose filter drops the declared DeletedAt column must abort boot, got %v", violations)
+	if len(violations) != 1 || !strings.Contains(violations[0], "archived_at") {
+		t.Fatalf("a composed leg whose filter drops the declared ArchivedAt column must abort boot, got %v", violations)
 	}
 
 	// Keeping the column in the filter is the fix — and it must pass.
-	subs[0].Fields = []string{"id", "name", "deleted_at"}
+	subs[0].Fields = []string{"id", "name", "archived_at"}
 	violations, _ = guardSchemaFieldsSurvival(subs, nil, []*query.ComposedViewDefinition{composed})
 	if len(violations) != 0 {
-		t.Fatalf("a filter that keeps the DeletedAt column must pass, got %v", violations)
+		t.Fatalf("a filter that keeps the ArchivedAt column must pass, got %v", violations)
 	}
 
-	// A mirror nobody declares a DeletedAt for stays an ADVISORY, not an abort —
+	// A mirror nobody declares an ArchivedAt for stays an ADVISORY, not an abort —
 	// the framework cannot know whether that upstream archives at all.
 	plain := query.ComposedView("orders_plain").Primary(primary).
 		Link(query.JoinUpstream(core.NewExternalSchema("upstream_plain").ID("id"), "P", "p")).On("p_id")
 	subs2 := []UpstreamSubscription{{Topic: "t", Collection: "upstream_plain", Fields: []string{"id"}}}
 	violations, warnings := guardSchemaFieldsSurvival(subs2, nil, []*query.ComposedViewDefinition{plain})
 	if len(violations) != 0 || len(warnings) != 1 {
-		t.Fatalf("an undeclared DeletedAt must warn, never abort: violations=%v warnings=%v", violations, warnings)
+		t.Fatalf("an undeclared ArchivedAt must warn, never abort: violations=%v warnings=%v", violations, warnings)
 	}
 }

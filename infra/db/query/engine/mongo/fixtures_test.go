@@ -28,7 +28,7 @@ var builderTestSchema = core.NewTableSchema[*builderTestEntity]("builder_test_en
 	ID("id").
 	Field("Name", "name").
 	Field("Email", "email").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 
@@ -39,7 +39,7 @@ type embedFixture struct {
 }
 
 func rootSchema(table string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).ID("id").DeletedAt("deleted_at")
+	return core.NewTableSchema[embedFixture](table).ID("id").ArchivedAt("archived_at")
 }
 
 // labeledSchema / otherSchema are the rootSchema variants for the composer
@@ -47,11 +47,11 @@ func rootSchema(table string) *core.TableSchema {
 // back (the plain rootSchema declares none). Kept separate so tables without
 // these columns keep using the minimal rootSchema.
 func labeledSchema(table string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).ID("id").Field("Label", "label").DeletedAt("deleted_at")
+	return core.NewTableSchema[embedFixture](table).ID("id").Field("Label", "label").ArchivedAt("archived_at")
 }
 
 func otherSchema(table string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).ID("id").Field("Other", "other").DeletedAt("deleted_at")
+	return core.NewTableSchema[embedFixture](table).ID("id").Field("Other", "other").ArchivedAt("archived_at")
 }
 
 // derivedName bridges the adapter tests to the index-name derivation that now

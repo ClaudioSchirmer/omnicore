@@ -56,7 +56,7 @@ func TestReader_FollowsActiveSlotPointer(t *testing.T) {
 
 	// Write into the ACTIVE slot; the bare collection stays empty.
 	if err := m.Upsert(ctx, resolver.Active("slotview"), "id1",
-		map[string]any{"_id": "id1", "name": "x", "deleted_at": nil}); err != nil {
+		map[string]any{"_id": "id1", "name": "x", "archived_at": nil}); err != nil {
 		t.Fatalf("Upsert into active slot: %v", err)
 	}
 

@@ -28,7 +28,7 @@ var redactedTestSchema = NewTableSchema[*builderTestEntity]("builder_test_entiti
 		core.InSync(core.RedactKeepLast(5)),
 		core.InAudit(core.RedactWith("***")),
 	).
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 

@@ -46,16 +46,16 @@ func sbvBase() *core.TableSchema {
 		Field("Document", "document").
 		Field("Name", "name").
 		NaturalID("document").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Child(core.NewTableSchema[sbvAddr]("sbv_addresses").
-			ID("id").ParentID("person_id").Field("Street", "street").DeletedAt("deleted_at"))
+			ID("id").ParentID("person_id").Field("Street", "street").ArchivedAt("archived_at"))
 }
 
 func sbvUserSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvUser]("sbv_users").
 		ID("id").
 		Field("UserName", "user_name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Sibling(core.NewSiblingSchema[*sbvUser]("sbv_user_configs").
 						Field("EmailNotification", "email_notification")).
 		SharedBase(sbvBase(), "id") // shared-ID model
@@ -65,9 +65,9 @@ func sbvEmployeeSchema() *core.TableSchema {
 	return core.NewTableSchema[*sbvEmployee]("sbv_employees").
 		ID("id").
 		Field("EmployeeNumber", "employee_number").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Child(core.NewTableSchema[sbvDependent]("sbv_dependents").
-							ID("id").ParentID("employee_id").Field("Name", "dep_name").DeletedAt("deleted_at")).
+							ID("id").ParentID("employee_id").Field("Name", "dep_name").ArchivedAt("archived_at")).
 		SharedBase(sbvBase(), "person_id") // separate-ParentID model
 }
 
@@ -134,7 +134,7 @@ func TestSharedBaseView_BuilderPanics(t *testing.T) {
 	})
 	assertPanics(t, "divergent base declaration", func() {
 		divergent := core.NewSharedBaseSchema("sbv_persons").Revision("revision").ID("id").
-			Field("Document", "document").NaturalID("document") // missing Name + DeletedAt
+			Field("Document", "document").NaturalID("document") // missing Name + ArchivedAt
 		role := core.NewTableSchema[*sbvUser]("sbv_users").ID("id").
 			Field("UserName", "user_name").SharedBase(divergent, "id")
 		SharedBaseView("x").Schema(sbvBase()).Role(role)
@@ -184,7 +184,7 @@ func TestValidateViewSchemas_PlainViewRejectsSharedBaseSchema(t *testing.T) {
 		t.Fatalf("a plain View rooted at a shared-base schema must be rejected, got %v", err)
 	}
 	// The positive control: a plain View rooted at a regular TableSchema passes.
-	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").ID("id").DeletedAt("deleted_at")).Version(1)
+	ok := View("plain").Schema(core.NewTableSchema[embedFixture]("users").ID("id").ArchivedAt("archived_at")).Version(1)
 	if err := ValidateViewSchemas([]*ViewDefinition{ok}); err != nil {
 		t.Fatalf("a plain View over a regular TableSchema must pass, got %v", err)
 	}
@@ -296,9 +296,9 @@ func TestComposeBaseRooted_RemnantWhenNoActive(t *testing.T) {
 	eng := sbvComposerEngine(t, map[string][]map[string]any{
 		"FROM sbv_persons": mapsFromColsData([]string{"id", "document", "name"}, [][]any{{"p1", "D1", "Ana"}}),
 		"FROM sbv_users":   mapsFromColsData([]string{"id", "user_name"}, [][]any{{"p1", "ana"}}),
-		// Employees: the active probe (deleted_at IS NULL) misses; the remnant
+		// Employees: the active probe (archived_at IS NULL) misses; the remnant
 		// probe (IS NOT NULL ORDER BY ... DESC) hits the latest archived row.
-		"IS NOT NULL ORDER BY": mapsFromColsData([]string{"id", "person_id", "employee_number", "deleted_at"},
+		"IS NOT NULL ORDER BY": mapsFromColsData([]string{"id", "person_id", "employee_number", "archived_at"},
 			[][]any{{"e_old", "p1", "M0", "2026-01-01"}}),
 	}, &calls, &args)
 
@@ -310,16 +310,16 @@ func TestComposeBaseRooted_RemnantWhenNoActive(t *testing.T) {
 	if !ok {
 		t.Fatalf("archived remnant must compose (keep mode), got %#v", doc["sbvEmployee"])
 	}
-	if emp["deleted_at"] == nil {
-		t.Error("the remnant segment must carry its DeletedAt timestamp (the SQL mirror)")
+	if emp["archived_at"] == nil {
+		t.Error("the remnant segment must carry its ArchivedAt timestamp (the SQL mirror)")
 	}
 	// The remnant probe must be deterministic: newest archived first.
 	found := false
 	for _, sql := range calls {
 		if strings.Contains(sql, "IS NOT NULL ORDER BY") {
 			found = true
-			if !strings.Contains(sql, "ORDER BY deleted_at DESC") {
-				t.Errorf("remnant pick must order by deleted_at DESC, got %q", sql)
+			if !strings.Contains(sql, "ORDER BY archived_at DESC") {
+				t.Errorf("remnant pick must order by archived_at DESC, got %q", sql)
 			}
 		}
 	}
@@ -462,8 +462,8 @@ func TestSharedBaseViewNode_StripArchivedRole(t *testing.T) {
 	n := sbvView().BuildViewNode()
 	doc := map[string]any{
 		"name":        "Ana",
-		"sbvUser":     map[string]any{"id": "p1", "user_name": "ana", "deleted_at": "2026-01-01"},
-		"sbvEmployee": map[string]any{"id": "e9", "employee_number": "M1", "deleted_at": nil},
+		"sbvUser":     map[string]any{"id": "p1", "user_name": "ana", "archived_at": "2026-01-01"},
+		"sbvEmployee": map[string]any{"id": "e9", "employee_number": "M1", "archived_at": nil},
 	}
 	n.StripArchivedChildren(doc)
 	if doc["sbvUser"] != nil {
@@ -481,7 +481,7 @@ func TestSharedBaseViewNode_StripRecursesIntoRoleChildren(t *testing.T) {
 			"id": "e9",
 			sbvDepSeg: []any{
 				map[string]any{"id": "d1", "dep_name": "Rita"},
-				map[string]any{"id": "d2", "dep_name": "Old", "deleted_at": "2026-01-01"},
+				map[string]any{"id": "d2", "dep_name": "Old", "archived_at": "2026-01-01"},
 			},
 		},
 	}
@@ -493,17 +493,17 @@ func TestSharedBaseViewNode_StripRecursesIntoRoleChildren(t *testing.T) {
 	}
 }
 
-func TestSharedBaseViewNode_ChildDeletedAtPaths(t *testing.T) {
-	paths := sbvView().BuildViewNode().ChildDeletedAtPaths()
+func TestSharedBaseViewNode_ChildArchivedAtPaths(t *testing.T) {
+	paths := sbvView().BuildViewNode().ChildArchivedAtPaths()
 	want := map[string]string{
-		sbvAddrSeg:                 "deleted_at",
-		"sbvUser":                  "deleted_at",
-		"sbvEmployee":              "deleted_at",
-		"sbvEmployee." + sbvDepSeg: "deleted_at",
+		sbvAddrSeg:                 "archived_at",
+		"sbvUser":                  "archived_at",
+		"sbvEmployee":              "archived_at",
+		"sbvEmployee." + sbvDepSeg: "archived_at",
 	}
 	for k, v := range want {
 		if paths[k] != v {
-			t.Errorf("ChildDeletedAtPaths[%q] = %q, want %q (all: %v)", k, paths[k], v, paths)
+			t.Errorf("ChildArchivedAtPaths[%q] = %q, want %q (all: %v)", k, paths[k], v, paths)
 		}
 	}
 }
@@ -529,9 +529,9 @@ func TestSharedBaseView_RebuildHashMovesWithRoles(t *testing.T) {
 func TestSharedBaseView_ComposedColumnSet(t *testing.T) {
 	set := sbvView().composedColumnSet()
 	for _, want := range []string{
-		"name", "document", "deleted_at",
+		"name", "document", "archived_at",
 		sbvAddrSeg, sbvAddrSeg + ".street",
-		"sbvUser", "sbvUser.user_name", "sbvUser.email_notification", "sbvUser.deleted_at",
+		"sbvUser", "sbvUser.user_name", "sbvUser.email_notification", "sbvUser.archived_at",
 		"sbvEmployee.employee_number",
 		"sbvEmployee." + sbvDepSeg + ".dep_name",
 	} {
@@ -559,9 +559,9 @@ func TestComposedColumnSet_OwnChildrenWalk(t *testing.T) {
 	}
 }
 
-// --- coverage: no-DeletedAt role + error propagation -------------------------
+// --- coverage: no-ArchivedAt role + error propagation -------------------------
 
-// sbvBadge is a role WITHOUT DeletedAt: hard delete is delete, so a single
+// sbvBadge is a role WITHOUT ArchivedAt: hard delete is delete, so a single
 // ParentID fetch decides the segment.
 type sbvBadge struct {
 	Name     string
@@ -576,7 +576,7 @@ func sbvBadgeSchema() *core.TableSchema {
 		SharedBase(sbvBase(), "person_id")
 }
 
-func TestComposeBaseRooted_RoleWithoutDeletedAt(t *testing.T) {
+func TestComposeBaseRooted_RoleWithoutArchivedAt(t *testing.T) {
 	var calls []string
 	var args [][]any
 	eng := sbvComposerEngine(t, map[string][]map[string]any{
@@ -591,11 +591,11 @@ func TestComposeBaseRooted_RoleWithoutDeletedAt(t *testing.T) {
 	}
 	badge, ok := doc["sbvBadge"].(Document)
 	if !ok || badge["code"] != "C7" {
-		t.Fatalf("a no-DeletedAt role must compose from the single ParentID fetch, got %#v", doc["sbvBadge"])
+		t.Fatalf("a no-ArchivedAt role must compose from the single ParentID fetch, got %#v", doc["sbvBadge"])
 	}
 	for _, sql := range calls {
-		if strings.Contains(sql, "FROM sbv_badges") && strings.Contains(sql, "deleted_at") {
-			t.Errorf("a no-DeletedAt role fetch must carry no archive predicate, got %q", sql)
+		if strings.Contains(sql, "FROM sbv_badges") && strings.Contains(sql, "archived_at") {
+			t.Errorf("a no-ArchivedAt role fetch must carry no archive predicate, got %q", sql)
 		}
 	}
 }
@@ -636,16 +636,16 @@ func TestComposeBaseRooted_ErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestSharedBaseViewNode_NoDeletedAtRole(t *testing.T) {
+func TestSharedBaseViewNode_NoArchivedAtRole(t *testing.T) {
 	view := SharedBaseView("v").Schema(sbvBase()).Role(sbvBadgeSchema()).Version(1)
 	n := view.BuildViewNode()
-	// ChildDeletedAtPaths: the badge role has no DeletedAt, so no path for it
+	// ChildArchivedAtPaths: the badge role has no ArchivedAt, so no path for it
 	// (the base-child path stays).
-	paths := n.ChildDeletedAtPaths()
+	paths := n.ChildArchivedAtPaths()
 	if _, has := paths["sbvBadge"]; has {
-		t.Errorf("a no-DeletedAt role must contribute no strip path, got %v", paths)
+		t.Errorf("a no-ArchivedAt role must contribute no strip path, got %v", paths)
 	}
-	if paths[sbvAddrSeg] != "deleted_at" {
+	if paths[sbvAddrSeg] != "archived_at" {
 		t.Errorf("base-child strip path must stay, got %v", paths)
 	}
 	// StripArchivedChildren: the badge segment survives untouched (no lifecycle),
@@ -653,42 +653,42 @@ func TestSharedBaseViewNode_NoDeletedAtRole(t *testing.T) {
 	doc := map[string]any{"sbvBadge": map[string]any{"id": "b1", "code": "C7"}}
 	n.StripArchivedChildren(doc)
 	if badge, ok := doc["sbvBadge"].(map[string]any); !ok || badge["code"] != "C7" {
-		t.Errorf("a no-DeletedAt role segment must survive the strip, got %#v", doc["sbvBadge"])
+		t.Errorf("a no-ArchivedAt role segment must survive the strip, got %#v", doc["sbvBadge"])
 	}
 }
 
 // Defensive branches: the schema-less node, nil doc, explicit embeds (not
-// lifecycle-carrying) and a DeletedAt-less child are all no-ops for the
+// lifecycle-carrying) and an ArchivedAt-less child are all no-ops for the
 // strip/paths pair.
 func TestViewNode_StripAndPathsDefensiveBranches(t *testing.T) {
 	empty := &ViewNode{}
-	if paths := empty.ChildDeletedAtPaths(); paths != nil {
+	if paths := empty.ChildArchivedAtPaths(); paths != nil {
 		t.Errorf("schema-less node must yield nil paths, got %v", paths)
 	}
 	empty.StripArchivedChildren(map[string]any{"x": 1})  // no panic
 	sbvView().BuildViewNode().StripArchivedChildren(nil) // nil doc no-op
 
 	// A view with an explicit external embed (no lifecycle) and a
-	// DeletedAt-less own child: neither contributes a strip path, and the
+	// ArchivedAt-less own child: neither contributes a strip path, and the
 	// strip leaves both segments untouched.
 	schema := core.NewTableSchema[*sbvEmployee]("se_emps").
 		ID("id").
 		Field("EmployeeNumber", "employee_number").
 		Child(core.NewTableSchema[sbvDependent]("se_deps").
-			ID("id").ParentID("emp_id").Field("Name", "dep_name")) // no DeletedAt
+			ID("id").ParentID("emp_id").Field("Name", "dep_name")) // no ArchivedAt
 	v := View("se").Version(1).Schema(schema).
 		EmbedMany(JoinUpstream(core.NewExternalSchema("se_ext").ID("id"), "Mirror", "mirror")).On("emp_id")
 	n := v.BuildViewNode()
-	if paths := n.ChildDeletedAtPaths(); len(paths) != 0 {
+	if paths := n.ChildArchivedAtPaths(); len(paths) != 0 {
 		t.Errorf("no lifecycle segments here — paths must be empty, got %v", paths)
 	}
 	doc := map[string]any{
 		sbvDepSeg: []any{map[string]any{"id": "d1", "dep_name": "Rita"}},
-		"mirror":  []any{map[string]any{"id": "m1", "deleted_at": "2026-01-01"}},
+		"mirror":  []any{map[string]any{"id": "m1", "archived_at": "2026-01-01"}},
 	}
 	n.StripArchivedChildren(doc)
 	if deps, _ := doc[sbvDepSeg].([]any); len(deps) != 1 {
-		t.Errorf("a DeletedAt-less child collection must not strip, got %#v", doc[sbvDepSeg])
+		t.Errorf("an ArchivedAt-less child collection must not strip, got %#v", doc[sbvDepSeg])
 	}
 	if mirror, _ := doc["mirror"].([]any); len(mirror) != 1 {
 		t.Errorf("an explicit embed must never strip (upstream lifecycle), got %#v", doc["mirror"])

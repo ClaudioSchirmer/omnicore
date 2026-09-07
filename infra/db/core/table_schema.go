@@ -41,7 +41,7 @@ type TableSchema struct {
 	byGo   map[string]schemaField
 	byCol  map[string]schemaField
 
-	deletedAt string // "" = disabled
+	archivedAt string // "" = disabled
 	createdAt string // "" = disabled (not stamped on insert)
 	updatedAt string // "" = disabled (not stamped on insert/update)
 
@@ -95,9 +95,9 @@ type TableSchema struct {
 	// referencingRoleLinks is, on a SHARED BASE, the set of roles that reference
 	// it — each a pointer to the role schema + the ParentID column it links through
 	// (populated as each role calls .SharedBase — the instance IS the cross-schema
-	// registry). The role's DeletedAt column is read LAZILY from the schema
+	// registry). The role's ArchivedAt column is read LAZILY from the schema
 	// pointer (via ReferencingRoles), so it is correct regardless of whether
-	// .DeletedAt was declared before or after .SharedBase. The refcount delete +
+	// .ArchivedAt was declared before or after .SharedBase. The refcount delete +
 	// CDC fan-out + lifecycle convergence enumerate it.
 	referencingRoleLinks []roleLink
 }
@@ -218,7 +218,7 @@ func NewTableSchema[T any](table string) *TableSchema {
 // its owner: a private secondary table that shares the owner's primary key (1:1)
 // and carries a disjoint subset of T's fields. Like NewTableSchema[T] it
 // validates every Field against T, but it declares NO primary key (it borrows
-// the owner's), NO foreign key, and NO DeletedAt — the owner controls identity
+// the owner's), NO foreign key, and NO ArchivedAt — the owner controls identity
 // and lifecycle. Attach it with
 // owner.Sibling(NewSiblingSchema[T](table).Field(...)).
 func NewSiblingSchema[T any](table string) *TableSchema {
@@ -245,7 +245,7 @@ func NewSiblingSchema[T any](table string) *TableSchema {
 // are the ones the aggregate path uses.
 //
 // What it declares like any other schema: ID (mandatory — identity stays
-// domain.ID as everywhere else), Field, and optionally DeletedAt / CreatedAt /
+// domain.ID as everywhere else), Field, and optionally ArchivedAt / CreatedAt /
 // UpdatedAt. What it must NOT declare — each panics at declaration, where the
 // mistake was written:
 //
@@ -344,8 +344,8 @@ func exportedFieldIndex(t reflect.Type, goName string) int {
 
 // ensureColumnFree panics when column is already claimed by the ID, a mapped
 // field, or another managed column — enforcing the bijection over the full
-// physical column set (ID + every Field + DeletedAt/created/updated)
-// regardless of the order ID/Field/DeletedAt/CreatedAt/UpdatedAt are declared.
+// physical column set (ID + every Field + ArchivedAt/created/updated)
+// regardless of the order ID/Field/ArchivedAt/CreatedAt/UpdatedAt are declared.
 // `self` names the slot being (re)assigned so reassigning it to the same column
 // is not flagged as a self-collision. Field() runs its own equivalent check at
 // declaration time; this covers every managed setter + ID so a collision is a
@@ -366,8 +366,8 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 	if _, dup := s.byCol[column]; dup {
 		collide("a mapped field")
 	}
-	if self != "DeletedAt" && column == s.deletedAt {
-		collide("DeletedAt")
+	if self != "ArchivedAt" && column == s.archivedAt {
+		collide("ArchivedAt")
 	}
 	if self != "CreatedAt" && column == s.createdAt {
 		collide("CreatedAt")
@@ -384,7 +384,7 @@ func (s *TableSchema) ensureColumnFree(column, self string) {
 // ensureColumnFree deliberately skips a slot's OWN current value (so an
 // idempotent same-column re-set is allowed) — which is exactly what lets a
 // DIFFERENT column overwrite the slot unnoticed. Every single-column slot (ID,
-// ParentID, DeletedAt, CreatedAt, UpdatedAt, Revision, NaturalID) is declared once.
+// ParentID, ArchivedAt, CreatedAt, UpdatedAt, Revision, NaturalID) is declared once.
 func (s *TableSchema) mustNotRedeclare(current, name, newCol string) {
 	if current != "" {
 		panic(fmt.Sprintf(
@@ -887,7 +887,7 @@ func (s *TableSchema) declareField(goName, column string, spec redactedFieldSpec
 	}
 	s.mustClaimNames(goName, column, "field")
 	// A redacted field may occupy any column a plain Field may — the framework's
-	// own slots (ID, ParentID, Revision, DeletedAt, CreatedAt, UpdatedAt) are
+	// own slots (ID, ParentID, Revision, ArchivedAt, CreatedAt, UpdatedAt) are
 	// already refused for ANY field, in both declaration orders. The natural key
 	// is the single exception that needs its own check, because it is required to
 	// be a mapped field and therefore passes the claim above.
@@ -931,7 +931,7 @@ func (s *TableSchema) mustClaimNames(goName, column, what string) {
 		panic(fmt.Sprintf("infra.TableSchema(%s): column %q claimed by more than one field — the map must be a bijection", s.table, column))
 	}
 	mustNotReservedColumn(s.table, column)
-	if column == s.idColumn || column == s.deletedAt || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
+	if column == s.idColumn || column == s.archivedAt || column == s.createdAt || column == s.updatedAt || column == s.revisionCol {
 		panic(fmt.Sprintf("infra.TableSchema(%s): %s column %q collides with a ID/managed column", s.table, what, column))
 	}
 	// The aggregate-child ParentID is OWNED by the write cascade: insertChild sets it to
@@ -979,21 +979,21 @@ func (s *TableSchema) appendField(fd schemaField) {
 	s.byCol[fd.column] = fd
 }
 
-// DeletedAt enables the DeletedAt predicate on col (read scope-gate +
-// archive/unarchive SQL). Omitting it disables DeletedAt: Archive/Unarchive
+// ArchivedAt enables the ArchivedAt predicate on col (read scope-gate +
+// archive/unarchive SQL). Omitting it disables ArchivedAt: Archive/Unarchive
 // are unavailable and the read gate is never applied.
-func (s *TableSchema) DeletedAt(col string) *TableSchema {
+func (s *TableSchema) ArchivedAt(col string) *TableSchema {
 	if s.secondary {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): a sibling declares NO DeletedAt — it has no lifecycle of its own; "+
-				"the owner controls archive/delete for the whole 1:1 row. Drop this DeletedAt(%q) call.",
+			"infra.TableSchema(%s): a sibling declares NO ArchivedAt — it has no lifecycle of its own; "+
+				"the owner controls archive/delete for the whole 1:1 row. Drop this ArchivedAt(%q) call.",
 			s.table, col,
 		))
 	}
-	s.mustNotRedeclare(s.deletedAt, "DeletedAt", col)
+	s.mustNotRedeclare(s.archivedAt, "ArchivedAt", col)
 	mustNotReservedColumn(s.table, col)
-	s.ensureColumnFree(col, "DeletedAt")
-	s.deletedAt = col
+	s.ensureColumnFree(col, "ArchivedAt")
+	s.archivedAt = col
 	return s
 }
 
@@ -1142,7 +1142,7 @@ func (s *TableSchema) Child(child *TableSchema) *TableSchema {
 // private secondary table over the SAME Go type that shares this node's primary
 // key (1:1) and carries a disjoint subset of the entity's fields. Width is
 // unlimited (call it repeatedly); a sibling does not nest, declares no
-// ParentID/ID/DeletedAt, and owns no children — the owner controls identity and
+// ParentID/ID/ArchivedAt, and owns no children — the owner controls identity and
 // lifecycle. The column/field partition (no overlap with the owner or another
 // sibling) is checked at WithSchema via ValidateSiblings (order-independent).
 func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
@@ -1187,9 +1187,9 @@ func (s *TableSchema) Sibling(sib *TableSchema) *TableSchema {
 			"infra.TableSchema(%s): sibling %q must not declare ID — it borrows the owner's primary key "+
 				"(the shared 1:1 key).", s.table, sib.table))
 	}
-	if sib.deletedAt != "" {
+	if sib.archivedAt != "" {
 		panic(fmt.Sprintf(
-			"infra.TableSchema(%s): sibling %q must not declare DeletedAt — a sibling has no lifecycle of "+
+			"infra.TableSchema(%s): sibling %q must not declare ArchivedAt — a sibling has no lifecycle of "+
 				"its own; the owner controls archive/delete.", s.table, sib.table))
 	}
 	if sib.createdAt != "" || sib.updatedAt != "" {
@@ -1289,7 +1289,7 @@ func (s *TableSchema) WireFieldOf(column string) string {
 
 // goNameForRead returns the logical Go field name for a physical column on the
 // read path, including the managed columns under fixed logical names
-// (created_at → "CreatedAt", updated_at → "UpdatedAt", DeletedAt → "DeletedAt")
+// (created_at → "CreatedAt", updated_at → "UpdatedAt", ArchivedAt → "ArchivedAt")
 // so a view can project them to the wire without a domain Go field. Returns
 // ok=false for a column the schema does not own (e.g. _id, foreign keys).
 func (s *TableSchema) goNameForRead(column string) (string, bool) {
@@ -1305,9 +1305,9 @@ func (s *TableSchema) goNameForRead(column string) (string, bool) {
 		if s.updatedAt != "" {
 			return "UpdatedAt", true
 		}
-	case s.deletedAt:
-		if s.deletedAt != "" {
-			return "DeletedAt", true
+	case s.archivedAt:
+		if s.archivedAt != "" {
+			return "ArchivedAt", true
 		}
 	}
 	// The foreign key is exposed read-only under the fixed logical name "ParentID" (the
@@ -1385,7 +1385,7 @@ type ResolvedField struct {
 //
 // The surface, in order: the schema's own mapped fields and the id (ColumnOf);
 // the three managed slots under their fixed logical names (CreatedAt,
-// UpdatedAt, DeletedAt), which is how every layer above infra addresses them;
+// UpdatedAt, ArchivedAt), which is how every layer above infra addresses them;
 // the read-only ParentID projection; then the 1:1 satellites — each sibling and
 // the shared base — whose fields sit FLAT at the owner's level in the read
 // document because the composer merges them there.
@@ -1410,9 +1410,9 @@ func (s *TableSchema) Resolve(goName string) (ResolvedField, bool) {
 		if s.updatedAt != "" {
 			return self(s.updatedAt)
 		}
-	case "DeletedAt":
-		if s.deletedAt != "" {
-			return self(s.deletedAt)
+	case "ArchivedAt":
+		if s.archivedAt != "" {
+			return self(s.archivedAt)
 		}
 	}
 	if goName == parentIDGoField {
@@ -1540,7 +1540,7 @@ func (s *TableSchema) typeName() string {
 	return s.typ.Name()
 }
 
-func (s *TableSchema) deletedAtColumn() (string, bool) { return s.deletedAt, s.deletedAt != "" }
+func (s *TableSchema) archivedAtColumn() (string, bool) { return s.archivedAt, s.archivedAt != "" }
 func (s *TableSchema) createdAtColumn() (string, bool) { return s.createdAt, s.createdAt != "" }
 func (s *TableSchema) updatedAtColumn() (string, bool) { return s.updatedAt, s.updatedAt != "" }
 
@@ -1612,7 +1612,7 @@ func (s *TableSchema) writeFields(e any) domain.Fields {
 // Exported write-path accessors. A relational engine living in its own package
 // (the MySQL engine under its build tag) builds INSERT/UPDATE statements from a
 // TableSchema; these thin wrappers expose the column → value map and the managed
-// timestamp columns + DeletedAt column it needs, without widening the surface
+// timestamp columns + ArchivedAt column it needs, without widening the surface
 // the in-package write path consumes (which keeps using the unexported forms).
 
 // WriteFields is the exported form of writeFields — the column → value map an
@@ -1887,9 +1887,9 @@ func (s *TableSchema) InsertNowColumns() []string { return s.insertNowColumns() 
 // UpdateNowColumns is the exported form of updateNowColumns.
 func (s *TableSchema) UpdateNowColumns() []string { return s.updateNowColumns() }
 
-// DeletedAtColumn is the exported form of deletedAtColumn — the DeletedAt
+// ArchivedAtColumn is the exported form of archivedAtColumn — the ArchivedAt
 // column and whether it was declared (engines gate archive/unarchive on it).
-func (s *TableSchema) DeletedAtColumn() (string, bool) { return s.deletedAtColumn() }
+func (s *TableSchema) ArchivedAtColumn() (string, bool) { return s.archivedAtColumn() }
 
 // ChildSchema is the exported form of childSchema — the declared child schema for
 // an aggregate child type name (nil when undeclared). An out-of-package engine's
@@ -1983,7 +1983,7 @@ func (s *TableSchema) ScanPlan() (cols []string, byCol map[string]FieldPath) {
 // this schema's table carries — the explicit column list a read issues instead of
 // SELECT *. Order: ID, business fields (declaration order), the shared-base ParentID (a
 // role's link to its base) and the aggregate-child ParentID, then the managed columns
-// (created_at, updated_at, deleted_at, revision) — each included only when
+// (created_at, updated_at, archived_at, revision) — each included only when
 // declared, deduplicated (ID==ParentID collapses to one). It names the columns of THIS
 // ONE table only: siblings and the shared base are separate tables read through
 // their own schema.
@@ -2013,7 +2013,7 @@ func (s *TableSchema) ReadColumns() []string {
 	add(s.parentIDColumn)
 	add(s.createdAt)
 	add(s.updatedAt)
-	add(s.deletedAt)
+	add(s.archivedAt)
 	add(s.revisionCol)
 	return cols
 }
@@ -2129,10 +2129,10 @@ func (s *TableSchema) ValidateAnchored() {
 	))
 }
 
-// ValidateModes panics when the entity declares an archive verb but DeletedAt
+// ValidateModes panics when the entity declares an archive verb but ArchivedAt
 // is disabled — turning a runtime SQL error into a loud boot failure.
 func (s *TableSchema) ValidateModes(modes []domain.EntityMode) {
-	if _, ok := s.deletedAtColumn(); ok {
+	if _, ok := s.archivedAtColumn(); ok {
 		return
 	}
 	for _, m := range modes {
@@ -2142,8 +2142,8 @@ func (s *TableSchema) ValidateModes(modes []domain.EntityMode) {
 				name = s.typ.Name()
 			}
 			panic(fmt.Sprintf(
-				"infra.TableSchema(%s): entity declares %s in Modes() but DeletedAt is not enabled — "+
-					"declare DeletedAt(col) or drop the mode",
+				"infra.TableSchema(%s): entity declares %s in Modes() but ArchivedAt is not enabled — "+
+					"declare ArchivedAt(col) or drop the mode",
 				name, modeName(m),
 			))
 		}

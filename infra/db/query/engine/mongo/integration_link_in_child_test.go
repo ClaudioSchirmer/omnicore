@@ -26,7 +26,7 @@ func licChildSchema() *core.TableSchema {
 
 func licPrimary() *query.ViewDefinition {
 	root := core.NewTableSchema[licGadget]("lic_gadgets").ID("id").Field("Code", "code").
-		DeletedAt("deleted_at").Child(licChildSchema())
+		ArchivedAt("archived_at").Child(licChildSchema())
 	return query.View("lic_gadgets").Version(1).Schema(root)
 }
 
@@ -49,7 +49,7 @@ func TestIntegration_LinkInChild(t *testing.T) {
 	childSeg := composed.Links()[0].ChildSegment // Go segment == doc segment for a native child
 
 	gDoc := map[string]any{
-		"_id": "g1", "code": "A", "deleted_at": nil,
+		"_id": "g1", "code": "A", "archived_at": nil,
 		childSeg: []any{
 			map[string]any{"id": "l1", "gadget_id": "g1", "item_id": "i1", "note": "one"},
 			map[string]any{"id": "l2", "gadget_id": "g1", "item_id": "i2", "note": "two"},

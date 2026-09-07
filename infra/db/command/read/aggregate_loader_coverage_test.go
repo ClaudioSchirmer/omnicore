@@ -50,7 +50,7 @@ func covAggRootRow(id, name string) func() Rows {
 // covChildRow scans one cov_children row in the column order the loader now
 // emits: fk (leading key) + label (business column) as *string, then the child's
 // own id as the trailing *stdsql.NullString carrier column (id left the scan plan
-// when it moved into domain.Managed). The deleted_at trailing *sql.NullTime stays
+// when it moved into domain.Managed). The archived_at trailing *sql.NullTime stays
 // unset (a live row).
 func covChildRow(fk, id, label string) func() Rows {
 	return func() Rows {

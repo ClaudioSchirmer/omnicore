@@ -297,11 +297,11 @@ func childArrayExpr(seg, pk, id string, op childOp, revision int64, guarded bool
 		}
 		return Document{"$concatArrays": []any{others, []any{lit(elem)}}}
 	case "archive", "unarchive":
-		// Both stamp the element's DeletedAt with what the cascade wrote — an
+		// Both stamp the element's ArchivedAt with what the cascade wrote — an
 		// instant for archive, an explicit null for unarchive — leaving every
 		// other field of the element untouched.
-		sd := deletedAtOf(child)
-		mutate := Document{sd: lit(op.Fields[sd])}
+		archivedCol := archivedAtOf(child)
+		mutate := Document{archivedCol: lit(op.Fields[archivedCol])}
 		if guarded {
 			mutate[elemRevisionField] = revision
 		}
@@ -320,13 +320,13 @@ func childArrayExpr(seg, pk, id string, op childOp, revision int64, guarded bool
 	}
 }
 
-// deletedAtOf returns the child's DeletedAt column or "deleted_at" as the
+// archivedAtOf returns the child's ArchivedAt column or "archived_at" as the
 // defensive fallback (an archive op only exists for archivable children).
-func deletedAtOf(child *core.TableSchema) string {
-	if sd, ok := child.DeletedAtColumn(); ok {
-		return sd
+func archivedAtOf(child *core.TableSchema) string {
+	if archivedCol, ok := child.ArchivedAtColumn(); ok {
+		return archivedCol
 	}
-	return "deleted_at"
+	return "archived_at"
 }
 
 // buildFanOutStages renders the SHARED-IDENTITY-ONLY stages a fan-out applies

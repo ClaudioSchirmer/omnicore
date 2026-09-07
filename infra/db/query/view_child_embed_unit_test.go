@@ -14,7 +14,7 @@ type childFixture struct{ ID string }
 // rootWithChild builds a root schema declaring one native aggregate child — the
 // only kind EmbedInChild may enrich.
 func rootWithChild(table, childTable string) *core.TableSchema {
-	return core.NewTableSchema[embedFixture](table).ID("id").DeletedAt("deleted_at").
+	return core.NewTableSchema[embedFixture](table).ID("id").ArchivedAt("archived_at").
 		Child(core.NewTableSchema[childFixture](childTable).ID("id").ParentID(table + "_id"))
 }
 

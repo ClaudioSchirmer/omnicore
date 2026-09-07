@@ -29,7 +29,7 @@ func rbpView() *query.ViewDefinition {
 		ID("id").
 		Field("Name", "name").
 		Field("Phone", "phone").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return query.View("rbp_users").Version(1).Schema(schema)
 }
 
@@ -39,7 +39,7 @@ func seedRBPUser(t *testing.T, m *MongoDB) {
 		"_id":        "u1",
 		"name":       "Alice",
 		"phone":      "+5511999998888",
-		"deleted_at": nil,
+		"archived_at": nil,
 	}
 	if err := m.Upsert(context.Background(), pc("rbp_users"), "u1", doc); err != nil {
 		t.Fatalf("seed: %v", err)

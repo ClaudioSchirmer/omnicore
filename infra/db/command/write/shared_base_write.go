@@ -22,13 +22,13 @@ import (
 //
 //   - base identity: id = UUIDv5(naturalKey) → UPSERT (insert-or-update shared
 //     fields, last-write-wins). The base is found (and reactivated) regardless of
-//     its own DeletedAt state — its lifecycle is DERIVED from the roles
+//     its own ArchivedAt state — its lifecycle is DERIVED from the roles
 //     (convergence below), and the KeepOrphan dormancy contract depends on the
 //     natural key finding its way back. No read-back: app and infra derive the
 //     same id.
 //   - role: at most ONE ACTIVE row per identity per role table — the framework
 //     invariant, enforced on INSERT (an existing ACTIVE role is a 409; an
-//     ARCHIVED role is INVISIBLE to the probe — DeletedAt is delete, here like
+//     ARCHIVED role is INVISIBLE to the probe — an archived row reads as absent, here like
 //     on every other read/write path — so the insert proceeds) and on UNARCHIVE
 //     (reviving a remnant while another row of the same role table is active is
 //     the same 409 — vetoUnarchiveWithActiveSibling). TOTAL row multiplicity is
@@ -46,7 +46,7 @@ import (
 // The base's lifecycle is driven by its roles (unified lifecycle convergence
 // below); a role hard-delete routes through convergeBaseAfterHardDelete — the
 // orphan purge (OrphanPolicy DeleteWhenUnreferenced, database-vetoable) or the
-// orphan archive (KeepOrphan + a archivable base).
+// orphan archive (KeepOrphan + an archivable base).
 //
 // Covers the FLAT role path (a role is typically a simple entity). All SQL is
 // dialect-agnostic via the Dialect.
@@ -131,7 +131,7 @@ func scalarString(v any) string {
 }
 
 // findActiveRoleByFK probes the role table for an ACTIVE row referencing the
-// shared base id. DeletedAt IS delete on this probe, exactly like every other
+// shared base id. an archived row reads as ABSENT on this probe, exactly like every other
 // read/write path: an archived role row is invisible here, so the caller's
 // insert proceeds and the dev's DDL arbitrates the collision with any physical
 // remnant (shared-ID → the primary key; separate ParentID → a full UNIQUE(fk) blocks
@@ -142,8 +142,8 @@ func scalarString(v any) string {
 func (b *BaseEngine) findActiveRoleByFK(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, fkCol, baseID string) (bool, error) {
 	q := "SELECT 1 FROM " + d.QuoteIdent(schema.Table()) +
 		" WHERE " + d.QuoteIdent(fkCol) + " = " + d.Placeholder(1)
-	if sd, hasSD := schema.DeletedAtColumn(); hasSD {
-		q += " AND " + d.QuoteIdent(sd) + " IS NULL"
+	if archivedCol, hasArchived := schema.ArchivedAtColumn(); hasArchived {
+		q += " AND " + d.QuoteIdent(archivedCol) + " IS NULL"
 	}
 	q = d.ApplyLimit(q, 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))
@@ -224,7 +224,7 @@ func (b *BaseEngine) insertWithBase(ctx persistence.RequestContext, entity domai
 		return domain.WriteResult{}, SingleNotificationError(entity.EntityName(), schema.WireFieldOf(schema.IDColumn()), domain.EntityAlreadyAddedNotification{})
 	}
 	// No ACTIVE role → insert. An ARCHIVED remnant is deliberately not looked
-	// for (DeletedAt is delete): if one exists, the schema's own constraints
+	// for (an archived row reads as absent): if one exists, the schema's own constraints
 	// veto or admit this insert — shared-ID collides on the primary key (the
 	// repository's ConstraintBinding maps it), a separate-ParentID model decides
 	// through its own unique index.
@@ -468,12 +468,12 @@ const sharedBasePurgeSavepoint = "omnicore_sb_purge"
 //     destruction is never invisible; the returned bundle carries the event to
 //     the caller's post-commit echo.
 //   - otherwise (KeepOrphan, still referenced, or vetoed) → the standing
-//     lifecycle convergence: with no ACTIVE role left, a archivable base
-//     archives (with its native children); without DeletedAt on the base,
+//     lifecycle convergence: with no ACTIVE role left, an archivable base
+//     archives (with its native children); without ArchivedAt on the base,
 //     nothing happens.
 //
 // A no-op for a role without a shared base, and — before any identity work —
-// for a base with neither DeleteWhenUnreferenced nor DeletedAt (nothing could
+// for a base with neither DeleteWhenUnreferenced nor ArchivedAt (nothing could
 // change). Roles to count come from the base's registry (every role that
 // declared .SharedBase); the just-deleted role row is already gone, so it
 // never counts itself.
@@ -490,7 +490,7 @@ func (b *BaseEngine) convergeBaseAfterHardDelete(
 	if !ok {
 		return AuditBundle{}, false, nil
 	}
-	_, baseHasSD := base.DeletedAtColumn()
+	_, baseHasSD := base.ArchivedAtColumn()
 	wantsPurge := base.OrphanPolicyValue() == DeleteWhenUnreferenced
 	if !wantsPurge && !baseHasSD {
 		return AuditBundle{}, false, nil // no lifecycle to drive
@@ -600,7 +600,7 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 
 // --- unified lifecycle convergence -------------------------------------------
 //
-// The shared base is a mini-root of its native children: it has DeletedAt and
+// The shared base is a mini-root of its native children: it has ArchivedAt and
 // its lifecycle is DRIVEN by its roles. The single rule, per verb:
 //   - a role becomes/stays active (insert / update / unarchive) → the base must be
 //     active: reactivateBaseIfArchived.
@@ -609,7 +609,7 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 //   - a role is hard-deleted (delete) → the base converges per OrphanPolicy:
 //     convergeBaseAfterHardDelete (the vetoable purge, or the orphan archive).
 // All three no-op without a shared base; the first two also no-op when the base
-// has no DeletedAt (then only the orphan branch applies). They read the base /
+// has no ArchivedAt (then only the orphan branch applies). They read the base /
 // role state and only write on a real transition (idempotent), so a steady-state
 // write costs at most one probing SELECT and no redundant UPDATE.
 
@@ -625,15 +625,15 @@ func (b *BaseEngine) purgeOrphanBase(ctx context.Context, tx WriteTx, d Dialect,
 // caller can describe the base-children segment with the stamp THEIR statement
 // used, which is the base's own and not necessarily the role's.
 func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity) (time.Time, error) {
-	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
+	base, archivedCol, baseID, ok, err := baseLifecycleTarget(schema, src)
 	if !ok || err != nil {
 		return time.Time{}, err
 	}
-	stamp, err := readArchiveStamp(ctx, tx, d, base.Table(), sd, base.IDColumn(), baseID)
+	stamp, err := readArchiveStamp(ctx, tx, d, base.Table(), archivedCol, base.IDColumn(), baseID)
 	if err != nil || stamp.IsZero() {
 		return time.Time{}, err
 	}
-	return stamp, unarchiveBaseCascade(ctx, tx, d, base, sd, baseID)
+	return stamp, unarchiveBaseCascade(ctx, tx, d, base, archivedCol, baseID)
 }
 
 // archiveBaseIfNoActiveRole archives the base + its native children once the role
@@ -641,10 +641,10 @@ func (b *BaseEngine) reactivateBaseIfArchived(ctx context.Context, tx WriteTx, d
 // SAME writeNow() instant the triggering role operation bound.
 //
 // It answers that instant when it fired and the zero time when it did not (no
-// shared base, no DeletedAt on it, or another role still active): the base
+// shared base, no ArchivedAt on it, or another role still active): the base
 // children were then NOT touched, and the event must not claim they were.
 func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, now time.Time) (time.Time, error) {
-	base, sd, baseID, ok, err := baseLifecycleTarget(schema, src)
+	base, archivedCol, baseID, ok, err := baseLifecycleTarget(schema, src)
 	if !ok || err != nil {
 		return time.Time{}, err
 	}
@@ -652,17 +652,17 @@ func (b *BaseEngine) archiveBaseIfNoActiveRole(ctx context.Context, tx WriteTx, 
 	if err != nil || active {
 		return time.Time{}, err
 	}
-	return now, archiveBaseCascade(ctx, tx, d, base, sd, baseID, now)
+	return now, archiveBaseCascade(ctx, tx, d, base, archivedCol, baseID, now)
 }
 
-// convergeBaseAfterSoftWrite routes a role's archive/unarchive to the matching
-// base lifecycle step (shared by the flat + aggregate soft-write paths). The
+// convergeBaseAfterArchiveWrite routes a role's archive/unarchive to the matching
+// base lifecycle step (shared by the flat + aggregate archive-write paths). The
 // unarchive active-sibling veto does NOT live here: it must probe BEFORE the
 // role row flips to active (vetoUnarchiveWithActiveSibling, called by the
-// soft-write paths ahead of the root UPDATE) — otherwise the dev's active-only
+// archive-write paths ahead of the root UPDATE) — otherwise the dev's active-only
 // unique index vetoes the UPDATE itself first, surfacing a raw constraint
 // error instead of the friendly conflict.
-func (b *BaseEngine) convergeBaseAfterSoftWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string, now time.Time) (time.Time, error) {
+func (b *BaseEngine) convergeBaseAfterArchiveWrite(ctx context.Context, tx WriteTx, d Dialect, schema *TableSchema, src domain.Entity, eventType string, now time.Time) (time.Time, error) {
 	switch eventType {
 	case "ARCHIVED":
 		return b.archiveBaseIfNoActiveRole(ctx, tx, d, schema, src, now)
@@ -688,9 +688,9 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	if !ok || fkCol == schema.IDColumn() {
 		return nil
 	}
-	sd, hasSD := schema.DeletedAtColumn()
-	if !hasSD {
-		return nil // unreachable on the unarchive verb (requireDeletedAt gates it); defensive
+	archivedCol, hasArchived := schema.ArchivedAtColumn()
+	if !hasArchived {
+		return nil // unreachable on the unarchive verb (requireArchivedAt gates it); defensive
 	}
 	_, nk := sharedBaseValues(base, src)
 	if err := requireNaturalKey(base, nk); err != nil {
@@ -700,7 +700,7 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	q := d.ApplyLimit("SELECT 1 FROM "+d.QuoteIdent(schema.Table())+
 		" WHERE "+d.QuoteIdent(fkCol)+" = "+d.Placeholder(1)+
 		" AND "+d.QuoteIdent(schema.IDColumn())+" <> "+d.Placeholder(2)+
-		" AND "+d.QuoteIdent(sd)+" IS NULL", 1)
+		" AND "+d.QuoteIdent(archivedCol)+" IS NULL", 1)
 	rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(id)))
 	if err != nil {
 		return err
@@ -712,24 +712,24 @@ func (b *BaseEngine) vetoUnarchiveWithActiveSibling(ctx context.Context, tx Writ
 	return rows.Err()
 }
 
-// baseLifecycleTarget resolves the shared base + its DeletedAt column + the
+// baseLifecycleTarget resolves the shared base + its ArchivedAt column + the
 // deterministic id from the role schema and entity, reporting ok=false (skip)
-// when there is no shared base or the base has no DeletedAt (lifecycle is then
+// when there is no shared base or the base has no ArchivedAt (lifecycle is then
 // hard-only, governed by the orphan refcount).
-func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSchema, sd, baseID string, ok bool, err error) {
+func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSchema, archivedCol, baseID string, ok bool, err error) {
 	base, _, has := schema.SharedBaseRef()
 	if !has {
 		return nil, "", "", false, nil
 	}
-	sd, hasSD := base.DeletedAtColumn()
-	if !hasSD {
+	archivedCol, hasArchived := base.ArchivedAtColumn()
+	if !hasArchived {
 		return nil, "", "", false, nil
 	}
 	_, nk := sharedBaseValues(base, src)
 	if err := requireNaturalKey(base, nk); err != nil {
 		return nil, "", "", false, err
 	}
-	return base, sd, deterministicBaseID(nk), true, nil
+	return base, archivedCol, deterministicBaseID(nk), true, nil
 }
 
 // archiveBaseCascade / unarchiveBaseCascade are the base's two lifecycle
@@ -749,19 +749,19 @@ func baseLifecycleTarget(schema *TableSchema, src domain.Entity) (base *TableSch
 // lifecycle transition is a base-data change and must move the last-writer-wins
 // token like any other base write; the gate guarantees the bump fires only on a
 // real transition.
-func archiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string, stamp time.Time) error {
+func archiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, archivedCol, baseID string, stamp time.Time) error {
 	sql := fmt.Sprintf("UPDATE %s SET %s = %s%s WHERE %s = %s AND %s IS NULL",
-		d.QuoteIdent(base.Table()), d.QuoteIdent(sd), d.Placeholder(1), baseRevisionBump(d, base),
-		d.QuoteIdent(base.IDColumn()), d.Placeholder(2), d.QuoteIdent(sd))
+		d.QuoteIdent(base.Table()), d.QuoteIdent(archivedCol), d.Placeholder(1), baseRevisionBump(d, base),
+		d.QuoteIdent(base.IDColumn()), d.Placeholder(2), d.QuoteIdent(archivedCol))
 	if err := tx.Exec(ctx, sql, d.EncodeArg(stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
 		return err
 	}
 	for _, bc := range base.ChildSchemas() {
-		csd, ok := bc.DeletedAtColumn()
+		baseChildArchivedCol, ok := bc.ArchivedAtColumn()
 		if !ok {
 			continue
 		}
-		if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn()),
+		if err := tx.Exec(ctx, archiveCascadeSQL(d, bc.Table(), baseChildArchivedCol, bc.ParentIDColumn()),
 			d.EncodeArg(stamp), d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
@@ -769,23 +769,23 @@ func archiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableS
 	return nil
 }
 
-func unarchiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, sd, baseID string) error {
+func unarchiveBaseCascade(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, archivedCol, baseID string) error {
 	// The native children go FIRST: their statement reads the base's own
-	// DeletedAt to know which of them this archive put to sleep, and the base
+	// ArchivedAt to know which of them this archive put to sleep, and the base
 	// UPDATE below is what clears it (see unarchiveCascadeSQL).
 	for _, bc := range base.ChildSchemas() {
-		csd, ok := bc.DeletedAtColumn()
+		baseChildArchivedCol, ok := bc.ArchivedAtColumn()
 		if !ok {
 			continue
 		}
-		if err := tx.Exec(ctx, unarchiveCascadeSQL(d, bc.Table(), csd, bc.ParentIDColumn(), base.Table(), sd, base.IDColumn()),
+		if err := tx.Exec(ctx, unarchiveCascadeSQL(d, bc.Table(), baseChildArchivedCol, bc.ParentIDColumn(), base.Table(), archivedCol, base.IDColumn()),
 			d.EncodeArg(domain.NewID(baseID)), d.EncodeArg(domain.NewID(baseID))); err != nil {
 			return err
 		}
 	}
 	sql := fmt.Sprintf("UPDATE %s SET %s = NULL%s WHERE %s = %s AND %s IS NOT NULL",
-		d.QuoteIdent(base.Table()), d.QuoteIdent(sd), baseRevisionBump(d, base),
-		d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(sd))
+		d.QuoteIdent(base.Table()), d.QuoteIdent(archivedCol), baseRevisionBump(d, base),
+		d.QuoteIdent(base.IDColumn()), d.Placeholder(1), d.QuoteIdent(archivedCol))
 	return tx.Exec(ctx, sql, d.EncodeArg(domain.NewID(baseID)))
 }
 
@@ -797,13 +797,13 @@ func baseRevisionBump(d Dialect, base *TableSchema) string {
 }
 
 // anyActiveRole reports whether any role row referencing the base (instance ∪
-// engine registry) is ACTIVE (not archived). A role without a DeletedAt
+// engine registry) is ACTIVE (not archived). A role without an ArchivedAt
 // column has no archived state, so every existing row counts as active.
 func (b *BaseEngine) anyActiveRole(ctx context.Context, tx WriteTx, d Dialect, base *TableSchema, baseID string) (bool, error) {
 	for _, rr := range b.effectiveReferencingRoles(base) {
 		q := "SELECT 1 FROM " + d.QuoteIdent(rr.Table) + " WHERE " + d.QuoteIdent(rr.ParentIDColumn) + " = " + d.Placeholder(1)
-		if rr.DeletedAtCol != "" {
-			q += " AND " + d.QuoteIdent(rr.DeletedAtCol) + " IS NULL"
+		if rr.ArchivedAtCol != "" {
+			q += " AND " + d.QuoteIdent(rr.ArchivedAtCol) + " IS NULL"
 		}
 		q = d.ApplyLimit(q, 1)
 		rows, err := tx.Query(ctx, q, d.EncodeArg(domain.NewID(baseID)))

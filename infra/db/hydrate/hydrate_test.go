@@ -9,7 +9,7 @@ import (
 
 // ─── the rendered SELECT ─────────────────────────────────────────────────────
 
-// The DeletedAt gate is a POLICY the caller passes down, and the rendered SQL is
+// The ArchivedAt gate is a POLICY the caller passes down, and the rendered SQL is
 // where that policy becomes observable. These lock both shapes.
 func TestBuildFetchSQL_IncludeArchivedOmitsTheGate(t *testing.T) {
 	cases := []struct {
@@ -21,7 +21,7 @@ func TestBuildFetchSQL_IncludeArchivedOmitsTheGate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := BuildFetchSQL(pgLikeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", true)
+			got := BuildFetchSQL(pgLikeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "archived_at", true)
 			if got != c.want {
 				t.Fatalf("got  %q\nwant %q", got, c.want)
 			}
@@ -33,13 +33,13 @@ func TestBuildFetchSQL_GateAppliedWhenArchivedExcluded(t *testing.T) {
 	cases := []struct {
 		name, verb, table, keyCol, want string
 	}{
-		{"row", "row", "orders", "id", "SELECT id, name FROM orders WHERE id = $1 AND deleted_at IS NULL LIMIT 1"},
-		{"where", "where", "lines", "order_id", "SELECT id, name FROM lines WHERE order_id = $1 AND deleted_at IS NULL"},
-		{"all", "all", "orders", "", "SELECT id, name FROM orders WHERE deleted_at IS NULL"},
+		{"row", "row", "orders", "id", "SELECT id, name FROM orders WHERE id = $1 AND archived_at IS NULL LIMIT 1"},
+		{"where", "where", "lines", "order_id", "SELECT id, name FROM lines WHERE order_id = $1 AND archived_at IS NULL"},
+		{"all", "all", "orders", "", "SELECT id, name FROM orders WHERE archived_at IS NULL"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := BuildFetchSQL(pgLikeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "deleted_at", false)
+			got := BuildFetchSQL(pgLikeDialect{}, c.verb, c.table, []string{"id", "name"}, c.keyCol, "archived_at", false)
 			if got != c.want {
 				t.Fatalf("got  %q\nwant %q", got, c.want)
 			}
@@ -47,12 +47,12 @@ func TestBuildFetchSQL_GateAppliedWhenArchivedExcluded(t *testing.T) {
 	}
 }
 
-// A source with no DeletedAt column has no archived state to gate on, so the
+// A source with no ArchivedAt column has no archived state to gate on, so the
 // clause is absent whatever the caller asks for.
-func TestBuildFetchSQL_NoDeletedAtColumnNeverGates(t *testing.T) {
+func TestBuildFetchSQL_NoArchivedAtColumnNeverGates(t *testing.T) {
 	got := BuildFetchSQL(pgLikeDialect{}, "where", "notes", []string{"id"}, "owner_id", "", false)
 	if strings.Contains(got, "IS NULL") {
-		t.Fatalf("a source without DeletedAt must emit no gate, got %q", got)
+		t.Fatalf("a source without ArchivedAt must emit no gate, got %q", got)
 	}
 }
 
@@ -88,14 +88,14 @@ func TestFetchRow_CoercesBoolOnTheWayOut(t *testing.T) {
 		"orders": {{"id": "o1", "name": "first", "active": int64(1)}},
 	})
 	h := New(eng)
-	row, err := h.FetchRow(context.Background(), rootSchema(), "orders", "id", "o1", "deleted_at", false)
+	row, err := h.FetchRow(context.Background(), rootSchema(), "orders", "id", "o1", "archived_at", false)
 	if err != nil {
 		t.Fatalf("FetchRow: %v", err)
 	}
 	if row["active"] != true {
 		t.Errorf("active = %#v, want true", row["active"])
 	}
-	if !strings.Contains(eng.sqls[0], "deleted_at IS NULL") {
+	if !strings.Contains(eng.sqls[0], "archived_at IS NULL") {
 		t.Errorf("the gate must reach the statement: %q", eng.sqls[0])
 	}
 }
@@ -113,7 +113,7 @@ func TestFetchWhere_ReturnsEveryMatch(t *testing.T) {
 	h := New(newScripted(map[string][]map[string]any{
 		"lines": {{"id": "l1", "label": "a", "order_id": "o1"}, {"id": "l2", "label": "b", "order_id": "o1"}},
 	}))
-	rows, err := h.FetchWhere(context.Background(), lineSchema(), "lines", "order_id", "o1", "deleted_at", false)
+	rows, err := h.FetchWhere(context.Background(), lineSchema(), "lines", "order_id", "o1", "archived_at", false)
 	if err != nil {
 		t.Fatalf("FetchWhere: %v", err)
 	}
@@ -167,11 +167,11 @@ func TestFetchByIDs_EmptySetIssuesNoStatement(t *testing.T) {
 }
 
 // The archived remnant pick is deterministic: the most recently archived row.
-func TestFetchLatestArchived_OrdersByDeletedAtDesc(t *testing.T) {
+func TestFetchLatestArchived_OrdersByArchivedAtDesc(t *testing.T) {
 	eng := newScripted(map[string][]map[string]any{
 		"students": {{"id": "s1", "grade": "A", "person_id": "p1"}},
 	})
-	row, err := New(eng).FetchLatestArchived(context.Background(), roleSchema(), "person_id", "p1", "deleted_at")
+	row, err := New(eng).FetchLatestArchived(context.Background(), roleSchema(), "person_id", "p1", "archived_at")
 	if err != nil {
 		t.Fatalf("FetchLatestArchived: %v", err)
 	}
@@ -179,13 +179,13 @@ func TestFetchLatestArchived_OrdersByDeletedAtDesc(t *testing.T) {
 		t.Fatal("expected the remnant row")
 	}
 	sql := eng.sqls[0]
-	if !strings.Contains(sql, "deleted_at IS NOT NULL") || !strings.Contains(sql, "ORDER BY deleted_at DESC") {
+	if !strings.Contains(sql, "archived_at IS NOT NULL") || !strings.Contains(sql, "ORDER BY archived_at DESC") {
 		t.Errorf("the remnant pick must be archived-only and deterministic: %q", sql)
 	}
 }
 
 func TestFetchLatestArchived_NoRemnantIsNilNotError(t *testing.T) {
-	row, err := New(newScripted(nil)).FetchLatestArchived(context.Background(), roleSchema(), "person_id", "p1", "deleted_at")
+	row, err := New(newScripted(nil)).FetchLatestArchived(context.Background(), roleSchema(), "person_id", "p1", "archived_at")
 	if err != nil || row != nil {
 		t.Fatalf("absent remnant = (%v, %v), want (nil, nil)", row, err)
 	}
@@ -202,7 +202,7 @@ func TestFetchInGrouped_DedupesKeysAndGroupsByThem(t *testing.T) {
 		},
 	})
 	got, err := New(eng).FetchInGrouped(context.Background(), lineSchema(), "lines", "order_id",
-		[]string{"o1", "o1", "o2"}, "deleted_at", false)
+		[]string{"o1", "o1", "o2"}, "archived_at", false)
 	if err != nil {
 		t.Fatalf("FetchInGrouped: %v", err)
 	}
@@ -311,12 +311,12 @@ func TestSchemaAccessors(t *testing.T) {
 	if got := SchemaPK(rootSchema()); got != "id" {
 		t.Errorf("SchemaPK = %q", got)
 	}
-	col, ok := SchemaDeletedAt(rootSchema())
-	if !ok || col != "deleted_at" {
-		t.Errorf("SchemaDeletedAt = (%q, %v)", col, ok)
+	col, ok := SchemaArchivedAt(rootSchema())
+	if !ok || col != "archived_at" {
+		t.Errorf("SchemaArchivedAt = (%q, %v)", col, ok)
 	}
-	if _, ok := SchemaDeletedAt(flatSchema()); ok {
-		t.Error("a schema declaring no DeletedAt must report none")
+	if _, ok := SchemaArchivedAt(flatSchema()); ok {
+		t.Error("a schema declaring no ArchivedAt must report none")
 	}
 }
 
