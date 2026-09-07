@@ -31,8 +31,8 @@ func seedReaderDocs(t *testing.T, m *MongoDB, view string, n int) []string {
 		id := fmt.Sprintf("id-%02d", i)
 		ids = append(ids, id)
 		doc := map[string]any{
-			"_id":        id,
-			"name":       fmt.Sprintf("n-%02d", i),
+			"_id":         id,
+			"name":        fmt.Sprintf("n-%02d", i),
 			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
@@ -305,9 +305,9 @@ func TestReader_FieldsProjectionStripsOrderByFieldFromWire(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("id-%02d", i)
 		doc := map[string]any{
-			"_id":        id,
-			"name":       fmt.Sprintf("n-%02d", i),
-			"email":      fmt.Sprintf("e-%02d@x", i),
+			"_id":         id,
+			"name":        fmt.Sprintf("n-%02d", i),
+			"email":       fmt.Sprintf("e-%02d@x", i),
 			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
@@ -355,8 +355,8 @@ func TestReader_KeysetCoexistsWithMultiClauseFilter(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		id := fmt.Sprintf("id-%02d", i)
 		doc := map[string]any{
-			"_id":        id,
-			"age":        20 + i,
+			"_id":         id,
+			"age":         20 + i,
 			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
@@ -489,9 +489,9 @@ func TestReader_ExclusionProjectionWithSort_IsAValidMongoProjection(t *testing.T
 	for i := 0; i < 3; i++ {
 		id := fmt.Sprintf("id-%02d", i)
 		doc := map[string]any{
-			"_id":        id,
-			"name":       fmt.Sprintf("n-%02d", i),
-			"phone":      "555-0100",
+			"_id":         id,
+			"name":        fmt.Sprintf("n-%02d", i),
+			"phone":       "555-0100",
 			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {

@@ -554,7 +554,6 @@ func loadedRevision(src domain.Entity) int64 {
 // apart, and it runs ONLY here on the failure path — the happy path pays
 // nothing, because the guard rides the UPDATE's own WHERE. An unguarded
 // statement skips the probe: zero rows can only mean the row is gone.
-//
 func execExpectingRow(ctx context.Context, tx WriteTx, d Dialect, sql string, args []any, row expectedRow) error {
 	n, err := tx.ExecCount(ctx, sql, args...)
 	if err != nil {

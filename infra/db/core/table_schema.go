@@ -42,8 +42,8 @@ type TableSchema struct {
 	byCol  map[string]schemaField
 
 	archivedAt string // "" = disabled
-	createdAt string // "" = disabled (not stamped on insert)
-	updatedAt string // "" = disabled (not stamped on insert/update)
+	createdAt  string // "" = disabled (not stamped on insert)
+	updatedAt  string // "" = disabled (not stamped on insert/update)
 
 	children map[string]*TableSchema // aggregate child schemas, keyed by Go type name
 
@@ -1289,7 +1289,7 @@ func (s *TableSchema) WireFieldOf(column string) string {
 
 // goNameForRead returns the logical Go field name for a physical column on the
 // read path, including the managed columns under fixed logical names
-// (created_at → "CreatedAt", updated_at → "UpdatedAt", ArchivedAt → "ArchivedAt")
+// (created_at → "CreatedAt", updated_at → "UpdatedAt", archived_at → "ArchivedAt")
 // so a view can project them to the wire without a domain Go field. Returns
 // ok=false for a column the schema does not own (e.g. _id, foreign keys).
 func (s *TableSchema) goNameForRead(column string) (string, bool) {
@@ -1541,8 +1541,8 @@ func (s *TableSchema) typeName() string {
 }
 
 func (s *TableSchema) archivedAtColumn() (string, bool) { return s.archivedAt, s.archivedAt != "" }
-func (s *TableSchema) createdAtColumn() (string, bool) { return s.createdAt, s.createdAt != "" }
-func (s *TableSchema) updatedAtColumn() (string, bool) { return s.updatedAt, s.updatedAt != "" }
+func (s *TableSchema) createdAtColumn() (string, bool)  { return s.createdAt, s.createdAt != "" }
+func (s *TableSchema) updatedAtColumn() (string, bool)  { return s.updatedAt, s.updatedAt != "" }
 
 func (s *TableSchema) childSchema(typeName string) *TableSchema {
 	if s == nil {

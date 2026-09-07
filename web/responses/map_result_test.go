@@ -206,9 +206,9 @@ func TestMap_ResultFieldsAbsentFromResponse_Dropped(t *testing.T) {
 	// The Response is the single wire authority: a Result field the Response
 	// does not declare never reaches the wire.
 	type Result struct {
-		ID        string
+		ID         string
 		ArchivedAt *string
-		Internal  string
+		Internal   string
 	}
 	type R struct {
 		Auto

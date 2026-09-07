@@ -42,7 +42,7 @@ const (
 type RoleRef struct {
 	Table          string
 	ParentIDColumn string
-	ArchivedAtCol   string
+	ArchivedAtCol  string
 }
 
 // roleLink is, on a shared base, one referencing role: a pointer to the role

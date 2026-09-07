@@ -132,7 +132,7 @@ func loaderTagSchema() *core.TableSchema {
 // created_at/updated_at/archived_at — onto the ROOT and every CHILD, not just the
 // id. Proven end to end against a real backend: an active aggregate exposes
 // non-nil created/updated and a nil archived at both levels; an archived root
-// exposes a non-nil deleted.
+// exposes a non-nil archived.
 func TestAggregateLoader_SurfacesManagedColumns(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()

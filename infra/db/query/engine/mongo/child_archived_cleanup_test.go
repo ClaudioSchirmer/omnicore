@@ -8,7 +8,7 @@ import (
 // path shape the reader produces: a child collection at the root, a
 // SharedBaseView role segment (a single map) and a role's own child collection
 // (dotted). Absent or differently-shaped nodes are no-ops.
-func TestRemoveChildSDColumn(t *testing.T) {
+func TestRemoveChildArchivedColumn(t *testing.T) {
 	doc := map[string]any{
 		"dependents": []any{
 			map[string]any{"name": "Rita", "archived_at": nil},

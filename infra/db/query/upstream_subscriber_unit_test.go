@@ -168,7 +168,7 @@ func TestProcessMessage_Archived_DeleteOnArchive(t *testing.T) {
 	}
 }
 
-func TestProcessMessage_Archived_SoftKeep(t *testing.T) {
+func TestProcessMessage_Archived_Keep(t *testing.T) {
 	colls := happyColls()
 	s := newTestUpstream(t, UpstreamSubscriberConfig{}, upstreamFakeMongo(colls), ordersRootEngine())
 

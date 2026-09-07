@@ -345,7 +345,7 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 	// external schemas, so declarations accumulate.
 	type declaration struct {
 		column, view string
-		isArchivedAt  bool
+		isArchivedAt bool
 	}
 	declaredBy := map[string][]declaration{}
 	embedded := map[string]bool{}

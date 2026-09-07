@@ -277,9 +277,9 @@ func KeepArchiveStateOnConflict() UpsertOption {
 // managedByVerb names the slots a Direct write may not bind directly, with what
 // owns each one. Keyed by the Go name Values would spell.
 var managedByVerb = map[string]string{
-	idGoField:   "identity is minted by the framework and returned by Insert",
-	"CreatedAt": "the framework stamps it from the operation's instant",
-	"UpdatedAt": "the framework stamps it from the operation's instant",
+	idGoField:    "identity is minted by the framework and returned by Insert",
+	"CreatedAt":  "the framework stamps it from the operation's instant",
+	"UpdatedAt":  "the framework stamps it from the operation's instant",
 	"ArchivedAt": "the archive transition has its own verbs, Archive and Unarchive",
 }
 
@@ -814,7 +814,7 @@ type upsertPlan struct {
 	keyCols      []string  // the conflict target, in declaration order
 	keyed        map[string]bool
 	unarchive    bool
-	archivedCol        string
+	archivedCol  string
 }
 
 func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error) {
@@ -840,11 +840,11 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 	}
 
 	plan := upsertPlan{
-		bound:      domain.Fields{},
-		insertOnly: domain.Fields{},
-		updateOnly: domain.Fields{},
-		unarchive:  cfg.archive == archiveUnarchive,
-		archivedCol:      archivedCol,
+		bound:       domain.Fields{},
+		insertOnly:  domain.Fields{},
+		updateOnly:  domain.Fields{},
+		unarchive:   cfg.archive == archiveUnarchive,
+		archivedCol: archivedCol,
 	}
 
 	// The conflict key resolves through the schema like any other name. Its

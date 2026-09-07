@@ -140,7 +140,7 @@ func TestUpdateAggregate_StepFailures(t *testing.T) {
 	})
 }
 
-func TestSoftWriteAggregate_StepFailures(t *testing.T) {
+func TestArchiveWriteAggregate_StepFailures(t *testing.T) {
 	newArchivable := func(t *testing.T) domain.Archivable {
 		t.Helper()
 		root := &aggWriteRoot{Name: "r"}
@@ -165,7 +165,7 @@ func TestSoftWriteAggregate_StepFailures(t *testing.T) {
 
 // An aggregate root schema without ArchivedAt cannot archive — the guard fires
 // before the TX opens.
-func TestSoftWriteAggregate_MissingArchivedAtIsError(t *testing.T) {
+func TestArchiveWriteAggregate_MissingArchivedAtIsError(t *testing.T) {
 	schema := NewTableSchema[*aggWriteRoot]("agg_w").
 		ID("id").Field("Name", "name").
 		Child(NewTableSchema[aggWriteChild]("agg_w_children").
@@ -185,7 +185,7 @@ func TestSoftWriteAggregate_MissingArchivedAtIsError(t *testing.T) {
 
 // The cascade skips (a) loaded item types with no declared child schema and
 // (b) declared children without an ArchivedAt column — root-only archive write.
-func TestSoftWriteAggregate_CascadeSkips(t *testing.T) {
+func TestArchiveWriteAggregate_CascadeSkips(t *testing.T) {
 	t.Run("undeclaredChildType", func(t *testing.T) {
 		schema := NewTableSchema[*aggWriteRoot]("agg_w").
 			ID("id").Field("Name", "name").ArchivedAt("archived_at")
@@ -330,7 +330,7 @@ func TestFlatUpdate_StepFailures(t *testing.T) {
 	})
 }
 
-func TestFlatSoftWrite_StepFailures(t *testing.T) {
+func TestFlatArchiveWrite_StepFailures(t *testing.T) {
 	newArchivable := func(t *testing.T) domain.Archivable {
 		t.Helper()
 		e := &builderTestEntity{Name: "a", Email: "a@x"}

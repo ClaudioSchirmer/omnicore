@@ -16,12 +16,12 @@ import (
 // byte-identity anchors of TestRebuildHash_ExternalLegStreamUnchanged.
 //
 // They were re-pinned ONCE, when these fixtures renamed their physical archive
-// column. The hash
-// writes the archive COLUMN (writeSchemaShape), so the fixture's own spelling
-// moved the digest while the framework's canonical stream stayed byte-identical
-// — verified by re-running this test with the fixtures' old column and getting
-// the previous digests back. Consumers keeping their column name see NO drift
-// from the rename; only a consumer who also renames the column rebuilds.
+// column: the hash writes the archive COLUMN (writeSchemaShape), so the
+// fixture's own spelling moved the digest while the framework's canonical
+// stream stayed byte-identical — verified by re-running this test with the
+// fixtures' old column and getting the previous digests back. Consumers keeping
+// their column name see NO drift from the rename; only a consumer who also
+// renames the column rebuilds.
 const (
 	externalRootEmbedRebuildHash  = "a11fc905886bddb3a7cb1b972780a25d999650e8def2997eff3f66008bbfae19"
 	externalChildEmbedRebuildHash = "de6d3cfed1821991dbf7b3c94b6481aea59a21b26a46e3ea9173d4ece7ca2f8f"
@@ -189,7 +189,8 @@ func TestRebuildHash_ChildEmbedCouplesToLegViewVersion(t *testing.T) {
 // canonical byte stream stays byte-identical, so upgrading the framework moves
 // no existing view's hash — no spurious drift/rebuild on any deployed service.
 // The pinned digests were captured from the code BEFORE the leg_view tag
-// existed; they must never move again.
+// existed and move only when a fixture's own physical column changes — never
+// from a framework change (see the note on the constants).
 func TestRebuildHash_ExternalLegStreamUnchanged(t *testing.T) {
 	cases := []struct {
 		name string

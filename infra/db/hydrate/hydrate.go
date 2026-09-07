@@ -72,7 +72,7 @@ func (h *Hydrator) Engine() core.RelationalEngine { return h.eng }
 // SchemaPK / SchemaArchivedAt read a source's physical ID + ArchivedAt column
 // straight from its schema. The schema is mandatory on every source, so there is
 // no convention fallback — nothing is silently mapped to "id"/"archived_at".
-func SchemaPK(s *core.TableSchema) string                { return s.IDColumn() }
+func SchemaPK(s *core.TableSchema) string                 { return s.IDColumn() }
 func SchemaArchivedAt(s *core.TableSchema) (string, bool) { return s.ArchivedAtColumn() }
 
 // FetchRow reads a single row of table by keyCol = keyVal, applying the ArchivedAt

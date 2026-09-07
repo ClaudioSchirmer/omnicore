@@ -142,7 +142,7 @@ func TestArchive_EmitsTheUpdateStatementShape(t *testing.T) {
 
 	sql, _ := stmtWithPrefix(t, tx, "UPDATE tenants SET")
 	for _, want := range []string{
-		"archived_at = $",          // the transition, as a bound column
+		"archived_at = $",         // the transition, as a bound column
 		"name = $",                // the full field set
 		"updated_at = $",          // archiving IS a mutation, so it stamps
 		"revision = revision + 1", // same commit-order token as any write

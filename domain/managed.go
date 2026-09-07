@@ -25,10 +25,10 @@ import "time"
 // DOES retain the carrier — harmless, since it stays invisible to identity and
 // audit either way.
 type Managed struct {
-	id        *ID
-	revision  int64
-	createdAt *time.Time
-	updatedAt *time.Time
+	id         *ID
+	revision   int64
+	createdAt  *time.Time
+	updatedAt  *time.Time
 	archivedAt *time.Time
 
 	// stamps are the STAMPED fields this write asks the framework to WRITE —
@@ -217,9 +217,9 @@ func (m Managed) GetRevision() int64 { return m.revision }
 
 // GetCreatedAt / GetUpdatedAt / GetArchivedAt return the managed timestamps, each
 // nil when absent: nil created/updated means the row is not loaded/persisted yet
-// (never a misleading zero time), nil deleted means a live row.
-func (m Managed) GetCreatedAt() *time.Time { return m.createdAt }
-func (m Managed) GetUpdatedAt() *time.Time { return m.updatedAt }
+// (never a misleading zero time), nil archived means a live row.
+func (m Managed) GetCreatedAt() *time.Time  { return m.createdAt }
+func (m Managed) GetUpdatedAt() *time.Time  { return m.updatedAt }
 func (m Managed) GetArchivedAt() *time.Time { return m.archivedAt }
 
 // setManagedColumns is the framework-only populate hook, reached from
