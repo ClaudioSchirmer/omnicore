@@ -62,7 +62,7 @@ func TestTwoSiblingSegments_DecideIndependently(t *testing.T) {
 }
 
 // A segment WITHOUT a declared ArchivedAt sitting beside one WITH it: the
-// undeclared one is never filtered, even carrying a archived_at-looking field.
+// undeclared one is never filtered, even carrying an archived_at-looking field.
 func TestSiblingSegments_UndeclaredIsNeverFiltered(t *testing.T) {
 	v := View("parts").Version(1).Schema(arcRootSchema("parts")).
 		Embed(mirrorWithArchived()).On("item_id").
@@ -78,6 +78,6 @@ func TestSiblingSegments_UndeclaredIsNeverFiltered(t *testing.T) {
 		t.Errorf("declared ⇒ filtered, got %v", doc["item"])
 	}
 	if doc["plain"] == nil {
-		t.Error("undeclared ⇒ never filtered, even with a archived_at-looking field")
+		t.Error("undeclared ⇒ never filtered, even with an archived_at-looking field")
 	}
 }

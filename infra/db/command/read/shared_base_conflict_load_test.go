@@ -80,7 +80,7 @@ func TestLoadSharedBaseIdentity_ActiveRoleConflict(t *testing.T) {
 	}
 }
 
-// A archived (archived) role is NOT a conflict: the probe filters it out with an
+// An archived role is NOT a conflict: the probe filters it out with an
 // `IS NULL` predicate, so the load falls through to the warm hydrate (and the persister's
 // revive path takes over on write).
 func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaArchivedAt(t *testing.T) {
