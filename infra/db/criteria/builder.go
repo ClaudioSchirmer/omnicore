@@ -190,15 +190,15 @@ func Outer(goField string) OuterRef { return OuterRef{Field: goField} }
 
 // ─── Query envelope ──────────────────────────────────────────────────────────
 
-// Scope governs the DeletedAt gate applied around the boolean predicate. It
-// is NOT part of the Expr algebra — the where-tree stays DeletedAt-agnostic;
-// the translator reads the scope and appends the deleted_at condition.
+// Scope governs the ArchivedAt gate applied around the boolean predicate. It
+// is NOT part of the Expr algebra — the where-tree stays ArchivedAt-agnostic;
+// the translator reads the scope and appends the archived_at condition.
 type Scope uint8
 
 const (
-	ScopeActive          Scope = iota // deleted_at IS NULL (default)
-	ScopeIncludeArchived              // active + archived (no deleted_at gate)
-	ScopeOnlyArchived                 // deleted_at IS NOT NULL
+	ScopeActive          Scope = iota // archived_at IS NULL (default)
+	ScopeIncludeArchived              // active + archived (no archived_at gate)
+	ScopeOnlyArchived                 // archived_at IS NOT NULL
 )
 
 // OrderField is one ORDER BY term. Field is the Go field name.
@@ -268,5 +268,5 @@ func (q *Query) LimitValue() int64 { return q.limit }
 // OffsetValue returns the row skip (0 = no offset).
 func (q *Query) OffsetValue() int64 { return q.offset }
 
-// Scope returns the DeletedAt scope.
+// Scope returns the ArchivedAt scope.
 func (q *Query) Scope() Scope { return q.scope }

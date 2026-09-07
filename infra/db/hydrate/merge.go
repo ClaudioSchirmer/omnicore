@@ -16,9 +16,9 @@ import (
 // doc, fetched by the shared primary key. The document stays a flat mirror of the
 // entity (siblings land at the owner's level, not nested) — the read-side
 // reflection of how the write side partitioned the row. An absent sibling row
-// leaves its fields omitted (never forced empty). Siblings carry no DeletedAt
+// leaves its fields omitted (never forced empty). Siblings carry no ArchivedAt
 // (the owner's gate governs the row's visibility), so the sibling fetch passes an
-// empty DeletedAt column — no per-sibling filter. The shared ID column is already
+// empty ArchivedAt column — no per-sibling filter. The shared ID column is already
 // on the owner doc, so it is not re-copied. CoerceTypes (inside FetchRow) restores
 // bool fidelity on the sibling's own columns.
 func (h *Hydrator) MergeOwnerSiblings(ctx context.Context, doc Document, ownerSchema *core.TableSchema, pkVal string, includeArchived bool) error {
@@ -62,8 +62,8 @@ func (h *Hydrator) MergeSharedBaseChildren(ctx context.Context, doc Document, sc
 	}
 	idStr := fmt.Sprintf("%v", baseID)
 	for _, bc := range baseChildren {
-		sd, _ := SchemaDeletedAt(bc)
-		rows, err := h.FetchWhere(ctx, bc, bc.Table(), bc.ParentIDColumn(), idStr, sd, includeArchived)
+		archivedCol, _ := SchemaArchivedAt(bc)
+		rows, err := h.FetchWhere(ctx, bc, bc.Table(), bc.ParentIDColumn(), idStr, archivedCol, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -91,8 +91,8 @@ func (h *Hydrator) MergeOwnChildren(ctx context.Context, doc Document, schema *c
 	}
 	idStr := fmt.Sprintf("%v", pkVal)
 	for _, child := range children {
-		sd, _ := SchemaDeletedAt(child)
-		rows, err := h.FetchWhere(ctx, child, child.Table(), child.ParentIDColumn(), idStr, sd, includeArchived)
+		archivedCol, _ := SchemaArchivedAt(child)
+		rows, err := h.FetchWhere(ctx, child, child.Table(), child.ParentIDColumn(), idStr, archivedCol, includeArchived)
 		if err != nil {
 			return err
 		}
@@ -113,12 +113,12 @@ func (h *Hydrator) MergeOwnChildren(ctx context.Context, doc Document, schema *c
 // sibling, the base fields land at the role's level (the doc stays flat). The base
 // ID column equals the ParentID value already on the doc, so it is not re-copied.
 //
-// The base's MANAGED columns (DeletedAt, created_at, updated_at) never overwrite
+// The base's MANAGED columns (ArchivedAt, created_at, updated_at) never overwrite
 // the role's own: the document represents the ROLE, whose lifecycle and timestamps
 // are authoritative (the base's are derived — it converges from its roles).
 // Without this guard, a two-role identity with ONE archived role would compose the
-// ACTIVE base's NULL deleted_at over the role's archived timestamp, hiding the
-// archival from the reader's DeletedAt gate, and every role doc would carry the
+// ACTIVE base's NULL archived_at over the role's archived timestamp, hiding the
+// archival from the reader's ArchivedAt gate, and every role doc would carry the
 // person's creation timestamps instead of its own. Each managed column of the base
 // is skipped only when the role declares its own column of the same kind.
 func (h *Hydrator) MergeSharedBase(ctx context.Context, doc Document, schema *core.TableSchema, includeArchived bool) error {
@@ -154,8 +154,8 @@ func (h *Hydrator) MergeSharedBase(ctx context.Context, doc Document, schema *co
 // drift.
 func sharedBaseSkipSet(base, role *core.TableSchema) map[string]bool {
 	skip := map[string]bool{base.IDColumn(): true}
-	if col, ok := base.DeletedAtColumn(); ok {
-		if _, roleHas := role.DeletedAtColumn(); roleHas {
+	if col, ok := base.ArchivedAtColumn(); ok {
+		if _, roleHas := role.ArchivedAtColumn(); roleHas {
 			skip[col] = true
 		}
 	}

@@ -22,7 +22,7 @@ import (
 //     it. One origin, everywhere.
 //   - "CreatedAt" / "UpdatedAt" — the framework stamps them from the operation's
 //     own instant when the schema declares them.
-//   - "DeletedAt" — the archive transition has its own verbs (Archive /
+//   - "ArchivedAt" — the archive transition has its own verbs (Archive /
 //     Unarchive); writing the column directly would bypass them.
 //
 // A STAMPED column (TableSchema.StampedTimeField) sits between the two: the
@@ -249,7 +249,7 @@ func OnConflict(goFields ...string) UpsertOption {
 }
 
 // UnarchiveOnConflict brings an archived row back to life when the upsert lands
-// on one: deleted_at is set to NULL in the conflict clause.
+// on one: archived_at is set to NULL in the conflict clause.
 //
 // Note what it does NOT do: the row's other columns are updated by the same
 // rules as any conflict, so counters CONTINUE from where they were rather than
@@ -277,10 +277,10 @@ func KeepArchiveStateOnConflict() UpsertOption {
 // managedByVerb names the slots a Direct write may not bind directly, with what
 // owns each one. Keyed by the Go name Values would spell.
 var managedByVerb = map[string]string{
-	idGoField:   "identity is minted by the framework and returned by Insert",
-	"CreatedAt": "the framework stamps it from the operation's instant",
-	"UpdatedAt": "the framework stamps it from the operation's instant",
-	"DeletedAt": "the archive transition has its own verbs, Archive and Unarchive",
+	idGoField:    "identity is minted by the framework and returned by Insert",
+	"CreatedAt":  "the framework stamps it from the operation's instant",
+	"UpdatedAt":  "the framework stamps it from the operation's instant",
+	"ArchivedAt": "the archive transition has its own verbs, Archive and Unarchive",
 }
 
 // resolveValues translates Values into the column-keyed map the statement
@@ -496,14 +496,14 @@ func (w *DirectWriter) DeleteOne(ctx context.Context, q *criteria.Query) error {
 	return w.runExpectingOne(ctx, w.deleteStmt(q), "DeleteOne")
 }
 
-// Archive stamps the DeletedAt column on every ACTIVE row matching the criteria.
+// Archive stamps the ArchivedAt column on every ACTIVE row matching the criteria.
 // One table, no cascade: nothing else in the database learns about it.
 func (w *DirectWriter) Archive(ctx context.Context, q *criteria.Query) (int64, error) {
 	return w.transition(ctx, q, true)
 }
 
-// Unarchive clears the DeletedAt column on every ARCHIVED row matching the
-// criteria — the statement gates on `deleted_at IS NOT NULL`, because that is
+// Unarchive clears the ArchivedAt column on every ARCHIVED row matching the
+// criteria — the statement gates on `archived_at IS NOT NULL`, because that is
 // what the verb means.
 func (w *DirectWriter) Unarchive(ctx context.Context, q *criteria.Query) (int64, error) {
 	return w.transition(ctx, q, false)
@@ -546,7 +546,7 @@ func (w *DirectWriter) Unarchive(ctx context.Context, q *criteria.Query) (int64,
 // would need a RETURNING/OUTPUT clause MySQL has no equivalent for, so the
 // framework declines to invent an answer.
 //
-// A schema declaring DeletedAt MUST also declare what an upsert does to the
+// A schema declaring ArchivedAt MUST also declare what an upsert does to the
 // archive column — UnarchiveOnConflict or KeepArchiveStateOnConflict — because
 // this is the one write that cannot be archive-gated (see those two).
 func (w *DirectWriter) Upsert(ctx context.Context, v Values, opts ...UpsertOption) error {
@@ -611,7 +611,7 @@ func (w *DirectWriter) DeleteAll(ctx context.Context) (int64, error) {
 // predicate renders the Query into the single Expr the statement is keyed on:
 // the caller's condition AND the archived-scope gate.
 //
-// The gate is expressed as a criteria node over the "DeletedAt" name the schema
+// The gate is expressed as a criteria node over the "ArchivedAt" name the schema
 // already resolves, rather than as a clause spliced in beside the predicate —
 // so it is compiled, qualified and bound by the same walk as everything else.
 //
@@ -629,23 +629,23 @@ func (w *DirectWriter) predicate(q *criteria.Query) (criteria.Expr, error) {
 }
 
 // gated ANDs the archived-scope condition onto a predicate when the schema
-// declares DeletedAt, and returns the predicate untouched when it does not — the
+// declares ArchivedAt, and returns the predicate untouched when it does not — the
 // same "no column, no gate" rule the read path's scope gate follows.
 func gated(pred criteria.Expr, scope criteria.Scope, schema *TableSchema) criteria.Expr {
-	if _, ok := schema.DeletedAtColumn(); !ok {
+	if _, ok := schema.ArchivedAtColumn(); !ok {
 		return pred
 	}
 	switch scope {
 	case criteria.ScopeIncludeArchived:
 		return pred
 	case criteria.ScopeOnlyArchived:
-		return criteria.And(pred, criteria.NotNull("DeletedAt"))
+		return criteria.And(pred, criteria.NotNull("ArchivedAt"))
 	default:
-		return criteria.And(pred, criteria.IsNull("DeletedAt"))
+		return criteria.And(pred, criteria.IsNull("ArchivedAt"))
 	}
 }
 
-// transition renders Archive/Unarchive: the DeletedAt column written to the
+// transition renders Archive/Unarchive: the ArchivedAt column written to the
 // operation's instant or to NULL, gated on the side of the transition the verb
 // comes FROM, so an already-archived row is not re-stamped and an active row is
 // not "restored".
@@ -654,7 +654,7 @@ func (w *DirectWriter) transition(ctx context.Context, q *criteria.Query, archiv
 	if archive {
 		verb, scope = "Archive", criteria.ScopeActive
 	}
-	sdCol, err := requireDeletedAt(w.schema, w.name)
+	archivedCol, err := requireArchivedAt(w.schema, w.name)
 	if err != nil {
 		return 0, err
 	}
@@ -677,7 +677,7 @@ func (w *DirectWriter) transition(ctx context.Context, q *criteria.Query, archiv
 			stamp = now
 		}
 		return buildUpdate(tx.Dialect(), schemaTarget(w.schema),
-			gated(q.Condition(), scope, w.schema), domain.Fields{sdCol: stamp},
+			gated(q.Condition(), scope, w.schema), domain.Fields{archivedCol: stamp},
 			w.schema.UpdateNowColumns(), now, "", 0)
 	})
 }
@@ -814,7 +814,7 @@ type upsertPlan struct {
 	keyCols      []string  // the conflict target, in declaration order
 	keyed        map[string]bool
 	unarchive    bool
-	sdCol        string
+	archivedCol  string
 }
 
 func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error) {
@@ -825,11 +825,11 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 				"exists is the statement's whole premise, and the framework will not guess it from the schema",
 			table)
 	}
-	sdCol, hasDeletedAt := w.schema.DeletedAtColumn()
-	if hasDeletedAt && !cfg.archiveGiven {
+	archivedCol, hasArchivedAt := w.schema.ArchivedAtColumn()
+	if hasArchivedAt && !cfg.archiveGiven {
 		return upsertPlan{}, fmt.Errorf(
 			"db: an Upsert on %q must declare what it does to an ARCHIVED row — write.UnarchiveOnConflict() "+
-				"or write.KeepArchiveStateOnConflict(). Every other write verb is gated on deleted_at IS NULL, "+
+				"or write.KeepArchiveStateOnConflict(). Every other write verb is gated on archived_at IS NULL, "+
 				"but an upsert cannot be: its conflict target takes no WHERE, so an archived row still holds "+
 				"the unique key and still absorbs the write. Unarchiving and updating-while-invisible are both "+
 				"defensible; picking one on your behalf is not",
@@ -840,11 +840,11 @@ func (w *DirectWriter) upsertPlan(v Values, cfg upsertConfig) (upsertPlan, error
 	}
 
 	plan := upsertPlan{
-		bound:      domain.Fields{},
-		insertOnly: domain.Fields{},
-		updateOnly: domain.Fields{},
-		unarchive:  cfg.archive == archiveUnarchive,
-		sdCol:      sdCol,
+		bound:       domain.Fields{},
+		insertOnly:  domain.Fields{},
+		updateOnly:  domain.Fields{},
+		unarchive:   cfg.archive == archiveUnarchive,
+		archivedCol: archivedCol,
 	}
 
 	// The conflict key resolves through the schema like any other name. Its
@@ -1003,7 +1003,7 @@ func (w *DirectWriter) renderUpsert(d Dialect, plan upsertPlan, id string, now t
 		sets = append(sets, UpsertSet{Col: c, Mode: core.UpsertSetNew})
 	}
 	if plan.unarchive {
-		sets = append(sets, UpsertSet{Col: plan.sdCol, Mode: core.UpsertSetExpr, Expr: "NULL"})
+		sets = append(sets, UpsertSet{Col: plan.archivedCol, Mode: core.UpsertSetExpr, Expr: "NULL"})
 	}
 	return d.BuildUpsert(w.schema.Table(), cols, plan.keyCols, sets), args, nil
 }

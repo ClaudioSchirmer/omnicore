@@ -48,7 +48,7 @@ func ecAggLoader(scalars []any) (*AggregateLoader[*ecMoneyEntity], *string, *int
 		}}, nil
 	}), func() *ecMoneyEntity { return &ecMoneyEntity{} }).
 		WithSchema(NewTableSchema[*ecMoneyEntity]("listings").
-			ID("id").Field("Cents", "monthly_rent").Field("Area", "built_area").DeletedAt("deleted_at"))
+			ID("id").Field("Cents", "monthly_rent").Field("Area", "built_area").ArchivedAt("archived_at"))
 	return l, &gotSQL, &queries
 }
 
@@ -68,7 +68,7 @@ func TestAggregate_ManyFactsOneQuery(t *testing.T) {
 	if !strings.HasPrefix(*gotSQL, "SELECT COUNT(*), SUM(monthly_rent), AVG(built_area) FROM listings WHERE ") {
 		t.Errorf("specs must compile in call order over resolved columns with a separated WHERE, got %q", *gotSQL)
 	}
-	if !strings.Contains(*gotSQL, "deleted_at IS NULL") {
+	if !strings.Contains(*gotSQL, "archived_at IS NULL") {
 		t.Errorf("the default scope gate (active-only) must apply, got %q", *gotSQL)
 	}
 	if total.Value != 3 {
@@ -195,7 +195,7 @@ func TestAggregate_CriteriaFilterAndArgs(t *testing.T) {
 		}}, nil
 	}), func() *ecMoneyEntity { return &ecMoneyEntity{} }).
 		WithSchema(NewTableSchema[*ecMoneyEntity]("listings").
-			ID("id").Field("Cents", "monthly_rent").Field("Area", "built_area").DeletedAt("deleted_at"))
+			ID("id").Field("Cents", "monthly_rent").Field("Area", "built_area").ArchivedAt("archived_at"))
 
 	total := Count()
 	q := criteria.Where(criteria.Gt("Cents", 100))

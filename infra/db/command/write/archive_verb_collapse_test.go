@@ -10,7 +10,7 @@ import (
 
 // Archive and Unarchive no longer have a write path of their own: they emit the
 // SAME statement the other verbs emit — the entity's full field set, managed
-// timestamps, revision bump, guarded on the loaded revision — with the DeletedAt
+// timestamps, revision bump, guarded on the loaded revision — with the ArchivedAt
 // transition riding along as one more written column. What they keep is the
 // cascade, the base convergence, the unarchive veto and the event type.
 
@@ -39,7 +39,7 @@ var tenantSchema = NewTableSchema[*tenantEntity]("tenants").
 	Revision("revision").
 	Field("Name", "name").
 	Field("Status", "status").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 
@@ -125,8 +125,8 @@ func TestArchive_PayloadMatchesWhatTheStatementWrote(t *testing.T) {
 	if !bound {
 		t.Errorf("the payload announces %v, which the statement never bound: %v", p["status"], args)
 	}
-	if v, present := p["deleted_at"]; !present || v == nil {
-		t.Errorf("ARCHIVED payload must carry the DeletedAt stamp, got %v", p)
+	if v, present := p["archived_at"]; !present || v == nil {
+		t.Errorf("ARCHIVED payload must carry the ArchivedAt stamp, got %v", p)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestArchive_EmitsTheUpdateStatementShape(t *testing.T) {
 
 	sql, _ := stmtWithPrefix(t, tx, "UPDATE tenants SET")
 	for _, want := range []string{
-		"deleted_at = $",          // the transition, as a bound column
+		"archived_at = $",         // the transition, as a bound column
 		"name = $",                // the full field set
 		"updated_at = $",          // archiving IS a mutation, so it stamps
 		"revision = revision + 1", // same commit-order token as any write
@@ -154,7 +154,7 @@ func TestArchive_EmitsTheUpdateStatementShape(t *testing.T) {
 	}
 }
 
-func TestUnarchive_ClearsDeletedAtAndWritesTheFieldSet(t *testing.T) {
+func TestUnarchive_ClearsArchivedAtAndWritesTheFieldSet(t *testing.T) {
 	e := loadedTenant(t, "suspended", 7)
 	u, err := domain.GetUnarchivable(e, nil, "GetUnarchivable")
 	if err != nil {
@@ -168,8 +168,8 @@ func TestUnarchive_ClearsDeletedAtAndWritesTheFieldSet(t *testing.T) {
 	}
 
 	sql, args := stmtWithPrefix(t, tx, "UPDATE tenants SET")
-	if !strings.Contains(sql, "deleted_at = $") {
-		t.Errorf("unarchive must bind the DeletedAt column, got %q", sql)
+	if !strings.Contains(sql, "archived_at = $") {
+		t.Errorf("unarchive must bind the ArchivedAt column, got %q", sql)
 	}
 	var sawNil, sawActive bool
 	for _, a := range args {
@@ -181,15 +181,15 @@ func TestUnarchive_ClearsDeletedAtAndWritesTheFieldSet(t *testing.T) {
 		}
 	}
 	if !sawNil {
-		t.Errorf("unarchive must bind an explicit NULL for DeletedAt, got %v", args)
+		t.Errorf("unarchive must bind an explicit NULL for ArchivedAt, got %v", args)
 	}
 	if !sawActive {
 		t.Errorf("unarchive must persist what IfUnarchive changed, got %v", args)
 	}
 
 	p := outboxPayloadFor(t, tx, "tenants", "UNARCHIVED")
-	if v, present := p["deleted_at"]; !present || v != nil {
-		t.Errorf("UNARCHIVED payload must carry an explicit null DeletedAt, got %v", p)
+	if v, present := p["archived_at"]; !present || v != nil {
+		t.Errorf("UNARCHIVED payload must carry an explicit null ArchivedAt, got %v", p)
 	}
 }
 
@@ -213,7 +213,7 @@ func TestArchive_StaleRevisionIsRefused(t *testing.T) {
 	}
 }
 
-// The row-count check now covers the soft verbs too: archiving an id that is not
+// The row-count check now covers the archive verbs too: archiving an id that is not
 // there answers 404 instead of committing an event about nothing.
 func TestArchive_MissingRowIsNotFound(t *testing.T) {
 	e := loadedTenant(t, "trial", 0) // never loaded → unguarded, so 0 rows means gone
@@ -293,7 +293,7 @@ func TestArchiveRole_DoesNotRewriteTheSharedIdentity(t *testing.T) {
 	}
 	// The role's own row, on the other hand, is written in full.
 	sql, _ := stmtWithPrefix(t, tx, "UPDATE aluno SET")
-	if !strings.Contains(sql, "matricula = $") || !strings.Contains(sql, "deleted_at = $") {
+	if !strings.Contains(sql, "matricula = $") || !strings.Contains(sql, "archived_at = $") {
 		t.Errorf("the role row must take the full field set plus the transition, got %q", sql)
 	}
 }
@@ -328,7 +328,7 @@ var seatSchema = NewTableSchema[*seatEntity]("seats").
 	Revision("revision").
 	Field("Name", "name").
 	Field("Seats", "seats").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	CreatedAt("created_at").
 	UpdatedAt("updated_at")
 
@@ -364,7 +364,7 @@ func TestUpdate_CompletedAsArchive_ExecutesTheArchive(t *testing.T) {
 	}
 
 	sql, args := stmtWithPrefix(t, tx, "UPDATE seats SET")
-	if !strings.Contains(sql, "deleted_at = $") {
+	if !strings.Contains(sql, "archived_at = $") {
 		t.Errorf("the write must carry the archive transition, got %q", sql)
 	}
 	if !strings.Contains(sql, "seats = $") {
@@ -382,8 +382,8 @@ func TestUpdate_CompletedAsArchive_ExecutesTheArchive(t *testing.T) {
 
 	// The event the read side routes on is the ARCHIVE one, not UPDATED.
 	p := outboxPayloadFor(t, tx, "seats", "ARCHIVED")
-	if v, present := p["deleted_at"]; !present || v == nil {
-		t.Errorf("the payload must carry the DeletedAt stamp, got %v", p)
+	if v, present := p["archived_at"]; !present || v == nil {
+		t.Errorf("the payload must carry the ArchivedAt stamp, got %v", p)
 	}
 }
 
@@ -405,8 +405,8 @@ func TestUpdate_WithoutTheRequest_StaysAPlainUpdate(t *testing.T) {
 		}
 	}
 	p := outboxPayloadFor(t, tx, "seats", "UPDATED")
-	if v, present := p["deleted_at"]; present && v != nil {
-		t.Errorf("a plain update must not stamp DeletedAt, got %v", p)
+	if v, present := p["archived_at"]; present && v != nil {
+		t.Errorf("a plain update must not stamp ArchivedAt, got %v", p)
 	}
 }
 

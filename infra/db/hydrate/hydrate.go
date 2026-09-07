@@ -69,18 +69,18 @@ func New(eng core.RelationalEngine) *Hydrator { return &Hydrator{eng: eng} }
 // Dialect directly (a selection step building its own WHERE, say).
 func (h *Hydrator) Engine() core.RelationalEngine { return h.eng }
 
-// SchemaPK / SchemaDeletedAt read a source's physical ID + DeletedAt column
+// SchemaPK / SchemaArchivedAt read a source's physical ID + ArchivedAt column
 // straight from its schema. The schema is mandatory on every source, so there is
-// no convention fallback — nothing is silently mapped to "id"/"deleted_at".
-func SchemaPK(s *core.TableSchema) string                { return s.IDColumn() }
-func SchemaDeletedAt(s *core.TableSchema) (string, bool) { return s.DeletedAtColumn() }
+// no convention fallback — nothing is silently mapped to "id"/"archived_at".
+func SchemaPK(s *core.TableSchema) string                 { return s.IDColumn() }
+func SchemaArchivedAt(s *core.TableSchema) (string, bool) { return s.ArchivedAtColumn() }
 
-// FetchRow reads a single row of table by keyCol = keyVal, applying the DeletedAt
+// FetchRow reads a single row of table by keyCol = keyVal, applying the ArchivedAt
 // gate unless includeArchived. Nil (not an error) when nothing matches.
-func (h *Hydrator) FetchRow(ctx context.Context, schema *core.TableSchema, table, keyCol, keyVal, sdCol string, includeArchived bool) (Document, error) {
+func (h *Hydrator) FetchRow(ctx context.Context, schema *core.TableSchema, table, keyCol, keyVal, archivedCol string, includeArchived bool) (Document, error) {
 	d := h.eng.Dialect()
 	results, err := h.eng.Querier().QueryMaps(ctx,
-		BuildFetchSQL(d, "row", table, readColsWithKey(schema, keyCol), keyCol, sdCol, includeArchived), h.EncodeKey(keyVal))
+		BuildFetchSQL(d, "row", table, readColsWithKey(schema, keyCol), keyCol, archivedCol, includeArchived), h.EncodeKey(keyVal))
 	if err != nil || len(results) == 0 {
 		return nil, err
 	}
@@ -91,10 +91,10 @@ func (h *Hydrator) FetchRow(ctx context.Context, schema *core.TableSchema, table
 
 // FetchWhere reads every row of table matching keyCol = keyVal under the same
 // gate — the 1:N companion of FetchRow.
-func (h *Hydrator) FetchWhere(ctx context.Context, schema *core.TableSchema, table, keyCol, keyVal, sdCol string, includeArchived bool) ([]Document, error) {
+func (h *Hydrator) FetchWhere(ctx context.Context, schema *core.TableSchema, table, keyCol, keyVal, archivedCol string, includeArchived bool) ([]Document, error) {
 	d := h.eng.Dialect()
 	results, err := h.eng.Querier().QueryMaps(ctx,
-		BuildFetchSQL(d, "where", table, readColsWithKey(schema, keyCol), keyCol, sdCol, includeArchived), h.EncodeKey(keyVal))
+		BuildFetchSQL(d, "where", table, readColsWithKey(schema, keyCol), keyCol, archivedCol, includeArchived), h.EncodeKey(keyVal))
 	if err != nil {
 		return nil, err
 	}
@@ -102,17 +102,17 @@ func (h *Hydrator) FetchWhere(ctx context.Context, schema *core.TableSchema, tab
 }
 
 // FetchByIDs selects every row whose keyCol is in ids, applying the same
-// DeletedAt gate as the single-row fetch. The id set is chunked at
+// ArchivedAt gate as the single-row fetch. The id set is chunked at
 // MaxInClauseSize so no single IN (...) predicate exceeds a backend's list
 // ceiling; each chunk's placeholders are rendered through the dialect and each id
 // is encoded exactly as the single-key path encodes it, so the WHERE matches the
 // stored id column on every backend. Rows arrive in no guaranteed order — the
 // caller keys each document by its ID column, never by position.
-func (h *Hydrator) FetchByIDs(ctx context.Context, schema *core.TableSchema, table, keyCol string, ids []string, sdCol string, includeArchived bool) ([]Document, error) {
+func (h *Hydrator) FetchByIDs(ctx context.Context, schema *core.TableSchema, table, keyCol string, ids []string, archivedCol string, includeArchived bool) ([]Document, error) {
 	d := h.eng.Dialect()
 	cond := ""
-	if !includeArchived && sdCol != "" {
-		cond = " AND " + d.QuoteIdent(sdCol) + " IS NULL"
+	if !includeArchived && archivedCol != "" {
+		cond = " AND " + d.QuoteIdent(archivedCol) + " IS NULL"
 	}
 	out := make([]Document, 0, len(ids))
 	for start := 0; start < len(ids); start += MaxInClauseSize {
@@ -138,11 +138,11 @@ func (h *Hydrator) FetchByIDs(ctx context.Context, schema *core.TableSchema, tab
 	return out, nil
 }
 
-// FetchAll reads the whole table under the DeletedAt gate — no key predicate.
-func (h *Hydrator) FetchAll(ctx context.Context, schema *core.TableSchema, table, sdCol string, includeArchived bool) ([]Document, error) {
+// FetchAll reads the whole table under the ArchivedAt gate — no key predicate.
+func (h *Hydrator) FetchAll(ctx context.Context, schema *core.TableSchema, table, archivedCol string, includeArchived bool) ([]Document, error) {
 	d := h.eng.Dialect()
 	results, err := h.eng.Querier().QueryMaps(ctx,
-		BuildFetchSQL(d, "all", table, readColsWithKey(schema, ""), "", sdCol, includeArchived))
+		BuildFetchSQL(d, "all", table, readColsWithKey(schema, ""), "", archivedCol, includeArchived))
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +151,10 @@ func (h *Hydrator) FetchAll(ctx context.Context, schema *core.TableSchema, table
 
 // FetchLatestArchived returns the most recently archived row referencing keyVal —
 // the deterministic remnant pick when no active row exists.
-func (h *Hydrator) FetchLatestArchived(ctx context.Context, schema *core.TableSchema, keyCol, keyVal, sdCol string) (Document, error) {
+func (h *Hydrator) FetchLatestArchived(ctx context.Context, schema *core.TableSchema, keyCol, keyVal, archivedCol string) (Document, error) {
 	d := h.eng.Dialect()
 	sql := d.ApplyLimit(fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s AND %s IS NOT NULL ORDER BY %s DESC",
-		selectList(d, readColsWithKey(schema, keyCol)), d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(sdCol), d.QuoteIdent(sdCol)), 1)
+		selectList(d, readColsWithKey(schema, keyCol)), d.QuoteIdent(schema.Table()), d.QuoteIdent(keyCol), d.Placeholder(1), d.QuoteIdent(archivedCol), d.QuoteIdent(archivedCol)), 1)
 	results, err := h.eng.Querier().QueryMaps(ctx, sql, h.EncodeKey(keyVal))
 	if err != nil || len(results) == 0 {
 		return nil, err
@@ -174,22 +174,22 @@ func (h *Hydrator) EncodeKey(keyVal string) any {
 
 // BuildFetchSQL renders the SELECT one keyed fetch runs: an explicit,
 // dialect-quoted column list over table, an optional keyCol = ? predicate, the
-// DeletedAt gate unless includeArchived, and LIMIT 1 when verb is "row". Exported
+// ArchivedAt gate unless includeArchived, and LIMIT 1 when verb is "row". Exported
 // because the gate it renders is a policy the CALLER decides (a projection that
 // drops archived rows passes includeArchived=false), so the caller's own tests
 // assert the SQL its policy produces.
-func BuildFetchSQL(d core.Dialect, verb, table string, cols []string, keyCol, sdCol string, includeArchived bool) string {
+func BuildFetchSQL(d core.Dialect, verb, table string, cols []string, keyCol, archivedCol string, includeArchived bool) string {
 	sel := selectList(d, cols)
 	cond := ""
-	if !includeArchived && sdCol != "" {
-		cond = " AND " + d.QuoteIdent(sdCol) + " IS NULL"
+	if !includeArchived && archivedCol != "" {
+		cond = " AND " + d.QuoteIdent(archivedCol) + " IS NULL"
 	}
 	if keyCol == "" {
 		// FetchAll: no key predicate.
 		if cond == "" {
 			return fmt.Sprintf("SELECT %s FROM %s", sel, d.QuoteIdent(table))
 		}
-		return fmt.Sprintf("SELECT %s FROM %s WHERE %s IS NULL", sel, d.QuoteIdent(table), d.QuoteIdent(sdCol))
+		return fmt.Sprintf("SELECT %s FROM %s WHERE %s IS NULL", sel, d.QuoteIdent(table), d.QuoteIdent(archivedCol))
 	}
 	sqlStr := fmt.Sprintf("SELECT %s FROM %s WHERE %s = %s%s",
 		sel, d.QuoteIdent(table), d.QuoteIdent(keyCol), d.Placeholder(1), cond)

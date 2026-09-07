@@ -59,7 +59,7 @@ func TestOracleComposer_OwnChild(t *testing.T) {
 		id RAW(16) NOT NULL PRIMARY KEY,
 		user_id RAW(16) NOT NULL,
 		qty NUMBER(10) NOT NULL,
-		deleted_at TIMESTAMP(6) NULL
+		archived_at TIMESTAMP(6) NULL
 	)`); err != nil {
 		t.Fatalf("create mc_lines: %v", err)
 	}
@@ -90,9 +90,9 @@ func TestOracleComposer_OwnChild(t *testing.T) {
 	// Child declared on the ROOT schema (replicating flatSchema's fields) — no embed.
 	rootWithChild := core.NewTableSchema[*flatPerson]("flat_persons").
 		ID("id").Field("Name", "name").Field("Email", "email").Field("Phone", "phone").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(core.NewTableSchema[mcLineRow]("mc_lines").ID("id").ParentID("user_id").
-			Field("Qty", "qty").DeletedAt("deleted_at"))
+			Field("Qty", "qty").ArchivedAt("archived_at"))
 	view := query.View("flat_persons").Version(1).Schema(rootWithChild)
 
 	doc, err := query.NewComposer(eng).Compose(ctx, view, res.ID.Value())

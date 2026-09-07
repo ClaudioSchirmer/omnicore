@@ -22,7 +22,7 @@ func composerRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*builderTestEntity]("orders").
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // composerEngine builds a fakeEngine whose QueryMaps is driven by mapsFn.
@@ -145,7 +145,7 @@ func composerSiblingRootSchema() *core.TableSchema {
 	return core.NewTableSchema[*builderTestEntity]("orders").
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Sibling(core.NewSiblingSchema[*builderTestEntity]("orders_ext").Field("Email", "email"))
 }
 
@@ -271,7 +271,7 @@ func TestCompose_OwnChildrenAutoNested(t *testing.T) {
 	childSchema := core.NewTableSchema[csComposeVO]("lines").ID("id").ParentID("order_id").Field("Label", "label").
 		Sibling(core.NewSiblingSchema[csComposeVO]("lines_ext").Field("Note", "note"))
 	rootWithChild := core.NewTableSchema[*builderTestEntity]("orders").
-		ID("id").Field("Name", "name").DeletedAt("deleted_at").
+		ID("id").Field("Name", "name").ArchivedAt("archived_at").
 		Child(childSchema)
 	view := View("orders").Version(1).Schema(rootWithChild) // no EmbedMany
 
@@ -433,15 +433,15 @@ func TestComposeBatch_ChunksLargeIDSet(t *testing.T) {
 }
 
 // composerRoleSchemaManaged mirrors composerRoleSchema with BOTH sides
-// declaring the managed columns (DeletedAt + timestamps) — the collision the
+// declaring the managed columns (ArchivedAt + timestamps) — the collision the
 // A5 guard resolves in favor of the ROLE.
 func composerRoleSchemaManaged() *core.TableSchema {
 	base := core.NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	return core.NewTableSchema[*builderTestEntity]("aluno").
 		ID("id").
 		Field("Email", "email").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		SharedBase(base, "pessoa_id")
@@ -456,11 +456,11 @@ func TestCompose_SharedBase_ManagedColumnsStayRoleScoped(t *testing.T) {
 		switch {
 		case strings.Contains(sql, "FROM pessoa"):
 			return mapsFromColsData(
-				[]string{"id", "name", "deleted_at", "created_at", "updated_at"},
+				[]string{"id", "name", "archived_at", "created_at", "updated_at"},
 				[][]any{{"p1", "Ana", nil, "2024-01-10", "2024-01-10"}}), nil
 		case strings.Contains(sql, "FROM aluno"):
 			return mapsFromColsData(
-				[]string{"id", "email", "pessoa_id", "deleted_at", "created_at", "updated_at"},
+				[]string{"id", "email", "pessoa_id", "archived_at", "created_at", "updated_at"},
 				[][]any{{"a1", "a@x", "p1", "2026-07-01", "2026-06-30", "2026-07-01"}}), nil
 		}
 		return nil, nil
@@ -475,8 +475,8 @@ func TestCompose_SharedBase_ManagedColumnsStayRoleScoped(t *testing.T) {
 	if doc["name"] != "Ana" {
 		t.Errorf("base business field must merge flat, got name=%v", doc["name"])
 	}
-	if doc["deleted_at"] != "2026-07-01" {
-		t.Errorf("role's deleted_at must survive the base merge (role archived, base active), got %v", doc["deleted_at"])
+	if doc["archived_at"] != "2026-07-01" {
+		t.Errorf("role's archived_at must survive the base merge (role archived, base active), got %v", doc["archived_at"])
 	}
 	if doc["created_at"] != "2026-06-30" || doc["updated_at"] != "2026-07-01" {
 		t.Errorf("role's timestamps must survive the base merge, got created=%v updated=%v",
@@ -492,11 +492,11 @@ func TestViewNode_StripArchivedChildren(t *testing.T) {
 		ID("id").
 		ParentID("aluno_id").
 		Field("Label", "label").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	root := core.NewTableSchema[*builderTestEntity]("aluno").
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Child(child)
 	node := View("aluno").Version(1).Schema(root).BuildViewNode()
 
@@ -505,8 +505,8 @@ func TestViewNode_StripArchivedChildren(t *testing.T) {
 		"id":   "a1",
 		"name": "Ana",
 		seg: []any{
-			map[string]any{"id": "n1", "label": "active", "deleted_at": nil},
-			map[string]any{"id": "n2", "label": "archived", "deleted_at": "2026-07-01"},
+			map[string]any{"id": "n1", "label": "active", "archived_at": nil},
+			map[string]any{"id": "n2", "label": "archived", "archived_at": "2026-07-01"},
 		},
 	}
 	node.StripArchivedChildren(doc)

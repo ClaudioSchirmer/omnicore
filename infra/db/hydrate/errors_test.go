@@ -30,7 +30,7 @@ func TestReads_SurfaceTheEngineError(t *testing.T) {
 	if _, err := h().FetchInGrouped(ctx, lineSchema(), "lines", "order_id", []string{"o1"}, "", true); err == nil {
 		t.Error("FetchInGrouped must surface the read error")
 	}
-	if _, err := h().FetchLatestArchived(ctx, roleSchema(), "person_id", "p1", "deleted_at"); err == nil {
+	if _, err := h().FetchLatestArchived(ctx, roleSchema(), "person_id", "p1", "archived_at"); err == nil {
 		t.Error("FetchLatestArchived must surface the read error")
 	}
 	if err := h().MergeOwnChildren(ctx, Document{"id": "o1"}, rootSchema(), true); err == nil {
@@ -51,14 +51,14 @@ func TestMergeSharedBase_WithoutRoleManagedColumnsTheBasesLand(t *testing.T) {
 	h := New(newScripted(map[string][]map[string]any{
 		"persons": {{
 			"id": "p1", "name": "ana",
-			"deleted_at": "BASE-ARCHIVED", "created_at": "BASE-TIME",
+			"archived_at": "BASE-ARCHIVED", "created_at": "BASE-TIME",
 		}},
 	}))
 	doc := Document{"id": "i1", "person_id": "p1"}
 	if err := h.MergeSharedBase(context.Background(), doc, bareRoleSchema(), true); err != nil {
 		t.Fatalf("MergeSharedBase: %v", err)
 	}
-	if doc["deleted_at"] != "BASE-ARCHIVED" || doc["created_at"] != "BASE-TIME" {
+	if doc["archived_at"] != "BASE-ARCHIVED" || doc["created_at"] != "BASE-TIME" {
 		t.Fatalf("with nothing to shadow, the base's managed columns must land: %v", doc)
 	}
 }

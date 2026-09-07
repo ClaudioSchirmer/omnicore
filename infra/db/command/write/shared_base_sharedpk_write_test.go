@@ -24,7 +24,7 @@ func roleTestSchemaSharedPK() *TableSchema {
 	return NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "id")
 }
 
@@ -84,7 +84,7 @@ func TestInsertRoleWithBase_SharedPK_ArchivedRemnantIsInvisible_InsertProceeds(t
 	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "INSERT INTO aluno") }) {
 		t.Errorf("insert must proceed as a plain INSERT under shared-ID, got %v", tx.execs)
 	}
-	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE aluno SET deleted_at = NULL") }) {
+	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE aluno SET archived_at = NULL") }) {
 		t.Errorf("no revive UPDATE may run on the insert path, got %v", tx.execs)
 	}
 }

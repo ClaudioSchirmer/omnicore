@@ -70,7 +70,7 @@
    │                                              ↑
    │            AppContext-derived overlays (tenant_id, owner_id) + field restriction layer here
    │           └─► <span class="auto">mongo.MongoViewReader</span>: adapts Criteria → bson
-   │                 ├─► applies deleted_at=null if !IncludeArchived (root gate)
+   │                 ├─► applies archived_at=null if !IncludeArchived (root gate)
    │                 ├─► strips archived entries from the nested aggregate-child arrays if !IncludeArchived
    │                 ├─► $text search if Search!=""
    │                 ├─► decode cursor → $gt/$lt on _id
@@ -199,7 +199,7 @@ func (q FindUsersQuery) FromQueryResult(
         <tr><td><code>After / Before string</code></td><td>opaque keyset cursors. From <code>?after=</code> / <code>?before=</code>.</td></tr>
         <tr><td><code>Backward bool</code></td><td>walk the window that PRECEDES the cursor in canonical order — the keyset runs in inverted sort order and the slice is restored before returning. The explicit direction signal every surface sets for <code>?last=</code> (alone: the LAST N of the set; with <code>?before=</code>: the N rows before that edge); the reader also infers it from a non-empty <code>Before</code>. Ignored when <code>OnlyTotal</code> is set, like Limit/After/Before.</td></tr>
         <tr><td><code>Search string</code></td><td><code>$text</code> term. From <code>?search=</code>.</td></tr>
-        <tr><td><code>IncludeArchived bool</code></td><td>lifts the <code>deleted_at IS NULL</code> gate. From <code>?includeArchived=true</code>.</td></tr>
+        <tr><td><code>IncludeArchived bool</code></td><td>lifts the <code>archived_at IS NULL</code> gate. From <code>?includeArchived=true</code>.</td></tr>
         <tr><td><code>OnlyTotal bool</code></td><td>only-total short-circuit. From <code>?onlyTotal=true</code>.</td></tr>
         <tr><td><code>BypassMaxLimit bool</code></td><td><strong>Never set from the wire.</strong> Skips the per-view page-size ceiling in <code>ReadPage</code> and uses <code>Limit</code> verbatim — for a trusted internal caller enforcing its OWN operator-set ceiling. The tabular export is the one framework user: it sets <code>Limit</code> to the resolved <code>maxExportRows</code> (deliberately larger than the page-read <code>MaxLimit</code>) and ignores the caller's <code>?first</code>/<code>?last</code>. A client cannot lift the ceiling with it.</td></tr>
     </tbody></table>

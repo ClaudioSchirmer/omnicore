@@ -24,13 +24,13 @@ type lifeSale struct {
 
 func lifeProductsView() *ViewDefinition {
 	return View("products").Version(1).Schema(
-		core.NewTableSchema[lifeProduct]("products").ID("id").DeletedAt("deleted_at").
+		core.NewTableSchema[lifeProduct]("products").ID("id").ArchivedAt("archived_at").
 			Field("Name", "name"))
 }
 
 func lifeSalesView() *ViewDefinition {
 	return View("sales").Version(1).
-		Schema(core.NewTableSchema[lifeSale]("sales").ID("id").DeletedAt("deleted_at").
+		Schema(core.NewTableSchema[lifeSale]("sales").ID("id").ArchivedAt("archived_at").
 			Field("ProductID", "product_id")).
 		Embed(JoinView(lifeProductsView(), "Product", "product")).On("product_id").
 		Indexes(Index("product_id"))
@@ -102,34 +102,34 @@ func TestLifecycle_SourceUpdateRefreshesSegment(t *testing.T) {
 }
 
 // ARCHIVE under the default (keep) policy: the source document survives with
-// its DeletedAt column populated, and the segment mirrors that state — the
+// its ArchivedAt column populated, and the segment mirrors that state — the
 // same contract an external mirror segment has. The reference is NOT nulled.
 func TestLifecycle_SourceArchivedKeepsMirroredSegment(t *testing.T) {
 	sig, colls := lifeFixture(t)
 	colls["sales"].docs = []any{map[string]any{"_id": "s1", "product_id": "p1"}}
 	colls["products"].docs = []any{map[string]any{
-		"_id": "p1", "name": "Cable", "deleted_at": "2026-01-02T00:00:00Z", docRevisionField: int64(3)}}
+		"_id": "p1", "name": "Cable", "archived_at": "2026-01-02T00:00:00Z", docRevisionField: int64(3)}}
 
 	sig.Written(context.Background(), "products", "p1")
 
 	elem := literalOf(t, lastSegmentEdit(t, colls["sales"], "product")).(Document)
-	if elem["deleted_at"] == nil {
-		t.Fatalf("an archived source must reach the segment carrying its DeletedAt stamp, got %v", elem)
+	if elem["archived_at"] == nil {
+		t.Fatalf("an archived source must reach the segment carrying its ArchivedAt stamp, got %v", elem)
 	}
 }
 
-// UNARCHIVE: the source document is written again with a cleared DeletedAt
+// UNARCHIVE: the source document is written again with a cleared ArchivedAt
 // column; the segment converges to the live state.
 func TestLifecycle_SourceUnarchivedRefreshesSegment(t *testing.T) {
 	sig, colls := lifeFixture(t)
 	colls["sales"].docs = []any{map[string]any{"_id": "s1", "product_id": "p1"}}
 	colls["products"].docs = []any{map[string]any{
-		"_id": "p1", "name": "Cable", "deleted_at": nil, docRevisionField: int64(4)}}
+		"_id": "p1", "name": "Cable", "archived_at": nil, docRevisionField: int64(4)}}
 
 	sig.Written(context.Background(), "products", "p1")
 
 	elem := literalOf(t, lastSegmentEdit(t, colls["sales"], "product")).(Document)
-	if elem["deleted_at"] != nil {
+	if elem["archived_at"] != nil {
 		t.Fatalf("an unarchived source must clear the stamp in the segment, got %v", elem)
 	}
 }
@@ -202,7 +202,7 @@ func TestLifecycle_EmbedderFKPointingNowhereClearsSegment(t *testing.T) {
 // pre-write document was captured (Before) and both FKs enter the target set.
 func TestLifecycle_SourceMovedBetweenParentsTouchesBothSides(t *testing.T) {
 	dashboard := View("dashboard").Version(1).
-		Schema(core.NewTableSchema[lifeSale]("customers").ID("id").DeletedAt("deleted_at")).
+		Schema(core.NewTableSchema[lifeSale]("customers").ID("id").ArchivedAt("archived_at")).
 		EmbedMany(JoinView(lifeProductsView(), "Products", "products")).On("owner_id")
 	colls := map[string]*fakeColl{
 		"products":  {docs: []any{map[string]any{"_id": "p1", "owner_id": "c2", docRevisionField: int64(5)}}},

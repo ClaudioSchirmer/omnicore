@@ -25,15 +25,15 @@ func carrierHasNotification(c domain.NotificationCarrier, key string) bool {
 	return false
 }
 
-// roleAggLoadSchemaSD is roleAggLoadSchema (shared_base_children_load_test.go) with a
-// DeletedAt column on the role, so the pre-flight probe filters archived rows out.
-func roleAggLoadSchemaSD() *TableSchema {
+// roleAggLoadSchemaArchived is roleAggLoadSchema (shared_base_children_load_test.go) with a
+// ArchivedAt column on the role, so the pre-flight probe filters archived rows out.
+func roleAggLoadSchemaArchived() *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 		Child(NewTableSchema[addrLoad]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street"))
 	return NewTableSchema[*roleAggLoad]("aluno").
 		ID("id").Revision("revision").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 }
 
@@ -83,7 +83,7 @@ func TestLoadSharedBaseIdentity_ActiveRoleConflict(t *testing.T) {
 // A archived (archived) role is NOT a conflict: the probe filters it out with an
 // `IS NULL` predicate, so the load falls through to the warm hydrate (and the persister's
 // revive path takes over on write).
-func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaDeletedAt(t *testing.T) {
+func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaArchivedAt(t *testing.T) {
 	var probeSQL string
 	query := func(sql string, args []any) (Rows, error) {
 		switch {
@@ -106,7 +106,7 @@ func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaDeletedAt(t *testing.T) 
 		return &fakeDBRows{}, nil
 	}
 	l := NewAggregateLoader[*roleAggLoad](fakeEngine(query), func() *roleAggLoad { return &roleAggLoad{} }).
-		WithSchema(roleAggLoadSchemaSD())
+		WithSchema(roleAggLoadSchemaArchived())
 
 	fresh := &roleAggLoad{Name: "Ana", Matricula: "M1"}
 	_, existed, err := l.LoadSharedBaseIdentity(context.Background(), fresh)
@@ -116,7 +116,7 @@ func TestLoadSharedBaseIdentity_ProbeExcludesArchivedViaDeletedAt(t *testing.T) 
 	if !existed {
 		t.Error("the identity exists (archived role) — the warm hydrate must still run")
 	}
-	if !strings.Contains(probeSQL, "deleted_at") || !strings.Contains(probeSQL, "IS NULL") {
-		t.Errorf("the probe must exclude archived rows via the DeletedAt column; got %q", probeSQL)
+	if !strings.Contains(probeSQL, "archived_at") || !strings.Contains(probeSQL, "IS NULL") {
+		t.Errorf("the probe must exclude archived rows via the ArchivedAt column; got %q", probeSQL)
 	}
 }

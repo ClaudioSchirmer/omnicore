@@ -193,7 +193,7 @@ func TestServableSharedBaseField_Passes(t *testing.T) {
 func managedSchema(table string) *core.TableSchema {
 	return core.NewTableSchema[*guardEnt](table).ID("id").Field("Name", "name").
 		ParentID("owner_id").
-		CreatedAt("created_at").UpdatedAt("updated_at").DeletedAt("deleted_at")
+		CreatedAt("created_at").UpdatedAt("updated_at").ArchivedAt("archived_at")
 }
 
 // TestServableManagedColumns_Passes — the managed slots and the ParentID
@@ -209,7 +209,7 @@ func managedSchema(table string) *core.TableSchema {
 // backing's.
 func TestServableManagedColumns_Passes(t *testing.T) {
 	schema := managedSchema("gadgets")
-	for _, field := range []string{"CreatedAt", "UpdatedAt", "DeletedAt", "ParentID"} {
+	for _, field := range []string{"CreatedAt", "UpdatedAt", "ArchivedAt", "ParentID"} {
 		if _, err := toExpr(schema, nil, map[string]any{field: "x"}); err != nil {
 			t.Errorf("a filter on the managed field %q must be servable, got %v", field, err)
 		}
@@ -221,7 +221,7 @@ func TestServableManagedColumns_Passes(t *testing.T) {
 
 // TestUnsupportedUndeclaredManagedColumn_MapsTo400 is the other half of the
 // rule: the logical name resolves only when the schema DECLARES that slot. A
-// view with no DeletedAt has no archived state to address, so the name is as
+// view with no ArchivedAt has no archived state to address, so the name is as
 // unknown as any other.
 func TestUnsupportedUndeclaredManagedColumn_MapsTo400(t *testing.T) {
 	_, err := toExpr(guardSchema("gadgets"), nil, map[string]any{"CreatedAt": "x"})

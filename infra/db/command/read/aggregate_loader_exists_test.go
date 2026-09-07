@@ -28,13 +28,13 @@ func (e *ecCodedEntity) BuildRules(string, domain.Service, *domain.Rules) {}
 func ecCodedLoader(queryFn func(sql string, args []any) (Rows, error)) *AggregateLoader[*ecCodedEntity] {
 	return NewAggregateLoader[*ecCodedEntity](fakeEngine(queryFn), func() *ecCodedEntity { return &ecCodedEntity{} }).
 		WithSchema(NewTableSchema[*ecCodedEntity]("listings").
-			ID("id").Field("Code", "announcement_code").DeletedAt("deleted_at"))
+			ID("id").Field("Code", "announcement_code").ArchivedAt("archived_at"))
 }
 
 func ecSchema() *TableSchema {
 	return NewTableSchema[*aggLoaderTestEntity]("listings").
 		ID("id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func ecLoader(queryFn func(sql string, args []any) (Rows, error)) *AggregateLoader[*aggLoaderTestEntity] {
@@ -76,7 +76,7 @@ func TestExists_CompilesBareProbe_TrueOnRow(t *testing.T) {
 	if !strings.Contains(gotSQL, "NOT (id = $2)") && !strings.Contains(gotSQL, "id <> $2") {
 		t.Errorf("the ID must be addressable as \"ID\" for exclude-self, got %q", gotSQL)
 	}
-	if !strings.Contains(gotSQL, "deleted_at IS NULL") {
+	if !strings.Contains(gotSQL, "archived_at IS NULL") {
 		t.Errorf("the default scope gate (active-only) must apply, got %q", gotSQL)
 	}
 	if len(gotArgs) != 2 {
@@ -119,7 +119,7 @@ func TestExists_NilQueryMeansAnyActive(t *testing.T) {
 	if _, err := l.Exists(context.Background(), nil); err != nil {
 		t.Fatalf("nil query must mean 'any active row', got %v", err)
 	}
-	if !strings.Contains(gotSQL, "deleted_at IS NULL") {
+	if !strings.Contains(gotSQL, "archived_at IS NULL") {
 		t.Errorf("nil query still gates on active, got %q", gotSQL)
 	}
 }

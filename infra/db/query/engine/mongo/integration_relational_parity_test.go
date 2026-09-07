@@ -132,7 +132,7 @@ func parityRootSchema() *core.TableSchema {
 		ID("id").
 		Revision("revision").
 		Field("Name", "name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
 		Sibling(core.NewSiblingSchema[*parityRoot]("parity_roots_ext").Field("Nickname", "nickname")).
@@ -140,7 +140,7 @@ func parityRootSchema() *core.TableSchema {
 			ID("id").
 			ParentID("parity_root_id").
 			Field("Amount", "amount").
-			DeletedAt("deleted_at").
+			ArchivedAt("archived_at").
 			CreatedAt("created_at").
 			UpdatedAt("updated_at"))
 }
@@ -151,7 +151,7 @@ func createParityTables(t *testing.T, p *postgres.Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		revision BIGINT NOT NULL DEFAULT 0,
 		name TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -163,7 +163,7 @@ func createParityTables(t *testing.T, p *postgres.Postgres) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		parity_root_id UUID NOT NULL REFERENCES parity_roots(id) ON DELETE CASCADE,
 		amount BIGINT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -208,7 +208,7 @@ func TestRelationalDocParity_WithSibling(t *testing.T) {
 
 // TestRelationalDocParity_ArchivedChild seeds one live and one archived child and
 // loads with IncludeArchived (matching the Composer's keep-archived default), so
-// both paths carry the archived element WITH its deleted_at — the read-time strip
+// both paths carry the archived element WITH its archived_at — the read-time strip
 // is a later ViewNode pass, not part of the composed/built document.
 func TestRelationalDocParity_ArchivedChild(t *testing.T) {
 	pg, cleanup := newTestPG(t)
@@ -226,7 +226,7 @@ func TestRelationalDocParity_ArchivedChild(t *testing.T) {
 		t.Fatalf("seed live tag: %v", err)
 	}
 	if _, err := pg.Pool().Exec(ctx,
-		`INSERT INTO loader_tag_vos (loader_root_id, label, deleted_at) VALUES ($1,'gone', NOW())`, rootID); err != nil {
+		`INSERT INTO loader_tag_vos (loader_root_id, label, archived_at) VALUES ($1,'gone', NOW())`, rootID); err != nil {
 		t.Fatalf("seed archived tag: %v", err)
 	}
 

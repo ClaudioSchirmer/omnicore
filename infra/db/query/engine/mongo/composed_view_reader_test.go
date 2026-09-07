@@ -18,7 +18,7 @@ import (
 // ─── filter-aware fake collection ────────────────────────────────────────────
 //
 // The composed reader's leg fetches carry real filters ($in batches, per-parent
-// ParentID equality, the DeletedAt gate) and real find options (limit, sort,
+// ParentID equality, the ArchivedAt gate) and real find options (limit, sort,
 // projection). filterColl honors the filter and the limit — enough to verify
 // grouping, LEFT semantics, archived gates and truncation — and captures both
 // so tests can assert exactly what was sent to the driver.
@@ -270,7 +270,7 @@ func cvrPrimaryView() *query.ViewDefinition {
 		ID("id").
 		Field("Code", "code").
 		Field("MirrorID", "mirror_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return query.View("gadgets").Version(1).Schema(schema)
 }
 
@@ -279,7 +279,7 @@ func cvrNotesView() *query.ViewDefinition {
 		ID("id").
 		Field("GadgetID", "gadget_id").
 		Field("Text", "text").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return query.View("gadget_notes").Version(1).Schema(schema)
 }
 
@@ -317,7 +317,7 @@ func newCVREnv() *cvrEnv {
 		notes: &filterColl{
 			docs: []bson.M{
 				{"_id": "n1", "gadget_id": "g1", "text": "a"},
-				{"_id": "n4", "gadget_id": "g1", "text": "ab", "deleted_at": "2026-01-01"},
+				{"_id": "n4", "gadget_id": "g1", "text": "ab", "archived_at": "2026-01-01"},
 				{"_id": "n2", "gadget_id": "g1", "text": "b"},
 				{"_id": "n3", "gadget_id": "g2", "text": "c"},
 			},
@@ -446,17 +446,17 @@ func TestComposedReader_ArchivedGatePerLeg(t *testing.T) {
 	env := newCVREnv()
 
 	// Default read: the archived note n4 is gated out by the leg's own
-	// DeletedAt column; the external mirror leg has no DeletedAt, so its
+	// ArchivedAt column; the external mirror leg has no ArchivedAt, so its
 	// filter carries no gate (the knob is a no-op there).
 	_, err := env.reader.ReadPage(context.Background(), "gadgets_full", queries.ReadCriteria{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, gated := env.mirror.filters[0]["deleted_at"]; gated {
-		t.Fatal("a leg without DeletedAt must not carry an archived gate")
+	if _, gated := env.mirror.filters[0]["archived_at"]; gated {
+		t.Fatal("a leg without ArchivedAt must not carry an archived gate")
 	}
 	notesMatch := aggStage(env.notes.aggPipelines[0], "$match")
-	if v, gated := notesMatch["deleted_at"]; !gated || v != nil {
+	if v, gated := notesMatch["archived_at"]; !gated || v != nil {
 		t.Fatalf("the notes leg must gate archived docs by default, got %#v", notesMatch)
 	}
 
@@ -1005,7 +1005,7 @@ func TestMongoViewReader_OverlayFilterCursorRoundTrip(t *testing.T) {
 			ID("id").
 			Field("Code", "code").
 			Field("MirrorID", "mirror_id").
-			DeletedAt("deleted_at"))
+			ArchivedAt("archived_at"))
 	r := NewMongoViewReader(newFakeMongo(coll), testResolver).SetViews([]*query.ViewDefinition{primary})
 
 	// The criteria AS THE READER SEES IT: the wire filter (Code) plus a
@@ -1053,7 +1053,7 @@ func newInChildEnv() (*ComposedViewReader, *filterColl, string) {
 	lineSchema := cvrLineSchema()
 	primarySchema := core.NewTableSchema[cvrGadget]("gadgets").
 		ID("id").Field("Code", "code").Field("MirrorID", "mirror_id").
-		DeletedAt("deleted_at").Child(lineSchema)
+		ArchivedAt("archived_at").Child(lineSchema)
 	primary := query.View("gadgets").Version(1).Schema(primarySchema)
 	composed := query.ComposedView("gadgets_full").Primary(primary).
 		LinkInChild(lineSchema, query.JoinUpstream(cvrUpstreamSchema(), "Item", "item")).On("item_id")

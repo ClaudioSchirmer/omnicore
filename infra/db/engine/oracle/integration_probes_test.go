@@ -41,7 +41,7 @@ func probeSchema() *core.TableSchema {
 		Field("Code", "code").
 		Field("Cents", "cents").
 		Field("Area", "area").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func probeSetup(t *testing.T) (*Engine, string) {
@@ -53,7 +53,7 @@ func probeSetup(t *testing.T) (*Engine, string) {
 		code VARCHAR2(32) NOT NULL,
 		cents NUMBER(19) NOT NULL,
 		area BINARY_DOUBLE NOT NULL,
-		deleted_at TIMESTAMP(6) NULL
+		archived_at TIMESTAMP(6) NULL
 	)`); err != nil {
 		t.Fatalf("create probe_items: %v", err)
 	}
@@ -65,7 +65,7 @@ func probeSetup(t *testing.T) (*Engine, string) {
 			del = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		}
 		if _, err := raw.ExecContext(ctx,
-			`INSERT INTO probe_items (id, code, cents, area, deleted_at) VALUES (:1, :2, :3, :4, :5)`,
+			`INSERT INTO probe_items (id, code, cents, area, archived_at) VALUES (:1, :2, :3, :4, :5)`,
 			id[:], code, cents, area, del); err != nil {
 			t.Fatalf("seed %s: %v", code, err)
 		}

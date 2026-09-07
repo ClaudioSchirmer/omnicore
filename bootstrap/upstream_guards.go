@@ -73,10 +73,10 @@ func applyUpstreamSubscriptionDefaults(subs []UpstreamSubscription, service stri
 //   - §8.4 — Anonymize policy requires AnonymizeFields
 //   - §8.5 (generalized) — every declared external-schema column must survive
 //     the subscription's `fields:` allowlist (abort) + advisory warning when
-//     no consuming schema declares a DeletedAt column
+//     no consuming schema declares an ArchivedAt column
 //
 // §8.5 is the only guard with a non-fatal branch: a mirror whose consuming
-// schemas declare no DeletedAt column yield an advisory (logged via
+// schemas declare no ArchivedAt column yield an advisory (logged via
 // logger, which may be nil in tests), not a boot-aborting violation.
 //
 // Per-entry shape validation (§5) runs first because a structurally
@@ -108,7 +108,7 @@ func validateUpstreamSubscriptions(
 	}
 	// §8.5 (generalized) — every column a consumer's external schema declares
 	// must survive the subscription's `fields:` allowlist (a dead declaration
-	// aborts); a mirror whose consuming schemas declare no DeletedAt column at
+	// aborts); a mirror whose consuming schemas declare no ArchivedAt column at
 	// all is an advisory (logged, not fatal).
 	sdViolations, sdWarnings := guardSchemaFieldsSurvival(subs, views, composed)
 	violations = append(violations, sdViolations...)
@@ -317,7 +317,7 @@ func guardAnonymizePolicy(subs []UpstreamSubscription) []string {
 // because the allowlist operates on the raw upstream payload and consults no
 // schema (at ingestion time no class is materialized). A declared column the
 // mirror can never carry is a dead declaration: reads translate it, exports
-// advertise it, and it is forever absent. The DeletedAt column is the highest-
+// advertise it, and it is forever absent. The ArchivedAt column is the highest-
 // stakes instance (an archived upstream entity would look active forever), so
 // it keeps its dedicated diagnostic.
 //
@@ -325,8 +325,8 @@ func guardAnonymizePolicy(subs []UpstreamSubscription) []string {
 //
 //   - ABORT (violation): a consumer's external schema declares a column that a
 //     non-empty `fields:` OMITS — generic message, archive-flavored when the
-//     column is that schema's DeletedAt.
-//   - ADVISORY (warning): NO consuming schema declares a DeletedAt column on
+//     column is that schema's ArchivedAt.
+//   - ADVISORY (warning): NO consuming schema declares an ArchivedAt column on
 //     the mirror. The consumer often cannot know whether the upstream
 //     archives, so this is a reminder, not a defect. Returned separately so
 //     the caller logs it at Warn rather than aborting the boot.
@@ -340,12 +340,12 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 	// Per embedded upstream Mongo collection: every column each consumer's
 	// external schema declares (minus the ID column — the mirror's identity
 	// lives in _id, the payload carries no id column), tagged with whether it
-	// is that schema's DeletedAt and who declared it, for the diagnostic. The
+	// is that schema's ArchivedAt and who declared it, for the diagnostic. The
 	// same collection may be consumed by several views with independent
 	// external schemas, so declarations accumulate.
 	type declaration struct {
 		column, view string
-		isDeletedAt  bool
+		isArchivedAt bool
 	}
 	declaredBy := map[string][]declaration{}
 	embedded := map[string]bool{}
@@ -355,8 +355,8 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 		if schema == nil {
 			return
 		}
-		sd, hasSD := schema.DeletedAtColumn()
-		if hasSD {
+		archivedCol, hasArchived := schema.ArchivedAtColumn()
+		if hasArchived {
 			sdDeclared[coll] = true
 		}
 		pk := schema.IDColumn()
@@ -365,7 +365,7 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 				continue
 			}
 			declaredBy[coll] = append(declaredBy[coll], declaration{
-				column: col, view: consumer, isDeletedAt: hasSD && col == sd,
+				column: col, view: consumer, isArchivedAt: hasArchived && col == archivedCol,
 			})
 		}
 	}
@@ -393,8 +393,8 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 		if !sdDeclared[s.Collection] {
 			warnings = append(warnings, fmt.Sprintf(
 				"subscription topic=%q collection=%q: no view embedding or composing this mirror declares a "+
-					"DeletedAt column on its external schema. If the upstream entity archives, declare "+
-					".DeletedAt(\"<column>\") on the NewExternalSchema AND keep that column in the subscription's "+
+					"ArchivedAt column on its external schema. If the upstream entity archives, declare "+
+					".ArchivedAt(\"<column>\") on the NewExternalSchema AND keep that column in the subscription's "+
 					"`fields:` — otherwise an archived upstream entity stays looking active in the mirror forever. "+
 					"Advisory: harmless if the upstream never archives.",
 				s.Topic, s.Collection,
@@ -418,7 +418,7 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 			}
 			if _, seen := firstView[d.column]; !seen {
 				firstView[d.column] = d.view
-				isSD[d.column] = d.isDeletedAt
+				isSD[d.column] = d.isArchivedAt
 				dropped = append(dropped, d.column)
 			}
 		}
@@ -426,7 +426,7 @@ func guardSchemaFieldsSurvival(subs []UpstreamSubscription, views []*query.ViewD
 		for _, col := range dropped {
 			if isSD[col] {
 				violations = append(violations, fmt.Sprintf(
-					"subscription topic=%q collection=%q declares fields %s which OMITS the DeletedAt "+
+					"subscription topic=%q collection=%q declares fields %s which OMITS the ArchivedAt "+
 						"column %q that %q's leg schema declares — an archived upstream entity carries "+
 						"%q in its event, the allowlist would strip it, and the mirror could never reflect the "+
 						"archive (archived rows would look active forever). Add %q to `fields:`, or clear "+

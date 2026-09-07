@@ -30,20 +30,20 @@ func assertPanics(t *testing.T, name string, fn func()) {
 
 // TestTableSchema_ManagedColumnBijection exercises the order-independent
 // collision enforcement over the full physical column set (ID + Field +
-// DeletedAt/CreatedAt/UpdatedAt). Each managed setter and ID must reject a
+// ArchivedAt/CreatedAt/UpdatedAt). Each managed setter and ID must reject a
 // column already claimed by another slot, regardless of declaration order.
 func TestTableSchema_ManagedColumnBijection(t *testing.T) {
 	assertPanics(t, "CreatedAt vs UpdatedAt same column", func() {
 		NewTableSchema[schemaSample]("t").CreatedAt("ts").UpdatedAt("ts")
 	})
-	assertPanics(t, "DeletedAt vs CreatedAt same column", func() {
-		NewTableSchema[schemaSample]("t").DeletedAt("ts").CreatedAt("ts")
+	assertPanics(t, "ArchivedAt vs CreatedAt same column", func() {
+		NewTableSchema[schemaSample]("t").ArchivedAt("ts").CreatedAt("ts")
 	})
-	assertPanics(t, "Field then DeletedAt same column", func() {
-		NewTableSchema[schemaSample]("t").Field("Name", "deleted_at").DeletedAt("deleted_at")
+	assertPanics(t, "Field then ArchivedAt same column", func() {
+		NewTableSchema[schemaSample]("t").Field("Name", "archived_at").ArchivedAt("archived_at")
 	})
-	assertPanics(t, "DeletedAt then Field same column", func() {
-		NewTableSchema[schemaSample]("t").DeletedAt("deleted_at").Field("Name", "deleted_at")
+	assertPanics(t, "ArchivedAt then Field same column", func() {
+		NewTableSchema[schemaSample]("t").ArchivedAt("archived_at").Field("Name", "archived_at")
 	})
 	assertPanics(t, "Field then CreatedAt same column", func() {
 		NewTableSchema[schemaSample]("t").Field("Created", "created_at").CreatedAt("created_at")
@@ -149,8 +149,8 @@ func TestTableSchema_SingleDeclaration(t *testing.T) {
 	assertPanics(t, "ParentID twice", func() {
 		NewTableSchema[embedFixture]("c").ID("id").ParentID("a").ParentID("b")
 	})
-	assertPanics(t, "DeletedAt twice", func() {
-		NewTableSchema[schemaSample]("t").ID("id").DeletedAt("a").DeletedAt("b")
+	assertPanics(t, "ArchivedAt twice", func() {
+		NewTableSchema[schemaSample]("t").ID("id").ArchivedAt("a").ArchivedAt("b")
 	})
 	assertPanics(t, "CreatedAt twice", func() {
 		NewTableSchema[schemaSample]("t").ID("id").CreatedAt("a").CreatedAt("b")
@@ -261,7 +261,7 @@ func TestTableSchema_Sibling_HappyPath(t *testing.T) {
 }
 
 // TestTableSchema_Sibling_BootGuards locks every declaration-time trava: a
-// sibling owns no lifecycle (DeletedAt), no ParentID, no ID (it borrows the owner's),
+// sibling owns no lifecycle (ArchivedAt), no ParentID, no ID (it borrows the owner's),
 // no children, no nested sibling; it must be over the same type, built with
 // NewSiblingSchema, carry fields, and not collide table names. The kind-mismatch
 // guards on Sibling()/Child() are covered too.
@@ -290,8 +290,8 @@ func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) 
 	wantPanicContaining("ParentID on a sibling", "the shared ID IS the link", func() {
 		NewSiblingSchema[schemaSample]("s").ParentID("owner_id")
 	})
-	wantPanicContaining("DeletedAt on a sibling", "no lifecycle of its own", func() {
-		NewSiblingSchema[schemaSample]("s").DeletedAt("deleted_at")
+	wantPanicContaining("ArchivedAt on a sibling", "no lifecycle of its own", func() {
+		NewSiblingSchema[schemaSample]("s").ArchivedAt("archived_at")
 	})
 	wantPanicContaining("CreatedAt on a sibling", "owner's CreatedAt/UpdatedAt already date that row", func() {
 		NewSiblingSchema[schemaSample]("s").CreatedAt("created_at")
@@ -311,8 +311,8 @@ func TestTableSchema_Sibling_DeclarationGuardsTeachTheDDLContract(t *testing.T) 
 func TestTableSchema_Sibling_BootGuards(t *testing.T) {
 	owner := func() *TableSchema { return NewTableSchema[schemaSample]("root").ID("id").Field("Name", "name") }
 
-	assertPanics(t, "DeletedAt on a sibling", func() {
-		owner().Sibling(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed").DeletedAt("del"))
+	assertPanics(t, "ArchivedAt on a sibling", func() {
+		owner().Sibling(NewSiblingSchema[schemaSample]("s").Field("Removed", "removed").ArchivedAt("del"))
 	})
 	assertPanics(t, "ParentID on a sibling", func() {
 		owner().Sibling(NewSiblingSchema[schemaSample]("s").ParentID("fk").Field("Removed", "removed"))
@@ -453,7 +453,7 @@ func TestTableSchema_ValidDeclarationDoesNotPanic(t *testing.T) {
 		ID("id").
 		Field("Name", "name").
 		Field("Created", "created").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 	if got, _ := s.ColumnOf("Name"); got != "name" {

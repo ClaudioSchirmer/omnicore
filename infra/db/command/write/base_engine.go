@@ -57,7 +57,7 @@ type BaseEngine struct {
 }
 
 // sbRole is one engine-registered shared-base role: the role schema pointer
-// (its DeletedAt column reads lazily, like the instance registry's roleLink)
+// (its ArchivedAt column reads lazily, like the instance registry's roleLink)
 // + the ParentID column it references the base through.
 type sbRole struct {
 	schema *TableSchema
@@ -114,8 +114,8 @@ func (b *BaseEngine) effectiveReferencingRoles(base *TableSchema) []RoleRef {
 		if seen[tbl] {
 			continue
 		}
-		sd, _ := reg.schema.DeletedAtColumn()
-		extra = append(extra, RoleRef{Table: tbl, ParentIDColumn: reg.fk, DeletedAtCol: sd})
+		archivedCol, _ := reg.schema.ArchivedAtColumn()
+		extra = append(extra, RoleRef{Table: tbl, ParentIDColumn: reg.fk, ArchivedAtCol: archivedCol})
 	}
 	sort.Slice(extra, func(i, j int) bool { return extra[i].Table < extra[j].Table })
 	return append(out, extra...)

@@ -9,7 +9,7 @@ import (
 )
 
 // managedScan reads the framework-owned carrier columns a schema declares —
-// the id (children only), created_at / updated_at / deleted_at and revision — as
+// the id (children only), created_at / updated_at / archived_at and revision — as
 // trailing SELECT columns and stamps them onto a freshly-loaded entity or
 // aggregate child via SetID + domain.SetManagedColumns. Columns the schema does
 // not declare are absent from both the SELECT (cols) and the apply — the
@@ -64,7 +64,7 @@ func buildManagedScan(schema *core.TableSchema, withID bool) *managedScan {
 		m.updated = &sql.NullTime{}
 		m.cols = append(m.cols, c)
 	}
-	if c, ok := schema.DeletedAtColumn(); ok && c != "" {
+	if c, ok := schema.ArchivedAtColumn(); ok && c != "" {
 		m.deleted = &sql.NullTime{}
 		m.cols = append(m.cols, c)
 	}

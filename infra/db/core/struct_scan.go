@@ -369,7 +369,7 @@ func ScanLeadingKey(row keyedRow, dst any, columns []string, byCol map[string]Fi
 
 // ScanLeadingKeyTrailing is ScanLeadingKey plus a tail of caller-owned scan
 // targets appended AFTER the struct columns — used to read the framework-managed
-// columns (created_at/updated_at/deleted_at/revision) into external
+// columns (created_at/updated_at/archived_at/revision) into external
 // sql.Null* destinations rather than struct fields, since the entity's carrier
 // slots are unexported. The SELECT must list: leading key, columns..., then the
 // trailing columns in the same order as `trailing`.

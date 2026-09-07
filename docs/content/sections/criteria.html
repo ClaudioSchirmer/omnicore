@@ -24,7 +24,7 @@ users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
     criteria.IsNull("DeletedReason"),
 )).OrderByDesc("CreatedAt").Limit(50))
 
-// Archived scope (the DeletedAt gate) lives on the Query, not in the predicate:
+// Archived scope (the ArchivedAt gate) lives on the Query, not in the predicate:
 archived, err := repo.FindOne(ctx, criteria.ByID(id).OnlyArchived())</code></pre>
 
 <h3>Who consumes it</h3>
@@ -118,9 +118,9 @@ page3, err := repo.FindAll(ctx, criteria.Where(criteria.Eq("TenantID", t)).
 <div class="box">
     <p>
         <strong>The archive gate is not part of the predicate.</strong> The where-tree stays
-        <code>DeletedAt</code>-agnostic and the scope decides what happens around it — which is why an archived
+        <code>ArchivedAt</code>-agnostic and the scope decides what happens around it — which is why an archived
         record is unreachable to every verb but Unarchive without a single handler writing
-        <code>deleted_at IS NULL</code>. A schema that declares no <code>DeletedAt</code> has no marker column, so
+        <code>archived_at IS NULL</code>. A schema that declares no <code>ArchivedAt</code> has no marker column, so
         no gate is emitted at all.
     </p>
 </div>
@@ -185,8 +185,8 @@ users, err := repo.Loader.FindAll(ctx, criteria.Where(
 <h4>The archive gate is automatic here too</h4>
 
 <p>
-    A subquery is scoped like every other read. When its source schema declares <code>DeletedAt</code>, the framework
-    adds that table's <code>deleted_at IS NULL</code> to the subquery's own WHERE — you never write it. When the
+    A subquery is scoped like every other read. When its source schema declares <code>ArchivedAt</code>, the framework
+    adds that table's <code>archived_at IS NULL</code> to the subquery's own WHERE — you never write it. When the
     source declares no archive marker there is no column to gate on and nothing is emitted.
 </p>
 
@@ -307,7 +307,7 @@ users, err := repo.Loader.FindAll(ctx, criteria.Where(
 
 <pre><code>EXISTS (SELECT 1 FROM phones phones_sq1
          WHERE phones_sq1.user_id = users.id
-           AND phones_sq1.deleted_at IS NULL)</code></pre>
+           AND phones_sq1.archived_at IS NULL)</code></pre>
 
 <p>
     The enclosing statement renders its own columns exactly as it did before — a subquery beside it changes nothing.

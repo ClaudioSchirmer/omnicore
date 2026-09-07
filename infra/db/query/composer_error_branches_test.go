@@ -43,7 +43,7 @@ func composerRoleView() *ViewDefinition {
 	schema := core.NewTableSchema[*composerRole]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Sibling(core.NewSiblingSchema[*composerRole]("aluno_extra").Field("Name", "name")).
 		Child(core.NewTableSchema[composerRoleChild]("aluno_filhos").
 			ID("id").ParentID("aluno_id").Field("Label", "label")).
@@ -59,7 +59,7 @@ func composerMaps(failSub string) func(string, []any) ([]map[string]any, error) 
 			return nil, errFake
 		}
 		if strings.Contains(sql, "FROM aluno") && !strings.Contains(sql, "FROM aluno_") {
-			return []map[string]any{{"id": "r1", "matricula": "M1", "pessoa_id": "p1", "deleted_at": nil}}, nil
+			return []map[string]any{{"id": "r1", "matricula": "M1", "pessoa_id": "p1", "archived_at": nil}}, nil
 		}
 		return nil, nil
 	}

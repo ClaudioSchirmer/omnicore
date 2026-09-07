@@ -49,7 +49,7 @@
                     <code>q.FromQueryResult(ctx, r)</code>
                 </td>
                 <td><code>ReadByID(view, id, criteria)</code></td>
-                <td><code>findOne(_id=$1)</code> + <code>deleted_at</code> gate unless <code>IncludeArchived</code></td>
+                <td><code>findOne(_id=$1)</code> + <code>archived_at</code> gate unless <code>IncludeArchived</code></td>
                 <td><code>{ data: TResp }</code> — the <code>TResult</code> mapped through the response projection; miss (or filtered out by an overlay) → 404 <code>RecordNotFoundNotification</code></td>
             </tr>
             <tr>
@@ -111,7 +111,7 @@
             <tr>
                 <td><code>?includeArchived=true</code></td>
                 <td><code>IncludeArchived</code></td>
-                <td>omits the <code>{deleted_at: null}</code> root gate AND keeps archived content in EVERY segment of the document — nested aggregate-child arrays, <code>SharedBaseView</code> roles, materialized embed segments (1:1 and 1:N) and <code>EmbedInChild</code> enrichments alike. The default does the opposite at every one of those levels, but only where the SOURCE SCHEMA declares <code>DeletedAt(column)</code>: a source that declares none has no archived state and is never filtered. One flag, whole read</td>
+                <td>omits the <code>{archived_at: null}</code> root gate AND keeps archived content in EVERY segment of the document — nested aggregate-child arrays, <code>SharedBaseView</code> roles, materialized embed segments (1:1 and 1:N) and <code>EmbedInChild</code> enrichments alike. The default does the opposite at every one of those levels, but only where the SOURCE SCHEMA declares <code>ArchivedAt(column)</code>: a source that declares none has no archived state and is never filtered. One flag, whole read</td>
             </tr>
         </tbody>
     </table>

@@ -194,7 +194,7 @@ func (b *BaseEntity) initWithName(name string, entityType reflect.Type) {
 
 // CompleteAsArchive asks the framework to finish THIS update as an archive: the
 // row is written with the entity's field set exactly as an update would, plus
-// the DeletedAt stamp, and everything an archive owns follows — the child
+// the ArchivedAt stamp, and everything an archive owns follows — the child
 // cascade, the shared-identity convergence, the ARCHIVED outbox event the read
 // side routes on, and an archive audit entry.
 //
@@ -498,7 +498,7 @@ func getDeletable(e Entity, service Service, actionName string) (Deletable, erro
 
 func getArchivable(e Entity, service Service, actionName string) (Archivable, error) {
 	ensureInit(e)
-	// Archive is a state transition (deleted_at flip + cascade). The birth-time
+	// Archive is a state transition (archived_at flip + cascade). The birth-time
 	// snapshot represents the entity in its pre-archive (active) state as the
 	// system of record held it — useful in timelines to see "entity was
 	// archived from state X", and the baseline an IfArchive mutation is

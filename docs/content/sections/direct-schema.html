@@ -96,7 +96,7 @@
         Field("Source", "source").
         Field("RunAt", "run_at").
         Field("OwnerID", "owner_id").
-        DeletedAt("deleted_at").        // optional — enables the scope gate and Archive/Unarchive
+        ArchivedAt("archived_at").        // optional — enables the scope gate and Archive/Unarchive
         CreatedAt("created_at").
         UpdatedAt("updated_at")
 }</code></pre>
@@ -284,8 +284,8 @@ n, err = jobs.DeleteAll(ctx)</code></pre>
     upserted table and the difference disappears.
 </p>
 <p>
-    A schema declaring <code>DeletedAt</code> <strong>must</strong> also declare
-    <code>write.UnarchiveOnConflict()</code> (the conflict clause sets <code>deleted_at = NULL</code>) or
+    A schema declaring <code>ArchivedAt</code> <strong>must</strong> also declare
+    <code>write.UnarchiveOnConflict()</code> (the conflict clause sets <code>archived_at = NULL</code>) or
     <code>write.KeepArchiveStateOnConflict()</code> (it does not touch the column). This is the one write that cannot
     be archive-gated — <code>INSERT … ON CONFLICT</code> has no <code>WHERE</code> for its conflict target, so an
     archived row still holds the unique key and still absorbs the write, invisibly to every read. Both answers are
@@ -357,14 +357,14 @@ groups, err := jobs.AggregateBy(ctx, crit, read.By("Status"), read.Count())</cod
 <p>
     A child table gets its own Direct schema. The filter costs nothing extra: <code>Resolve</code> already answers
     <code>ParentID</code>, exactly as it answers <code>CreatedAt</code>, <code>UpdatedAt</code> and
-    <code>DeletedAt</code>.
+    <code>ArchivedAt</code>.
 </p>
 <pre><code>func UserPhoneTable() *core.TableSchema {
     return core.NewDirectSchema[UserPhoneRow]("user_phones").
         ID("id").
         ParentID("user_id").
         Field("Number", "number").
-        DeletedAt("deleted_at")
+        ArchivedAt("archived_at")
 }
 
 total := read.Count()
@@ -403,7 +403,7 @@ err := phones.Aggregate(ctx, criteria.Where(criteria.Eq("ParentID", userID)), to
                 everywhere.</td>
         </tr>
         <tr>
-            <td><code>"CreatedAt"</code> / <code>"UpdatedAt"</code> / <code>"DeletedAt"</code> inside <code>Values</code></td>
+            <td><code>"CreatedAt"</code> / <code>"UpdatedAt"</code> / <code>"ArchivedAt"</code> inside <code>Values</code></td>
             <td>Error before any statement</td>
             <td>The framework stamps the timestamps from the operation's own instant, and the archive transition has its
                 own verbs — writing the column directly would bypass them.</td>
@@ -415,9 +415,9 @@ err := phones.Aggregate(ctx, criteria.Where(criteria.Eq("ParentID", userID)), to
                 will not guess it from the schema.</td>
         </tr>
         <tr>
-            <td>An <code>Upsert</code> on a schema declaring <code>DeletedAt</code>, with no archive policy</td>
+            <td>An <code>Upsert</code> on a schema declaring <code>ArchivedAt</code>, with no archive policy</td>
             <td>Error before any statement</td>
-            <td>Every other verb is gated on <code>deleted_at IS NULL</code>; an upsert cannot be, because its conflict
+            <td>Every other verb is gated on <code>archived_at IS NULL</code>; an upsert cannot be, because its conflict
                 target takes no <code>WHERE</code> — an archived row still holds the unique key and still absorbs the
                 write. Declare <code>write.UnarchiveOnConflict()</code> or
                 <code>write.KeepArchiveStateOnConflict()</code>: both are defensible, so neither is a default.</td>

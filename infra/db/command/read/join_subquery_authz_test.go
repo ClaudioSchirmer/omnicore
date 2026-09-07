@@ -50,7 +50,7 @@ func authzRolePermissionSchema() *TableSchema {
 		ID("id").
 		Field("RoleID", "role_id").
 		Field("PermissionID", "permission_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // The join targets. Both are ordinary entity schemas in a real service; a join
@@ -59,7 +59,7 @@ func authzRoleSchema() *TableSchema {
 	return NewTableSchema[*authzNamed]("roles").
 		ID("id").
 		Field("Key", "role_key").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		AsDirectSchema()
 }
 
@@ -68,7 +68,7 @@ func authzPermissionSchema() *TableSchema {
 		ID("id").
 		Field("Resource", "resource_name").
 		Field("Action", "action_name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		AsDirectSchema()
 }
 
@@ -79,7 +79,7 @@ type authzNamed struct {
 	Action   string
 }
 
-// The subquery sources. Each declares DeletedAt, so each carries its own gate
+// The subquery sources. Each declares ArchivedAt, so each carries its own gate
 // without the caller writing one.
 type authzLink struct {
 	ID      domain.ID
@@ -89,7 +89,7 @@ type authzLink struct {
 }
 
 func authzLinkSchema(table string, cols ...string) *TableSchema {
-	s := core.NewDirectSchema[authzLink](table).ID("id").DeletedAt("deleted_at")
+	s := core.NewDirectSchema[authzLink](table).ID("id").ArchivedAt("archived_at")
 	for _, c := range cols {
 		switch c {
 		case "user_id":
@@ -109,7 +109,7 @@ func authzCriteria(userID string) *criteria.Query {
 	userRoles := authzLinkSchema("user_roles", "user_id", "role_id")
 	groupRoles := authzLinkSchema("group_roles", "group_id", "role_id")
 	userGroups := authzLinkSchema("user_groups", "user_id", "group_id")
-	groups := core.NewDirectSchema[authzLink]("groups").ID("id").DeletedAt("deleted_at")
+	groups := core.NewDirectSchema[authzLink]("groups").ID("id").ArchivedAt("archived_at")
 
 	return criteria.Where(criteria.Or(
 		criteria.InSub("RoleID",
@@ -192,23 +192,23 @@ func TestAuthzQuery_WholeStatement(t *testing.T) {
 	//    which carries a correlated EXISTS ─────────────────────────────────────
 	wantWhere := "WHERE (role_permissions.role_id IN (" +
 		"SELECT user_roles_sq1.role_id FROM user_roles user_roles_sq1 " +
-		"WHERE user_roles_sq1.user_id = $1 AND user_roles_sq1.deleted_at IS NULL)" +
+		"WHERE user_roles_sq1.user_id = $1 AND user_roles_sq1.archived_at IS NULL)" +
 		" OR role_permissions.role_id IN (" +
 		"SELECT group_roles_sq1.role_id FROM group_roles group_roles_sq1 " +
 		"WHERE group_roles_sq1.group_id IN (" +
 		"SELECT user_groups_sq2.group_id FROM user_groups user_groups_sq2 " +
 		"WHERE (user_groups_sq2.user_id = $2 AND EXISTS (" +
 		"SELECT 1 FROM groups groups_sq3 " +
-		"WHERE groups_sq3.id = user_groups_sq2.group_id AND groups_sq3.deleted_at IS NULL)) " +
-		"AND user_groups_sq2.deleted_at IS NULL) " +
-		"AND group_roles_sq1.deleted_at IS NULL)) " +
-		"AND role_permissions.deleted_at IS NULL"
+		"WHERE groups_sq3.id = user_groups_sq2.group_id AND groups_sq3.archived_at IS NULL)) " +
+		"AND user_groups_sq2.archived_at IS NULL) " +
+		"AND group_roles_sq1.archived_at IS NULL)) " +
+		"AND role_permissions.archived_at IS NULL"
 	if !strings.Contains(sql, wantWhere) {
 		t.Errorf("predicate mismatch.\n got: %s\nwant contains:\n%s", sql, wantWhere)
 	}
 
 	// ── five archive gates, none of them written by the caller ────────────────
-	if got := strings.Count(sql, "deleted_at IS NULL"); got != 5 {
+	if got := strings.Count(sql, "archived_at IS NULL"); got != 5 {
 		t.Errorf("archive gates = %d, want 5 (the anchor plus one per subquery source):\n%s", got, sql)
 	}
 
@@ -228,7 +228,7 @@ func TestAuthzQuery_WholeStatement(t *testing.T) {
 // Five gates, and none of them on roles or permissions.
 func TestAuthzQuery_JoinTargetsAreNotGated(t *testing.T) {
 	sql, _ := authzSQL(t, authzCriteria("7b3c1f10-3c7e-4a8d-9f0e-9d2a8e6d4b51"))
-	for _, alias := range []string{"j_role_id.deleted_at", "j_permission_id.deleted_at"} {
+	for _, alias := range []string{"j_role_id.archived_at", "j_permission_id.archived_at"} {
 		if strings.Contains(sql, alias) {
 			t.Errorf("the join target must not be archive-gated, found %q in:\n%s", alias, sql)
 		}
@@ -242,10 +242,10 @@ func TestAuthzQuery_OuterScopeDoesNotReachIntoTheSubqueries(t *testing.T) {
 
 	// The column itself stays in the SELECT list — it is a mapped field. What must
 	// be gone is the GATE.
-	if strings.Contains(sql, "role_permissions.deleted_at IS NULL") {
+	if strings.Contains(sql, "role_permissions.archived_at IS NULL") {
 		t.Errorf("IncludeArchived left the anchor gated:\n%s", sql)
 	}
-	if got := strings.Count(sql, "deleted_at IS NULL"); got != 4 {
+	if got := strings.Count(sql, "archived_at IS NULL"); got != 4 {
 		t.Errorf("subquery gates = %d, want the 4 that belong to the sources:\n%s", got, sql)
 	}
 }

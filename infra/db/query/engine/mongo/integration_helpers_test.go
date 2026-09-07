@@ -248,11 +248,11 @@ func rowCount(t *testing.T, pg *postgres.Postgres, table string) int {
 	return n
 }
 
-// activeCount counts rows where deleted_at IS NULL.
+// activeCount counts rows where archived_at IS NULL.
 func activeCount(t *testing.T, pg *postgres.Postgres, table string) int {
 	t.Helper()
 	var n int
-	q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE deleted_at IS NULL`, table)
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE archived_at IS NULL`, table)
 	if err := pg.Pool().QueryRow(context.Background(), q).Scan(&n); err != nil {
 		t.Fatalf("activeCount %s: %v", table, err)
 	}

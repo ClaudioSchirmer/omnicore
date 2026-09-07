@@ -40,10 +40,10 @@ func TestNewInfrastructureError_AndError(t *testing.T) {
 
 func TestViewNode_SchemaLessFallbacks(t *testing.T) {
 	// A node with no schema (the defensive empty node) passes paths/docs through
-	// and yields no DeletedAt gate.
+	// and yields no ArchivedAt gate.
 	n := &ViewNode{}
-	if _, ok := n.DeletedAtColumn(); ok {
-		t.Error("schema-less node must report no DeletedAt")
+	if _, ok := n.ArchivedAtColumn(); ok {
+		t.Error("schema-less node must report no ArchivedAt")
 	}
 	doc := map[string]any{"anything": 1}
 	if got := n.ToGoDoc(doc); len(got) != 1 || got["anything"] != 1 {

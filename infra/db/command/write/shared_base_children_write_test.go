@@ -13,7 +13,7 @@ import (
 // White-box coverage for SharedBase native children (base-children) on the write
 // path: a base-child is routed to the base's deterministic id (ParentID column = the
 // base ParentID, not the role ParentID), Removed archives (or hard-deletes when the base has
-// no DeletedAt), the orphan refcount removes base-children before the base, and
+// no ArchivedAt), the orphan refcount removes base-children before the base, and
 // an empty natural key is rejected. Driven through the recording fake WriteTx.
 
 type bcAddr struct {
@@ -40,19 +40,19 @@ func (e *bcRole) AggregateChildren() []domain.AggregateValueObject {
 }
 
 // bcRoleSchema declares endereco as a NATIVE CHILD OF THE BASE (pessoa), shared by
-// every role. deletedAt toggles the archive column on base + base-child alike.
+// every role. archivedAt toggles the archive column on base + base-child alike.
 // The purge policy is declared explicitly (the default is KeepOrphan) so the
 // orphan-delete test below exercises the purge branch.
-func bcRoleSchema(deletedAt bool) *TableSchema {
+func bcRoleSchema(archivedAt bool) *TableSchema {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").Field("Document", "document").
 		NaturalID("document").OrphanPolicy(DeleteWhenUnreferenced)
 	addr := NewTableSchema[bcAddr]("endereco").ID("id").ParentID("pessoa_id").Field("Street", "street")
-	if deletedAt {
-		base = base.DeletedAt("deleted_at")
-		addr = addr.DeletedAt("deleted_at")
+	if archivedAt {
+		base = base.ArchivedAt("archived_at")
+		addr = addr.ArchivedAt("archived_at")
 	}
 	base = base.Child(addr)
-	role := NewTableSchema[*bcRole]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").DeletedAt("deleted_at")
+	role := NewTableSchema[*bcRole]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").ArchivedAt("archived_at")
 	return role.SharedBase(base, "pessoa_id")
 }
 
@@ -89,7 +89,7 @@ func TestBaseChild_InsertRoutesToBaseFK(t *testing.T) {
 	}
 }
 
-func TestBaseChild_RemovedArchivesWhenDeletedAt(t *testing.T) {
+func TestBaseChild_RemovedArchivesWhenArchivedAt(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(bcAddr{Street: "Old"}, domain.NewID("addr-1"))})
@@ -106,13 +106,13 @@ func TestBaseChild_RemovedArchivesWhenDeletedAt(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	if !hasStmt(tx.execs, func(s string) bool {
-		return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = $1")
+		return strings.HasPrefix(s, "UPDATE endereco SET archived_at = $1")
 	}) {
-		t.Errorf("a Removed base-child WITH DeletedAt must archive (UPDATE endereco SET deleted_at), got %v", tx.execs)
+		t.Errorf("a Removed base-child WITH ArchivedAt must archive (UPDATE endereco SET archived_at), got %v", tx.execs)
 	}
 }
 
-func TestBaseChild_RemovedHardDeletesWhenNoDeletedAt(t *testing.T) {
+func TestBaseChild_RemovedHardDeletesWhenNoArchivedAt(t *testing.T) {
 	e := &bcRole{Name: "Ana", Document: "D1", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	e.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(bcAddr{Street: "Old"}, domain.NewID("addr-1"))})
@@ -129,7 +129,7 @@ func TestBaseChild_RemovedHardDeletesWhenNoDeletedAt(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "DELETE FROM endereco") }) {
-		t.Errorf("a Removed base-child WITHOUT DeletedAt must hard-delete (DELETE FROM endereco), got %v", tx.execs)
+		t.Errorf("a Removed base-child WITHOUT ArchivedAt must hard-delete (DELETE FROM endereco), got %v", tx.execs)
 	}
 }
 
@@ -187,11 +187,11 @@ func TestConvergeBase_ArchiveLastActiveRoleArchivesBase(t *testing.T) {
 	if err := be.Archive(newBuilderCtx(), arch, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = $1") }) {
-		t.Errorf("archiving the last active role must archive the base (UPDATE pessoa SET deleted_at = $1), got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET archived_at = $1") }) {
+		t.Errorf("archiving the last active role must archive the base (UPDATE pessoa SET archived_at = $1), got %v", tx.execs)
 	}
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = $1") }) {
-		t.Errorf("the base archive must cascade to the base-children (UPDATE endereco SET deleted_at = $1), got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET archived_at = $1") }) {
+		t.Errorf("the base archive must cascade to the base-children (UPDATE endereco SET archived_at = $1), got %v", tx.execs)
 	}
 	// ONE writeNow() for the whole operation: the role row, the shared identity
 	// it drove down and that identity's native children all carry the very same
@@ -199,7 +199,7 @@ func TestConvergeBase_ArchiveLastActiveRoleArchivesBase(t *testing.T) {
 	stamps := map[string]time.Time{}
 	for i, sql := range tx.execs {
 		for _, table := range []string{"aluno", "pessoa", "endereco"} {
-			if strings.HasPrefix(sql, "UPDATE "+table+" SET deleted_at = $1") {
+			if strings.HasPrefix(sql, "UPDATE "+table+" SET archived_at = $1") {
 				stamps[table], _ = tx.execArgs[i][0].(time.Time)
 			}
 		}
@@ -224,7 +224,7 @@ func TestConvergeBase_ArchiveWithAnotherActiveRoleKeepsBase(t *testing.T) {
 		t.Fatalf("Archive: %v", err)
 	}
 	for _, s := range tx.execs {
-		if strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = $1") {
+		if strings.HasPrefix(s, "UPDATE pessoa SET archived_at = $1") {
 			t.Errorf("the base must stay active while another role is active, got %q", s)
 		}
 	}
@@ -243,7 +243,7 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	// archived and reactivates, carrying its native children with it).
 	archived := rowsArchivedAt(baseArchiveStamp)
 	tx := &recTx{count: 1, queryFn: func(sql string, args []any) (Rows, error) {
-		if strings.HasPrefix(sql, "SELECT deleted_at FROM") {
+		if strings.HasPrefix(sql, "SELECT archived_at FROM") {
 			return archived(sql, args)
 		}
 		return &fakeRows{remaining: 0}, nil
@@ -252,11 +252,11 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = NULL") }) {
-		t.Errorf("unarchiving a role must reactivate the archived base (UPDATE pessoa SET deleted_at = NULL), got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET archived_at = NULL") }) {
+		t.Errorf("unarchiving a role must reactivate the archived base (UPDATE pessoa SET archived_at = NULL), got %v", tx.execs)
 	}
-	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET deleted_at = NULL") }) {
-		t.Errorf("base reactivation must cascade to the base-children (UPDATE endereco SET deleted_at = NULL), got %v", tx.execs)
+	if !hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco SET archived_at = NULL") }) {
+		t.Errorf("base reactivation must cascade to the base-children (UPDATE endereco SET archived_at = NULL), got %v", tx.execs)
 	}
 	// And it reaches exactly the base-children the BASE'S archive stamped: the
 	// statement reads that instant off the base row itself, not "every archived
@@ -265,15 +265,15 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 	childAt, baseAt := -1, -1
 	for i, sql := range tx.execs {
 		switch {
-		case strings.HasPrefix(sql, "UPDATE endereco SET deleted_at = NULL"):
+		case strings.HasPrefix(sql, "UPDATE endereco SET archived_at = NULL"):
 			childAt = i
-			if !strings.Contains(sql, "AND deleted_at = (SELECT deleted_at FROM pessoa WHERE id = $2)") {
+			if !strings.Contains(sql, "AND archived_at = (SELECT archived_at FROM pessoa WHERE id = $2)") {
 				t.Errorf("the base-children restore must read the base's own stamp, got %q", sql)
 			}
 			if args := tx.execArgs[i]; len(args) != 2 {
 				t.Errorf("cascade args = %v, want [baseID baseID]", args)
 			}
-		case strings.HasPrefix(sql, "UPDATE pessoa SET deleted_at = NULL"):
+		case strings.HasPrefix(sql, "UPDATE pessoa SET archived_at = NULL"):
 			baseAt = i
 		}
 	}
@@ -281,7 +281,7 @@ func TestConvergeBase_UnarchiveReactivatesBase(t *testing.T) {
 		t.Fatalf("expected both the base-children cascade and the base UPDATE: %v", tx.execs)
 	}
 	if childAt > baseAt {
-		t.Errorf("the base-children cascade reads the base's DeletedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
+		t.Errorf("the base-children cascade reads the base's ArchivedAt, so it must run BEFORE the UPDATE that clears it: %v", tx.execs)
 	}
 }
 
@@ -299,7 +299,7 @@ func TestConvergeBase_UnarchiveLeavesAnActiveBaseAlone(t *testing.T) {
 	if err := be.Unarchive(newBuilderCtx(), un, bcRoleSchema(true), firingHook); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET deleted_at = NULL") }) {
+	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE pessoa SET archived_at = NULL") }) {
 		t.Errorf("an active base must not be re-activated, got %v", tx.execs)
 	}
 	if hasStmt(tx.execs, func(s string) bool { return strings.HasPrefix(s, "UPDATE endereco") }) {

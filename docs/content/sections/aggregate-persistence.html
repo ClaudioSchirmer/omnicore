@@ -112,7 +112,7 @@ func (Endereco) CollectionName() string { return "Enderecos" }</code></pre>
         <li><strong>Archive(root)</strong> → Archive on all active children</li>
         <li><strong>Unarchive(root)</strong> → Unarchive on the children <em>this root's archive</em> put to sleep — the ones carrying its archive stamp, never a child archived on its own (see <a href="#aggregate-persistence~unarchive-scope">What an unarchive brings back</a>; requires <code>domain.ArchivedFinder</code> on the Repository to hydrate the aggregate)</li>
         <li><strong>Delete(root)</strong> → an explicit <code>DELETE</code> on every declared child table (by ParentID), in the same TX, before the root DELETE — the framework owns the cascade in Go, not a database <code>ON DELETE CASCADE</code></li>
-        <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items when the child declares <code>DeletedAt</code>; <code>DELETE</code> of those rows when it does not (see <a href="#aggregate-persistence~child-deleted-at">What a child's DeletedAt declares</a>)</li>
+        <li><strong>Update(root) with items <code>StatusRemoved</code></strong> → Archive of those specific items when the child declares <code>ArchivedAt</code>; <code>DELETE</code> of those rows when it does not (see <a href="#aggregate-persistence~child-archived-at">What a child's ArchivedAt declares</a>)</li>
     </ul>
 
     <h3 id="insert-path">The INSERT path</h3>
@@ -228,7 +228,7 @@ COMMIT
 
     <div class="box warn">
         <strong>An archived aggregate is unreachable to every verb but Unarchive.</strong> The verbs above all
-        load through <code>FindByID</code>, which filters <code>WHERE deleted_at IS NULL</code> — so on an
+        load through <code>FindByID</code>, which filters <code>WHERE archived_at IS NULL</code> — so on an
         ARCHIVED root every one of them answers 404, the per-entry child operations included. The row keeps the
         state the archive left it in, and the way back is the explicit unarchive. See
         <a href="#auto-handlers~archived-is-unreachable">An archived aggregate is unreachable to every other verb</a>.
@@ -244,17 +244,17 @@ COMMIT
     </p>
     <p>
         What tells the two apart is already in the data, and it costs no column: <strong>one operation, one
-        instant</strong>. A write stamps a single <code>DeletedAt</code> value — the same <code>time.Time</code> — on the
-        root row and on every child row its cascade reaches, and the archive cascade skips (<code>deleted_at IS
+        instant</strong>. A write stamps a single <code>ArchivedAt</code> value — the same <code>time.Time</code> — on the
+        root row and on every child row its cascade reaches, and the archive cascade skips (<code>archived_at IS
         NULL</code>) the children that were already archived, so those keep their own, older stamp. "Archived because of
         the root" therefore reads exactly as "carries the root's archive stamp":
     </p>
-    <div class="flow">archive at T1   root.deleted_at    = T1
+    <div class="flow">archive at T1   root.archived_at    = T1
                 child A (active)   = T1   ← the cascade stamped it
                 child B (archived) = T0   ← untouched, it was already down
 
-unarchive       UPDATE child SET deleted_at = NULL
-                 WHERE parent_id = ? AND deleted_at = (SELECT deleted_at FROM root WHERE id = ?)
+unarchive       UPDATE child SET archived_at = NULL
+                 WHERE parent_id = ? AND archived_at = (SELECT archived_at FROM root WHERE id = ?)
                 └─ A comes back · B stays archived, still carrying T0
                 └─ then the root row is cleared — in that order, because the sub-select IS the
                    discriminator</div>
@@ -277,7 +277,7 @@ unarchive       UPDATE child SET deleted_at = NULL
         about the base's children at all, because no statement touched them.
     </p>
     <div class="note">
-        <strong>The DeletedAt columns must carry sub-second precision, and root and child must agree on it.</strong> The
+        <strong>The ArchivedAt columns must carry sub-second precision, and root and child must agree on it.</strong> The
         discriminator is an equality between two stored timestamps, so it is only as sharp as the column type:
         <code>TIMESTAMPTZ</code> / <code>TIMESTAMP(6)</code> / <code>DATETIME(6)</code> / <code>DATETIME2(6)</code>.
         A second-precision column (a bare MySQL <code>DATETIME</code>) collapses two operations that happened within the
@@ -285,15 +285,15 @@ unarchive       UPDATE child SET deleted_at = NULL
         matching it, which fails safe (nothing is restored) but silently.
     </div>
 
-    <h3 id="child-deleted-at">What a child's <code>DeletedAt</code> declares</h3>
+    <h3 id="child-archived-at">What a child's <code>ArchivedAt</code> declares</h3>
     <p>
         A child's removal is decided by <strong>one thing — whether the child's own schema declares
-        <code>DeletedAt</code></strong>, the same rule the root follows. A child that declares the column is
+        <code>ArchivedAt</code></strong>, the same rule the root follows. A child that declares the column is
         <strong>archived</strong>: the row lingers, hidden from reads, and it comes back through its own re-add — the
         owner's unarchive restores only what the owner's own archive stamped
         (<a href="#aggregate-persistence~unarchive-scope">What an unarchive brings back</a>). A child that
         declares none has no state to stamp, so the honest write is the <strong>DELETE</strong> — exactly the answer the root
-        gives an entity without <code>DeletedAt</code>. Where the child lives makes no difference: a role's own child and a
+        gives an entity without <code>ArchivedAt</code>. Where the child lives makes no difference: a role's own child and a
         shared base's native child follow the identical rule.
     </p>
     <p>
@@ -322,13 +322,13 @@ writeChildren → domain.OperationOf(OriginalStatus, CurrentStatus)
           │   └─ a role's own child and a base-child take the same two branches: where a
           │      child hangs changes its ParentID, never its verb
           │
-          ├─► it declares DeletedAt(col) ──► ARCHIVE
+          ├─► it declares ArchivedAt(col) ──► ARCHIVE
           │      UPDATE child SET col = now WHERE id = ?
           │      audit op "archived"  ·  outbox _op "archive"
           │      └─ the row lingers, hidden from reads. It carries THIS operation's stamp, which is
           │         not the owner's: a later unarchive of the owner leaves it exactly where it is
           │
-          └─► it declares no DeletedAt ────► DELETE
+          └─► it declares no ArchivedAt ────► DELETE
                  DELETE FROM child_sibling WHERE id = ?
                  DELETE FROM child         WHERE id = ?
                     └─ the sibling rows go FIRST: a sibling is a 1:1 slice of the child's
@@ -349,13 +349,13 @@ writeChildren → domain.OperationOf(OriginalStatus, CurrentStatus)
    │                          UPDATE: one framework-owned TX, hooks at positions A and D,
    ▼                          one outbox row, one in-TX audit row
 
-Archive(root)      UPDATE root SET deleted_at = now
+Archive(root)      UPDATE root SET archived_at = now
                    │
-                   ├─► child WITH DeletedAt     UPDATE child SET deleted_at = now
+                   ├─► child WITH ArchivedAt     UPDATE child SET archived_at = now
                    │      └─ one statement per child table, so the cascade reaches rows
                    │         the aggregate never loaded
                    │
-                   ├─► child WITHOUT DeletedAt  untouched
+                   ├─► child WITHOUT ArchivedAt  untouched
                    │      └─ nothing to stamp: its rows stay ACTIVE while the owner is
                    │         archived. The owner's document is hidden from default reads
                    │         by the OWNER's state, not by the child's
@@ -367,18 +367,18 @@ Archive(root)      UPDATE root SET deleted_at = now
                                    same two rules above — with the column, stamped; without
                                    it, left active under an archived base
                           └─ OrphanPolicy plays NO part here: it governs the hard branch
-                             only. Soft is reversible, so nothing is ever destroyed by it
+                             only. Archiving is reversible, so nothing is ever destroyed by it
 
-Unarchive(root)    ├─► child WITH DeletedAt     UPDATE child SET deleted_at = NULL
+Unarchive(root)    ├─► child WITH ArchivedAt     UPDATE child SET archived_at = NULL
                    │                            WHERE parent_id = ?
-                   │                              AND deleted_at = (SELECT deleted_at FROM root
+                   │                              AND archived_at = (SELECT archived_at FROM root
                    │                                                WHERE id = ?)
                    │      └─ exactly the rows the root's archive stamped. A child archived on its
                    │         own carries a different instant and stays archived. The stamp is read
                    │         INSIDE the statement, so this runs BEFORE the root row is cleared
-                   ├─► child WITHOUT DeletedAt  untouched — it never left
+                   ├─► child WITHOUT ArchivedAt  untouched — it never left
                    │
-                   UPDATE root SET deleted_at = NULL
+                   UPDATE root SET archived_at = NULL
                    │
                    └─► SHARED BASE ONLY — is the base archived?
                              yes → reactivate it and restore the native children the BASE'S archive
@@ -389,7 +389,7 @@ Delete(root)       DELETE FROM child_sibling  (subquery over the child rows abou
                    DELETE FROM child          (by ParentID)
                    DELETE FROM root_sibling   (by the root id)
                    DELETE FROM root
-                   │   └─ the child's DeletedAt is NOT consulted here: a hard delete is the
+                   │   └─ the child's ArchivedAt is NOT consulted here: a hard delete is the
                    │      end of the line, and normalization takes the rows with it
                    │
                    └─► SHARED BASE ONLY — convergence, after the role row is gone
@@ -401,7 +401,7 @@ Delete(root)       DELETE FROM child_sibling  (subquery over the child rows abou
                                    and archives if no role is active
                              no  → OrphanPolicy decides — and it is the ONLY place it decides:
                                      KeepOrphan (the DEFAULT)
-                                        the base stays. Declaring DeletedAt, the orphaned
+                                        the base stays. Declaring ArchivedAt, the orphaned
                                         identity ARCHIVES instead of staying active: dormant
                                         and revivable, never destroyed
                                      DeleteWhenUnreferenced (opt-in)
@@ -440,7 +440,7 @@ outbox ARCHIVED / UNARCHIVED / DELETED  ·  audit event  ·  hook beforeCommit (
         <tr><td>Exactly <strong>one outbox row</strong> per operation (granularity B — the aggregate is the event unit)</td><td><code>insertAggregate / updateAggregate</code></td></tr>
         <tr><td>ParentID injected before the child INSERT</td><td><code>insertChild</code></td></tr>
         <tr><td>The child ID minted by the INSERT is <strong>written back into the aggregate map</strong> (<code>AssignAggregateItemID</code> stamps the item's <code>ID</code> field, statuses untouched) — so post-write readers see the child exactly as persisted: <code>FromEntity</code> can mirror children <em>with their ids</em> in the write response, and the outbox/audit snapshots (built after the child INSERTs) carry real ids instead of empty ones. An item without a settable <code>domain.ID</code>-typed <code>ID</code> field is skipped silently</td><td><code>writeChildren / domain.AssignAggregateItemID</code></td></tr>
-        <tr><td>Each child is bucketed by <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> — comparing where the item <em>started</em> (zero value or DB-loaded) against where it is now — into one <code>AggregateItemOp</code>: <code>OpInsert</code>→INSERT, <code>OpUpdate</code>→UPDATE, <code>OpDelete</code>→Archive (UPDATE <code>deleted_at</code>; the row stays recoverable) when the child declares <code>DeletedAt</code>, else <code>DELETE</code> of the child row — its sibling rows first, same TX, <code>OpNoop</code>→skipped. Two cross-status cases follow from the pair: a DB-loaded child re-added (<code>Constructor→Added</code>) is an <strong>UPDATE</strong>, not an INSERT; a brand-new child added then removed before commit (<code>Added→Removed</code>) is <strong>OpNoop</strong> — no SQL, never persisted</td><td><code>writeChildren</code></td></tr>
+        <tr><td>Each child is bucketed by <code>domain.OperationOf(OriginalStatus, CurrentStatus)</code> — comparing where the item <em>started</em> (zero value or DB-loaded) against where it is now — into one <code>AggregateItemOp</code>: <code>OpInsert</code>→INSERT, <code>OpUpdate</code>→UPDATE, <code>OpDelete</code>→Archive (UPDATE <code>archived_at</code>; the row stays recoverable) when the child declares <code>ArchivedAt</code>, else <code>DELETE</code> of the child row — its sibling rows first, same TX, <code>OpNoop</code>→skipped. Two cross-status cases follow from the pair: a DB-loaded child re-added (<code>Constructor→Added</code>) is an <strong>UPDATE</strong>, not an INSERT; a brand-new child added then removed before commit (<code>Added→Removed</code>) is <strong>OpNoop</strong> — no SQL, never persisted</td><td><code>writeChildren</code></td></tr>
         <tr><td>Archive of the root cascades archive on all active children</td><td><code>archiveAggregate</code></td></tr>
         <tr><td>Unarchive of the root restores the children its own archive stamped — one statement per child table, gated on that stamp</td><td><code>cascadeChildren</code></td></tr>
         <tr><td>Hard Delete of the root issues an explicit <code>DELETE</code> per declared child table (by ParentID) before the root DELETE, same TX — no dependence on <code>ON DELETE CASCADE</code> (the ParentID clause is an optional safety-net)</td><td><code>deleteAggregate</code></td></tr>
@@ -458,7 +458,7 @@ outbox ARCHIVED / UNARCHIVED / DELETED  ·  audit event  ·  hook beforeCommit (
 
     <div class="box">
         <strong>Archive and Unarchive run BuildRules and consult Modes().</strong> Archive and Unarchive are
-        <em>state transitions</em> (touch <code>deleted_at</code>, not fields). They <strong>run <code>BuildRules</code> in <code>ModeArchive</code> / <code>ModeUnarchive</code></strong>
+        <em>state transitions</em> (touch <code>archived_at</code>, not fields). They <strong>run <code>BuildRules</code> in <code>ModeArchive</code> / <code>ModeUnarchive</code></strong>
         — each its own verb, dispatched by the <code>IfArchive</code> / <code>IfUnarchive</code> DSL closures (not <code>IfUpdate</code>, which is PUT/PATCH exclusively) — AND they <strong>consult <code>Modes()</code></strong>: an entity
         that does not declare <code>ModeArchive</code> receives <code>ArchiveNotAllowedNotification</code> (403 Forbidden) when
         calling <code>GetArchivable</code>; same for <code>ModeUnarchive</code>/<code>UnarchiveNotAllowedNotification</code>.
@@ -522,7 +522,7 @@ func UserSchema() *core.TableSchema {
         Field("Email", "email").
         Field("Username", "username").
         Field("Phone", "phone").
-        DeletedAt("deleted_at").
+        ArchivedAt("archived_at").
         CreatedAt("created_at").
         UpdatedAt("updated_at").
         Child(core.NewTableSchema[Address]("addresses").
@@ -530,7 +530,7 @@ func UserSchema() *core.TableSchema {
             ID("id").
             Field("Street", "street").
             Field("ZipCode", "zip_code").
-            DeletedAt("deleted_at"))
+            ArchivedAt("archived_at"))
 }
 
 // Declare once and thread it — WithSchema feeds the write binding AND the

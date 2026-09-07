@@ -12,7 +12,7 @@ import (
 // FindByParamsQueryHandler, so a single Query type owns its persistence
 // shape end to end. ReadByID honors criteria.Filter (security overlays
 // from AppContext, e.g. tenant id) merged with the {_id: id} +
-// deleted_at gate; the pagination knobs on the same DTO are ignored by
+// archived_at gate; the pagination knobs on the same DTO are ignored by
 // design (they only make sense on a paged read).
 //
 // On a hit, the document is filled into a TResult (ResultFromDoc) and

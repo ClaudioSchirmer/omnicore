@@ -28,7 +28,7 @@ func directJobSchema() *TableSchema {
 		Field("Status", "status").
 		Field("Source", "source").
 		Field("Owner", "owner_id").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		UpdatedAt("updated_at")
 }
 
@@ -76,7 +76,7 @@ func TestDirectWrite_UpdateContinuesThePlaceholderNumbering(t *testing.T) {
 	if n != 3 {
 		t.Fatalf("affected = %d, want 3", n)
 	}
-	want := "UPDATE job_queue SET status = $1, updated_at = $2 WHERE (source = $3 AND deleted_at IS NULL)"
+	want := "UPDATE job_queue SET status = $1, updated_at = $2 WHERE (source = $3 AND archived_at IS NULL)"
 	if tx.lastSQL != want {
 		t.Fatalf("sql =\n  %q\nwant\n  %q", tx.lastSQL, want)
 	}
@@ -92,11 +92,11 @@ func TestDirectWrite_ScopeGate(t *testing.T) {
 		want string
 	}{
 		{"active by default", criteria.Where(criteria.Eq("Status", "x")),
-			"DELETE FROM job_queue WHERE (status = $1 AND deleted_at IS NULL)"},
+			"DELETE FROM job_queue WHERE (status = $1 AND archived_at IS NULL)"},
 		{"include archived", criteria.Where(criteria.Eq("Status", "x")).IncludeArchived(),
 			"DELETE FROM job_queue WHERE status = $1"},
 		{"only archived", criteria.Where(criteria.Eq("Status", "x")).OnlyArchived(),
-			"DELETE FROM job_queue WHERE (status = $1 AND deleted_at IS NOT NULL)"},
+			"DELETE FROM job_queue WHERE (status = $1 AND archived_at IS NOT NULL)"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -111,9 +111,9 @@ func TestDirectWrite_ScopeGate(t *testing.T) {
 	}
 }
 
-// A schema with no DeletedAt is never gated — the same "no column, no gate" rule
+// A schema with no ArchivedAt is never gated — the same "no column, no gate" rule
 // the read path follows.
-func TestDirectWrite_NoDeletedAtNoGate(t *testing.T) {
+func TestDirectWrite_NoArchivedAtNoGate(t *testing.T) {
 	tx := &fakeWriteTx{n: 1}
 	schema := core.NewDirectSchema[directJobRow]("job_queue").ID("id").Field("Status", "status")
 	w := NewDirectWriter(&directTestEngine{tx: tx}, schema, "ImportJob")
@@ -131,13 +131,13 @@ func TestDirectWrite_ArchiveAndUnarchive(t *testing.T) {
 	if _, err := w.Archive(ctx, criteria.Where(criteria.Eq("Status", "x"))); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	if want := "UPDATE job_queue SET deleted_at = $1, updated_at = $2 WHERE (status = $3 AND deleted_at IS NULL)"; tx.lastSQL != want {
+	if want := "UPDATE job_queue SET archived_at = $1, updated_at = $2 WHERE (status = $3 AND archived_at IS NULL)"; tx.lastSQL != want {
 		t.Fatalf("archive sql =\n  %q\nwant\n  %q", tx.lastSQL, want)
 	}
 	if _, err := w.Unarchive(ctx, criteria.Where(criteria.Eq("Status", "x"))); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	if want := "UPDATE job_queue SET deleted_at = $1, updated_at = $2 WHERE (status = $3 AND deleted_at IS NOT NULL)"; tx.lastSQL != want {
+	if want := "UPDATE job_queue SET archived_at = $1, updated_at = $2 WHERE (status = $3 AND archived_at IS NOT NULL)"; tx.lastSQL != want {
 		t.Fatalf("unarchive sql =\n  %q\nwant\n  %q", tx.lastSQL, want)
 	}
 	// The verb IS the scope: a criteria that declares one is refused rather than
@@ -254,7 +254,7 @@ func TestDirectWrite_ValuesRefusals(t *testing.T) {
 		{"id", Values{"ID": "x"}, "minted by the framework"},
 		{"created", Values{"CreatedAt": "x"}, "stamps it"},
 		{"updated", Values{"UpdatedAt": "x"}, "stamps it"},
-		{"deleted", Values{"DeletedAt": "x"}, "Archive and Unarchive"},
+		{"deleted", Values{"ArchivedAt": "x"}, "Archive and Unarchive"},
 		{"unknown", Values{"Nope": "x"}, "unknown field"},
 	}
 	for _, c := range cases {
@@ -359,13 +359,13 @@ func TestDirectWrite_RefusesAnUnknownPredicateField(t *testing.T) {
 	}
 }
 
-// Archive on a schema with no DeletedAt is refused: there is no column to stamp.
+// Archive on a schema with no ArchivedAt is refused: there is no column to stamp.
 func TestDirectWrite_ArchiveNeedsTheColumn(t *testing.T) {
 	tx := &fakeWriteTx{n: 1}
 	schema := core.NewDirectSchema[directJobRow]("job_queue").ID("id").Field("Status", "status")
 	w := NewDirectWriter(&directTestEngine{tx: tx}, schema, "ImportJob")
 	if _, err := w.Archive(context.Background(), criteria.Where(criteria.Eq("Status", "x"))); err == nil {
-		t.Fatal("Archive without a DeletedAt column must be refused")
+		t.Fatal("Archive without an ArchivedAt column must be refused")
 	}
 }
 

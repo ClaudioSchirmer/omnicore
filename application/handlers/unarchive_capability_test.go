@@ -13,7 +13,7 @@ import (
 
 // Unarchive REQUIRES a repository that can load an archived aggregate. The
 // handler used to fall back to an empty Repo.New() + SetID sample, which works
-// only while the verb touches nothing but deleted_at: that sample carries the
+// only while the verb touches nothing but archived_at: that sample carries the
 // entity's zero value in every business field and no revision, so it can be
 // neither written back nor guarded. A repository providing neither capability
 // is a wiring error and must fail loudly instead of writing a ghost.

@@ -198,7 +198,7 @@ func buildStructCopier(srcT, dstT reflect.Type, inProgress map[pairKey]bool) (fi
 		if reason != "" {
 			// Name the offending field on the Response — the fix site — and
 			// carry the inner reason up, so a nested miss reads as a path
-			// ("User.DeletedAt: …") rather than a bare type complaint.
+			// ("User.ArchivedAt: …") rather than a bare type complaint.
 			return nil, fmt.Sprintf("field %s (%s → %s): %s", dfT.Name, sfT.Type, dfT.Type, reason)
 		}
 		slots = append(slots, slot{srcIndex: srcIndex, dstIndex: f.fieldIndex, copy: cp})

@@ -294,7 +294,7 @@ func isNumericKind(k reflect.Kind) bool {
 
 // naturalKeyRedactionPanic is the diagnostic for the one slot a redacted field
 // cannot occupy. Every OTHER framework-owned slot (ID, ParentID, Revision,
-// DeletedAt, CreatedAt, UpdatedAt) is already mutually exclusive with any field
+// ArchivedAt, CreatedAt, UpdatedAt) is already mutually exclusive with any field
 // declaration, in both orders — mustClaimNames refuses a field on those columns
 // and each setter refuses a column a field already claimed. The natural key is
 // the exception, because it MUST also be a mapped field: it is a business column

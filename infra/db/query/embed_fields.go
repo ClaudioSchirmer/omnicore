@@ -121,7 +121,7 @@ func trimDocsToFields(docs []Document, allow map[string]struct{}) []Document {
 //     rejected — its NewExternalSchema is already the consumer's own
 //     declaration of what it reads;
 //   - every entry must resolve on the SOURCE view, in GO vocabulary: a root
-//     field by Go name (managed slots by their fixed names — "DeletedAt",
+//     field by Go name (managed slots by their fixed names — "ArchivedAt",
 //     "CreatedAt", "ParentID") or a top-level segment by its Go segment name.
 //
 // Emptiness, duplicates and reserved `_` entries already panicked at the
@@ -155,7 +155,7 @@ func appendLegFieldsProblems(acc []string, viewName, what string, leg *Leg) []st
 		acc = append(acc, fmt.Sprintf(
 			"view %q: %s declares Fields entry %q, which is neither a Go field of the source view %q nor one "+
 				"of its top-level segments — entries are GO names (business fields by their declared Go name, "+
-				"managed slots by their fixed names: \"DeletedAt\", \"CreatedAt\", \"UpdatedAt\", \"ParentID\"), "+
+				"managed slots by their fixed names: \"ArchivedAt\", \"CreatedAt\", \"UpdatedAt\", \"ParentID\"), "+
 				"and a segment name admits or cuts that segment whole.",
 			viewName, what, f, leg.view.Name()))
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 // Fixtures for the JoinView Fields allowlist: a source view with two business
-// fields, a DeletedAt column and one native child, so entries of every kind
+// fields, an ArchivedAt column and one native child, so entries of every kind
 // (business field, managed slot, top-level segment) are exercised.
 
 type fieldsSrcRoot struct {
@@ -33,7 +33,7 @@ func fieldsSourceView() *ViewDefinition {
 			ID("id").
 			Field("Name", "name").
 			Field("Email", "mail").
-			DeletedAt("removed_on").
+			ArchivedAt("removed_on").
 			Child(fieldsSrcNoteSchema()))
 }
 
@@ -96,7 +96,7 @@ func TestLegFields_ValidEntriesPass(t *testing.T) {
 	src := fieldsSourceView()
 	// A business field by Go name, the fixed managed name, and a top-level
 	// segment (the source's native child) — every entry kind at once.
-	leg := JoinView(src, "Src", "src").Fields("Name", "DeletedAt", noteSegment())
+	leg := JoinView(src, "Src", "src").Fields("Name", "ArchivedAt", noteSegment())
 	v := fieldsEmbedder(leg)
 	if err := ValidateViewSchemas([]*ViewDefinition{src, v}); err != nil {
 		t.Fatalf("valid Fields entries must pass boot validation, got: %v", err)
@@ -132,7 +132,7 @@ func TestEmbedTrimSet_TranslatesAndForces(t *testing.T) {
 		}
 	}
 	if _, ok := set["removed_on"]; ok {
-		t.Errorf("DeletedAt column not declared must NOT be in the trim set: %v", set)
+		t.Errorf("ArchivedAt column not declared must NOT be in the trim set: %v", set)
 	}
 }
 
@@ -151,7 +151,7 @@ func TestTrimToFields_KeepsReservedAndAllowed(t *testing.T) {
 		t.Errorf("capped field must be trimmed, got %v", got)
 	}
 	if _, has := got["removed_on"]; has {
-		t.Errorf("capped DeletedAt column must be trimmed, got %v", got)
+		t.Errorf("capped ArchivedAt column must be trimmed, got %v", got)
 	}
 	if _, has := got[noteSegment()]; has {
 		t.Errorf("unlisted segment must be cut whole, got %v", got)
@@ -207,15 +207,15 @@ func TestRebuildHash_FieldsConditional(t *testing.T) {
 
 // ─── read side ───────────────────────────────────────────────────────────────
 
-func TestLegViewNode_FieldsGateDeletedAt(t *testing.T) {
+func TestLegViewNode_FieldsGateArchivedAt(t *testing.T) {
 	src := fieldsSourceView()
 	capped := legViewNode(JoinView(src, "Src", "src").Fields("Name"))
-	if _, ok := capped.DeletedAtColumn(); ok {
-		t.Errorf("a capped DeletedAt column must report NO archived gate (the archive switch)")
+	if _, ok := capped.ArchivedAtColumn(); ok {
+		t.Errorf("a capped ArchivedAt column must report NO archived gate (the archive switch)")
 	}
-	kept := legViewNode(JoinView(src, "Src", "src").Fields("Name", "DeletedAt"))
-	if col, ok := kept.DeletedAtColumn(); !ok || col != "removed_on" {
-		t.Errorf("DeletedAt listed → the gate stays on the physical column, got %q/%v", col, ok)
+	kept := legViewNode(JoinView(src, "Src", "src").Fields("Name", "ArchivedAt"))
+	if col, ok := kept.ArchivedAtColumn(); !ok || col != "removed_on" {
+		t.Errorf("ArchivedAt listed → the gate stays on the physical column, got %q/%v", col, ok)
 	}
 }
 
@@ -240,15 +240,15 @@ func TestLegViewNode_FieldsGateColumnPath(t *testing.T) {
 	}
 }
 
-func TestChildDeletedAtPaths_CappedSegmentContributesNothing(t *testing.T) {
+func TestChildArchivedAtPaths_CappedSegmentContributesNothing(t *testing.T) {
 	src := fieldsSourceView()
 	capped := fieldsEmbedder(JoinView(src, "Src", "src").Fields("Name")).BuildViewNode()
-	if paths := capped.ChildDeletedAtPaths(); len(paths) != 0 {
+	if paths := capped.ChildArchivedAtPaths(); len(paths) != 0 {
 		t.Errorf("a capped segment has no archived rule — no auto-include path, got %v", paths)
 	}
-	kept := fieldsEmbedder(JoinView(src, "Src", "src").Fields("Name", "DeletedAt")).BuildViewNode()
-	if paths := kept.ChildDeletedAtPaths(); paths["src"] != "removed_on" {
-		t.Errorf("DeletedAt listed → the segment contributes its strip path, got %v", paths)
+	kept := fieldsEmbedder(JoinView(src, "Src", "src").Fields("Name", "ArchivedAt")).BuildViewNode()
+	if paths := kept.ChildArchivedAtPaths(); paths["src"] != "removed_on" {
+		t.Errorf("ArchivedAt listed → the segment contributes its strip path, got %v", paths)
 	}
 }
 
@@ -262,11 +262,11 @@ func TestStripArchivedChildren_CappedSegmentNeverStripped(t *testing.T) {
 	if doc["src"] == nil {
 		t.Fatalf("capped segment must never be stripped")
 	}
-	kept := fieldsEmbedder(JoinView(src, "Src", "src").Fields("Name", "DeletedAt")).BuildViewNode()
+	kept := fieldsEmbedder(JoinView(src, "Src", "src").Fields("Name", "ArchivedAt")).BuildViewNode()
 	doc2 := map[string]any{"src": map[string]any{"_id": "s1", "name": "Ana", "removed_on": "2026-01-01"}}
 	kept.StripArchivedChildren(doc2)
 	if doc2["src"] != nil {
-		t.Fatalf("DeletedAt listed → the archived segment hides on a default read, got %v", doc2["src"])
+		t.Fatalf("ArchivedAt listed → the archived segment hides on a default read, got %v", doc2["src"])
 	}
 }
 
@@ -278,7 +278,7 @@ func TestChildEmbedTrimSet_AndDocsTrim(t *testing.T) {
 		t.Fatalf("child-embed trim set must carry the declared column, got %v", set)
 	}
 	if _, ok := set["removed_on"]; ok {
-		t.Fatalf("child-embed trim set must cut the undeclared DeletedAt column: %v", set)
+		t.Fatalf("child-embed trim set must cut the undeclared ArchivedAt column: %v", set)
 	}
 	docs := []Document{{"_id": "a", "name": "x", "mail": "m"}, {"_id": "b", "name": "y", "removed_on": "z"}}
 	got := trimDocsToFields(docs, set)
@@ -287,7 +287,7 @@ func TestChildEmbedTrimSet_AndDocsTrim(t *testing.T) {
 			t.Errorf("doc %d kept a capped field: %v", i, d)
 		}
 		if _, has := d["removed_on"]; has {
-			t.Errorf("doc %d kept the capped DeletedAt column: %v", i, d)
+			t.Errorf("doc %d kept the capped ArchivedAt column: %v", i, d)
 		}
 		if d["_id"] == nil || d["name"] == nil {
 			t.Errorf("doc %d lost identity/allowed field: %v", i, d)

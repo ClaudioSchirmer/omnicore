@@ -33,7 +33,7 @@ func newWriteID() (string, error) {
 }
 
 // writeNow mints the single authoritative timestamp of one write operation.
-// Managed columns (created_at/updated_at and the DeletedAt stamp) are bound as
+// Managed columns (created_at/updated_at and the ArchivedAt stamp) are bound as
 // ordinary arguments — the same move the ids made with the Go-minted UUID v7:
 // no dialect NOW() expression in the data DML, so every statement of one
 // operation (root, children, siblings, base cascade) carries the SAME instant,
@@ -305,11 +305,11 @@ func rowExistsSQL(d Dialect, table, pk string) string {
 //
 // Its one caller is archiveChild: a child the aggregate marked Removed during an
 // UPDATE. The ROOT verbs do not come through here — Archive/Unarchive write the
-// entity's full field set with the DeletedAt transition as one more column (see
-// softWrite), so the row's business state and the event that announces it can
+// entity's full field set with the ArchivedAt transition as one more column (see
+// archiveWrite), so the row's business state and the event that announces it can
 // never disagree.
-func archiveSQL(d Dialect, t writeTarget, sdCol string, pred criteria.Expr, now time.Time, revCol string) (string, []any, error) {
-	sets, args := buildSet(d, domain.Fields{sdCol: now}, nil, now, revCol)
+func archiveSQL(d Dialect, t writeTarget, archivedCol string, pred criteria.Expr, now time.Time, revCol string) (string, []any, error) {
+	sets, args := buildSet(d, domain.Fields{archivedCol: now}, nil, now, revCol)
 	where, whereArgs, err := compilePredicate(d, t, pred, len(args))
 	if err != nil {
 		return "", nil, err
@@ -338,21 +338,21 @@ func childDeleteSQL(d Dialect, childTable, fkCol string) string {
 }
 
 // archiveCascadeSQL renders the ARCHIVE direction of the symmetric cascade: set
-// the DeletedAt column to the operation stamp (bound as the FIRST arg) for
+// the ArchivedAt column to the operation stamp (bound as the FIRST arg) for
 // the ACTIVE children of the root (second arg). Gated on `IS NULL` so it is
 // idempotent, never re-stamps an already-archived child — and so the stamp it
 // writes is, for every row it touches, the SAME instant the root row carries:
 // one writeNow() per operation, bound here and by the root UPDATE alike. That
 // equality is not a coincidence to preserve casually — it IS the discriminator
 // unarchiveCascadeSQL reads back.
-func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
+func archiveCascadeSQL(d Dialect, childTable, childArchivedCol, fkCol string) string {
 	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE %s = %s AND %s IS NULL",
-		d.QuoteIdent(childTable), d.QuoteIdent(childSd), d.Placeholder(1),
-		d.QuoteIdent(fkCol), d.Placeholder(2), d.QuoteIdent(childSd))
+		d.QuoteIdent(childTable), d.QuoteIdent(childArchivedCol), d.Placeholder(1),
+		d.QuoteIdent(fkCol), d.Placeholder(2), d.QuoteIdent(childArchivedCol))
 }
 
 // unarchiveCascadeSQL renders the UNARCHIVE direction of the symmetric cascade:
-// clear the DeletedAt column of the children the OWNER'S OWN archive stamped —
+// clear the ArchivedAt column of the children the OWNER'S OWN archive stamped —
 // the owner id binds first (the ParentID), the owner ROW id second.
 //
 // The gate used to be `IS NOT NULL` ("every archived child"), and that is the
@@ -380,16 +380,16 @@ func archiveCascadeSQL(d Dialect, childTable, childSd, fkCol string) string {
 // cascadeChildren / unarchiveBaseCascade) — that sub-select is the discriminator.
 //
 // The comparison is still an equality between two stored timestamps, so it is
-// only as sharp as the columns' precision: owner and child DeletedAt columns must
+// only as sharp as the columns' precision: owner and child ArchivedAt columns must
 // share the same type, with sub-second precision (DATETIME(6), TIMESTAMP(6),
 // DATETIME2(6), TIMESTAMPTZ — what the generator emits). A second-precision
 // column collapses two operations that happened within the same second into one
 // stamp; a child column COARSER than the owner's truncates the stamp it was
 // given and stops matching, which fails safe (nothing is revived) but silently.
-func unarchiveCascadeSQL(d Dialect, childTable, childSd, fkCol, ownerTable, ownerSd, ownerPK string) string {
+func unarchiveCascadeSQL(d Dialect, childTable, childArchivedCol, fkCol, ownerTable, ownerSd, ownerPK string) string {
 	return fmt.Sprintf("UPDATE %s SET %s = NULL WHERE %s = %s AND %s = (SELECT %s FROM %s WHERE %s = %s)",
-		d.QuoteIdent(childTable), d.QuoteIdent(childSd),
-		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childSd),
+		d.QuoteIdent(childTable), d.QuoteIdent(childArchivedCol),
+		d.QuoteIdent(fkCol), d.Placeholder(1), d.QuoteIdent(childArchivedCol),
 		d.QuoteIdent(ownerSd), d.QuoteIdent(ownerTable), d.QuoteIdent(ownerPK), d.Placeholder(2))
 }
 
@@ -426,14 +426,14 @@ func buildSiblingUpsert(d Dialect, sib *TableSchema, pkCol, id string, fields do
 	return d.BuildUpsert(sib.Table(), cols, []string{pkCol}, sets), args
 }
 
-// requireDeletedAt is the runtime backstop for the boot-time Modes() ⟺
-// DeletedAt check: a write path needing the DeletedAt column on a schema that
+// requireArchivedAt is the runtime backstop for the boot-time Modes() ⟺
+// ArchivedAt check: a write path needing the ArchivedAt column on a schema that
 // did not declare it fails loudly instead of emitting broken SQL.
-func requireDeletedAt(s *TableSchema, entityName string) (string, error) {
-	col, ok := s.DeletedAtColumn()
+func requireArchivedAt(s *TableSchema, entityName string) (string, error) {
+	col, ok := s.ArchivedAtColumn()
 	if !ok {
 		return "", fmt.Errorf(
-			"db: %s did not declare DeletedAt in its TableSchema — archive/unarchive is unavailable",
+			"db: %s did not declare ArchivedAt in its TableSchema — archive/unarchive is unavailable",
 			entityName,
 		)
 	}

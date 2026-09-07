@@ -186,7 +186,7 @@ func archivableSchema() *TableSchema {
 		Field("Identity", "identity").
 		Field("LastIP", "last_ip").
 		StampedCounterField("TotalCount", "total_count").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func newArchivableWriter(t *testing.T) (*DirectWriter, *fakeWriteTx) {
@@ -195,16 +195,16 @@ func newArchivableWriter(t *testing.T) (*DirectWriter, *fakeWriteTx) {
 	return NewDirectWriter(&directTestEngine{tx: tx}, archivableSchema(), "AuthAttempt"), tx
 }
 
-// Every other verb gates on deleted_at IS NULL. An upsert cannot, so the caller
+// Every other verb gates on archived_at IS NULL. An upsert cannot, so the caller
 // must say what happens — there is no defensible default.
-func TestUpsert_ArchivePolicyIsMandatoryWhenDeletedAtIsDeclared(t *testing.T) {
+func TestUpsert_ArchivePolicyIsMandatoryWhenArchivedAtIsDeclared(t *testing.T) {
 	w, _ := newArchivableWriter(t)
 	err := w.Upsert(context.Background(), Values{"Identity": "bob", "TotalCount": Stamp},
 		OnConflict("Identity"))
 	if err == nil {
-		t.Fatal("a schema with DeletedAt must not upsert without an archive policy")
+		t.Fatal("a schema with ArchivedAt must not upsert without an archive policy")
 	}
-	for _, want := range []string{"UnarchiveOnConflict", "KeepArchiveStateOnConflict", "deleted_at IS NULL"} {
+	for _, want := range []string{"UnarchiveOnConflict", "KeepArchiveStateOnConflict", "archived_at IS NULL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("the diagnostic must mention %q, got: %v", want, err)
 		}
@@ -217,7 +217,7 @@ func TestUpsert_UnarchiveOnConflictClearsTheColumn(t *testing.T) {
 		OnConflict("Identity"), UnarchiveOnConflict()); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if !strings.Contains(tx.lastSQL, "deleted_at = NULL") {
+	if !strings.Contains(tx.lastSQL, "archived_at = NULL") {
 		t.Fatalf("UnarchiveOnConflict must clear the archive column: %s", tx.lastSQL)
 	}
 }
@@ -228,7 +228,7 @@ func TestUpsert_KeepArchiveStateLeavesTheColumnAlone(t *testing.T) {
 		OnConflict("Identity"), KeepArchiveStateOnConflict()); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if strings.Contains(tx.lastSQL, "deleted_at") {
+	if strings.Contains(tx.lastSQL, "archived_at") {
 		t.Fatalf("KeepArchiveStateOnConflict must not touch the archive column: %s", tx.lastSQL)
 	}
 	// The rest of the upsert is unchanged by the policy.
@@ -238,12 +238,12 @@ func TestUpsert_KeepArchiveStateLeavesTheColumnAlone(t *testing.T) {
 }
 
 // A schema with no archive column needs no policy at all.
-func TestUpsert_NoDeletedAtNeedsNoPolicy(t *testing.T) {
+func TestUpsert_NoArchivedAtNeedsNoPolicy(t *testing.T) {
 	w, _ := newUpsertWriter(t)
 	if err := w.Upsert(context.Background(), Values{
 		"Identity": "bob", "IdentityKind": "USERNAME", "Outcome": "FAILURE", "LastIP": "10.0.0.1",
 	}, attemptKey()); err != nil {
-		t.Fatalf("a schema without DeletedAt must upsert with no policy: %v", err)
+		t.Fatalf("a schema without ArchivedAt must upsert with no policy: %v", err)
 	}
 }
 
@@ -303,8 +303,8 @@ func TestUpsert_NoArchiveColumnEmitsNoArchiveClause(t *testing.T) {
 	}, attemptKey()); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	if strings.Contains(tx.lastSQL, "deleted_at") {
-		t.Fatalf("a schema with no DeletedAt must not mention it: %s", tx.lastSQL)
+	if strings.Contains(tx.lastSQL, "archived_at") {
+		t.Fatalf("a schema with no ArchivedAt must not mention it: %s", tx.lastSQL)
 	}
 }
 

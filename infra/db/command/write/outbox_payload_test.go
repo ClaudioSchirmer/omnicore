@@ -41,7 +41,7 @@ func TestBuildWritePayload_FlatInsertShape(t *testing.T) {
 func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 	schema := NewTableSchema[*builderTestEntity]("t").ID("id").Revision("revision").
 		Field("Name", "name").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at")
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at")
 	e := &builderTestEntity{Name: "a"}
 	meta := outboxMeta{ID: uuid.NewString()}
 
@@ -57,12 +57,12 @@ func TestBuildWritePayload_TimestampsByVerb(t *testing.T) {
 		t.Errorf("UPDATED must carry updated_at = the op stamp, got %v", upd)
 	}
 	arc := buildWritePayload(schema, e, nil, "ARCHIVED", testNow, CascadeStamps{}, schema.WriteFields(e), meta)
-	if arc["deleted_at"] != testNow {
-		t.Errorf("ARCHIVED must carry the DeletedAt stamp, got %v", arc)
+	if arc["archived_at"] != testNow {
+		t.Errorf("ARCHIVED must carry the ArchivedAt stamp, got %v", arc)
 	}
 	una := buildWritePayload(schema, e, nil, "UNARCHIVED", testNow, CascadeStamps{}, schema.WriteFields(e), meta)
-	if v, has := una["deleted_at"]; !has || v != nil {
-		t.Errorf("UNARCHIVED must carry an explicit null DeletedAt, got %v", una)
+	if v, has := una["archived_at"]; !has || v != nil {
+		t.Errorf("UNARCHIVED must carry an explicit null ArchivedAt, got %v", una)
 	}
 }
 
@@ -139,13 +139,13 @@ func TestBuildWritePayload_UnarchiveRestoresOnlyTheCascadedChildren(t *testing.T
 	if restored["_op"] != "unarchive" {
 		t.Errorf("the child the root archived must be restored, got %v", restored)
 	}
-	if v, present := restored["deleted_at"]; !present || v != nil {
+	if v, present := restored["archived_at"]; !present || v != nil {
 		t.Errorf("a restore carries the explicit null the cascade wrote, got %v", restored)
 	}
 	if untouched["_op"] != "noop" {
 		t.Errorf("a child archived on its own must stay archived, got %v", untouched)
 	}
-	if _, present := untouched["deleted_at"]; present {
+	if _, present := untouched["archived_at"]; present {
 		t.Errorf("an untouched child must not have its stamp rewritten, got %v", untouched)
 	}
 }
@@ -204,7 +204,7 @@ func TestBuildWritePayload_ArchiveWithoutBaseTransitionLeavesBaseChildrenAlone(t
 	if len(items) != 1 || items[0]["_op"] != "noop" {
 		t.Errorf("no base transition → the base children are untouched, got %v", items)
 	}
-	if _, present := items[0]["deleted_at"]; present {
+	if _, present := items[0]["archived_at"]; present {
 		t.Errorf("an untouched base child must not be stamped by the event, got %v", items[0])
 	}
 }
@@ -223,13 +223,13 @@ func TestChildOpName_Mapping(t *testing.T) {
 		t.Errorf("removed (archivable) → archive, got %q", got)
 	}
 	// The column decides, and nothing else does: a removed child that declares no
-	// DeletedAt reports the DELETE the persister issued — whether it is a role's
+	// ArchivedAt reports the DELETE the persister issued — whether it is a role's
 	// own child or a shared base's native one.
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusRemoved), false, "UPDATED", false, false); got != "delete" {
-		t.Errorf("removed child without DeletedAt → delete, got %q", got)
+		t.Errorf("removed child without ArchivedAt → delete, got %q", got)
 	}
 
-	// Soft verbs report the CASCADE the root statement performed, not the item's
+	// Archive verbs report the CASCADE the root statement performed, not the item's
 	// own status: the row the statement reached takes the transition.
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusChanged), true, "ARCHIVED", true, true); got != "archive" {
 		t.Errorf("archive cascades onto the active children, got %q", got)
@@ -237,9 +237,9 @@ func TestChildOpName_Mapping(t *testing.T) {
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "UNARCHIVED", true, true); got != "unarchive" {
 		t.Errorf("unarchive restores the children it archived, got %q", got)
 	}
-	// A child table with no DeletedAt takes no cascade at all.
+	// A child table with no ArchivedAt takes no cascade at all.
 	if got := childOpName(domain.OperationOf(domain.StatusConstructor, domain.StatusConstructor), true, "ARCHIVED", false, false); got != "noop" {
-		t.Errorf("a child without DeletedAt is skipped by the cascade, got %q", got)
+		t.Errorf("a child without ArchivedAt is skipped by the cascade, got %q", got)
 	}
 	// And neither does a row the cascade's predicate did not reach: already
 	// archived when the root archived, or carrying a stamp that is not the one

@@ -92,17 +92,17 @@ func TestReservedColumnPrefix_RejectedEverywhere(t *testing.T) {
 		NewTableSchema[*revRoleEntity]("t").ID("id").Field("Name", "_name")
 	})
 	mustPanicContains(t, "reserved", func() {
-		NewTableSchema[*revRoleEntity]("t").ID("id").DeletedAt("_deleted_at")
+		NewTableSchema[*revRoleEntity]("t").ID("id").ArchivedAt("_archived_at")
 	})
 }
 
 func TestPayloadColumnTypes_CoversAllScalarSources(t *testing.T) {
 	base := revBase().Revision("brev")
 	role := NewTableSchema[*revRoleEntity]("aluno").ID("id").Revision("revision").
-		Field("Extra", "extra").DeletedAt("deleted_at").
+		Field("Extra", "extra").ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 	types := role.PayloadColumnTypes()
-	for _, col := range []string{"id", "extra", "deleted_at", "pessoa_id", "name", "document", "brev"} {
+	for _, col := range []string{"id", "extra", "archived_at", "pessoa_id", "name", "document", "brev"} {
 		if _, ok := types[col]; !ok {
 			t.Errorf("PayloadColumnTypes must cover %q, got %v", col, types)
 		}

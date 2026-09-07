@@ -19,7 +19,7 @@ import (
 func loaderSchema() *core.TableSchema {
 	return core.NewTableSchema[*aggLoaderTestEntity]("agg_loader").
 		ID("id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // findRoots compiles the criteria before touching the pool. An unknown field in

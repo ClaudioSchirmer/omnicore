@@ -40,7 +40,7 @@ func roleTestSchema() *TableSchema {
 		ID("id").
 		Revision("revision").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 }
 
@@ -106,8 +106,8 @@ func TestInsertRoleWithBase_ActiveConflict409(t *testing.T) {
 	}
 }
 
-// An ARCHIVED role is INVISIBLE to the insert probe (DeletedAt is delete on
-// this path like on every other): the probe — which now filters deleted_at IS
+// An ARCHIVED role is INVISIBLE to the insert probe (an archived row counts as absent on
+// this path like on every other): the probe — which now filters archived_at IS
 // NULL in SQL — finds nothing, so the write proceeds as a plain INSERT and the
 // schema's own constraints arbitrate the collision with the physical remnant
 // (asserted E2E against real backends; the fake here scripts the probe miss).
@@ -124,13 +124,13 @@ func TestInsertRoleWithBase_ArchivedRemnantIsInvisible_InsertProceeds(t *testing
 		t.Errorf("stmt[1] must be a plain role INSERT (no revive), got %q", tx.execs[1])
 	}
 	if hasStmt(tx.execs, func(s string) bool {
-		return strings.Contains(s, "deleted_at = NULL") && strings.HasPrefix(s, "UPDATE aluno")
+		return strings.Contains(s, "archived_at = NULL") && strings.HasPrefix(s, "UPDATE aluno")
 	}) {
 		t.Errorf("no revive UPDATE may run on the insert path, got %v", tx.execs)
 	}
 }
 
-// The active-only probe carries the DeletedAt predicate in its SQL — the
+// The active-only probe carries the ArchivedAt predicate in its SQL — the
 // invisibility of archived rows is enforced by the QUERY, not by scanning.
 func TestFindActiveRoleByFK_ProbeFiltersArchivedInSQL(t *testing.T) {
 	var probed string
@@ -145,7 +145,7 @@ func TestFindActiveRoleByFK_ProbeFiltersArchivedInSQL(t *testing.T) {
 	if _, err := be.Insert(newBuilderCtx(), ins, roleTestSchema(), firingHook); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
-	if !strings.Contains(probed, "deleted_at IS NULL") {
+	if !strings.Contains(probed, "archived_at IS NULL") {
 		t.Errorf("role probe must filter archived rows in SQL, got %q", probed)
 	}
 }
@@ -164,7 +164,7 @@ func roleTestSchemaPurge() *TableSchema {
 		ID("id").
 		Revision("revision").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 }
 
@@ -232,7 +232,7 @@ func TestDeleteRoleWithBase_StillReferencedKeepsBase(t *testing.T) {
 func TestDeleteRoleWithBase_DefaultKeepsOrphanBase(t *testing.T) {
 	// roleTestSchema declares NO OrphanPolicy → KeepOrphan (the safe default):
 	// the base row survives the last role's hard-delete untouched (no probes, no
-	// savepoint), and without DeletedAt on the base no archive runs either.
+	// savepoint), and without ArchivedAt on the base no archive runs either.
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) { return &fakeRows{remaining: 0}, nil }}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if err := be.Delete(newBuilderCtx(), roleTestDeletable(t), roleTestSchema(), firingHook); err != nil {
@@ -286,19 +286,19 @@ func TestDeleteRoleWithBase_FKVetoKeepsBase(t *testing.T) {
 }
 
 func TestDeleteRoleWithBase_VetoThenArchivesBase(t *testing.T) {
-	// Purge policy + a archivable base: when the database vetoes the purge,
+	// Purge policy + an archivable base: when the database vetoes the purge,
 	// the standing lifecycle convergence still archives the orphaned identity.
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
 		ID("id").
 		Field("Name", "name").
 		Field("Document", "document").
 		NaturalID("document").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		OrphanPolicy(DeleteWhenUnreferenced)
 	schema := NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 	tx := &recTx{
 		queryFn:    func(string, []any) (Rows, error) { return &fakeRows{remaining: 0}, nil },
@@ -317,8 +317,8 @@ func TestDeleteRoleWithBase_VetoThenArchivesBase(t *testing.T) {
 	if len(tx.execs) != 8 {
 		t.Fatalf("expected 8 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
-	if !strings.HasPrefix(tx.execs[4], "UPDATE pessoa SET deleted_at = $1") {
-		t.Errorf("the vetoed orphan must be archived (UPDATE pessoa SET deleted_at = $1), got %q", tx.execs[4])
+	if !strings.HasPrefix(tx.execs[4], "UPDATE pessoa SET archived_at = $1") {
+		t.Errorf("the vetoed orphan must be archived (UPDATE pessoa SET archived_at = $1), got %q", tx.execs[4])
 	}
 }
 
@@ -403,7 +403,7 @@ func TestDeleteRoleWithBase_PurgeOutboxErrorFails(t *testing.T) {
 func TestDeleteRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 	// A shared-base role whose natural key resolved empty cannot derive the
 	// identity — converging on UUIDv5("") could touch the WRONG base row, so the
-	// delete fails loudly instead (same guard as the soft-write convergence).
+	// delete fails loudly instead (same guard as the archive-write convergence).
 	e := &roleTestEntity{Name: "Ana", Document: "", Matricula: "M1"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	del, err := domain.GetDeletable(e, nil, "GetDeletable")
@@ -418,8 +418,8 @@ func TestDeleteRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 	}
 }
 
-func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
-	// Default policy + a archivable base: the last role's hard-delete leaves
+func TestDeleteRoleWithBase_KeepOrphanArchivesArchivableBase(t *testing.T) {
+	// Default policy + an archivable base: the last role's hard-delete leaves
 	// the identity dormant (archived), never destroyed — and revivable by a
 	// future insert of the same natural key.
 	base := NewSharedBaseSchema("pessoa").Revision("revision").
@@ -427,11 +427,11 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 		Field("Name", "name").
 		Field("Document", "document").
 		NaturalID("document").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	schema := NewTableSchema[*roleTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 	// No active role remains → the anyActiveRole probe finds nothing.
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) { return &fakeRows{remaining: 0}, nil }}
@@ -446,7 +446,7 @@ func TestDeleteRoleWithBase_KeepOrphanArchivesSoftDeletableBase(t *testing.T) {
 	if len(tx.execs) != 5 {
 		t.Fatalf("expected 5 statements, got %d: %v", len(tx.execs), tx.execs)
 	}
-	if !strings.HasPrefix(tx.execs[1], "UPDATE pessoa SET deleted_at = $1") {
+	if !strings.HasPrefix(tx.execs[1], "UPDATE pessoa SET archived_at = $1") {
 		t.Errorf("the orphaned archivable base must archive, got %q", tx.execs[1])
 	}
 	if !strings.HasPrefix(tx.execs[2], "UPDATE pessoa SET revision = revision + 1") {
@@ -485,7 +485,7 @@ func aggRoleSchema() *TableSchema {
 	return NewTableSchema[*aggRoleEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Child(NewTableSchema[aggRoleChild]("aluno_disciplines").ID("id").ParentID("aluno_id").Field("Label", "label")).
 		SharedBase(base, "pessoa_id")
 }
@@ -532,7 +532,7 @@ func TestDeleteRoleWithBase_EngineRegistryUnionsRoles(t *testing.T) {
 	profSchema := NewTableSchema[*roleTestEntity]("professor").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(profBase, "pessoa_id")
 
 	var probed []string
@@ -579,7 +579,7 @@ func TestRegisterSharedBaseRole_DivergentDeclarationPanics(t *testing.T) {
 	role := NewTableSchema[*roleTestEntity]("professor").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(divergent, "pessoa_id")
 
 	defer func() {
@@ -652,7 +652,7 @@ func TestUnarchiveRoleWithBase_ActiveSiblingConflict409(t *testing.T) {
 	}
 	// The probe targets the SAME role table, excludes the row being unarchived,
 	// and filters active rows only.
-	for _, want := range []string{"FROM aluno", "pessoa_id", "<>", "deleted_at IS NULL"} {
+	for _, want := range []string{"FROM aluno", "pessoa_id", "<>", "archived_at IS NULL"} {
 		if !strings.Contains(probeSQL, want) {
 			t.Errorf("veto probe SQL must contain %q, got %q", want, probeSQL)
 		}
@@ -704,7 +704,7 @@ func TestUnarchiveRoleWithBase_SharedPKSkipsVeto(t *testing.T) {
 		t.Fatalf("Unarchive: %v", err)
 	}
 	// Two queries are expected: the restore's own archive-stamp read (SELECT
-	// deleted_at FROM aluno — the discriminator its child cascade binds) and the
+	// archived_at FROM aluno — the discriminator its child cascade binds) and the
 	// payload's base revision (FROM pessoa). The sibling VETO probe (SELECT 1
 	// FROM aluno) must NOT run under the shared-ID model: the ID caps the table
 	// at one row per identity, so there is no second active role to collide with.
@@ -741,21 +741,21 @@ func TestUnarchiveRoleWithBase_EmptyNaturalKeyErrors(t *testing.T) {
 }
 
 // White-box: the defensive no-ops of the veto — a role schema without
-// DeletedAt (unreachable through the unarchive verb, which requires it) and a
+// ArchivedAt (unreachable through the unarchive verb, which requires it) and a
 // convergence call with a neutral event type.
 func TestVetoUnarchive_DefensiveNoOps(t *testing.T) {
 	base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").Field("Document", "document").NaturalID("document")
-	noSD := NewTableSchema[*roleTestEntity]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
+	noArchived := NewTableSchema[*roleTestEntity]("aluno").ID("id").Revision("revision").Field("Matricula", "matricula").SharedBase(base, "pessoa_id")
 	tx := &recTx{queryFn: func(string, []any) (Rows, error) {
-		t.Fatal("no probe may run for a role without DeletedAt")
+		t.Fatal("no probe may run for a role without ArchivedAt")
 		return nil, nil
 	}}
 	be := newFlatBE(&recBeginner{tx: tx})
 	src := &roleTestEntity{Name: "Ana", Document: "D1"}
-	if err := be.vetoUnarchiveWithActiveSibling(newBuilderCtx(), tx, testPGDialect{}, noSD, src, "some-id", "Aluno"); err != nil {
-		t.Fatalf("no-DeletedAt veto must no-op, got %v", err)
+	if err := be.vetoUnarchiveWithActiveSibling(newBuilderCtx(), tx, testPGDialect{}, noArchived, src, "some-id", "Aluno"); err != nil {
+		t.Fatalf("no-ArchivedAt veto must no-op, got %v", err)
 	}
-	stamp, err := be.convergeBaseAfterSoftWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER", testStamp())
+	stamp, err := be.convergeBaseAfterArchiveWrite(newBuilderCtx(), tx, testPGDialect{}, roleTestSchema(), src, "OTHER", testStamp())
 	if err != nil {
 		t.Fatalf("a neutral event type must no-op, got %v", err)
 	}

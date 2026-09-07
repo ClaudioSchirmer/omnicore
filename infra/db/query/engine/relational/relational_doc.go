@@ -75,12 +75,12 @@ type managedGetters interface {
 	GetRevision() int64
 	GetCreatedAt() *time.Time
 	GetUpdatedAt() *time.Time
-	GetDeletedAt() *time.Time
+	GetArchivedAt() *time.Time
 }
 
 // applyManaged writes the managed timestamps under their physical columns — only
 // the ones the schema declares (schema-driven, matching the Composer's
-// ReadColumns), a live row's deleted_at emitted as a present nil like the
+// ReadColumns), a live row's archived_at emitted as a present nil like the
 // Composer's fetched NULL — and the revision under revisionKey:
 // query.DocRevisionField for a root (the watermark), the physical RevisionColumn
 // for a child (the Composer leaves a child row's revision under its physical
@@ -96,8 +96,8 @@ func applyManaged(doc query.Document, schema *core.TableSchema, e any, revisionK
 	if col := schema.UpdatedAtColumn(); col != "" {
 		doc[col] = timeValue(m.GetUpdatedAt())
 	}
-	if col, has := schema.DeletedAtColumn(); has && col != "" {
-		doc[col] = timeValue(m.GetDeletedAt())
+	if col, has := schema.ArchivedAtColumn(); has && col != "" {
+		doc[col] = timeValue(m.GetArchivedAt())
 	}
 	if schema.RevisionColumn() != "" && revisionKey != "" {
 		doc[revisionKey] = m.GetRevision()

@@ -29,7 +29,7 @@ type ScopedReaderProvider[T any] interface {
 // ScopedArchivedReaderProvider is the archived-scope twin of
 // ScopedReaderProvider, mirroring domain.ArchivedFinder[T] under the request
 // ctx. UnarchiveCommandHandler probes it to hydrate the archived aggregate
-// (deleted_at IS NOT NULL) under the request deadline before falling back to
+// (archived_at IS NOT NULL) under the request deadline before falling back to
 // the ctx-less domain.ArchivedFinder[T].
 type ScopedArchivedReaderProvider[T any] interface {
 	ScopedArchivedReader(ctx *configuration.AppContext) domain.ArchivedFinder[T]

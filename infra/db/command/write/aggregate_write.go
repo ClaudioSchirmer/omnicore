@@ -254,7 +254,7 @@ func (b *BaseEngine) hardDelete(
 				// pick / segment of every SharedBaseView changes), so the
 				// base revision advances even when the convergence itself was a
 				// no-op on the base row (KeepOrphan, still-referenced, no
-				// DeletedAt). The purge branch is exempt — the base row is gone.
+				// ArchivedAt). The purge branch is exempt — the base row is gone.
 				if err = bumpBaseRevision(ctx, tx, d, base, meta.BaseID); err != nil {
 					return err
 				}
@@ -331,10 +331,10 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 }
 
 // removeChild applies a Removed child: the CHILD'S SCHEMA decides, exactly like the
-// root's does. A child that declares DeletedAt is ARCHIVED (the row lingers, hidden,
+// root's does. A child that declares ArchivedAt is ARCHIVED (the row lingers, hidden,
 // and the owner's unarchive brings it back); a child that declares none has no state
 // to stamp, so the honest write is the DELETE — the same answer the root gives an
-// entity without DeletedAt. Position in the tree is irrelevant: a role's own child and
+// entity without ArchivedAt. Position in the tree is irrelevant: a role's own child and
 // a shared base's native child follow the identical rule.
 //
 // A hard-removed child takes its sibling rows with it, mirroring what hardDelete does
@@ -342,8 +342,8 @@ func writeChildren(ctx context.Context, tx WriteTx, d Dialect, root *domain.Aggr
 // outlive it). Base-children carry no siblings (rejected at boot), so that loop is a
 // no-op there — it exists for the role children this path now covers.
 func removeChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, item domain.AggregateValueObject, now time.Time) error {
-	if sdCol, ok := child.DeletedAtColumn(); ok {
-		return archiveChild(ctx, tx, d, child, sdCol, item, now)
+	if archivedCol, ok := child.ArchivedAtColumn(); ok {
+		return archiveChild(ctx, tx, d, child, archivedCol, item, now)
 	}
 	id := item.GetID().Value()
 	if id == "" {
@@ -421,15 +421,15 @@ func updateChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema,
 	return applySiblingUpdates(ctx, tx, d, child, item, id, false)
 }
 
-// archiveChild: Removed → Archive, for a child whose schema declares DeletedAt.
+// archiveChild: Removed → Archive, for a child whose schema declares ArchivedAt.
 // removeChild resolves the column and only routes here when it exists, so the
 // column arrives resolved rather than being re-derived (and re-guarded) here.
-func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, sdCol string, item domain.AggregateValueObject, now time.Time) error {
+func archiveChild(ctx context.Context, tx WriteTx, d Dialect, child *TableSchema, archivedCol string, item domain.AggregateValueObject, now time.Time) error {
 	id := item.GetID().Value()
 	if id == "" {
 		return fmt.Errorf("db: cannot archive child %q without id", child.Table())
 	}
-	sql, args, err := archiveSQL(d, schemaTarget(child), sdCol, criteria.Eq(idGoField, domain.NewID(id)), now, "")
+	sql, args, err := archiveSQL(d, schemaTarget(child), archivedCol, criteria.Eq(idGoField, domain.NewID(id)), now, "")
 	if err != nil {
 		return err
 	}

@@ -72,7 +72,7 @@ func TestIntegration_MixedBinaryWindow_OwnChildEqualRevision(t *testing.T) {
 		Field("Label", "label").Field("Rank", "rank")
 	root := core.NewTableSchema[*pdRoot]("mb_roots").ID("id").Revision("revision").
 		Field("Name", "name").Field("Nick", "nick").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(child)
 	view := View("mb_view").Version(2).Schema(root)
 	seg := childDocSegment(child)
@@ -201,7 +201,7 @@ func TestIntegration_MixedBinaryWindow_V1ConsumerChildReplace(t *testing.T) {
 		Field("Label", "label")
 	rootV1 := core.NewTableSchema[*pdRoot]("mb1_roots").ID("id").Revision("revision").
 		Field("Name", "name").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(childV1)
 	viewV1 := View("mb1_view").Version(1).Schema(rootV1)
 	seg := childDocSegment(childV1)
@@ -238,7 +238,7 @@ func TestIntegration_MixedBinaryWindow_V1ConsumerChildReplace(t *testing.T) {
 	consultDoc := Document{
 		"id": "r1", "name": "r",
 		seg: []any{
-			Document{"id": "c1", "label": "a", "deleted_at": "2026-07-23T14:12:32Z"},
+			Document{"id": "c1", "label": "a", "archived_at": "2026-07-23T14:12:32Z"},
 			Document{"id": "c2", "label": "a"},
 		},
 		docRevisionField: int64(2),
@@ -251,7 +251,7 @@ func TestIntegration_MixedBinaryWindow_V1ConsumerChildReplace(t *testing.T) {
 		"name": "r", "nick": "nick-value",
 		"_ids": {"id": "r1", "revision": 2},
 		"_children": {"pdChild": [
-			{"_op": "archive", "id": "c1", "deleted_at": "2026-07-23T14:12:32Z"},
+			{"_op": "archive", "id": "c1", "archived_at": "2026-07-23T14:12:32Z"},
 			{"_op": "insert", "id": "c2", "label": "a", "rank": 7}
 		]}
 	}`))

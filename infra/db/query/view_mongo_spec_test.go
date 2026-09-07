@@ -116,14 +116,14 @@ func TestIndexSpec_TTL_ConvertsToSeconds(t *testing.T) {
 }
 
 func TestIndexSpec_Partial_StoresFilter(t *testing.T) {
-	filter := Exists("deleted_at", false)
+	filter := Exists("archived_at", false)
 	s := Index("email").Partial(filter)
 	if s.partialFilter == nil {
 		t.Fatal("partialFilter = nil after Partial()")
 	}
-	inner, ok := s.partialFilter["deleted_at"].(bson.M)
+	inner, ok := s.partialFilter["archived_at"].(bson.M)
 	if !ok {
-		t.Fatalf("partialFilter.deleted_at type = %T, want bson.M", s.partialFilter["deleted_at"])
+		t.Fatalf("partialFilter.archived_at type = %T, want bson.M", s.partialFilter["archived_at"])
 	}
 	if exists, _ := inner["$exists"].(bool); exists {
 		t.Error("$exists = true, want false")
@@ -149,13 +149,13 @@ func TestIndexSpec_TextOptions(t *testing.T) {
 // ─── Exists helper ────────────────────────────────────────────────────────────
 
 func TestExists_FalseShape(t *testing.T) {
-	got := Exists("deleted_at", false)
+	got := Exists("archived_at", false)
 	if len(got) != 1 {
 		t.Fatalf("Exists returned %d keys, want 1", len(got))
 	}
-	inner, ok := got["deleted_at"].(bson.M)
+	inner, ok := got["archived_at"].(bson.M)
 	if !ok {
-		t.Fatalf("Exists value type = %T, want bson.M", got["deleted_at"])
+		t.Fatalf("Exists value type = %T, want bson.M", got["archived_at"])
 	}
 	exists, ok := inner["$exists"].(bool)
 	if !ok || exists {
@@ -328,7 +328,7 @@ func TestValidateMongoSpec_OK(t *testing.T) {
 		Indexes(
 			Index("email").Unique(),
 			Compound("email", "created_at").Desc(),
-			Index("deleted_at").Partial(Exists("deleted_at", false)),
+			Index("archived_at").Partial(Exists("archived_at", false)),
 			TextIndex("name", "email").DefaultLanguage("portuguese"),
 		).
 		JSONSchema(bson.M{"bsonType": "object"})

@@ -10,7 +10,7 @@ import (
 )
 
 // A Removed child is decided by ONE thing — whether its own schema declares
-// DeletedAt — exactly like the root is. Declared → ARCHIVE (the row lingers);
+// ArchivedAt — exactly like the root is. Declared → ARCHIVE (the row lingers);
 // absent → DELETE (there is no state to stamp). These tests pin that rule on
 // every emitter the write drives: the SQL, the audit event and the outbox
 // payload, which must all tell the same story about the same row.
@@ -20,7 +20,7 @@ import (
 var covAggHardChildSchema = NewTableSchema[*covAgg]("cov_aggs").
 	ID("id").
 	Field("Name", "name").
-	DeletedAt("deleted_at").
+	ArchivedAt("archived_at").
 	Child(NewTableSchema[covChild]("cov_children").
 		ID("id").
 		ParentID("cov_agg_id").
@@ -45,7 +45,7 @@ func removedCovChild(t *testing.T) domain.Updatable {
 // A hard-removed child cannot leave its sibling row behind: a sibling is a 1:1
 // slice of the child's row, so it goes first, in the same TX — the same order
 // hardDelete uses when the whole aggregate goes.
-func TestRemoveChild_WithoutDeletedAt_TakesItsSiblingFirst(t *testing.T) {
+func TestRemoveChild_WithoutArchivedAt_TakesItsSiblingFirst(t *testing.T) {
 	id := uuid.NewString()
 	root := &csRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
@@ -100,16 +100,16 @@ func TestRemoveChild_SiblingDeleteFailurePropagates(t *testing.T) {
 	}
 }
 
-// The dominant path is untouched: a child that declares DeletedAt is stamped,
+// The dominant path is untouched: a child that declares ArchivedAt is stamped,
 // never deleted.
-func TestRemoveChild_WithDeletedAt_ArchivesAndDeletesNothing(t *testing.T) {
+func TestRemoveChild_WithArchivedAt_ArchivesAndDeletesNothing(t *testing.T) {
 	tx := &recTx{count: 1}
 	be := newFlatBE(&recBeginner{tx: tx})
 	if _, err := be.Update(newBuilderCtx(), removedCovChild(t), covAggSchema, firingHook); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if !hasStmt(tx.execs, func(s string) bool {
-		return strings.HasPrefix(s, "UPDATE cov_children") && strings.Contains(s, "deleted_at")
+		return strings.HasPrefix(s, "UPDATE cov_children") && strings.Contains(s, "archived_at")
 	}) {
 		t.Errorf("an archivable child must be stamped, got %v", tx.execs)
 	}
@@ -125,15 +125,15 @@ func TestChildEvent_RemovedChildOpFollowsTheColumn(t *testing.T) {
 	hard := BuildUpdateEvent(newBuilderCtx(), removedCovChild(t), covAggHardChildSchema, nil)
 	kids := hard.Children["covChild"]
 	if len(kids) != 1 || kids[0].Op != "deleted" {
-		t.Fatalf("a child without DeletedAt is deleted, not archived: %+v", hard.Children)
+		t.Fatalf("a child without ArchivedAt is deleted, not archived: %+v", hard.Children)
 	}
 	if kids[0].Snapshot["Label"] != "x" {
 		t.Errorf("the previous state must survive the deletion in the audit trail, got %+v", kids[0])
 	}
 
-	soft := BuildUpdateEvent(newBuilderCtx(), removedCovChild(t), covAggSchema, nil)
-	if kids := soft.Children["covChild"]; len(kids) != 1 || kids[0].Op != "archived" {
-		t.Fatalf("a child with DeletedAt is archived: %+v", soft.Children)
+	archived := BuildUpdateEvent(newBuilderCtx(), removedCovChild(t), covAggSchema, nil)
+	if kids := archived.Children["covChild"]; len(kids) != 1 || kids[0].Op != "archived" {
+		t.Fatalf("a child with ArchivedAt is archived: %+v", archived.Children)
 	}
 }
 
@@ -162,9 +162,9 @@ func TestBuildWritePayload_RemovedChildOpFollowsTheColumn(t *testing.T) {
 	}
 
 	if got := opOf(t, covAggHardChildSchema); got != "delete" {
-		t.Errorf("a removed child without DeletedAt must project as a delete, got %v", got)
+		t.Errorf("a removed child without ArchivedAt must project as a delete, got %v", got)
 	}
 	if got := opOf(t, covAggSchema); got != "archive" {
-		t.Errorf("a removed child with DeletedAt must project as an archive, got %v", got)
+		t.Errorf("a removed child with ArchivedAt must project as an archive, got %v", got)
 	}
 }

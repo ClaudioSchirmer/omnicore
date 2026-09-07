@@ -66,7 +66,7 @@ type sqlVisitor struct {
 //
 //   - owner: the statement holds a DECLARED read join (WithJoins). A joined
 //     aggregate is a FOREIGN namespace — nothing stops it from having a "name",
-//     a "code" or the framework's own deleted_at/created_at/updated_at/revision
+//     a "code" or the framework's own archived_at/created_at/updated_at/revision
 //     — so EVERY column on the anchor side must be qualified by the table it
 //     physically lives on, not just the id. Anchor, siblings and shared base are
 //     all in the FROM under their own table names (never an alias), so their
@@ -692,16 +692,16 @@ func CompileWhereForWrite(e criteria.Expr, resolve FieldResolver, dialect Dialec
 	return v.sb.String(), v.args, nil
 }
 
-// ScopeGate returns the DeletedAt condition for the scope on the source's
-// resolved DeletedAt column ("" = no gate). A source with DeletedAt
+// ScopeGate returns the ArchivedAt condition for the scope on the source's
+// resolved ArchivedAt column ("" = no gate). A source with ArchivedAt
 // disabled has no marker column, so every scope yields no gate.
 // qualifier is the table-qualified prefix (already quoted) to prepend to the
-// DeletedAt column, or "" to leave it bare. It MUST be non-empty when the
+// ArchivedAt column, or "" to leave it bare. It MUST be non-empty when the
 // query JOINs another archivable table (a role's SharedBase, whose own
-// deleted_at would otherwise make the bare column reference ambiguous), matching
+// archived_at would otherwise make the bare column reference ambiguous), matching
 // how the leading ID is qualified under the same joins.
 func ScopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
-	col, ok := schema.DeletedAtColumn()
+	col, ok := schema.ArchivedAtColumn()
 	if !ok {
 		return ""
 	}
@@ -720,16 +720,16 @@ func ScopeGate(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier
 }
 
 // ChildScopeFilter maps the scope to the trailing child filter clause on the
-// child source's DeletedAt column: active children are gated on
+// child source's ArchivedAt column: active children are gated on
 // <col> IS NULL; under any archived scope children load unfiltered so the
 // unarchive cascade sees every child via AllAggregateItems(). A child with
-// DeletedAt disabled is never gated.
+// ArchivedAt disabled is never gated.
 // qualifier follows the same rule as ScopeGate's: pass the (quoted) owning table
 // when the child query JOINs another archivable table — as the base-child
-// loader does (base child JOINed to the role, both carrying deleted_at) — and ""
+// loader does (base child JOINed to the role, both carrying archived_at) — and ""
 // for a single-table child SELECT where the bare column is unambiguous.
 func ChildScopeFilter(s criteria.Scope, schema *TableSchema, dialect Dialect, qualifier string) string {
-	col, ok := schema.DeletedAtColumn()
+	col, ok := schema.ArchivedAtColumn()
 	if !ok {
 		return ""
 	}

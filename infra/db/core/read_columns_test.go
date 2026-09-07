@@ -10,7 +10,7 @@ import (
 // dropped) and its deterministic order (a stable prepared-statement cache key).
 
 // TestReadColumns_FlatRoot — ID, business fields (declaration order), then the
-// managed columns created_at, updated_at, deleted_at, revision.
+// managed columns created_at, updated_at, archived_at, revision.
 func TestReadColumns_FlatRoot(t *testing.T) {
 	s := NewTableSchema[schemaSample]("t").
 		ID("id").
@@ -18,9 +18,9 @@ func TestReadColumns_FlatRoot(t *testing.T) {
 		Field("Name", "name").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	got := s.ReadColumns()
-	want := []string{"id", "name", "created_at", "updated_at", "deleted_at", "revision"}
+	want := []string{"id", "name", "created_at", "updated_at", "archived_at", "revision"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ReadColumns() = %v, want %v", got, want)
 	}
@@ -53,10 +53,10 @@ func TestReadColumns_SharedBaseRole(t *testing.T) {
 		Revision("revision").
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "person_id")
 	got := role.ReadColumns()
-	want := []string{"id", "name", "person_id", "deleted_at", "revision"}
+	want := []string{"id", "name", "person_id", "archived_at", "revision"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ReadColumns() = %v, want %v", got, want)
 	}

@@ -51,7 +51,7 @@ func TestLoadSharedBaseIdentity_FastPaths(t *testing.T) {
 		}
 	})
 	t.Run("emptyNaturalKeyIsCold", func(t *testing.T) {
-		l := newRoleLoader(baseRowThenNone(nil), roleAggLoadSchemaSD())
+		l := newRoleLoader(baseRowThenNone(nil), roleAggLoadSchemaArchived())
 		fresh := &roleAggLoad{Name: "", Matricula: "M1"} // empty natural key
 		got, existed, err := l.LoadSharedBaseIdentity(context.Background(), fresh)
 		if err != nil || existed || got != fresh {
@@ -70,7 +70,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 			}
 			return &fakeDBRows{}, nil
 		}
-		l := newRoleLoader(query, roleAggLoadSchemaSD())
+		l := newRoleLoader(query, roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the probe error")
 		}
@@ -82,7 +82,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 			}
 			return &fakeDBRows{}, nil
 		}
-		l := newRoleLoader(query, roleAggLoadSchemaSD())
+		l := newRoleLoader(query, roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the scan error")
 		}
@@ -90,7 +90,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 	t.Run("baseIDDecodeError", func(t *testing.T) {
 		eng := decodeErrFakeEngine(baseRowThenNone(nil), "") // every DecodeID fails
 		l := NewAggregateLoader[*roleAggLoad](eng, func() *roleAggLoad { return &roleAggLoad{} }).
-			WithSchema(roleAggLoadSchemaSD())
+			WithSchema(roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the decode error")
 		}
@@ -105,7 +105,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 			}
 			return &fakeDBRows{}, nil
 		}
-		l := newRoleLoader(query, roleAggLoadSchemaSD())
+		l := newRoleLoader(query, roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the role probe error")
 		}
@@ -120,7 +120,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 			}
 			return &fakeDBRows{}, nil
 		}
-		l := newRoleLoader(query, roleAggLoadSchemaSD())
+		l := newRoleLoader(query, roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the base-child query error")
 		}
@@ -135,7 +135,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 			}
 			return &fakeDBRows{}, nil
 		}
-		l := newRoleLoader(query, roleAggLoadSchemaSD())
+		l := newRoleLoader(query, roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the base-child scan error")
 		}
@@ -150,7 +150,7 @@ func TestLoadSharedBaseIdentity_ErrorSurfaces(t *testing.T) {
 			}
 			return &fakeDBRows{}, nil
 		}
-		l := newRoleLoader(query, roleAggLoadSchemaSD())
+		l := newRoleLoader(query, roleAggLoadSchemaArchived())
 		if _, _, err := l.LoadSharedBaseIdentity(context.Background(), fresh()); err == nil {
 			t.Fatal("expected the base-child cursor error")
 		}
@@ -161,7 +161,7 @@ func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 	t.Run("baseWithoutChildren", func(t *testing.T) {
 		base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name")
 		schema := NewTableSchema[*roleAggLoad]("aluno").
-			ID("id").Revision("revision").Field("Matricula", "matricula").DeletedAt("deleted_at").
+			ID("id").Revision("revision").Field("Matricula", "matricula").ArchivedAt("archived_at").
 			SharedBase(base, "pessoa_id")
 		l := newRoleLoader(baseRowThenNone(nil), schema)
 		got, existed, err := l.LoadSharedBaseIdentity(context.Background(), &roleAggLoad{Name: "Ana"})
@@ -173,7 +173,7 @@ func TestLoadBaseChildrenConstructor_SkipPaths(t *testing.T) {
 		base := NewSharedBaseSchema("pessoa").Revision("revision").ID("id").Field("Name", "name").NaturalID("name").
 			Child(noColsChildSchema("pessoa_id"))
 		schema := NewTableSchema[*noColsRole]("aluno").
-			ID("id").Field("Matricula", "matricula").DeletedAt("deleted_at").
+			ID("id").Field("Matricula", "matricula").ArchivedAt("archived_at").
 			SharedBase(base, "pessoa_id")
 		l := NewAggregateLoader[*noColsRole](fakeEngine(baseRowThenNone(nil)), func() *noColsRole { return &noColsRole{} }).
 			WithSchema(schema)

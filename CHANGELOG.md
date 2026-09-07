@@ -11,6 +11,49 @@ with `1.0.0`.
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-09-06
+
+### Changed
+
+- **The managed archive slot is `ArchivedAt`; `DeletedAt` is gone from the
+  framework (breaking).** The verbs were always `Archive`/`Unarchive`, the mode
+  tokens `ARCHIVE`/`UNARCHIVE` and the integration event `ARCHIVED` — the slot
+  was the last place the framework still said "deleted", and it said it on the
+  surface the developer types.
+  - Builder: `TableSchema.DeletedAt(col)` → `TableSchema.ArchivedAt(col)`;
+    `TableSchema.DeletedAtColumn()` → `ArchivedAtColumn()`.
+  - Views: `ViewNode.DeletedAtColumn()` → `ArchivedAtColumn()`;
+    `ViewNode.ChildDeletedAtPaths()` → `ChildArchivedAtPaths()`.
+  - `hydrate.SchemaDeletedAt` → `hydrate.SchemaArchivedAt`.
+  - `core.RoleRef.DeletedAtCol` → `core.RoleRef.ArchivedAtCol`.
+  - `domain.Managed.GetDeletedAt()` → `GetArchivedAt()`.
+  - The FIXED LOGICAL NAME moves with them: the string `"DeletedAt"` becomes
+    `"ArchivedAt"` in `criteria` predicates, a `Leg`'s `Fields` allowlist (the
+    per-consumer archive switch), `EmbedFields`, the Direct write's reserved-key
+    gate and its refusal text, and `ValidateModes`.
+  - **Wire:** the rendered field becomes `archivedAt` — the JSON key, the filter
+    token, the `?fields=` projection token and the sort token. Clients, DTOs and
+    QA suites matching `deletedAt` must update.
+- **The soft-delete vocabulary is gone with it.** The slot rename left the
+  concept named twice; every remaining spelling of "delete" that meant *archive*
+  is now archive vocabulary: `softWrite` → `archiveWrite`,
+  `convergeBaseAfterSoftWrite` → `convergeBaseAfterArchiveWrite`, the `softVerb`
+  parameter → `archiveVerb`, and the `sd`/`SD` abbreviation (soft-delete) that
+  carried the column through the read and write paths → `archivedCol` /
+  `hasArchived` / `childArchivedPaths` / `removeChildArchivedColumn`. Comments,
+  docs and test names follow ("soft verbs" → archive verbs, "soft-delete gate" →
+  archive gate, "soft-deleted" → archived). Only PHYSICAL deletion still says
+  delete: `ModeDelete`, `IfDelete`, `OpDelete`, `Deletable`, `DeleteOnArchive`
+  (which really does remove the projected document), `DeleteWhenUnreferenced`,
+  and the hard-delete cascade.
+
+- **No data migration and no view rebuild.** Projected Mongo documents and
+  outbox payloads carry the PHYSICAL column, which the developer still names and
+  may keep exactly as it is — `ArchivedAt("deleted_at")` stays valid — and a
+  view whose column did not change keeps its `RebuildHash` byte-for-byte
+  (verified: re-running `TestRebuildHash_ExternalLegStreamUnchanged` with the
+  fixtures' former column reproduces the previously pinned digests).
+
 ## [0.73.0] - 2026-09-06
 
 ### Changed

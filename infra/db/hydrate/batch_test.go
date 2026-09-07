@@ -102,12 +102,12 @@ func TestMergeSharedBaseBatch_AppliesTheSameManagedSkip(t *testing.T) {
 	eng := newScripted(map[string][]map[string]any{
 		"persons": {{
 			"id": "p1", "name": "ana", "revision": int64(9),
-			"deleted_at": nil, "created_at": "BASE-TIME",
+			"archived_at": nil, "created_at": "BASE-TIME",
 		}},
 	})
 	docs := []Document{{
 		"id": "s1", "person_id": "p1",
-		"deleted_at": "ROLE-ARCHIVED", "created_at": "ROLE-TIME",
+		"archived_at": "ROLE-ARCHIVED", "created_at": "ROLE-TIME",
 	}}
 	if err := New(eng).MergeSharedBaseBatch(context.Background(), docs, roleSchema(), true); err != nil {
 		t.Fatalf("MergeSharedBaseBatch: %v", err)
@@ -115,7 +115,7 @@ func TestMergeSharedBaseBatch_AppliesTheSameManagedSkip(t *testing.T) {
 	if docs[0]["name"] != "ana" {
 		t.Errorf("the base business field must merge flat, got %#v", docs[0]["name"])
 	}
-	if docs[0]["deleted_at"] != "ROLE-ARCHIVED" || docs[0]["created_at"] != "ROLE-TIME" {
+	if docs[0]["archived_at"] != "ROLE-ARCHIVED" || docs[0]["created_at"] != "ROLE-TIME" {
 		t.Errorf("the role's managed columns must survive the base merge: %v", docs[0])
 	}
 	if docs[0][BaseRevisionField] != int64(9) {
@@ -150,7 +150,7 @@ func TestMergeSharedBaseChildrenBatch_NestsPerDocAndSkipsTheUnlinked(t *testing.
 	if _, present := docs[1]["Addresses"]; present {
 		t.Error("a role with no base link must get no base-child segment")
 	}
-	if !strings.Contains(eng.sqls[0], "deleted_at IS NULL") {
+	if !strings.Contains(eng.sqls[0], "archived_at IS NULL") {
 		t.Errorf("the archived gate must reach the batched read: %q", eng.sqls[0])
 	}
 }

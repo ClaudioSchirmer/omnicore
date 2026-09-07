@@ -31,9 +31,9 @@ func seedReaderDocs(t *testing.T, m *MongoDB, view string, n int) []string {
 		id := fmt.Sprintf("id-%02d", i)
 		ids = append(ids, id)
 		doc := map[string]any{
-			"_id":        id,
-			"name":       fmt.Sprintf("n-%02d", i),
-			"deleted_at": nil,
+			"_id":         id,
+			"name":        fmt.Sprintf("n-%02d", i),
+			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed [%d]: %v", i, err)
@@ -197,10 +197,10 @@ func TestReader_ForwardWithCustomSort_RespectsTiebreaker(t *testing.T) {
 	// first. Without the tiebreaker, the cursor could either skip or repeat
 	// the pair across pages.
 	docs := []map[string]any{
-		{"_id": "id-A", "name": "Alice", "deleted_at": nil},
-		{"_id": "id-B", "name": "Alice", "deleted_at": nil}, // duplicate name
-		{"_id": "id-C", "name": "Bob", "deleted_at": nil},
-		{"_id": "id-D", "name": "Carol", "deleted_at": nil},
+		{"_id": "id-A", "name": "Alice", "archived_at": nil},
+		{"_id": "id-B", "name": "Alice", "archived_at": nil}, // duplicate name
+		{"_id": "id-C", "name": "Bob", "archived_at": nil},
+		{"_id": "id-D", "name": "Carol", "archived_at": nil},
 	}
 	for _, d := range docs {
 		if err := m.Upsert(context.Background(), pc(view), d["_id"].(string), d); err != nil {
@@ -305,10 +305,10 @@ func TestReader_FieldsProjectionStripsOrderByFieldFromWire(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		id := fmt.Sprintf("id-%02d", i)
 		doc := map[string]any{
-			"_id":        id,
-			"name":       fmt.Sprintf("n-%02d", i),
-			"email":      fmt.Sprintf("e-%02d@x", i),
-			"deleted_at": nil,
+			"_id":         id,
+			"name":        fmt.Sprintf("n-%02d", i),
+			"email":       fmt.Sprintf("e-%02d@x", i),
+			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -355,9 +355,9 @@ func TestReader_KeysetCoexistsWithMultiClauseFilter(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		id := fmt.Sprintf("id-%02d", i)
 		doc := map[string]any{
-			"_id":        id,
-			"age":        20 + i,
-			"deleted_at": nil,
+			"_id":         id,
+			"age":         20 + i,
+			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -421,7 +421,7 @@ func TestReader_FieldsProjectionWithoutID_WalkAdvances(t *testing.T) {
 	names := []string{"Alpha", "Bravo", "Charlie"}
 	ids := []string{"a69341e6-aaaa", "b1234567-bbbb", "c98765ff-cccc"}
 	for i, name := range names {
-		doc := map[string]any{"_id": ids[i], "name": name, "deleted_at": nil}
+		doc := map[string]any{"_id": ids[i], "name": name, "archived_at": nil}
 		if err := m.Upsert(context.Background(), pc(view), ids[i], doc); err != nil {
 			t.Fatalf("seed %q: %v", name, err)
 		}
@@ -489,10 +489,10 @@ func TestReader_ExclusionProjectionWithSort_IsAValidMongoProjection(t *testing.T
 	for i := 0; i < 3; i++ {
 		id := fmt.Sprintf("id-%02d", i)
 		doc := map[string]any{
-			"_id":        id,
-			"name":       fmt.Sprintf("n-%02d", i),
-			"phone":      "555-0100",
-			"deleted_at": nil,
+			"_id":         id,
+			"name":        fmt.Sprintf("n-%02d", i),
+			"phone":       "555-0100",
+			"archived_at": nil,
 		}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed: %v", err)
@@ -554,7 +554,7 @@ func ivReader(t *testing.T, m *MongoDB, view string) *MongoViewReader {
 	schema := core.NewTableSchema[ivUser](view).
 		ID("id").
 		Field("Name", "name").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return NewMongoViewReader(m, testResolver).
 		SetViews([]*query.ViewDefinition{query.View(view).Version(1).Schema(schema)})
 }
@@ -562,7 +562,7 @@ func ivReader(t *testing.T, m *MongoDB, view string) *MongoViewReader {
 func seedIVUsers(t *testing.T, m *MongoDB, view string, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
-		doc := map[string]any{"_id": id, "id": id, "name": "N-" + id, "deleted_at": nil}
+		doc := map[string]any{"_id": id, "id": id, "name": "N-" + id, "archived_at": nil}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed %q: %v", id, err)
 		}
@@ -658,7 +658,7 @@ func TestReader_RestrictOnAnotherField_LeavesTheIdentity(t *testing.T) {
 
 func ivMirrorReader(t *testing.T, m *MongoDB, view string) *MongoViewReader {
 	t.Helper()
-	mirror := core.NewExternalSchema(view).ID("id").Field("Name", "name").DeletedAt("deleted_at")
+	mirror := core.NewExternalSchema(view).ID("id").Field("Name", "name").ArchivedAt("archived_at")
 	return NewMongoViewReader(m, testResolver).
 		SetViews([]*query.ViewDefinition{query.View(view).Version(1).Schema(mirror)})
 }
@@ -666,7 +666,7 @@ func ivMirrorReader(t *testing.T, m *MongoDB, view string) *MongoViewReader {
 func seedMirrorDocs(t *testing.T, m *MongoDB, view string, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
-		doc := map[string]any{"_id": id, "name": "N-" + id, "deleted_at": nil}
+		doc := map[string]any{"_id": id, "name": "N-" + id, "archived_at": nil}
 		if err := m.Upsert(context.Background(), pc(view), id, doc); err != nil {
 			t.Fatalf("seed %q: %v", id, err)
 		}

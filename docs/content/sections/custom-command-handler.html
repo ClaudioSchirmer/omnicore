@@ -301,7 +301,7 @@ if err := repo.Loader.Aggregate(ctx,
     return err
 }
 // → SELECT COUNT(*), SUM(price_cents), MAX(price_cents)
-//   FROM orders WHERE customer_id = $1 AND deleted_at IS NULL
+//   FROM orders WHERE customer_id = $1 AND archived_at IS NULL
 canAddOrder := count.Value &lt; 10 &amp;&amp; total.Value+newOrderCents &lt;= budgetCents
 _ = top.Found // false ⇔ no active order matched (0 can be a real MAX — check the flag, not the value)</code></pre>
     <p>
@@ -352,7 +352,7 @@ if err != nil {
     return err
 }
 // → SELECT category, COUNT(*), SUM(price_cents), AVG(weight)
-//   FROM products WHERE status = $1 AND deleted_at IS NULL
+//   FROM products WHERE status = $1 AND archived_at IS NULL
 //   GROUP BY category ORDER BY category
 for _, g := range groups {
     g.KeyString("Category")                    // this group's key ("" for a NULL key)
@@ -403,7 +403,7 @@ users, err := repo.FindAll(ctx, criteria.Where(criteria.And(
 
     <h4 id="aggregate-loader-auto">Automatic scan mode (recommended default)</h4>
     <p>
-        No scanner passed. The loader builds <code>SELECT col1, col2, ... FROM table WHERE id=$1 AND deleted_at IS NULL</code>
+        No scanner passed. The loader builds <code>SELECT col1, col2, ... FROM table WHERE id=$1 AND archived_at IS NULL</code>
         from the columns declared in the <code>TableSchema</code> and writes each into its struct field by
         index via <code>row.Scan</code>. Only declared fields are selected — an undeclared exported field is
         simply absent from the schema, and the private fields of the embedded <code>AggregateRoot</code> /
@@ -440,12 +440,12 @@ func NewUserRepository(eng core.RelationalEngine) *UserRepository {
     </p>
     <pre><code>-- Root (FindOne(criteria.ByID(id)) — id read back; criteria drives the WHERE)
 SELECT id, name, email, username, phone FROM users
- WHERE id = $1 AND deleted_at IS NULL;
+ WHERE id = $1 AND archived_at IS NULL;
 
 -- Per child declared via .Child(...) on the schema (FindAll batches with fk IN ($1,$2,...))
 SELECT user_id, id, label, street, number, complement, neighborhood, city, state, zip_code, country
   FROM addresses
- WHERE user_id = $1 AND deleted_at IS NULL;</code></pre>
+ WHERE user_id = $1 AND archived_at IS NULL;</code></pre>
 
     <h4>Column ↔ field mapping</h4>
     <p>
@@ -464,7 +464,7 @@ SELECT user_id, id, label, street, number, complement, neighborhood, city, state
         Field("Name", "name").
         Field("DisplayName", "display_name").  // any Go field ↔ any column
         Field("Email", "mail").                // a rename lives only here
-        DeletedAt("deleted_at").
+        ArchivedAt("archived_at").
         CreatedAt("created_at").
         UpdatedAt("updated_at")
 }</code></pre>

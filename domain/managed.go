@@ -10,7 +10,7 @@ import "time"
 // the persister and, on some surfaces, from the caller. The revision and the
 // three timestamps are READ-ONLY: the write path stamps created_at/updated_at
 // from the operation's own instant (the source declared in relational.clock),
-// the framework bumps revision, and deleted_at moves only through
+// the framework bumps revision, and archived_at moves only through
 // Archive/Unarchive — the dev never sets them, they surface after a load via the
 // getters. The relational loader populates all of it through SetManagedColumns.
 //
@@ -25,11 +25,11 @@ import "time"
 // DOES retain the carrier — harmless, since it stays invisible to identity and
 // audit either way.
 type Managed struct {
-	id        *ID
-	revision  int64
-	createdAt *time.Time
-	updatedAt *time.Time
-	deletedAt *time.Time
+	id         *ID
+	revision   int64
+	createdAt  *time.Time
+	updatedAt  *time.Time
+	archivedAt *time.Time
 
 	// stamps are the STAMPED fields this write asks the framework to WRITE —
 	// requested by Go field name, never by column (the physical name lives only
@@ -215,20 +215,20 @@ func (m *Managed) idPtr() *ID { return m.id }
 // unguarded write for it.
 func (m Managed) GetRevision() int64 { return m.revision }
 
-// GetCreatedAt / GetUpdatedAt / GetDeletedAt return the managed timestamps, each
+// GetCreatedAt / GetUpdatedAt / GetArchivedAt return the managed timestamps, each
 // nil when absent: nil created/updated means the row is not loaded/persisted yet
-// (never a misleading zero time), nil deleted means a live row.
-func (m Managed) GetCreatedAt() *time.Time { return m.createdAt }
-func (m Managed) GetUpdatedAt() *time.Time { return m.updatedAt }
-func (m Managed) GetDeletedAt() *time.Time { return m.deletedAt }
+// (never a misleading zero time), nil archived means a live row.
+func (m Managed) GetCreatedAt() *time.Time  { return m.createdAt }
+func (m Managed) GetUpdatedAt() *time.Time  { return m.updatedAt }
+func (m Managed) GetArchivedAt() *time.Time { return m.archivedAt }
 
 // setManagedColumns is the framework-only populate hook, reached from
 // SetManagedColumns. Unexported: there is no public setter for managed data.
-func (m *Managed) setManagedColumns(revision int64, createdAt, updatedAt, deletedAt *time.Time) {
+func (m *Managed) setManagedColumns(revision int64, createdAt, updatedAt, archivedAt *time.Time) {
 	m.revision = revision
 	m.createdAt = createdAt
 	m.updatedAt = updatedAt
-	m.deletedAt = deletedAt
+	m.archivedAt = archivedAt
 }
 
 // WithID returns a copy of an aggregate child (or any value embedding Managed)
@@ -243,7 +243,7 @@ func WithID[T any](item T, id ID) T {
 }
 
 type managedColumnWriter interface {
-	setManagedColumns(revision int64, createdAt, updatedAt, deletedAt *time.Time)
+	setManagedColumns(revision int64, createdAt, updatedAt, archivedAt *time.Time)
 }
 
 // SetManagedColumns populates the framework-managed revision + timestamps on an
@@ -251,12 +251,12 @@ type managedColumnWriter interface {
 // after a scan (the id is set separately via SetID). It is a no-op returning
 // false on a target that does not embed Managed. Pass a POINTER — the carrier is
 // mutated in place.
-func SetManagedColumns(target any, revision int64, createdAt, updatedAt, deletedAt *time.Time) bool {
+func SetManagedColumns(target any, revision int64, createdAt, updatedAt, archivedAt *time.Time) bool {
 	w, ok := target.(managedColumnWriter)
 	if !ok {
 		return false
 	}
-	w.setManagedColumns(revision, createdAt, updatedAt, deletedAt)
+	w.setManagedColumns(revision, createdAt, updatedAt, archivedAt)
 	return true
 }
 

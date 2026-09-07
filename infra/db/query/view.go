@@ -109,9 +109,9 @@ func View(name string) *ViewDefinition {
 	return &ViewDefinition{name: name}
 }
 
-// Schema attaches the view's root core.TableSchema (Go↔column + ID + DeletedAt) —
+// Schema attaches the view's root core.TableSchema (Go↔column + ID + ArchivedAt) —
 // the same schema the repository declares. The composer uses it for the root
-// ID + DeletedAt column; the reader uses it to translate root leaf fields
+// ID + ArchivedAt column; the reader uses it to translate root leaf fields
 // between Go field names and physical columns. Reuse the repo's schema so write
 // and read agree.
 func (v *ViewDefinition) Schema(ts *core.TableSchema) *ViewDefinition {
@@ -142,18 +142,18 @@ func (v *ViewDefinition) Version(n int) *ViewDefinition {
 
 // DeleteOnArchive opts the view in to dropping archived rows from the Mongo
 // projection. By default (flag absent), an ARCHIVED outbox event triggers a
-// compose+upsert so the document survives with deleted_at populated — the
+// compose+upsert so the document survives with archived_at populated — the
 // read side mirrors the relational backend symmetrically, and the composer
-// omits the WHERE deleted_at IS NULL filter on the root SELECT and on every
+// omits the WHERE archived_at IS NULL filter on the root SELECT and on every
 // archiving relational source of the aggregate's closure (child
 // collections, the role-remnant pick). When this builder is called, ARCHIVED
 // events instead remove the document from the Mongo collection and the
-// composer applies the WHERE deleted_at IS NULL filter across that closure
+// composer applies the WHERE archived_at IS NULL filter across that closure
 // (cascade: the flag governs the aggregate's own projection — there is no
 // per-child override). Embed segments are untouched by the flag: an embed is
 // a Mongo read of its source and always mirrors the source's own archive
 // state (the read-time archived strip is governed by the SOURCE schema's
-// DeletedAt declaration, not by this flag).
+// ArchivedAt declaration, not by this flag).
 //
 // Reader semantics are unchanged: by-id and list queries default to
 // IncludeArchived=false (filter applied at the Mongo layer); the consumer

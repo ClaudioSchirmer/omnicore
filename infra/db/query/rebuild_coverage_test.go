@@ -64,7 +64,7 @@ func aliveRoot(id string) map[string]any {
 	// silently routes consultGuardedStages onto its defensive unguarded
 	// fallback — which is exactly what the backfill-clobber pin test exists to
 	// forbid on the real path.
-	return map[string]any{"id": id, "name": "n-" + id, "deleted_at": nil, "revision": int64(1)}
+	return map[string]any{"id": id, "name": "n-" + id, "archived_at": nil, "revision": int64(1)}
 }
 
 func newScriptEngine(ids []string, rootDoc func(string) map[string]any) *fakeEngine {

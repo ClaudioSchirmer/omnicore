@@ -11,7 +11,7 @@ import (
 )
 
 // White-box coverage for the bodyless-verb outbox payloads (lifecycle_payload.go):
-// ARCHIVED/UNARCHIVED carry the full field map + the DeletedAt column,
+// ARCHIVED/UNARCHIVED carry the full field map + the ArchivedAt column,
 // DELETED carries the structural keys (ID + shared-base ParentID). Payloads are read
 // back off the recording fake's captured args and decoded as JSON — the same
 // bytes a CDC consumer would see.
@@ -58,7 +58,7 @@ func flatArchivableWithID(t *testing.T) (domain.Archivable, string) {
 	return a, id
 }
 
-func TestArchive_OutboxPayloadCarriesFieldsAndDeletedAt(t *testing.T) {
+func TestArchive_OutboxPayloadCarriesFieldsAndArchivedAt(t *testing.T) {
 	a, _ := flatArchivableWithID(t)
 	tx := &recTx{count: 1}
 	be := newFlatBE(&recBeginner{tx: tx})
@@ -69,12 +69,12 @@ func TestArchive_OutboxPayloadCarriesFieldsAndDeletedAt(t *testing.T) {
 	if p["name"] != "alice" || p["email"] != "a@x.com" {
 		t.Errorf("ARCHIVED payload must carry the field map, got %v", p)
 	}
-	if v, ok := p["deleted_at"]; !ok || v == nil {
-		t.Errorf("ARCHIVED payload must carry a populated DeletedAt column, got %v", p)
+	if v, ok := p["archived_at"]; !ok || v == nil {
+		t.Errorf("ARCHIVED payload must carry a populated ArchivedAt column, got %v", p)
 	}
 }
 
-func TestUnarchive_OutboxPayloadCarriesFieldsAndNullDeletedAt(t *testing.T) {
+func TestUnarchive_OutboxPayloadCarriesFieldsAndNullArchivedAt(t *testing.T) {
 	e := &builderTestEntity{Name: "alice", Email: "a@x.com"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	u, err := domain.GetUnarchivable(e, nil, "GetUnarchivable")
@@ -90,8 +90,8 @@ func TestUnarchive_OutboxPayloadCarriesFieldsAndNullDeletedAt(t *testing.T) {
 	if p["name"] != "alice" {
 		t.Errorf("UNARCHIVED payload must carry the field map, got %v", p)
 	}
-	if v, ok := p["deleted_at"]; !ok || v != nil {
-		t.Errorf("UNARCHIVED payload must carry an explicit null DeletedAt column, got %v", p)
+	if v, ok := p["archived_at"]; !ok || v != nil {
+		t.Errorf("UNARCHIVED payload must carry an explicit null ArchivedAt column, got %v", p)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestDeleteRoleWithBase_PurgedBase_OutboxPayloadIsBasePK(t *testing.T) {
 }
 
 // roleArchTestEntity mirrors roleTestEntity with the archive/unarchive modes
-// enabled, so the role soft-write payloads can be exercised.
+// enabled, so the role archive-write payloads can be exercised.
 type roleArchTestEntity struct {
 	domain.BaseEntity
 	Name      string // shared (lives on the base)
@@ -183,7 +183,7 @@ func roleArchTestSchema() *TableSchema {
 	return NewTableSchema[*roleArchTestEntity]("aluno").
 		ID("id").
 		Field("Matricula", "matricula").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		SharedBase(base, "pessoa_id")
 }
 
@@ -206,12 +206,12 @@ func TestArchiveRoleWithBase_OutboxPayloadCarriesBaseFK(t *testing.T) {
 	if p["pessoa_id"] != deterministicBaseID("D1") {
 		t.Errorf("role ARCHIVED payload must carry the shared-base ParentID, got %v", p)
 	}
-	if v, ok := p["deleted_at"]; !ok || v == nil {
-		t.Errorf("role ARCHIVED payload must carry a populated DeletedAt column, got %v", p)
+	if v, ok := p["archived_at"]; !ok || v == nil {
+		t.Errorf("role ARCHIVED payload must carry a populated ArchivedAt column, got %v", p)
 	}
 }
 
-func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
+func TestArchiveAggregate_OutboxPayloadRootCarriesArchivedAt(t *testing.T) {
 	root := &aggWriteRoot{Name: "r"}
 	root.SetID(domain.NewID(uuid.NewString()))
 	root.AggregateConstructor([]domain.AggregateValueObject{domain.WithID(aggWriteChild{Label: "c"}, domain.NewIDFromUUID(uuid.New()))})
@@ -228,8 +228,8 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 	if p["name"] != "r" {
 		t.Errorf("aggregate ARCHIVED payload must carry the root fields flat at the top, got %v", p)
 	}
-	if v, present := p["deleted_at"]; !present || v == nil {
-		t.Errorf("aggregate ARCHIVED payload must carry a populated DeletedAt column, got %v", p)
+	if v, present := p["archived_at"]; !present || v == nil {
+		t.Errorf("aggregate ARCHIVED payload must carry a populated ArchivedAt column, got %v", p)
 	}
 	ch, present := p["_children"].(map[string]any)
 	if !present {
@@ -241,7 +241,7 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 	}
 	item, _ := items[0].(map[string]any)
 	// The cascade is not verb-implied on the read side: the root statement
-	// flipped every child row's DeletedAt, so the payload must SAY so, carrying
+	// flipped every child row's ArchivedAt, so the payload must SAY so, carrying
 	// the same stamp the child UPDATE bound. Listing them as noop left the
 	// projected array claiming those children were still active.
 	if item["_op"] != "archive" {
@@ -249,9 +249,9 @@ func TestArchiveAggregate_OutboxPayloadRootCarriesDeletedAt(t *testing.T) {
 	}
 	// One operation, one instant: the child's stamp is the same value the root
 	// carries, which is what the cascade statement bound.
-	if item["deleted_at"] != p["deleted_at"] {
+	if item["archived_at"] != p["archived_at"] {
 		t.Errorf("child stamp %v must equal the root's %v — one operation, one instant",
-			item["deleted_at"], p["deleted_at"])
+			item["archived_at"], p["archived_at"])
 	}
 }
 

@@ -79,9 +79,9 @@
                     <code>GetArchivable(loaded, svc, "GetArchivable")</code><br>
                     Mode <code>ModeArchive</code> → <code>IfArchive</code> fires (archive-specific invariants — owner check etc. — live there, no <code>actionName</code> branch); <code>IfUpdate</code> does not fire. State-transition guard then verifies <code>ModeArchive</code> is declared
                 </td>
-                <td><code>UPDATE users SET col=val, updated_at=$now, deleted_at=$now, revision=revision+1 WHERE id=$1 AND revision=$2</code> <span class="muted">(the update statement, with the transition as one more written column — see <a href="#lifecycle-map">Archive and Unarchive are the update path</a>)</span></td>
+                <td><code>UPDATE users SET col=val, updated_at=$now, archived_at=$now, revision=revision+1 WHERE id=$1 AND revision=$2</code> <span class="muted">(the update statement, with the transition as one more written column — see <a href="#lifecycle-map">Archive and Unarchive are the update path</a>)</span></td>
                 <td><code>ARCHIVED</code></td>
-                <td><code>Upsert</code> (default — document survives with <code>deleted_at</code> populated) — <code>Delete</code> on views with <code>DeleteOnArchive()</code></td>
+                <td><code>Upsert</code> (default — document survives with <code>archived_at</code> populated) — <code>Delete</code> on views with <code>DeleteOnArchive()</code></td>
                 <td><code>archive</code></td>
             </tr>
             <tr>
@@ -91,7 +91,7 @@
                     <code>GetUnarchivable(loaded, svc, "GetUnarchivable")</code><br>
                     Mode <code>ModeUnarchive</code> → <code>IfUnarchive</code> fires (symmetric to <code>IfArchive</code>); state-transition guard verifies <code>ModeUnarchive</code>
                 </td>
-                <td><code>UPDATE users SET col=val, updated_at=$now, deleted_at=NULL, revision=revision+1 WHERE id=$1 AND revision=$2</code> <span class="muted">(same statement as archive; only the bound DeletedAt value differs)</span></td>
+                <td><code>UPDATE users SET col=val, updated_at=$now, archived_at=NULL, revision=revision+1 WHERE id=$1 AND revision=$2</code> <span class="muted">(same statement as archive; only the bound ArchivedAt value differs)</span></td>
                 <td><code>UNARCHIVED</code></td>
                 <td><code>Upsert</code> (re-compose — unconditional, regardless of <code>DeleteOnArchive</code>)</td>
                 <td><code>unarchive</code></td>
@@ -116,7 +116,7 @@
         body verb emits one self-sufficient JSON shape: all scalars column-keyed flat at the top (root/role fields ∪
         sibling fields ∪ shared-base business fields ∪ the verb's managed timestamps — the EXACT app-clock values the
         DML bound: <code>INSERTED</code> carries <code>created_at</code>+<code>updated_at</code>;
-        <code>UPDATED</code> only <code>updated_at</code>; <code>ARCHIVED</code> the DeletedAt stamp;
+        <code>UPDATED</code> only <code>updated_at</code>; <code>ARCHIVED</code> the ArchivedAt stamp;
         <code>UNARCHIVED</code> an explicit <code>null</code>); an <code>_ids</code> structural block
         (<code>id</code>, and for SharedBase roles <code>base_id</code> + <code>base_revision</code> — the
         row-lock-serialized last-writer-wins token — plus <code>base_purged</code> on the purging DELETED); and
@@ -139,7 +139,7 @@
         means one outbox row per aggregate operation, and the read side applies the root event's
         <code>_children</code> deltas surgically — per child row, keyed by ID, each carrying its own
         <code>_op</code> — never a whole-document recompose. What children DO have, per row, is per-op SQL emitted
-        by <code>writeChildren</code> on a body verb, plus the SET-BASED cascade the soft verbs and the hard delete
+        by <code>writeChildren</code> on a body verb, plus the SET-BASED cascade the archive verbs and the hard delete
         emit (one statement per child table, keyed on the ParentID — it reaches every child row of the aggregate,
         including any the caller never loaded), and a per-row audit <code>op</code> that echoes the child row's
         lifecycle effect exactly as the root verb echoes the root's. On an
@@ -178,7 +178,7 @@
             <tr>
                 <td><code>update</code> — <code>OpDelete</code> <span class="muted">(<code>Constructor→Removed</code>: a DB-loaded child removed)</span></td>
                 <td><code>User.ReplaceAddresses(addrs)</code> → <code>ReplaceAggregateChildrenOf</code> (or <code>RemoveAggregateChild</code> direct)</td>
-                <td><code>UPDATE addresses SET deleted_at=$now WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
+                <td><code>UPDATE addresses SET archived_at=$now WHERE id=$1</code> <span class="muted">(the row stays in the DB, recoverable via unarchive)</span></td>
                 <td><code>archived</code> <span class="muted">(same op as the cascade below — same lifecycle effect on the row)</span></td>
             </tr>
             <tr>
@@ -189,14 +189,14 @@
             </tr>
             <tr>
                 <td><code>archive</code> — cascade</td>
-                <td>the root's soft write cascades onto every declared child table with a DeletedAt column</td>
-                <td><code>UPDATE addresses SET deleted_at=$now WHERE user_id=$1 AND deleted_at IS NULL</code></td>
+                <td>the root's archive write cascades onto every declared child table with an ArchivedAt column</td>
+                <td><code>UPDATE addresses SET archived_at=$now WHERE user_id=$1 AND archived_at IS NULL</code></td>
                 <td><code>archived</code></td>
             </tr>
             <tr>
                 <td><code>unarchive</code> — cascade</td>
                 <td>the symmetric cascade: restores the children the root's OWN archive stamped, gated on the stamp the root row still carries. A child archived on its own — a PUT-replace casualty, a <code>RemoveAggregateChild</code> — carries a different instant and stays archived</td>
-                <td><code>UPDATE addresses SET deleted_at=NULL WHERE user_id=$1 AND deleted_at=(SELECT deleted_at FROM users WHERE id=$2)</code> — read column against column, and therefore before the root row is cleared</td>
+                <td><code>UPDATE addresses SET archived_at=NULL WHERE user_id=$1 AND archived_at=(SELECT archived_at FROM users WHERE id=$2)</code> — read column against column, and therefore before the root row is cleared</td>
                 <td><code>unarchived</code> (only for the rows it reached)</td>
             </tr>
             <tr>
@@ -216,13 +216,13 @@
         <strong>Audit <code>verb</code> (root) and audit <code>op</code> (child) both echo what the write did to
         the row's LIFECYCLE — whether the row appeared, changed in place, retired, returned, or vanished.
         Identical lifecycle effect ⇒ identical audit token. Distinct effect ⇒ distinct token.</strong> Consumer
-        intent (PUT vs PATCH, archive cascade vs PUT-replace DeletedAt) lives in the <code>actionName</code> field
+        intent (PUT vs PATCH, archive cascade vs PUT-replace ArchivedAt) lives in the <code>actionName</code> field
         at the root and in the <code>verb</code> field on the surrounding event; the per-row
         <code>op</code>/<code>verb</code> stays anchored to what physically happened to the row.
     </div>
     <p>
         Concretely, five effects and five tokens: the row was created (<code>insert</code>); it changed while its
-        DeletedAt stayed where it was (<code>update</code>); its DeletedAt went from null to a stamp
+        ArchivedAt stayed where it was (<code>update</code>); its ArchivedAt went from null to a stamp
         (<code>archive</code>); from a stamp back to null (<code>unarchive</code>); the row is gone
         (<code>delete</code>).
     </p>
@@ -230,13 +230,13 @@
         <strong>This rule used to be phrased against the SQL text — "identical SQL ⇒ identical audit token" — and
         that phrasing no longer holds.</strong> Archive, unarchive, PUT and PATCH all emit the SAME statement
         today: the entity's full field set, the managed timestamps, the revision bump and the guard. What separates
-        them is one bound value — whether the DeletedAt column was written, and to what. So the statement TEXT can
+        them is one bound value — whether the ArchivedAt column was written, and to what. So the statement TEXT can
         no longer tell the verbs apart, while the lifecycle effect always can. The tokens themselves did not
         change; only the rule that explains them.
     </div>
     <p>
         This gives consumers a forensically honest record: an audit log entry saying <code>op="archived"</code>
-        always means "this row still exists in the DB with <code>deleted_at</code> populated, can be restored",
+        always means "this row still exists in the DB with <code>archived_at</code> populated, can be restored",
         regardless of whether the trigger was a PATCH /archive or a PUT-replace. Same way <code>op="deleted"</code>
         always means "this row is gone, only the cascade/snapshot in the audit can reconstruct what it was".
         Tooling that reverses state changes (rebuilding the prior aggregate from audit) only needs to know the
@@ -309,7 +309,7 @@
     <p>
         They now emit the same UPDATE every other verb emits — full field set, managed timestamps,
         <code>revision</code> bump, guarded on the loaded revision — with the transition riding along as one
-        more written column: the DeletedAt column bound to the operation's instant (archive) or to SQL NULL
+        more written column: the ArchivedAt column bound to the operation's instant (archive) or to SQL NULL
         (unarchive). The payload then describes what the statement wrote, which is what makes it true.
     </p>
     <div class="box good">
@@ -320,7 +320,7 @@
         <strong>What the two verbs still own</strong> — the reason this is not simply <code>Update</code>:
     </p>
     <ul>
-        <li><strong>The DeletedAt column is required.</strong> No column, no verb.</li>
+        <li><strong>The ArchivedAt column is required.</strong> No column, no verb.</li>
         <li><strong>The one-active-role probe runs first.</strong> On unarchive it must fire BEFORE the row
             flips to active, or an active-only unique index vetoes the UPDATE itself with a raw constraint
             error instead of the canonical conflict.</li>
@@ -339,13 +339,13 @@
         Two consequences worth planning for. <strong>Archiving now stamps <code>updated_at</code></strong> — it is
         a mutation, and it shows up in "changed recently" listings. And <strong>archiving a row that is not there
         answers 404</strong> instead of committing an event about nothing; the same row-count check the update
-        verbs always had now covers the soft verbs too. Siblings are written
+        verbs always had now covers the archive verbs too. Siblings are written
         as a PARTIAL update, so an archive never deletes a 1:1 facet because its columns happen to be all-nil.
     </p>
 
     <h3>The child cascade is visible to the read side</h3>
     <p>
-        An aggregate archive flips the DeletedAt of every child row under the ParentID. The payload used to list
+        An aggregate archive flips the ArchivedAt of every child row under the ParentID. The payload used to list
         those children as <code>_op: "noop"</code>, which the projector skips — so the relational rows were
         archived while the projected array still claimed they were active, and a live document disagreed with one
         rebuilt from the source.
@@ -353,8 +353,8 @@
     <p>
         Each item now reports the cascade it took: <code>_op: "archive"</code> carrying the same stamp the child
         UPDATE bound, or <code>_op: "unarchive"</code> carrying an explicit null. Both are the same surgical
-        edit — stamp the element's DeletedAt, leave every other field alone. A child table that declares no
-        DeletedAt takes no cascade and stays <code>noop</code> — and so does a row the statement's predicate did not
+        edit — stamp the element's ArchivedAt, leave every other field alone. A child table that declares no
+        ArchivedAt takes no cascade and stays <code>noop</code> — and so does a row the statement's predicate did not
         reach, because the restore brings back only what the root's own archive put to sleep (see
         <a href="#aggregate-persistence~unarchive-scope">What an unarchive brings back</a>). The event and the rows
         therefore describe the same set, which is what keeps a live document and one rebuilt from the source in

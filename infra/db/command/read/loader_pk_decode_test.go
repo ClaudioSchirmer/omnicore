@@ -27,7 +27,7 @@ func (mysqlLikeDialect) DecodeID(raw string) (string, error) {
 
 func covChildSchemaForDecode() *TableSchema {
 	return NewTableSchema[covChild]("cov_children").
-		ID("id").ParentID("agg_id").Field("Label", "label").DeletedAt("deleted_at")
+		ID("id").ParentID("agg_id").Field("Label", "label").ArchivedAt("archived_at")
 }
 
 // A child's own id now lives in the unexported domain.Managed carrier, read as a

@@ -124,11 +124,11 @@ func TestBuildUpdate_Oracle(t *testing.T) {
 // expression (SYSTIMESTAMP), never a baked-in NOW().
 func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "archived_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
 	if err != nil {
 		t.Fatalf("archiveSQL: %v", err)
 	}
-	if got != `UPDATE "USERS" SET "DELETED_AT" = :1 WHERE "ID" = :2` {
+	if got != `UPDATE "USERS" SET "ARCHIVED_AT" = :1 WHERE "ID" = :2` {
 		t.Errorf("archiveSQL = %q", got)
 	}
 	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
@@ -148,12 +148,12 @@ func TestArchiveUnarchiveDelete_Oracle(t *testing.T) {
 // restore.
 func TestChildCascadeSQL_Oracle(t *testing.T) {
 	d := testOracleDialect{}
-	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
-	if archive != `UPDATE "ADDRESSES" SET "DELETED_AT" = :1 WHERE "USER_ID" = :2 AND "DELETED_AT" IS NULL` {
+	archive := archiveCascadeSQL(d, "addresses", "archived_at", "user_id")
+	if archive != `UPDATE "ADDRESSES" SET "ARCHIVED_AT" = :1 WHERE "USER_ID" = :2 AND "ARCHIVED_AT" IS NULL` {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
-	if unarchive != `UPDATE "ADDRESSES" SET "DELETED_AT" = NULL WHERE "USER_ID" = :1 AND "DELETED_AT" = (SELECT "DELETED_AT" FROM "USERS" WHERE "ID" = :2)` {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "archived_at", "user_id", "users", "archived_at", "id")
+	if unarchive != `UPDATE "ADDRESSES" SET "ARCHIVED_AT" = NULL WHERE "USER_ID" = :1 AND "ARCHIVED_AT" = (SELECT "ARCHIVED_AT" FROM "USERS" WHERE "ID" = :2)` {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

@@ -143,11 +143,11 @@ func TestWriteNow_DBClock_ErrorsPropagate(t *testing.T) {
 
 func TestArchiveUnarchiveDelete_SQL(t *testing.T) {
 	d := testPGDialect{}
-	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "deleted_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
+	got, _, err := archiveSQL(d, idOnlyTarget("users", "id"), "archived_at", criteria.Eq("ID", domain.NewID(testArchiveID)), testNow, "")
 	if err != nil {
 		t.Fatalf("archiveSQL: %v", err)
 	}
-	if got != "UPDATE users SET deleted_at = $1 WHERE id = $2" {
+	if got != "UPDATE users SET archived_at = $1 WHERE id = $2" {
 		t.Errorf("archiveSQL = %q", got)
 	}
 	got, _, err = deleteSQL(d, idOnlyTarget("users", "id"), criteria.Eq("ID", domain.NewID(testArchiveID)))
@@ -175,12 +175,12 @@ func TestBuildSiblingUpsert_ArgsOrder_PG(t *testing.T) {
 
 func TestChildCascadeSQL_Shared(t *testing.T) {
 	d := testPGDialect{}
-	archive := archiveCascadeSQL(d, "addresses", "deleted_at", "user_id")
-	if archive != "UPDATE addresses SET deleted_at = $1 WHERE user_id = $2 AND deleted_at IS NULL" {
+	archive := archiveCascadeSQL(d, "addresses", "archived_at", "user_id")
+	if archive != "UPDATE addresses SET archived_at = $1 WHERE user_id = $2 AND archived_at IS NULL" {
 		t.Errorf("archive cascade = %q", archive)
 	}
-	unarchive := unarchiveCascadeSQL(d, "addresses", "deleted_at", "user_id", "users", "deleted_at", "id")
-	if unarchive != "UPDATE addresses SET deleted_at = NULL WHERE user_id = $1 AND deleted_at = (SELECT deleted_at FROM users WHERE id = $2)" {
+	unarchive := unarchiveCascadeSQL(d, "addresses", "archived_at", "user_id", "users", "archived_at", "id")
+	if unarchive != "UPDATE addresses SET archived_at = NULL WHERE user_id = $1 AND archived_at = (SELECT archived_at FROM users WHERE id = $2)" {
 		t.Errorf("unarchive cascade = %q", unarchive)
 	}
 }

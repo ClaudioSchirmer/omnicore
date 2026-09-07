@@ -20,7 +20,7 @@ import (
 // recording fake WriteTx + WriteBeginner — the unit-level twin of what the
 // integration suites exercise against a real database. They cover the control
 // flow + error branches (begin/exec/commit failures, update-not-found, hook
-// firing, the missing-DeletedAt guard) without a live backend; the real SQL
+// firing, the missing-ArchivedAt guard) without a live backend; the real SQL
 // behavior remains the integration suites' contract.
 
 // recTx records the statements the write path emits and exposes injectable
@@ -61,21 +61,21 @@ func (r *fakeRows) Err() error   { return nil }
 func (r *fakeRows) Close() error { return nil }
 
 // cascadeTouches is the Go-side reading of the cascade's own WHERE clause, and
-// loadedDeletedAt is where it gets its input — including from a value object
+// loadedArchivedAt is where it gets its input — including from a value object
 // that carries no managed carrier at all, which reads as active (there is no
 // archive history to read).
 func TestCascadeTouches_MirrorsTheStatementPredicate(t *testing.T) {
 	stamp := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	older := stamp.Add(-2 * time.Hour)
 
-	// archive → WHERE deleted_at IS NULL
+	// archive → WHERE archived_at IS NULL
 	if !cascadeTouches(true, nil, stamp) {
 		t.Error("the archive cascade stamps the ACTIVE children")
 	}
 	if cascadeTouches(true, &older, stamp) {
 		t.Error("the archive cascade skips a child that is already archived")
 	}
-	// unarchive → WHERE deleted_at = $stamp
+	// unarchive → WHERE archived_at = $stamp
 	if !cascadeTouches(false, &stamp, stamp) {
 		t.Error("the restore reaches the child this root's archive stamped")
 	}
@@ -100,13 +100,13 @@ func TestCascadeTouches_MirrorsTheStatementPredicate(t *testing.T) {
 		t.Error("an instant is an instant, whatever location the driver attached")
 	}
 	// An item with no domain.Managed carrier reads as active.
-	if got := loadedDeletedAt(struct{ Label string }{"no carrier"}); got != nil {
+	if got := loadedArchivedAt(struct{ Label string }{"no carrier"}); got != nil {
 		t.Errorf("a carrier-less item has no archive history, got %v", got)
 	}
 }
 
 // rowsArchivedAt scripts the readArchiveStamp probe — the single-column
-// `SELECT deleted_at FROM <table> WHERE <pk> = $1` the restore direction runs
+// `SELECT archived_at FROM <table> WHERE <pk> = $1` the restore direction runs
 // before it clears the row — as one row carrying stamp, scanned through `any`
 // exactly as a driver hands a timestamp over.
 func rowsArchivedAt(stamp time.Time) func(string, []any) (Rows, error) {
@@ -330,22 +330,22 @@ func TestBaseEngine_ArchiveUnarchiveDelete(t *testing.T) {
 		if !tx.committed {
 			t.Errorf("%s: expected commit", verb)
 		}
-		// soft-write/delete + outbox + audit.
+		// archive-write/delete + outbox + audit.
 		if len(tx.execs) != 3 {
 			t.Errorf("%s: expected 3 statements, got %d", verb, len(tx.execs))
 		}
 	}
 }
 
-func TestBaseEngine_Archive_MissingDeletedAtIsError(t *testing.T) {
-	noSD := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
+func TestBaseEngine_Archive_MissingArchivedAtIsError(t *testing.T) {
+	noArchived := NewTableSchema[*builderTestEntity]("nsd").ID("id").Revision("revision").Field("Name", "name").Field("Email", "email")
 	tx := &recTx{}
 	be := newFlatBE(&recBeginner{tx: tx})
 	e := &builderTestEntity{Name: "a", Email: "a@x"}
 	e.SetID(domain.NewID(uuid.NewString()))
 	a, _ := domain.GetArchivable(e, nil, "GetArchivable")
-	if err := be.Archive(newBuilderCtx(), a, noSD, WriteHook{}); err == nil {
-		t.Fatal("expected an error archiving a schema without DeletedAt")
+	if err := be.Archive(newBuilderCtx(), a, noArchived, WriteHook{}); err == nil {
+		t.Fatal("expected an error archiving a schema without ArchivedAt")
 	}
 }
 

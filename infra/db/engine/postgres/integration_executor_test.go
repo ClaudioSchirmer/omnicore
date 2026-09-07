@@ -38,7 +38,7 @@ func createFlatPersonsTable(t *testing.T, pg *Postgres) {
 		email TEXT NOT NULL,
 		phone TEXT,
 		revision BIGINT NOT NULL DEFAULT 0,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -54,7 +54,7 @@ func flatPersonSchemaOn(table string) *core.TableSchema {
 		Field("Name", "name").
 		Field("Email", "email").
 		Field("Phone", "phone").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -117,7 +117,7 @@ func TestPostgres_Insert_NotNullViolationPropagates(t *testing.T) {
 	}
 
 	pg.Pool().Exec(context.Background(),
-		`CREATE UNIQUE INDEX flat_persons_email_uq ON flat_persons (email) WHERE deleted_at IS NULL`)
+		`CREATE UNIQUE INDEX flat_persons_email_uq ON flat_persons (email) WHERE archived_at IS NULL`)
 
 	e2 := &flatPerson{Name: "Bob2", Email: "bob@x"}
 	ins2, _ := domain.GetInsertable(e2, nil, "GetInsertable")
@@ -135,7 +135,7 @@ func TestPostgres_Insert_HonorsSchemaTableOverride(t *testing.T) {
 		name TEXT NOT NULL,
 		email TEXT NOT NULL,
 		phone TEXT,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -212,7 +212,7 @@ func TestPostgres_Update_BadIDReturnsError(t *testing.T) {
 
 // --- Archive / Unarchive --------------------------------------------------
 
-func TestPostgres_Archive_FlipsDeletedAtAndEmitsOutbox(t *testing.T) {
+func TestPostgres_Archive_FlipsArchivedAtAndEmitsOutbox(t *testing.T) {
 	pg, cleanup := newTestPG(t)
 	defer cleanup()
 	createFlatPersonsTable(t, pg)
@@ -265,7 +265,7 @@ func TestPostgres_Unarchive_RestoresAndEmitsOutbox(t *testing.T) {
 		t.Fatalf("Archive: %v", err)
 	}
 	if activeCount(t, pg, "flat_persons") != 0 {
-		t.Fatal("Archive should have flipped deleted_at")
+		t.Fatal("Archive should have flipped archived_at")
 	}
 
 	loaded2 := &flatPerson{Name: "U", Email: "u@x"}

@@ -23,13 +23,13 @@ type lmNote struct{ ID, GadgetID, Text string }
 
 func lmPrimary() *query.ViewDefinition {
 	root := core.NewTableSchema[lmGadget]("lm_gadgets").ID("id").Field("Code", "code").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 	return query.View("lm_gadgets").Version(1).Schema(root)
 }
 
 func lmNotesView() *query.ViewDefinition {
 	schema := core.NewTableSchema[lmNote]("lm_notes").ID("id").
-		Field("GadgetID", "gadget_id").Field("Text", "text").DeletedAt("deleted_at")
+		Field("GadgetID", "gadget_id").Field("Text", "text").ArchivedAt("archived_at")
 	return query.View("lm_notes").Version(1).Schema(schema)
 }
 
@@ -68,9 +68,9 @@ func TestIntegration_LinkManyTopN(t *testing.T) {
 	composed := lmComposed(primary, notes)
 
 	for _, g := range []map[string]any{
-		{"_id": "g1", "code": "A", "deleted_at": nil},
-		{"_id": "g2", "code": "B", "deleted_at": nil},
-		{"_id": "g3", "code": "C", "deleted_at": nil}, // no notes at all
+		{"_id": "g1", "code": "A", "archived_at": nil},
+		{"_id": "g2", "code": "B", "archived_at": nil},
+		{"_id": "g3", "code": "C", "archived_at": nil}, // no notes at all
 	} {
 		if err := m.Upsert(ctx, pc("lm_gadgets"), g["_id"].(string), g); err != nil {
 			t.Fatalf("seed gadget: %v", err)
@@ -79,12 +79,12 @@ func TestIntegration_LinkManyTopN(t *testing.T) {
 	// g1 is the fat parent: four active notes seeded OUT of order plus one
 	// archived; g2 has one. The ceiling is 2, the declared order `text` asc.
 	for _, n := range []map[string]any{
-		{"_id": "n3", "gadget_id": "g1", "text": "c", "deleted_at": nil},
-		{"_id": "n1", "gadget_id": "g1", "text": "a", "deleted_at": nil},
-		{"_id": "n4", "gadget_id": "g1", "text": "d", "deleted_at": nil},
-		{"_id": "n2", "gadget_id": "g1", "text": "b", "deleted_at": nil},
-		{"_id": "n0", "gadget_id": "g1", "text": "0-archived", "deleted_at": "2026-01-01"},
-		{"_id": "n5", "gadget_id": "g2", "text": "only", "deleted_at": nil},
+		{"_id": "n3", "gadget_id": "g1", "text": "c", "archived_at": nil},
+		{"_id": "n1", "gadget_id": "g1", "text": "a", "archived_at": nil},
+		{"_id": "n4", "gadget_id": "g1", "text": "d", "archived_at": nil},
+		{"_id": "n2", "gadget_id": "g1", "text": "b", "archived_at": nil},
+		{"_id": "n0", "gadget_id": "g1", "text": "0-archived", "archived_at": "2026-01-01"},
+		{"_id": "n5", "gadget_id": "g2", "text": "only", "archived_at": nil},
 	} {
 		if err := m.Upsert(ctx, pc("lm_notes"), n["_id"].(string), n); err != nil {
 			t.Fatalf("seed note: %v", err)

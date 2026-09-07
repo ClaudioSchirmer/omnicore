@@ -171,7 +171,7 @@ type Config struct {
 
 		// Clock declares WHERE a write operation reads the instant it stamps
 		// its managed timestamp columns with — created_at, updated_at and the
-		// archive/unarchive deleted_at stamp:
+		// archive/unarchive archived_at stamp:
 		//
 		//   db  — from this relational backend, once per write transaction.
 		//         Every replica of the service then shares ONE clock, which is

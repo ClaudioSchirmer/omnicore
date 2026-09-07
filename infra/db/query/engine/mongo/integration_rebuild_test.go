@@ -103,7 +103,7 @@ func TestRebuildView_RebuildsFromTable(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE rv_users (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -131,14 +131,14 @@ func TestRebuildAllViews(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE rv_a (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
 	createTable(t, pg, `CREATE TABLE rv_b (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		label TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -168,7 +168,7 @@ func TestRebuildViewSince_FiltersByUpdatedAt(t *testing.T) {
 	createTable(t, pg, `CREATE TABLE rv_since (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)
@@ -209,7 +209,7 @@ func TestExecuteRebuild_HappyPath(t *testing.T) {
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
 		revision BIGINT NOT NULL DEFAULT 0,
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)

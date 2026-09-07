@@ -286,12 +286,12 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	if err != nil {
 		return queries.Page{}, err
 	}
-	sdCol, sdOn := node.DeletedAtColumn()
+	archivedCol, archivedOn := node.ArchivedAtColumn()
 
 	filter := bson.M{}
 	applyFilter(filter, colFilter)
-	if !c.IncludeArchived && sdOn {
-		filter[sdCol] = nil
+	if !c.IncludeArchived && archivedOn {
+		filter[archivedCol] = nil
 	}
 	if c.Search != "" {
 		filter["$text"] = bson.M{"$search": c.Search}
@@ -395,22 +395,22 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	autoIncluded := projectionAutoIncluded(colProj, colSort, inclusion)
 	// A consumer projection that narrows a SEGMENT's subfields
 	// (?fields=dependents.name, ?fields=product.code, a GraphQL selection set)
-	// would drop that segment's DeletedAt column from the returned entries —
+	// would drop that segment's ArchivedAt column from the returned entries —
 	// and the default-read archived strip below can only hide what the entries
-	// still carry. Auto-include the DeletedAt column of every segment that
+	// still carry. Auto-include the ArchivedAt column of every segment that
 	// declares one (child collections, roles, materialized embeds, EmbedInChild
 	// enrichments alike), and remember it for post-strip removal so the wire
 	// shape still matches the consumer's request exactly.
-	childSDCleanup := map[string]string{}
+	childArchivedCleanup := map[string]string{}
 	if len(colProj) > 0 && !c.IncludeArchived {
 		var extra []string
-		extra, childSDCleanup = childDeletedAtAutoIncludes(colProj, node.ChildDeletedAtPaths(), inclusion)
+		extra, childArchivedCleanup = childArchivedAtAutoIncludes(colProj, node.ChildArchivedAtPaths(), inclusion)
 		autoIncluded = append(autoIncluded, extra...)
 	}
 	// The store's identity is the cursor's ABSOLUTE tiebreaker — buildStableSortDoc
 	// appends `_id` to every sort and encodeTupleCursor reads it off the doc — so it
 	// obeys the same auto-include / post-strip contract the two blocks above apply
-	// to sort fields and segment DeletedAt columns. It was the one cursor input
+	// to sort fields and segment ArchivedAt columns. It was the one cursor input
 	// outside that mechanism: a selection that did not name the identity had `_id`
 	// EXCLUDED (translateProjectionKeys' `_id: 0`), which left the tiebreaker slot
 	// reading a value the doc no longer carried. Re-include it for the query and
@@ -504,23 +504,23 @@ func (r *MongoViewReader) ReadPage(ctx context.Context, view string, c queries.R
 	for _, d := range docs {
 		m := map[string]any(d)
 		normalizeBSONValues(m)
-		// The root-level DeletedAt gate ran in the Mongo filter; the same
+		// The root-level ArchivedAt gate ran in the Mongo filter; the same
 		// default-read contract applies to EVERY segment below it — child
 		// collections, roles, materialized embed segments and EmbedInChild
 		// enrichments — each filtered only where its own source schema declares
-		// a DeletedAt column. Skipped wholesale when the caller asked for
+		// an ArchivedAt column. Skipped wholesale when the caller asked for
 		// archived data, which is what makes one flag reveal every level.
 		if !c.IncludeArchived {
 			node.StripArchivedChildren(m)
 		}
-		// Remove the auto-included child DeletedAt columns from the kept
+		// Remove the auto-included child ArchivedAt columns from the kept
 		// entries — the strip has already consumed them, and the consumer's
 		// projection did not ask for them. Paths cover three shapes: a child
 		// collection at the root ("Dependents"), a SharedBaseView role segment
 		// (a single map, "User"), and a role's own child collection (dotted,
 		// "User.Dependents").
-		for docField, sdCol := range childSDCleanup {
-			removeChildSDColumn(m, strings.Split(docField, "."), sdCol)
+		for docField, archivedCol := range childArchivedCleanup {
+			removeChildArchivedColumn(m, strings.Split(docField, "."), archivedCol)
 		}
 		items = append(items, normalizeIdentity(node.ToGoDoc(m), keepIdentity))
 	}
@@ -563,7 +563,7 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 		return r.composed.ReadByID(ctx, view, id, c)
 	}
 	node := r.resolveViewSchema(view)
-	sdCol, sdOn := node.DeletedAtColumn()
+	archivedCol, archivedOn := node.ArchivedAtColumn()
 	col := r.mongo.collFn(r.resolver.Active(view).String())
 	filter := bson.M{}
 	colFilter, err := translateFilterKeys(node, c.Filter)
@@ -585,8 +585,8 @@ func (r *MongoViewReader) ReadByID(ctx context.Context, view, id string, c queri
 	} else {
 		filter["_id"] = id
 	}
-	if !c.IncludeArchived && sdOn {
-		filter[sdCol] = nil
+	if !c.IncludeArchived && archivedOn {
+		filter[archivedCol] = nil
 	}
 	// Projection. A by-id read has no wire `?fields=`, so what arrives here
 	// came from the Query's ToCriteria — most often ReadCriteria.Restrict,
@@ -862,7 +862,7 @@ func identityAutoIncluded(userProj map[string]int, inclusion bool) {
 // keys sorted so the emitted document is stable across runs, values verbatim.
 //
 // It renders, it does not decide. Every auto-include — sort fields, segment
-// DeletedAt columns, the identity — has already been folded INTO the map by the
+// ArchivedAt columns, the identity — has already been folded INTO the map by the
 // helper that owns that decision, each one writing the flag its projection mode
 // allows. Rendering the map is what keeps a single mode in the emitted document;
 // appending auto-included paths as a separate `: 1` tail (what this did before)
@@ -1069,12 +1069,12 @@ func textPattern(value string, kind queries.TextMatchKind) string {
 
 var _ queries.ViewReader = (*MongoViewReader)(nil)
 
-// removeChildSDColumn removes the auto-included DeletedAt column at the
+// removeChildArchivedColumn removes the auto-included ArchivedAt column at the
 // given doc-field path — a child collection ([]any of maps), a SharedBaseView
 // role segment (a single map) or, dotted, a role's own child collection.
 // Intermediate segments are always maps (dotted paths only descend through
 // role segments); anything absent or differently shaped is a no-op.
-func removeChildSDColumn(container any, segs []string, sdCol string) {
+func removeChildArchivedColumn(container any, segs []string, archivedCol string) {
 	if len(segs) == 0 {
 		return
 	}
@@ -1084,7 +1084,7 @@ func removeChildSDColumn(container any, segs []string, sdCol string) {
 	// element. (Role segments and 1:1 embeds are maps, handled below.)
 	if items, ok := container.([]any); ok {
 		for _, item := range items {
-			removeChildSDColumn(item, segs, sdCol)
+			removeChildArchivedColumn(item, segs, archivedCol)
 		}
 		return
 	}
@@ -1093,18 +1093,18 @@ func removeChildSDColumn(container any, segs []string, sdCol string) {
 		return
 	}
 	if len(segs) > 1 {
-		removeChildSDColumn(m[segs[0]], segs[1:], sdCol)
+		removeChildArchivedColumn(m[segs[0]], segs[1:], archivedCol)
 		return
 	}
 	switch t := m[segs[0]].(type) {
 	case []any:
 		for _, e := range t {
 			if em, ok := e.(map[string]any); ok {
-				delete(em, sdCol)
+				delete(em, archivedCol)
 			}
 		}
 	case map[string]any:
-		delete(t, sdCol)
+		delete(t, archivedCol)
 	}
 }
 
@@ -1120,19 +1120,19 @@ func projectionTouchesField(colProj map[string]int, docField string) bool {
 	return false
 }
 
-// childDeletedAtAutoIncludes decides which segment DeletedAt columns a
+// childArchivedAtAutoIncludes decides which segment ArchivedAt columns a
 // consumer projection must transparently re-include so the default-read
 // archived strip can still see (and hide) archived content, plus the per-field
-// cleanup map (docField -> sdCol) used to remove those columns from the
+// cleanup map (docField -> archivedCol) used to remove those columns from the
 // returned docs afterwards so the wire shape matches the request. "child" in
 // the name is historical: the paths cover every segment kind that declares a
-// DeletedAt column, not only child collections.
+// ArchivedAt column, not only child collections.
 //
 // It fires ONLY when the projection narrows to a STRICT SUBFIELD of the child
 // (dependents.name): that projection would otherwise drop the child's
-// DeletedAt column, blinding the strip. When the WHOLE child field is
+// ArchivedAt column, blinding the strip. When the WHOLE child field is
 // projected (?fields=dependents) the returned object ALREADY carries its
-// DeletedAt column, so re-including "dependents.deleted_at" is both
+// ArchivedAt column, so re-including "dependents.archived_at" is both
 // unnecessary and an ILLEGAL projection — Mongo rejects an inclusion that lists
 // a field and a subpath of it together (Location31249 "Path collision at
 // <field>.<sub>"). The whole-field case is skipped, so it behaves exactly like
@@ -1141,20 +1141,20 @@ func projectionTouchesField(colProj map[string]int, docField string) bool {
 // The mode split is the same one projectionAutoIncluded and identityAutoIncluded
 // answer: an INCLUSION that narrows into the segment has to add the column back,
 // while an EXCLUSION already serves it and must only un-exclude the case where
-// the projection named the column itself. Writing `dependents.deleted_at: 1`
+// the projection named the column itself. Writing `dependents.archived_at: 1`
 // into an exclusion projection would fail the read the way the sort-field
 // auto-include did (Location31253), and it was never needed there.
-func childDeletedAtAutoIncludes(colProj map[string]int, childSDPaths map[string]string, inclusion bool) ([]string, map[string]string) {
+func childArchivedAtAutoIncludes(colProj map[string]int, childArchivedPaths map[string]string, inclusion bool) ([]string, map[string]string) {
 	var autoIncluded []string
 	cleanup := map[string]string{}
-	for docField, sdCol := range childSDPaths {
+	for docField, archivedCol := range childArchivedPaths {
 		if _, whole := colProj[docField]; whole {
 			continue
 		}
 		if !projectionTouchesField(colProj, docField) {
 			continue
 		}
-		path := docField + "." + sdCol
+		path := docField + "." + archivedCol
 		if inclusion {
 			colProj[path] = 1
 		} else {
@@ -1164,7 +1164,7 @@ func childDeletedAtAutoIncludes(colProj map[string]int, childSDPaths map[string]
 			delete(colProj, path)
 		}
 		autoIncluded = append(autoIncluded, path)
-		cleanup[docField] = sdCol
+		cleanup[docField] = archivedCol
 	}
 	return autoIncluded, cleanup
 }

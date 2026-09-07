@@ -12,6 +12,41 @@
         </ul>
     </div>
     <div class="release">
+        <div class="release-head"><span class="release-tag">v0.74.0</span><span class="release-date">September 6, 2026</span></div>
+        <ul>
+            <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the managed archive slot is
+                <code>ArchivedAt</code>; <code>DeletedAt</code> is gone from the framework.</strong> The verbs
+                were always <code>Archive</code>/<code>Unarchive</code>, the mode tokens always
+                <code>ARCHIVE</code>/<code>UNARCHIVE</code> and the event always <code>ARCHIVED</code> — the
+                slot was the last place the framework still said "deleted", and it said it on the surface the
+                developer types. Renamed across the whole map: the builder
+                <code>TableSchema.ArchivedAt(col)</code> and <code>TableSchema.ArchivedAtColumn()</code>;
+                <code>ViewNode.ArchivedAtColumn()</code> and <code>ViewNode.ChildArchivedAtPaths()</code>;
+                <code>hydrate.SchemaArchivedAt</code>; the <code>core.RoleRef.ArchivedAtCol</code> field;
+                <code>domain.Managed.GetArchivedAt()</code>. The FIXED LOGICAL NAME moves with them —
+                <code>"DeletedAt"</code> becomes <code>"ArchivedAt"</code> wherever a name is addressed as a
+                string: <code>criteria</code> predicates, a <code>Leg</code>'s <code>Fields</code> allowlist
+                (the per-consumer archive switch), <code>EmbedFields</code>, the Direct write's reserved-key
+                gate and its refusal text, and <code>ValidateModes</code>. <strong>On the wire the rendered
+                field becomes <code>archivedAt</code></strong> — the JSON key, the filter token, the
+                <code>?fields=</code> projection token and the sort token — so clients and QA suites matching
+                <code>deletedAt</code> must update.
+                <strong>The soft-delete vocabulary goes with it:</strong> <code>softWrite</code> →
+                <code>archiveWrite</code>, <code>softVerb</code> → <code>archiveVerb</code>,
+                <code>convergeBaseAfterSoftWrite</code> → <code>convergeBaseAfterArchiveWrite</code>, and the
+                <code>sd</code>/<code>SD</code> abbreviation that carried the column through the read and write
+                paths → <code>archivedCol</code>/<code>hasArchived</code>/<code>childArchivedPaths</code>.
+                Only PHYSICAL deletion still says delete — <code>ModeDelete</code>, <code>IfDelete</code>,
+                <code>OpDelete</code>, <code>Deletable</code>, <code>DeleteOnArchive</code>,
+                <code>DeleteWhenUnreferenced</code> and the hard-delete cascade.
+                <strong>No data migration and no view rebuild.</strong> Projected Mongo documents and outbox
+                payloads carry the PHYSICAL column, which the developer still names and may keep exactly as it
+                is: <code>ArchivedAt("deleted_at")</code> stays valid, and a view whose column did not change
+                keeps its <code>RebuildHash</code> byte-for-byte. See
+                <a href="#table-schema">TableSchema</a> and <a href="#lifecycle-map">Lifecycle map</a>.</li>
+        </ul>
+    </div>
+    <div class="release">
         <div class="release-head"><span class="release-tag">v0.73.0</span><span class="release-date">September 6, 2026</span></div>
         <ul>
             <li><strong>Changed</strong> — <strong>breaking</strong> — <strong>the notification <code>field</code> is
@@ -754,7 +789,7 @@
                 declares <code>DeletedAt</code> is archived on removal, a child that declares none has its row
                 deleted. Where the child lives no longer changes the answer — a role's own child and a shared
                 base's native child behave identically. See
-                <a href="#aggregate-persistence~child-deleted-at">What a child's <code>DeletedAt</code> declares</a>.
+                <a href="#aggregate-persistence~child-archived-at">What a child's <code>DeletedAt</code> declares</a>.
                 <ul>
                     <li>A role's own child declaring no <code>DeletedAt</code> could not be removed at all: the
                         write reached the archive step with no column to stamp and failed with an infrastructure

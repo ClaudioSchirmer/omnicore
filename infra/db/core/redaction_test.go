@@ -329,7 +329,7 @@ func TestCompositePart_ParticipatesInTheRedactionShape(t *testing.T) {
 // ─── The one column a redacted field cannot occupy ───────────────────────────
 //
 // RedactedField REPLACES Field; it is not complementary. Every slot the framework
-// owns (ID, ParentID, Revision, DeletedAt, CreatedAt, UpdatedAt) is therefore
+// owns (ID, ParentID, Revision, ArchivedAt, CreatedAt, UpdatedAt) is therefore
 // already mutually exclusive with ANY field declaration, in both orders. The
 // natural key is the exception that needs a check of its own: it is REQUIRED to
 // be a mapped field, so it passes the ordinary claim — and it still must not be
@@ -388,7 +388,7 @@ func TestFrameworkSlots_AlreadyRefuseARedactedField(t *testing.T) {
 	mustPanicWith(t, "collides with a ID/managed column", func() {
 		NewTableSchema[redactFixture]("redact_fixtures").
 			ID("id").
-			DeletedAt("nickname").
+			ArchivedAt("nickname").
 			RedactedField("Nickname", "nickname", InSync(RedactWith("***")), InAudit(Plain()))
 	})
 	// …and in the reverse order, through ensureColumnFree on the setter.
@@ -396,7 +396,7 @@ func TestFrameworkSlots_AlreadyRefuseARedactedField(t *testing.T) {
 		NewTableSchema[redactFixture]("redact_fixtures").
 			ID("id").
 			RedactedField("Nickname", "nickname", InSync(RedactWith("***")), InAudit(Plain())).
-			DeletedAt("nickname")
+			ArchivedAt("nickname")
 	})
 }
 

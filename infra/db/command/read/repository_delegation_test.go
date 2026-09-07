@@ -31,13 +31,13 @@ func TestBaseAggregateRepository_CtxlessFinders(t *testing.T) {
 		t.Fatalf("FindByID: %+v, %v", e, err)
 	}
 
-	// FindArchivedByID flips the DeletedAt gate on the same SQL path.
+	// FindArchivedByID flips the ArchivedAt gate on the same SQL path.
 	r = covRepo(covAggQuery(covAggRootRow("r1", "Ana"), noRows, &rootSQL))
 	if _, err := r.FindArchivedByID(domain.NewID("r1")); err != nil {
 		t.Fatalf("FindArchivedByID: %v", err)
 	}
-	if !strings.Contains(rootSQL, "deleted_at IS NOT NULL") {
-		t.Errorf("archived load must gate on deleted_at IS NOT NULL, got %q", rootSQL)
+	if !strings.Contains(rootSQL, "archived_at IS NOT NULL") {
+		t.Errorf("archived load must gate on archived_at IS NOT NULL, got %q", rootSQL)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestSharedBaseRoleRepository(t *testing.T) {
 		// call routed into LoadSharedBaseIdentity.
 		query := func(sql string, _ []any) (Rows, error) { return &fakeDBRows{}, nil }
 		repo := NewSharedBaseRoleRepository[*roleAggLoad](fakeEngine(query), func() *roleAggLoad { return &roleAggLoad{} })
-		repo.WithSchema(roleAggLoadSchemaSD())
+		repo.WithSchema(roleAggLoadSchemaArchived())
 		ctx := configuration.NewAppContextWithRandomID(configuration.LangENG)
 		fresh := &roleAggLoad{Name: "Ana", Matricula: "M1"}
 		got, existed, err := repo.LoadForSharedBaseInsert(ctx, fresh)

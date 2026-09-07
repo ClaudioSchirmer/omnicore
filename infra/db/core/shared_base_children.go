@@ -79,13 +79,13 @@ func (s *TableSchema) EffectiveChildNames() []string {
 // by both the role and its base, and no base-child declares an archived state its
 // base can never drive.
 //
-// The second rule is one-directional on purpose. A base-child WITH DeletedAt under
+// The second rule is one-directional on purpose. A base-child WITH ArchivedAt under
 // a base WITHOUT one is refused: the base never archives, so nothing would ever
 // cascade onto that column and the archived state would be reachable only by a
 // per-item removal — a lifecycle with no owner. The opposite pairing is legal: a
 // base-child that declares no column under an archivable base simply removes by
 // DELETE and takes no part in the base's cascade, exactly like a role's own child
-// (aggregate-persistence: "What a child's DeletedAt declares"). A no-op for a
+// (aggregate-persistence: "What a child's ArchivedAt declares"). A no-op for a
 // schema without a shared base.
 func (s *TableSchema) ValidateSharedBaseChildren() {
 	base, _, ok := s.SharedBaseRef()
@@ -100,11 +100,11 @@ func (s *TableSchema) ValidateSharedBaseChildren() {
 					"%q — a child type belongs to exactly one owner (the role OR the base). Drop one .Child(%q).",
 				s.table, name, base.table, name))
 		}
-		if bc.deletedAt != "" && base.deletedAt == "" {
+		if bc.archivedAt != "" && base.archivedAt == "" {
 			panic(fmt.Sprintf(
-				"infra.TableSchema(%s): base child %q declares DeletedAt but its shared base %q has none — the "+
+				"infra.TableSchema(%s): base child %q declares ArchivedAt but its shared base %q has none — the "+
 					"base never archives, so nothing would ever cascade onto that column and the archived state "+
-					"would have no owner. Declare DeletedAt on the base too, or drop it from the child (a "+
+					"would have no owner. Declare ArchivedAt on the base too, or drop it from the child (a "+
 					"base-child without the column removes by DELETE, which is a complete lifecycle of its own).",
 				s.table, name, base.table))
 		}

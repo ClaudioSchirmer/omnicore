@@ -25,7 +25,7 @@ import (
 //   - ConsumerGroup:    "<service>-upstream-<topic>"
 //   - Workers:          1
 //   - Fields:           nil → full payload kept
-//   - DeleteOnArchive:  false → ARCHIVED upserts a doc with deleted_at set
+//   - DeleteOnArchive:  false → ARCHIVED upserts a doc with archived_at set
 //   - StartFrom:        StartFromLatest
 //   - OnUpstreamDelete: UpstreamDeleteCascade
 //
@@ -61,7 +61,7 @@ type UpstreamSubscription struct {
 
 	// DeleteOnArchive mirrors ViewDefinition.DeleteOnArchive: when
 	// true, ARCHIVED events remove the local doc; when false (default),
-	// the local doc survives with deleted_at populated. The semantics
+	// the local doc survives with archived_at populated. The semantics
 	// stay symmetric with how B's own views handle archive.
 	DeleteOnArchive bool `yaml:"deleteOnArchive"`
 

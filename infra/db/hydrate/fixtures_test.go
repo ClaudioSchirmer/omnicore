@@ -50,7 +50,7 @@ func lineSchema() *core.TableSchema {
 		ID("id").
 		ParentID("order_id").
 		Field("Label", "label").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // siblingSchema partitions the owner's row: same primary key, extra columns.
@@ -68,7 +68,7 @@ func rootSchema() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		Field("Active", "active").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Revision("revision").
 		Child(lineSchema()).
 		Sibling(siblingSchema())
@@ -107,13 +107,13 @@ func baseSchema() *core.TableSchema {
 		ID("id").
 		Field("Name", "name").
 		NaturalID("name").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		Child(core.NewTableSchema[*addressEnt]("addresses").
 			ID("id").
 			ParentID("person_id").
 			Field("City", "city").
-			DeletedAt("deleted_at"))
+			ArchivedAt("archived_at"))
 }
 
 type roleEnt struct {
@@ -132,7 +132,7 @@ func roleSchema() *core.TableSchema {
 	return core.NewTableSchema[*roleEnt]("students").
 		ID("id").
 		Field("Grade", "grade").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		Revision("revision").
 		SharedBase(baseSchema(), "person_id")

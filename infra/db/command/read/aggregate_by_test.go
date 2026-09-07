@@ -43,7 +43,7 @@ func ecGroupLoader(rows [][]any) (*AggregateLoader[*ecGroupEntity], *string, *in
 		}}, nil
 	}), func() *ecGroupEntity { return &ecGroupEntity{} }).
 		WithSchema(NewTableSchema[*ecGroupEntity]("listings").
-			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").Field("Area", "built_area").DeletedAt("deleted_at"))
+			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").Field("Area", "built_area").ArchivedAt("archived_at"))
 	return l, &gotSQL, &queries
 }
 
@@ -67,7 +67,7 @@ func TestAggregateBy_GroupedFactsOneQuery(t *testing.T) {
 	if !strings.HasPrefix(*gotSQL, "SELECT category, COUNT(*), SUM(monthly_rent) FROM listings WHERE ") {
 		t.Errorf("keys then specs must compile in call order over resolved columns, got %q", *gotSQL)
 	}
-	if !strings.Contains(*gotSQL, "deleted_at IS NULL") {
+	if !strings.Contains(*gotSQL, "archived_at IS NULL") {
 		t.Errorf("the default scope gate (active-only) must apply, got %q", *gotSQL)
 	}
 	if !strings.HasSuffix(*gotSQL, " GROUP BY category ORDER BY category") {
@@ -175,7 +175,7 @@ func TestAggregateBy_CriteriaFilterApplies(t *testing.T) {
 		return &fakeDBRows{}, nil
 	}), func() *ecGroupEntity { return &ecGroupEntity{} }).
 		WithSchema(NewTableSchema[*ecGroupEntity]("listings").
-			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").DeletedAt("deleted_at"))
+			ID("id").Field("Category", "category").Field("Cents", "monthly_rent").ArchivedAt("archived_at"))
 
 	q := criteria.Where(criteria.Gt("Cents", 100))
 	if _, err := l.AggregateBy(context.Background(), q, By("Category"), Count()); err != nil {

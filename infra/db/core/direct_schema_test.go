@@ -29,7 +29,7 @@ func directJobSchema() *TableSchema {
 		ID("id").
 		Field("Status", "status").
 		Field("RunAt", "run_at").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		CreatedAt("created_at").
 		UpdatedAt("updated_at")
 }
@@ -44,7 +44,7 @@ func TestDirectSchema_IsTheSameDescriptor(t *testing.T) {
 	}
 	// It resolves through the SAME surface every other schema does: its own
 	// fields, the id, and the managed slots.
-	for _, name := range []string{"ID", "Status", "RunAt", "CreatedAt", "UpdatedAt", "DeletedAt"} {
+	for _, name := range []string{"ID", "Status", "RunAt", "CreatedAt", "UpdatedAt", "ArchivedAt"} {
 		if _, ok := s.Resolve(name); !ok {
 			t.Errorf("Resolve(%q) failed — a Direct schema resolves like any other", name)
 		}

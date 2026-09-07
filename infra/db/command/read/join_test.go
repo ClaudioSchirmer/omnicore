@@ -617,7 +617,7 @@ func TestTargetColumnNullability_OnlySpeaksWhereTheTargetCanBackIt(t *testing.T)
 		// A MANAGED slot resolves as a column but is not a struct field (the
 		// carrier's slots are unexported), so there is nothing to read a pointer
 		// off — not nullable, rather than a guess from the column's meaning.
-		{"a managed slot", Join{Target: collidingTargetSchema("customers")}, JoinField{Column: "deleted_at"}, false},
+		{"a managed slot", Join{Target: collidingTargetSchema("customers")}, JoinField{Column: "archived_at"}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if _, _, got := targetColumnNullability(c.j, c.f); got != c.want {
@@ -1174,12 +1174,12 @@ func TestJoinScanTargets_EmptyWithoutRootJoins(t *testing.T) {
 
 // The joined aggregate the tests above use is deliberately thin. A REAL one
 // shares column names with the anchor (both have a "name") and carries the
-// framework's own managed columns (every archivable entity has deleted_at), so
+// framework's own managed columns (every archivable entity has archived_at), so
 // nothing about the anchor side may be emitted bare while it is in the FROM.
 func collidingTargetSchema(table string) *TableSchema {
 	return NewTableSchema[*joinCustomer](table).ID("id").
 		Field("Name", "code"). // the SAME column the anchor has
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		AsDirectSchema()
 }
 
@@ -1187,7 +1187,7 @@ func collidingOrderSchema() *TableSchema {
 	return NewTableSchema[*joinOrder]("orders").
 		ID("id").
 		Revision("revision").
-		DeletedAt("deleted_at").
+		ArchivedAt("archived_at").
 		Field("Code", "code").
 		Field("CustomerID", "customer_id").
 		Field("CarrierID", "carrier_id").
@@ -1199,7 +1199,7 @@ func collidingLineSchema() *TableSchema {
 		ID("id").ParentID("order_id").
 		Field("Label", "label").
 		Field("CityID", "city_id").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 // Every anchor column in the root SELECT is qualified once a join is in the FROM
@@ -1221,19 +1221,19 @@ func TestDeclaredJoin_RootSelectQualifiesEveryAnchorColumn(t *testing.T) {
 	}
 }
 
-// The anchor's soft-delete gate under a join target that also has deleted_at.
+// The anchor's archive gate under a join target that also has archived_at.
 func TestDeclaredJoin_RootScopeGateIsQualified(t *testing.T) {
 	l := joinLoader(collidingOrderSchema()).WithJoins(
 		InnerJoin(collidingTargetSchema("customers")).On("customer_id").Field("CustomerName", "code"),
 	)
 	sql := capturedSQL(t, l, criteria.Where(nil))
-	if !strings.Contains(sql, "orders.deleted_at IS NULL") {
+	if !strings.Contains(sql, "orders.archived_at IS NULL") {
 		t.Errorf("the scope gate must be qualified under a join:\n%s", sql)
 	}
 }
 
-// The CHILD's soft-delete gate, same story: a child join target with a
-// deleted_at of its own makes the bare gate ambiguous. This one broke every
+// The CHILD's archive gate, same story: a child join target with a
+// archived_at of its own makes the bare gate ambiguous. This one broke every
 // read of an aggregate whose child joined an ordinary archivable entity.
 func TestChildJoin_ChildScopeGateIsQualified(t *testing.T) {
 	l := joinLoader(collidingOrderSchema()).WithJoins(
@@ -1241,7 +1241,7 @@ func TestChildJoin_ChildScopeGateIsQualified(t *testing.T) {
 			On("city_id").Field("CityName", "code"),
 	)
 	sql := childCapturedSQL(t, l)
-	if !strings.Contains(sql, "order_lines.deleted_at IS NULL") {
+	if !strings.Contains(sql, "order_lines.archived_at IS NULL") {
 		t.Errorf("the child scope gate must be qualified under a child join:\n%s", sql)
 	}
 }

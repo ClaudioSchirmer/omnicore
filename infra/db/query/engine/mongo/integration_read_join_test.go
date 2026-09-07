@@ -102,7 +102,7 @@ func joinOrderSchema() *core.TableSchema {
 		Field("Code", "code").
 		Field("CustomerID", "customer_id").
 		Field("CarrierID", "carrier_id").
-		DeletedAt("deleted_at").CreatedAt("created_at").UpdatedAt("updated_at").
+		ArchivedAt("archived_at").CreatedAt("created_at").UpdatedAt("updated_at").
 		Child(joinLineSchema())
 }
 
@@ -142,7 +142,7 @@ func createReadJoinTables(t *testing.T, p *postgres.Postgres) {
 		code TEXT NOT NULL,
 		customer_id UUID NOT NULL REFERENCES join_customers(id),
 		carrier_id UUID REFERENCES join_carriers(id),
-		deleted_at TIMESTAMP,
+		archived_at TIMESTAMP,
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 	)`)

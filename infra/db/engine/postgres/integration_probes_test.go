@@ -36,7 +36,7 @@ func probeSchema() *core.TableSchema {
 		Field("Code", "code").
 		Field("Cents", "cents").
 		Field("Area", "area").
-		DeletedAt("deleted_at")
+		ArchivedAt("archived_at")
 }
 
 func probeSetup(t *testing.T) (*Postgres, string, func()) {
@@ -47,7 +47,7 @@ func probeSetup(t *testing.T) (*Postgres, string, func()) {
 		code TEXT NOT NULL,
 		cents BIGINT NOT NULL,
 		area DOUBLE PRECISION NOT NULL,
-		deleted_at TIMESTAMP
+		archived_at TIMESTAMP
 	)`)
 	ctx := context.Background()
 	var idA string
@@ -61,7 +61,7 @@ func probeSetup(t *testing.T) (*Postgres, string, func()) {
 		t.Fatalf("seed B/C: %v", err)
 	}
 	if _, err := pg.Pool().Exec(ctx,
-		`INSERT INTO probe_items (code, cents, area, deleted_at) VALUES ('A', 999999, 99.9, NOW())`); err != nil {
+		`INSERT INTO probe_items (code, cents, area, archived_at) VALUES ('A', 999999, 99.9, NOW())`); err != nil {
 		t.Fatalf("seed archived: %v", err)
 	}
 	return pg, idA, cleanup

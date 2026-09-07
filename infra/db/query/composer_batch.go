@@ -38,17 +38,17 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 	}
 	for _, r := range view.roles {
 		_, fkCol, _ := r.schema.SharedBaseRef()
-		sd, hasSD := hydrate.SchemaDeletedAt(r.schema)
+		archivedCol, hasArchived := hydrate.SchemaArchivedAt(r.schema)
 		baseIDs := hydrate.CollectKeys(rows, basePK)
 
-		// Active role rows (or, without DeletedAt, simply the row) for the whole
+		// Active role rows (or, without ArchivedAt, simply the row) for the whole
 		// batch in one lookup, grouped by the base ParentID.
 		var grouped map[string][]Document
 		var err error
-		if !hasSD {
+		if !hasArchived {
 			grouped, err = c.h.FetchInGrouped(ctx, r.schema, r.schema.Table(), fkCol, baseIDs, "", true)
 		} else {
-			grouped, err = c.h.FetchInGrouped(ctx, r.schema, r.schema.Table(), fkCol, baseIDs, sd, false)
+			grouped, err = c.h.FetchInGrouped(ctx, r.schema, r.schema.Table(), fkCol, baseIDs, archivedCol, false)
 		}
 		if err != nil {
 			return err
@@ -68,13 +68,13 @@ func (c *Composer) composeBaseRootedRowsBatched(ctx context.Context, view *ViewD
 		}
 		// Fallback for bases with no active row: the most recently archived remnant
 		// (per-base, matching fetchRoleRow's step 2). Rare — only archived-only roles.
-		if hasSD && includeArchived {
+		if hasArchived && includeArchived {
 			for _, row := range rows {
 				bid := hydrate.KeyOf(row, basePK)
 				if bid == "" || roleByBase[bid] != nil {
 					continue
 				}
-				arch, err := c.h.FetchLatestArchived(ctx, r.schema, fkCol, bid, sd)
+				arch, err := c.h.FetchLatestArchived(ctx, r.schema, fkCol, bid, archivedCol)
 				if err != nil {
 					return err
 				}

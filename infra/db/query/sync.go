@@ -866,7 +866,7 @@ func (s *SyncEngine) applyConsultUpsert(ctx context.Context, view *ViewDefinitio
 // creates. The shared-base fan-out passes false: it targets ids another
 // writer's FindIDsByField snapshot produced, so a missing document there means
 // a role deleted concurrently — upserting would resurrect a skeleton carrying
-// only base fields (no ID, no ParentID, no deleted_at: invisible to every future
+// only base fields (no ID, no ParentID, no archived_at: invisible to every future
 // fan-out and reconciliation, yet listed as an active row) that only a full
 // rebuild could remove.
 func (s *SyncEngine) applyProjection(ctx context.Context, viewName, id string, stages []Document, upsert bool) error {
@@ -1150,7 +1150,7 @@ func (s *SyncEngine) projectOwnViews(ctx context.Context, event kafkaEvent, raw 
 	for _, view := range views {
 		// DELETED always removes from the read side (hard delete, no flag
 		// overrides it). ARCHIVED by default goes through the projection branch
-		// below — the document survives with deleted_at populated, so consumers
+		// below — the document survives with archived_at populated, so consumers
 		// that pass IncludeArchived=true can read it. Views that opt in via
 		// ViewDefinition.DeleteOnArchive() instead remove the document on
 		// ARCHIVED. An UNARCHIVED event always hits the projection branch.
@@ -1386,7 +1386,7 @@ func resolveBaseID(event kafkaEvent) string {
 // shouldDeleteFromView is the routing decision for read-side events. DELETED
 // is unconditional (hard delete = remove from Mongo regardless of the view's
 // archive policy). ARCHIVED is conditional: by default the document survives
-// in the projection (upsert path with deleted_at populated, symmetric with
+// in the projection (upsert path with archived_at populated, symmetric with
 // PostgreSQL) and the consumer reads it via the existing IncludeArchived
 // flag; views that opt in via DeleteOnArchive() remove the document
 // instead — the explicit hot-tier choice. Any other event type (INSERTED,
