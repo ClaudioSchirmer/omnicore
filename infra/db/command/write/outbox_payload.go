@@ -374,7 +374,7 @@ func readRevisionCreatedAt(ctx context.Context, tx WriteTx, d Dialect, table, re
 }
 
 // normalizeStamp coerces a scanned timestamp (a created_at for the tombstone's
-// incarnation discriminator, a archived_at for the archive cascade's) into a UTC
+// incarnation discriminator, an archived_at for the archive cascade's) into a UTC
 // time.Time. The write path binds UTC values, so a naive string form (MySQL
 // DATETIME without parseTime) parses as UTC. An unrecognized form — and a NULL,
 // which arrives as a nil any — degrades to zero: the tombstone then falls back

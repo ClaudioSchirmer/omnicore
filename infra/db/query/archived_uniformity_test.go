@@ -65,7 +65,7 @@ func TestArchived_OneToOneSegmentKeptWhenActive(t *testing.T) {
 func TestArchived_SegmentUntouchedWhenSourceDeclaresNoArchivedAt(t *testing.T) {
 	v := View("orders").Version(1).Schema(arcRootSchema("orders")).
 		Embed(mirrorNoArchived()).On("plain_id").Indexes(Index("plain_id"))
-	// Even carrying a archived_at-looking field, an undeclared lifecycle is not a
+	// Even carrying an archived_at-looking field, an undeclared lifecycle is not a
 	// lifecycle: the segment must survive untouched.
 	doc := map[string]any{"_id": "o1", "plain": map[string]any{"_id": "p1", "archived_at": archivedStamp}}
 	v.BuildViewNode().StripArchivedChildren(doc)
