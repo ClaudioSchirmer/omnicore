@@ -1,7 +1,7 @@
 # omnicore
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ClaudioSchirmer/omnicore.svg)](https://pkg.go.dev/github.com/ClaudioSchirmer/omnicore)
-[![Go 1.21+](https://img.shields.io/badge/go-1.21%2B-00ADD8.svg)](https://go.dev)
+[![Go 1.26+](https://img.shields.io/badge/go-1.26%2B-00ADD8.svg)](https://go.dev)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-24292e.svg)](https://claudioschirmer.github.io/omnicore/)
 
@@ -23,6 +23,79 @@ Mongo-projected read side, and every transport surface — from a single
 - 🔁 **One handler, five surfaces** — REST, gRPC, GraphQL, the message broker (Kafka or NATS), and file exports share the *same* handler instance.
 - 📬 **Correct-by-construction writes** — data + outbox + audit commit in one transaction, always.
 - 🛠️ **Batteries included** — auth, authz, cache, outbound HTTP, migrations, schema evolution, tracing, i18n.
+
+---
+
+## How it is tested — 15,487 assertions, on every engine, every run
+
+A framework is only worth what it survives. omnicore's own unit suite is the floor, not the
+proof: **5,596 Go test functions across 685 test files**, compiled and run under **all 8
+engine × transport build-tag combinations** (Postgres · MySQL · SQL Server · Oracle, each with
+Kafka and with NATS), plus the integration suites against real databases.
+
+The proof is a **separate QA service** — a private repository whose only reason to exist is to
+run the framework against real infrastructure and refuse to let it lie. It is not published, and
+will not be: it is a test RIG — deliberately broken configurations, throwaway fixtures,
+engine-specific probes, entities shaped to corner cases rather than to a domain. Example code is
+[authcore](https://github.com/ClaudioSchirmer/authcore)'s job; this one's job is to break things.
+It boots the real service on a real bench — relational engine + Mongo + Debezium CDC relay +
+broker — and asserts over HTTP, gRPC, GraphQL and directly in the databases.
+
+**Last full matrix run — ALL GREEN, 217/217 runs, 7,452 s (≈ 2 h) wall clock:**
+
+| | |
+|---|---|
+| **Executable contract suites** | **54** (`qa/*.sh`, ~30k lines of shell) |
+| **Relational lanes, in parallel** | **4** — Postgres + Kafka · MySQL + NATS · SQL Server + Kafka · Oracle 23ai + NATS |
+| **Assertions per lane** | **3,750** — every suite runs on every engine, so an engine-specific regression has nowhere to hide |
+| **Isolated SQLite lane** | **487** assertions — `CGO_ENABLED=0 -tags sqlite`, boot + migrations + write side verified inside the `app.db` file itself |
+| **Assertions per full run** | **15,487** (4 × 3,750 + 487) across **217** scheduled suite runs |
+| **Gates in the same run** | the framework's 8 build-tag combos + the QA service's 4, and the integration suites on all four engines |
+| **Verdict policy** | **fail-fast** — the run stops at the first RED suite; there is no "keep going" mode, by design |
+
+**And it covers the whole surface, not the happy path.** One suite per vertical, each on all four
+engines: the write lifecycle and aggregates · archive/unarchive cascades and child removal ·
+old-state capture · lifecycle hooks · optimistic concurrency · Mongo schema evolution and the
+**online blue-green rebuild at scale** · **projection resilience** (Mongo primary step-down and
+quorum loss, parked events, automatic replay) · CDC ripple and convergence · relational views ·
+read joins · subqueries · direct schemas · composed / embedded / external-embed / upstream views ·
+computed and sparse `?fields=` projections · the filter vocabulary and its typed 400s · field
+redaction · stamped fields · audit · cache · outbound HTTP and its middleware · gRPC client ·
+tracing · i18n and naming · REST + OpenAPI, GraphQL and gRPC surfaces · JWT auth, self-issued
+tokens, gRPC security and the authorization layers · HTTP hardening and `trustProxy` · integration
+events · both transports · migrations · probes · config validation. Plus a perf lane that
+**measures** instead of asserting, so a release that gets slower is visible rather than discovered.
+
+Every capability in the tables below answers to at least one of those suites, on every engine it
+claims to support.
+
+---
+
+## Built with omnicore — [authcore](https://github.com/ClaudioSchirmer/authcore)
+
+**A real, public service on this framework** — the reference for what a microservice assembled on
+omnicore actually looks like, beyond the snippets below.
+
+> ### 🔐 [authcore](https://github.com/ClaudioSchirmer/authcore) — the identity provider of a multi-tenant platform
+>
+> It owns the tenants, the people and the machines that act inside them, the roles and permissions
+> they hold, and the signed tokens the rest of the mesh trusts: any other service accepts an
+> authcore token by pointing `auth.jwt.jwksUrl` at it — configuration only, no code. 57 management
+> endpoints over seven aggregates (Tenant, User, Client, Group, Role, Permission, Claim), answered
+> on REST **and** GraphQL by the same handlers, with PostgreSQL as the source of truth and
+> [relational views](https://claudioschirmer.github.io/omnicore/#relational-view) in front of it —
+> read-your-writes, no CDC lag, no Mongo — a posture `/omnicore:configure` can convert to full
+> distributed CQRS without touching a line of domain code.
+>
+> Worth reading for: the composition root and `Wire`, the domain/application/web/infra layering,
+> the three [authorization layers](https://claudioschirmer.github.io/omnicore/#authz-seams) in
+> anger, [token issuance](https://claudioschirmer.github.io/omnicore/#token-issuance) with key
+> rotation and rotating refresh tokens, the translation catalogs, and a contract QA suite that
+> proves the whole surface end to end.
+>
+> It is maintained entirely through the
+> [omnicore Claude Code plugin](https://github.com/ClaudioSchirmer/omnicore-plugin) — the same
+> `/omnicore:*` skills any consumer of this framework can install.
 
 ---
 
@@ -139,7 +212,8 @@ operator retry surface — without the handler being aware of any of it.
 go get github.com/ClaudioSchirmer/omnicore@latest
 ```
 
-Requires Go 1.21+ (`log/slog` and generics).
+Requires Go 1.26+ — the toolchain the module declares (`go 1.26.3`) and the one CI builds every
+engine × transport row against.
 
 ## Quick start
 
@@ -181,7 +255,11 @@ type User struct {
 func (u *User) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
     r.IfInsertOrUpdate(func() {
         if u.Email == "" {
-            r.AddNotification("Email", domain.RequiredFieldNotification{})
+            // Notifications are emitted by FIELD REFERENCE — a pointer to the entity's
+            // own field. The wire name (lowerCamel, acronym-aware), the `notifyAs`
+            // override and the `labelKey` catalog key are read off that field; the
+            // final flag says whether its current value is echoed back.
+            r.AddNotification(&u.Email, domain.RequiredFieldNotification{}, false)
         }
     })
 }
@@ -189,11 +267,11 @@ func (u *User) BuildRules(_ string, _ domain.Service, r *domain.Rules) {
 
 ```go
 // application/commands/insert_user.go — application boundary (Cmd owns input + output)
-func (c InsertUserCommand) ToEntity(_ *configuration.AppContext) *User {
-    return &User{Name: c.Name, Email: c.Email, Phone: c.Phone}
+func (c InsertUserCommand) ToEntity(_ *configuration.AppContext) (*User, error) {
+    return &User{Name: c.Name, Email: c.Email, Phone: c.Phone}, nil
 }
-func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) InsertUserResult {
-    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}
+func (c InsertUserCommand) FromEntity(_ *configuration.AppContext, u *User) (InsertUserResult, error) {
+    return InsertUserResult{ID: *u.GetID(), Name: u.Name, Email: u.Email, Phone: u.Phone}, nil
 }
 ```
 
@@ -228,6 +306,8 @@ semantics, same audit guarantees. → [CommandHandler](https://claudioschirmer.g
 
 - 📖 **[Documentation site](https://claudioschirmer.github.io/omnicore/)** — the public manual (published from [`docs/`](docs/) via GitHub Pages); the consumer's source of truth for every exported API.
 - 📝 **[`CHANGELOG.md`](CHANGELOG.md)** — release notes (Keep a Changelog, SemVer; the API may evolve through `0.x.y`).
+- 🔐 **[authcore](https://github.com/ClaudioSchirmer/authcore)** — a complete service built on omnicore, to read alongside the manual.
+- 🧰 **[omnicore-plugin](https://github.com/ClaudioSchirmer/omnicore-plugin)** — the Claude Code plugin that scaffolds, evolves, QAs and upgrades a service on this framework.
 
 ## Stack
 
